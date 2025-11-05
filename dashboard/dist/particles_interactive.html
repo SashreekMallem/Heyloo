@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>WebGPU Particles Background</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			body {
+				margin: 0;
+				padding: 0;
+				overflow: hidden;
+				background: #0a0a0f;
+			}
+			canvas {
+				display: block;
+				position: fixed;
+				top: 0;
+				left: 0;
+				width: 100%;
+				height: 100%;
+			}
+		</style>
+	</head>
+	<body>
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "../three.js/build/three.webgpu.js",
+					"three/webgpu": "../three.js/build/three.webgpu.js",
+					"three/tsl": "../three.js/build/three.tsl.js",
+					"three/addons/": "../three.js/examples/jsm/"
+				}
+			}
+		</script>
+
+		<script type="module">
+			import * as THREE from 'three/webgpu';
+			import { float, If, PI, color, cos, instanceIndex, Loop, mix, mod, sin, instancedArray, Fn, uint, uniform, uniformArray, hash, vec3, vec4 } from 'three/tsl';
+			import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+			let camera, scene, renderer, controls, updateCompute;
+			let mouseX = 0, mouseY = 0;
+			let targetMouseX = 0, targetMouseY = 0;
+			let scrollY = 0;
+			let targetScrollY = 0;
+
+			init();
+
+			async function init() {
+				camera = new THREE.PerspectiveCamera(25, window.innerWidth / window.innerHeight, 0.1, 100);
+				camera.position.set(0, 0, 15);
+
+				scene = new THREE.Scene();
+
+				// Minimal lighting for atmosphere
+				const ambientLight = new THREE.AmbientLight('#ffffff', 0.3);
+				scene.add(ambientLight);
+
+				const directionalLight = new THREE.DirectionalLight('#3b82f6', 0.8);
+				directionalLight.position.set(4, 2, 0);
+				scene.add(directionalLight);
+
+				// renderer
+				renderer = new THREE.WebGPURenderer({ antialias: true, alpha: true });
+				renderer.setPixelRatio(window.devicePixelRatio);
+				renderer.setSize(window.innerWidth, window.innerHeight);
+				renderer.setAnimationLoop(animate);
+				renderer.setClearColor('#0a0a0f', 1);
+				document.body.appendChild(renderer.domElement);
+
+				await renderer.init();
+
+				controls = new OrbitControls(camera, renderer.domElement);
+				controls.enableDamping = true;
+				controls.dampingFactor = 0.05;
+				controls.enableZoom = false;
+				controls.enablePan = false;
+				controls.autoRotate = true;
+				controls.autoRotateSpeed = 0.5;
+				controls.enabled = false; // Disable manual controls, let it auto-rotate
+
+				window.addEventListener('resize', onWindowResize);
+				document.addEventListener('mousemove', onMouseMove);
+				document.addEventListener('scroll', onScroll);
+
+				// attractors - NO HELPERS/RINGS/ARROWS
+				const attractorsPositions = uniformArray([
+					new THREE.Vector3(-2, 0, 0),
+					new THREE.Vector3(2, 0, 0),
+					new THREE.Vector3(0, 2.5, 0)
+				]);
+				const attractorsRotationAxes = uniformArray([
+					new THREE.Vector3(0, 1, 0).normalize(),
+					new THREE.Vector3(1, 0, 1).normalize(),
+					new THREE.Vector3(1, 0, 0).normalize()
+				]);
+				const attractorsLength = uniform(attractorsPositions.array.length, 'uint');
+
+				// particles - MORE particles for denser effect
+				const count = Math.pow(2, 19); // 524,288 particles (doubled!)
+
+				const material = new THREE.SpriteNodeMaterial({
+					blending: THREE.AdditiveBlending,
+					depthWrite: false,
+					transparent: true
+				});
+
+				const attractorMass = uniform(Number(`1e${7}`));
+				const particleGlobalMass = uniform(Number(`1e${4}`));
+				const timeScale = uniform(1.5); // Faster base speed
+				const spinningStrength = uniform(4.0); // More spinning energy
+				const maxSpeed = uniform(12); // Even faster particles
+				const gravityConstant = 6.67e-11;
+				const velocityDamping = uniform(0.06); // Less damping = more chaos
+				const scale = uniform(0.012); // Bigger particles for visibility
+				const boundHalfExtent = uniform(12); // Larger bounds
+				const colorA = uniform(color('#7000ff')); // Brighter purple
+				const colorB = uniform(color('#00e5ff')); // Brighter cyan
+				const colorC = uniform(color('#ff0080')); // Brighter pink
+
+				const positionBuffer = instancedArray(count, 'vec3');
+				const velocityBuffer = instancedArray(count, 'vec3');
+
+				const sphericalToVec3 = Fn(([phi, theta]) => {
+					const sinPhiRadius = sin(phi);
+					return vec3(sinPhiRadius.mul(cos(theta)), cos(phi), sinPhiRadius.mul(sin(theta)));
+				});
+
+				const init = Fn(() => {
+					const position = positionBuffer.element(instanceIndex);
+					const velocity = velocityBuffer.element(instanceIndex);
+
+					const phi = hash(instanceIndex).mul(PI).mul(2);
+					const theta = hash(instanceIndex.add(uint(Math.random() * 0xffffff))).mul(PI);
+
+					const randRadius = hash(instanceIndex.add(uint(Math.random() * 0xffffff))).remap(0.25, 1).mul(5);
+					position.assign(sphericalToVec3(phi, theta).mul(randRadius));
+
+					const baseVelocity = sphericalToVec3(phi, theta).mul(0.08);
+					velocity.assign(baseVelocity);
+				});
+
+				const initCompute = init().compute(count);
+				renderer.compute(initCompute);
+
+				// update compute
+				const particleMassMultiplier = hash(instanceIndex.add(uint(Math.random() * 0xffffff))).remap(0.25, 1).toVar();
+				const particleMass = particleMassMultiplier.mul(particleGlobalMass).toVar();
+
+				const update = Fn(() => {
+					const delta = float(1 / 60).mul(timeScale).toVar();
+
+					const position = positionBuffer.element(instanceIndex);
+					const velocity = velocityBuffer.element(instanceIndex);
+
+					// force
+					const force = vec3(0).toVar();
+
+					Loop(attractorsLength, ({ i }) => {
+						const attractorPosition = attractorsPositions.element(i);
+						const attractorRotationAxis = attractorsRotationAxes.element(i);
+
+						const toAttractor = attractorPosition.sub(position);
+						const distance = toAttractor.length();
+						const direction = toAttractor.normalize();
+
+						// gravity
+						const gravityStrength = attractorMass.mul(particleMass).mul(gravityConstant).div(distance.pow(2)).toVar();
+						const gravityForce = direction.mul(gravityStrength);
+						force.addAssign(gravityForce);
+
+						// spinning
+						const spinningForce = attractorRotationAxis.mul(gravityStrength).mul(spinningStrength);
+						const spinningVelocity = spinningForce.cross(toAttractor);
+						force.addAssign(spinningVelocity);
+					});
+
+					// velocity
+					velocity.addAssign(force.mul(delta));
+
+					const speed = velocity.length();
+					If(speed.greaterThan(maxSpeed), () => {
+						velocity.assign(velocity.normalize().mul(maxSpeed));
+					});
+
+					velocity.mulAssign(velocityDamping.oneMinus());
+
+					// position
+					position.addAssign(velocity.mul(delta));
+
+					// box loop
+					const halfHalfExtent = boundHalfExtent.div(2).toVar();
+					position.assign(mod(position.add(halfHalfExtent), boundHalfExtent).sub(halfHalfExtent));
+				});
+
+				updateCompute = update().compute(count);
+
+				// nodes - Enhanced colors with 3-color gradient
+				material.positionNode = positionBuffer.toAttribute();
+				material.colorNode = Fn(() => {
+					const velocity = velocityBuffer.toAttribute();
+					const speed = velocity.length();
+					const colorMix = speed.div(maxSpeed).smoothstep(0, 0.8);
+					
+					// Three-color gradient: purple -> cyan -> pink
+					const midColor = mix(colorA, colorB, colorMix.mul(2).min(1));
+					const finalColor = mix(midColor, colorC, colorMix.sub(0.5).max(0).mul(2));
+					
+					return vec4(finalColor, colorMix.mul(0.8).add(0.2));
+				})();
+				material.scaleNode = particleMassMultiplier.mul(scale);
+
+				// mesh
+				const geometry = new THREE.PlaneGeometry(1, 1);
+				const mesh = new THREE.InstancedMesh(geometry, material, count);
+				scene.add(mesh);
+
+				// Store references for dynamic updates
+				window.attractorsPositions = attractorsPositions;
+				window.timeScale = timeScale;
+				window.spinningStrength = spinningStrength;
+			}
+
+			function onMouseMove(event) {
+				targetMouseX = (event.clientX / window.innerWidth) * 2 - 1;
+				targetMouseY = -(event.clientY / window.innerHeight) * 2 + 1;
+			}
+
+			function onScroll(event) {
+				targetScrollY = window.scrollY * 0.001;
+			}
+
+			function onWindowResize() {
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+				renderer.setSize(window.innerWidth, window.innerHeight);
+			}
+
+			async function animate() {
+				// Smooth mouse following with easing
+				mouseX += (targetMouseX - mouseX) * 0.08;
+				mouseY += (targetMouseY - mouseY) * 0.08;
+				scrollY += (targetScrollY - scrollY) * 0.05;
+
+				// Dynamic attractor movement based on time, mouse, and scroll
+				const time = performance.now() * 0.0005;
+				const scrollEffect = scrollY * 0.5;
+				const mouseSpeed = Math.abs(targetMouseX - mouseX) + Math.abs(targetMouseY - mouseY);
+				
+				if (window.attractorsPositions) {
+					// Attractor 1 - main orbit with mouse parallax
+					const orbit1Speed = 0.8 + scrollEffect;
+					window.attractorsPositions.array[0].x = Math.cos(time * orbit1Speed) * (3 + mouseX * 0.8) + mouseX * 1.2;
+					window.attractorsPositions.array[0].y = Math.sin(time * 0.5) * (2 + Math.abs(mouseY) * 0.5) + mouseY * 0.8;
+					window.attractorsPositions.array[0].z = Math.sin(time * 0.6 + scrollEffect) * 2.5 + scrollY;
+
+					// Attractor 2 - counter-orbit with scroll influence
+					const orbit2Speed = 0.8 - scrollEffect * 0.3;
+					window.attractorsPositions.array[1].x = Math.cos(time * orbit2Speed + Math.PI) * (3 - mouseX * 0.5) - mouseX * 0.7;
+					window.attractorsPositions.array[1].y = Math.sin(time * 0.5 + Math.PI * 0.5) * 2.5 - mouseY * 0.4;
+					window.attractorsPositions.array[1].z = Math.cos(time * 0.7 - scrollEffect) * (2.5 - scrollY * 0.5);
+
+					// Attractor 3 - figure-8 pattern with strong mouse interaction
+					window.attractorsPositions.array[2].x = Math.sin(time * 0.6 + mouseSpeed * 2) * (2.5 + Math.abs(mouseX) * 0.8) + mouseX * 1.5;
+					window.attractorsPositions.array[2].y = Math.cos(time * 0.4) * (3 + scrollEffect) + mouseY * 1.2 + Math.sin(scrollEffect * 2) * 0.5;
+					window.attractorsPositions.array[2].z = Math.sin(time * 0.8 + scrollEffect * 2) * 2.5 - scrollY * 0.3;
+
+					window.attractorsPositions.needsUpdate = true;
+				}
+
+				// Dynamic time scale - speeds up with mouse movement and scroll
+				if (window.timeScale) {
+					const interactionIntensity = mouseSpeed * 3 + Math.abs(scrollEffect) * 0.5;
+					window.timeScale.value = 1.2 + interactionIntensity;
+				}
+
+				// Dynamic spinning - responds to mouse position and movement
+				if (window.spinningStrength) {
+					const spinIntensity = Math.abs(mouseX) * 1.5 + Math.abs(mouseY) * 1.2 + mouseSpeed * 4;
+					window.spinningStrength.value = 3.5 + spinIntensity;
+				}
+
+				// Camera zoom based on scroll
+				camera.position.z = 15 - scrollY * 2;
+				camera.position.x = mouseX * 2;
+				camera.position.y = -mouseY * 1.5;
+				camera.lookAt(0, 0, 0);
+
+				controls.update();
+				renderer.compute(updateCompute);
+				renderer.render(scene, camera);
+			}
+		</script>
+	</body>
+</html>

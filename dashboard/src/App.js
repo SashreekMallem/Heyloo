@@ -17,7 +17,7 @@ import { RestaurantCallsPage } from './features/restaurant/CallsPage';
 import { RestaurantMenuPage } from './features/restaurant/MenuPage';
 import { RestaurantCustomersPage } from './features/restaurant/CustomersPage';
 import { RestaurantSettingsPage } from './features/restaurant/SettingsPage';
-import LandingPage from './pages/LandingPage';
+import { LandingPage } from './pages/LandingPageNew';
 import PrivacyPolicyPage from './pages/PrivacyPolicyPage';
 import TermsPage from './pages/TermsPage';
 import SupportPage from './pages/SupportPage';
