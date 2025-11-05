@@ -1,0 +1,33 @@
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ]
+    },
+    "supabase": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@supabase/mcp-server-supabase@latest",
+        "--project-ref=fjfhwbtovmbooaqafdxb"
+      ],
+      "env": {
+        "SUPABASE_ACCESS_TOKEN": "YOUR_SUPABASE_ACCESS_TOKEN"
+      }
+    },
+    "vapi": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.vapi.ai/mcp",
+        "--header",
+        "Authorization: Bearer YOUR_VAPI_SECRET"
+      ]
+    }
+  }
+}
+

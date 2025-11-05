@@ -1,0 +1,5 @@
+{
+    "chat.agent.thinkingStyle": "expanded",
+    "github.copilot.chat.alternateGptPrompt.enabled": false,
+    "chat.mcp.gallery.enabled": true
+}

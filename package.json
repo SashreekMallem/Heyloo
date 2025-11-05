@@ -1,0 +1,24 @@
+{
+  "name": "heyloo-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "server",
+    "dashboard",
+    "packages/shared"
+  ],
+  "scripts": {
+    "install:all": "npm install --workspaces --include-workspace-root",
+    "lint": "npm run lint --workspaces",
+    "format": "npm run format --workspaces",
+    "dev:api": "npm --workspace server run dev",
+    "dev:dashboard": "npm --workspace dashboard run dev",
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "typescript": "^5.6.3"
+  }
+}
