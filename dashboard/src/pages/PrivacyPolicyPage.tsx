@@ -146,8 +146,8 @@ export default function PrivacyPolicyPage() {
               </p>
               <div className="bg-slate-50 p-4 rounded-lg mt-4">
                 <p className="text-slate-700 font-medium">Heyloo Technologies</p>
-                <p className="text-slate-600">Email: privacy@heyloo.com</p>
-                <p className="text-slate-600">Support: support@heyloo.com</p>
+                <p className="text-slate-600">Email: ms@eduflixai.com</p>
+                <p className="text-slate-600">Support: ms@eduflixai.com</p>
               </div>
             </div>
           </section>

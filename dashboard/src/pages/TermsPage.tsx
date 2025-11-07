@@ -15,7 +15,7 @@ export default function TermsPage() {
           </div>
           <div>
             <h1 className="text-2xl font-bold text-slate-900">End User License Agreement</h1>
-            <p className="text-slate-600">Heyloo Technologies</p>
+            <p className="text-slate-600">Heyloo Technologies · ms@eduflixai.com</p>
           </div>
         </div>
       </div>
