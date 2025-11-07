@@ -29,8 +29,6 @@
     </filter>
   </defs>
 
-  <rect width="600" height="600" rx="140" fill="url(#glass)" />
-
   <!-- hero stroke -->
   <g transform="translate(300 300)" filter="url(#innerGlow)">
     <path
