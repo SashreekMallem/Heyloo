@@ -1,12 +1,67 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 32" fill="none">
+<svg viewBox="0 0 600 600" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="heylooGradient" x1="0" y1="0" x2="120" y2="32" gradientUnits="userSpaceOnUse">
-      <stop offset="0.15" stop-color="#22d3ee"/>
-      <stop offset="0.5" stop-color="#38bdf8"/>
-      <stop offset="1" stop-color="#c084fc"/>
+    <linearGradient id="pulse" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4df2ff" />
+      <stop offset="40%" stop-color="#8c7bff" />
+      <stop offset="100%" stop-color="#ff4fa2" />
     </linearGradient>
+    <linearGradient id="glass" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1f2337" />
+      <stop offset="100%" stop-color="#06070d" />
+    </linearGradient>
+    <filter id="innerGlow">
+      <feGaussianBlur stdDeviation="12" result="blur" />
+      <feComponentTransfer>
+        <feFuncA type="linear" slope="0.4" />
+      </feComponentTransfer>
+      <feBlend in="SourceGraphic" in2="blur" mode="screen" />
+    </filter>
+    <filter id="neon">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="6" result="blur" />
+      <feOffset dx="0" dy="4" />
+      <feComponentTransfer>
+        <feFuncA type="linear" slope="0.35" />
+      </feComponentTransfer>
+      <feMerge>
+        <feMergeNode />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
   </defs>
-  <rect x="2" y="2" width="28" height="28" rx="12" fill="url(#heylooGradient)" />
-  <path d="M12 12v8c0 2.209 1.791 4 4 4h6v-4h-6v-8h6V8h-6c-2.209 0-4 1.791-4 4Z" fill="#0f172a"/>
-  <path d="M44.8 24h-4.4L35 8h4.2l3.2 11.1L45.6 8h3.8l3.2 11.2L55.8 8H60l-5.3 16h-4.3l-3.3-10.8L44.8 24Zm22 .3c-4.5 0-7.7-3.6-7.7-8.3 0-4.7 3.2-8.3 7.7-8.3s7.7 3.6 7.7 8.3c0 4.7-3.2 8.3-7.7 8.3Zm0-3.6c2 0 3.4-2 3.4-4.7 0-2.7-1.4-4.7-3.4-4.7s-3.4 2-3.4 4.7c0 2.7 1.4 4.7 3.4 4.7Zm20.5 3.3c-4.5 0-7.7-3.6-7.7-8.3 0-4.7 3.2-8.3 7.7-8.3s7.7 3.6 7.7 8.3c0 4.7-3.2 8.3-7.7 8.3Zm0-3.6c2 0 3.4-2 3.4-4.7 0-2.7-1.4-4.7-3.4-4.7s-3.4 2-3.4 4.7c0 2.7 1.4 4.7 3.4 4.7Zm15.5 3V11.6h4V24h-4Zm-.5-14.2v-3.4h5V10h-5Zm11.3 14.2V11.6h4V24h-4Z" fill="#f8fafc"/>
+
+  <rect width="600" height="600" rx="140" fill="url(#glass)" />
+
+  <!-- ambient light -->
+  <circle cx="180" cy="160" r="120" fill="#57fff133" />
+  <circle cx="430" cy="420" r="160" fill="#ff53a327" />
+
+  <!-- hero stroke -->
+  <g transform="translate(300 300)" filter="url(#innerGlow)">
+    <path
+      d="M -90 110
+         L -90 -110
+         M -90 0
+         Q -40 -70, 5 -35
+         Q 45 -10, 95 -85
+         L 95 110"
+      fill="none"
+      stroke="url(#pulse)"
+      stroke-width="24"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      filter="url(#neon)"
+    />
+  </g>
+
+  <!-- subtle text -->
+  <text
+    x="300"
+    y="525"
+    text-anchor="middle"
+    font-family="Sora, 'Segoe UI', sans-serif"
+    font-size="46"
+    letter-spacing="6"
+    fill="#f6f7ffbb">
+    HEYLOO
+  </text>
 </svg>
