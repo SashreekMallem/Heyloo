@@ -397,7 +397,7 @@ function Navigation() {
           <img
             src={heylooLogo}
             alt="Heyloo logo"
-            className="w-10 h-10 drop-shadow-[0_8px_25px_rgba(91,255,250,0.35)] transition-transform group-hover:scale-105"
+            className="w-16 h-16 drop-shadow-[0_8px_25px_rgba(91,255,250,0.35)] transition-transform group-hover:scale-105"
           />
           <div className="flex flex-col">
             <span className="text-lg font-semibold tracking-wide text-white">Heyloo Voice Agency</span>
@@ -815,10 +815,12 @@ function Footer() {
       <div className="max-w-7xl mx-auto">
         <div className="grid md:grid-cols-4 gap-8 mb-8">
           <div>
-            <div className="flex items-center gap-2 mb-4">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center">
-                <Phone className="w-5 h-5" />
-              </div>
+            <div className="flex items-center gap-3 mb-4">
+              <img
+                src={heylooLogo}
+                alt="Heyloo logo"
+                className="w-12 h-12 drop-shadow-[0_8px_25px_rgba(91,255,250,0.35)]"
+              />
               <span className="text-xl font-bold">Heyloo</span>
             </div>
             <p className="text-gray-400 text-sm">
