@@ -285,9 +285,34 @@ async function exchangeCloverCode(code) {
             code: 'CLOVER_NOT_CONFIGURED'
         });
     }
+    const apiUrl = env.API_URL ?? process.env.API_URL;
+    if (!apiUrl) {
+        throw Object.assign(new Error('API_URL not configured'), {
+            status: 500,
+            code: 'API_URL_NOT_CONFIGURED'
+        });
+    }
     // Clover OAuth token exchange
-    // POST https://api.clover.com/oauth/token
-    const response = await fetch('https://api.clover.com/oauth/token', {
+    // OAuth v2 endpoints:
+    // - Production: https://api.clover.com/oauth/v2/token
+    // - Sandbox: https://apisandbox.dev.clover.com/oauth/v2/token
+    // IMPORTANT: redirect_uri MUST match exactly what was used in the authorization request
+    // IMPORTANT: Must use same environment (sandbox/production) as authorization request
+    const redirectUri = `${apiUrl}/v1/onboarding/pos/clover/callback`;
+    // Match the environment used in authorization (check if app is in sandbox)
+    // You can set CLOVER_ENVIRONMENT=sandbox in .env to force sandbox
+    const useSandbox = process.env.CLOVER_ENVIRONMENT === 'sandbox' || process.env.NODE_ENV !== 'production';
+    const cloverTokenBase = useSandbox
+        ? 'https://apisandbox.dev.clover.com'
+        : 'https://api.clover.com';
+    logger.info({
+        redirectUri,
+        apiUrl,
+        environment: useSandbox ? 'sandbox' : 'production',
+        tokenBase: cloverTokenBase
+    }, '[Clover OAuth] Exchanging code with redirect_uri');
+    // Use OAuth v2 token endpoint (recommended over legacy /oauth/token)
+    const response = await fetch(`${cloverTokenBase}/oauth/v2/token`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded'
@@ -296,7 +321,8 @@ async function exchangeCloverCode(code) {
             client_id: env.CLOVER_APP_ID,
             client_secret: env.CLOVER_APP_SECRET,
             code,
-            grant_type: 'authorization_code'
+            grant_type: 'authorization_code',
+            redirect_uri: redirectUri // Must match the redirect_uri used in authorization request
         })
     });
     if (!response.ok) {
@@ -411,6 +437,26 @@ export async function connectMultipleLocations(restaurantId, posType, config, se
         connectedCount,
         requestedCount: selectedIds.length
     }, 'Multiple POS locations connected');
+    // Trigger async menu sync for each connected location (fire-and-forget)
+    // This runs in background and won't block the connection response
+    if (connectedCount > 0) {
+        const { syncMenuFromPosAsync } = await import('./pos-service.js');
+        // Get the IDs of the locations we just connected
+        const { data: connectedLocations } = await supabase
+            .from('restaurant_pos_locations')
+            .select('id')
+            .eq('restaurant_id', restaurantId)
+            .eq('pos_type', posType)
+            .in('pos_location_id', selectedIds)
+            .eq('is_active', true);
+        if (connectedLocations && connectedLocations.length > 0) {
+            logger.info({ restaurantId, locationCount: connectedLocations.length }, '[POS Connection] Triggering auto-menu sync for connected locations');
+            // Sync each location asynchronously
+            for (const location of connectedLocations) {
+                syncMenuFromPosAsync(restaurantId, location.id, 'auto');
+            }
+        }
+    }
     return connectedCount;
 }
 /**

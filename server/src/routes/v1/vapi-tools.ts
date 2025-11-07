@@ -18,12 +18,37 @@ const restaurantParamSchema = z.object({
 router.use(vapiToolLimiter);
 router.use(requireVapiToolToken);
 
+// VAPI tools send POST requests with parameters in the body
+// Support both GET (for testing) and POST (for VAPI)
+const menuSchema = z.object({
+  restaurantId: z.string().uuid(),
+  locationId: z.string().uuid().optional().nullable(),
+  location_id: z.string().uuid().optional().nullable()
+});
+
+router.post('/menu', async (req, res) => {
+  try {
+    const body = menuSchema.parse(req.body);
+    const restaurantId = body.restaurantId;
+    const locationId = body.locationId || body.location_id || null;
+    const menu = await listMenuItems(restaurantId, locationId);
+    res.json({ items: menu });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Invalid request' });
+  }
+});
+
+// Keep GET for backward compatibility and testing
 router.get('/menu', async (req, res) => {
-  const { restaurantId } = restaurantParamSchema.parse(req.query);
-  // Extract locationId from VAPI variables if provided (multi-location support)
-  const locationId = (req.query as any).locationId || (req.query as any).location_id || null;
-  const menu = await listMenuItems(restaurantId, locationId);
-  res.json({ items: menu });
+  try {
+    const { restaurantId } = restaurantParamSchema.parse(req.query);
+    // Extract locationId from VAPI variables if provided (multi-location support)
+    const locationId = (req.query as any).locationId || (req.query as any).location_id || null;
+    const menu = await listMenuItems(restaurantId, locationId);
+    res.json({ items: menu });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Invalid request' });
+  }
 });
 
 const findCustomerSchema = z.object({
@@ -38,14 +63,35 @@ router.post('/customer', async (req, res) => {
   res.json(customer);
 });
 
+const customerAddressesSchema = z.object({
+  restaurantId: z.string().uuid(),
+  customerId: z.string().uuid()
+});
+
+// VAPI tools send POST requests
+router.post('/customer-addresses', async (req, res) => {
+  try {
+    const body = customerAddressesSchema.parse(req.body);
+    const addresses = await getCustomerAddresses(body.customerId, body.restaurantId);
+    res.json({ addresses });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Invalid request' });
+  }
+});
+
+// Keep GET for backward compatibility and testing
 router.get('/customer-addresses', async (req, res) => {
-  const schema = z.object({
-    restaurantId: z.string().uuid(),
-    customerId: z.string().uuid()
-  });
-  const { restaurantId, customerId } = schema.parse(req.query);
-  const addresses = await getCustomerAddresses(customerId, restaurantId);
-  res.json({ addresses });
+  try {
+    const schema = z.object({
+      restaurantId: z.string().uuid(),
+      customerId: z.string().uuid()
+    });
+    const { restaurantId, customerId } = schema.parse(req.query);
+    const addresses = await getCustomerAddresses(customerId, restaurantId);
+    res.json({ addresses });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Invalid request' });
+  }
 });
 
 router.post('/orders', async (req, res) => {
@@ -60,6 +106,84 @@ router.post('/orders', async (req, res) => {
     callId: callId
   });
   res.status(201).json(order);
+});
+
+// VAPI check_order_status tool calls POST /orders/status with orderId and restaurantId in body
+const checkOrderStatusSchema = z.object({
+  restaurantId: z.string().uuid(),
+  orderId: z.string().uuid()
+});
+
+router.post('/orders/status', async (req, res) => {
+  try {
+    const body = checkOrderStatusSchema.parse(req.body);
+    const { orderId, restaurantId } = body;
+
+    const { data: order, error } = await supabase
+      .from('orders')
+      .select('id,status,payment_status,total,placed_at,customer_name')
+      .eq('id', orderId)
+      .eq('restaurant_id', restaurantId)
+      .maybeSingle();
+
+    if (error) {
+      return res.status(500).json({
+        message: 'Failed to fetch order',
+        code: 'ORDER_FETCH_ERROR'
+      });
+    }
+
+    if (!order) {
+      return res.status(404).json({
+        message: 'Order not found',
+        code: 'ORDER_NOT_FOUND'
+      });
+    }
+
+    // Return friendly status message for VAPI
+    let statusMessage = 'Your order is being processed';
+    
+    switch (order.status) {
+      case 'payment_pending':
+        statusMessage = 'Waiting for payment. Please check your text message for the payment link.';
+        break;
+      case 'pending':
+        statusMessage = 'Your order is being processed';
+        break;
+      case 'confirmed':
+        statusMessage = 'Your order has been confirmed and is being prepared';
+        break;
+      case 'preparing':
+        statusMessage = 'Your order is being prepared in the kitchen';
+        break;
+      case 'ready':
+        statusMessage = 'Your order is ready for pickup!';
+        break;
+      case 'out_for_delivery':
+        statusMessage = 'Your order is out for delivery';
+        break;
+      case 'delivered':
+        statusMessage = 'Your order has been delivered';
+        break;
+      case 'picked_up':
+        statusMessage = 'Your order has been picked up';
+        break;
+      case 'cancelled':
+        statusMessage = 'Your order has been cancelled';
+        break;
+    }
+
+    res.json({
+      orderId: order.id,
+      status: order.status,
+      paymentStatus: order.payment_status,
+      message: statusMessage,
+      total: order.total,
+      placedAt: order.placed_at
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Invalid request' });
+  }
 });
 
 router.post('/orders/:orderId/status', async (req, res) => {

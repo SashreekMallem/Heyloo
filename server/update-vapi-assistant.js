@@ -17,9 +17,14 @@ if (!VAPI_API_KEY) {
 const vapi = new VapiClient({ token: VAPI_API_KEY });
 
 const systemPrompt = `You are a friendly voice assistant for {{restaurant_name}}.
-{{#if assistant_name}}
-Your name is {{assistant_name}}. When customers ask what your name is, introduce yourself as {{assistant_name}}.
-{{/if}}
+Your name is {{assistant_name}}. 
+
+CRITICAL INSTRUCTION #1: Right after saying the greeting "Thank you for calling! How can I help you today?", you MUST immediately say "My name is {{assistant_name}}" or "This is {{assistant_name}}". This is the very first thing you say after the greeting. Do not wait for the customer to ask - introduce yourself immediately.
+
+CRITICAL INSTRUCTION #2: IMMEDIATELY after introducing yourself, you MUST call the get_menu tool to fetch the menu. Do NOT wait for the customer to ask. This is for testing purposes to verify the tools are working. After calling get_menu:
+- If it succeeds: Say "I've successfully loaded our menu. How can I help you today?"
+- If it fails: Say "I'm having trouble loading our menu right now, but I'm here to help. How can I assist you?"
+
 Your restaurant_id is: {{restaurant_id}}.
 {{#if location_name}}
 You are currently handling calls for the {{location_name}} location.
@@ -98,6 +103,24 @@ You have access to the following tools to help customers:
 6. **Confirmation**: Confirm order details, total, and payment method
 7. **Order Status**: Use check_order_status if customer asks about existing orders
 
+## Critical Tool Usage Rules
+
+1. **Menu Requests → Call get_menu immediately**  
+   - The moment the caller asks about the menu, categories, dishes, or prices, you MUST call \`get_menu\` before giving any description.  
+   - Do not stall with filler phrases—invoke the tool first, wait for the response, then read back items from the result.  
+   - Never rely on memory for menu details; only speak from the tool output.
+
+2. **Ordering Flow Enforcement**  
+   - After sharing the menu, if the caller wants to order, run \`find_or_create_customer\` right away to capture their profile.  
+   - For delivery, call \`get_customer_addresses\` (or collect a new address) before \`create_order\`.  
+   - Only call \`create_order\` once you have items, address (if needed), and payment method.
+
+3. **Status Checks**  
+   - If the caller asks about an existing order, call \`check_order_status\` immediately; do not guess the status.
+
+4. **Tool Failures**  
+   - If a tool errors, apologize, briefly explain the issue, and either retry once or offer to take a message for restaurant staff.
+
 ## Payment Instructions
 
 - **NEVER ask for credit card numbers over the phone**
@@ -133,6 +156,18 @@ async function updateAssistant() {
     console.log('🔄 Updating VAPI Assistant system prompt...\n');
     console.log(`Assistant ID: ${ASSISTANT_ID}\n`);
 
+    // Tool IDs for the restaurant assistant
+    const toolIds = [
+      '3add970c-907e-4d77-955b-ee5f74a752c5', // get_menu
+      '9d2272d5-4fea-4b91-966b-fb57f84378dd', // find_or_create_customer
+      'ca6255f2-5fd4-4570-9bc9-077267cd8c60', // get_customer_addresses
+      '18f94fb0-c82d-4a10-bece-1e3336075330', // create_order
+      'bfd572f1-76a7-4006-98f1-055e9accacba'  // check_order_status
+    ];
+
+    const API_URL = process.env.API_URL || 'https://eely-val-provocatively.ngrok-free.dev';
+    const serverUrl = `${API_URL}/v1/vapi/assistant-request`;
+
     const updatedAssistant = await vapi.assistants.update(ASSISTANT_ID, {
       model: {
         provider: 'openai',
@@ -143,8 +178,40 @@ async function updateAssistant() {
             content: systemPrompt
           }
         ]
-      }
+      },
+      serverUrl: serverUrl,
+      serverUrlSecret: process.env.VAPI_WEBHOOK_SECRET
     });
+
+    // Attach all tools at once - use separate update call
+    console.log('\n🔧 Attaching tools to assistant...');
+    try {
+      // VAPI requires tools to be attached in a separate update with just toolIds
+      const toolUpdateResult = await vapi.assistants.update(ASSISTANT_ID, {
+        toolIds: toolIds
+      });
+      console.log(`  ✅ Attached ${toolIds.length} tools`);
+      console.log(`  Tool IDs: ${toolIds.join(', ')}`);
+    } catch (err) {
+      console.error(`  ❌ Failed to attach tools:`, err.message);
+      if (err.response) {
+        console.error('  Response:', JSON.stringify(err.response.data, null, 2));
+      }
+      // Try alternative method - update with model + tools together
+      console.log('\n  Trying alternative method...');
+      try {
+        const altResult = await vapi.assistants.update(ASSISTANT_ID, {
+          model: {
+            provider: 'openai',
+            model: 'gpt-4o'
+          },
+          toolIds: toolIds
+        });
+        console.log(`  ✅ Attached ${toolIds.length} tools (alternative method)`);
+      } catch (altErr) {
+        console.error(`  ❌ Alternative method also failed:`, altErr.message);
+      }
+    }
 
     console.log('✅ Assistant updated successfully!\n');
     console.log('System prompt now includes:');
@@ -152,6 +219,10 @@ async function updateAssistant() {
     console.log('  - Assistant name support ({{assistant_name}})');
     console.log('  - Location name support ({{location_name}})');
     console.log('  - Location ID support ({{location_id}})');
+    console.log('\n🔧 Configuration:');
+    console.log('  - Tools attached:', toolIds.length);
+    console.log('  - Server URL:', serverUrl);
+    console.log('  - Tool IDs:', toolIds.join(', '));
     console.log('\n📝 Updated at:', updatedAssistant.updatedAt);
   } catch (error) {
     console.error('❌ Failed to update assistant:', error.message);
@@ -163,4 +234,3 @@ async function updateAssistant() {
 }
 
 updateAssistant();
-

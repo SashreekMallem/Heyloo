@@ -3,6 +3,7 @@ import { logger } from '../lib/logger.js';
 
 /**
  * General API rate limiter - 100 requests per 15 minutes per IP
+ * Exempts VAPI webhook endpoints (they use webhookLimiter instead)
  */
 export const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -12,6 +13,10 @@ export const apiLimiter = rateLimit({
   legacyHeaders: false,
   // Skip validation warnings - we control trust proxy at Express level
   validate: false,
+  // Skip rate limiting for VAPI webhook endpoints (they use webhookLimiter)
+  skip: (req) => {
+    return req.path.startsWith('/v1/vapi/') || req.path.startsWith('/vapi/');
+  },
   handler: (req, res) => {
     logger.warn({ ip: req.ip, path: req.path }, 'Rate limit exceeded');
     res.status(429).json({

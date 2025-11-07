@@ -149,12 +149,30 @@ onboardingRouter.get('/pos/clover/auth', (req, res) => {
     // Generate state for CSRF protection
     const state = Buffer.from(JSON.stringify({ restaurantId, timestamp: Date.now() })).toString('base64');
     // Build Clover OAuth authorization URL
-    // Clover uses https://www.clover.com/oauth/authorize for OAuth
-    // NOTE: Clover permissions are primarily configured in Developer Dashboard app settings
-    // These scopes may be used for additional permissions beyond dashboard config
-    const cloverAuthUrl = new URL('https://www.clover.com/oauth/authorize');
+    // Clover OAuth v2 endpoints (recommended):
+    // - Production: https://www.clover.com/oauth/v2/authorize
+    // - Sandbox: https://apisandbox.dev.clover.com/oauth/v2/authorize
+    // NOTE: If app is in sandbox, use sandbox endpoints. Check Clover Dashboard to confirm.
+    // IMPORTANT: The redirect_uri MUST be registered in Clover Developer Dashboard as a subpath of your Site URL
+    // The redirect_uri parameter value must match EXACTLY what's registered (including https/http, domain, path)
+    const redirectUri = `${apiUrl}/v1/onboarding/pos/clover/callback`;
+    // Determine if we should use sandbox or production
+    // You can set CLOVER_ENVIRONMENT=sandbox in .env to force sandbox, otherwise defaults to production
+    const useSandbox = process.env.CLOVER_ENVIRONMENT === 'sandbox' || env.NODE_ENV !== 'production';
+    const cloverAuthBase = useSandbox
+        ? 'https://apisandbox.dev.clover.com'
+        : 'https://www.clover.com';
+    logger.info({
+        redirectUri,
+        apiUrl,
+        appId: env.CLOVER_APP_ID?.substring(0, 8) + '...',
+        environment: useSandbox ? 'sandbox' : 'production',
+        authBase: cloverAuthBase
+    }, '[Clover OAuth] Building authorization URL');
+    // Use OAuth v2 endpoint (recommended over legacy /oauth/authorize)
+    const cloverAuthUrl = new URL(`${cloverAuthBase}/oauth/v2/authorize`);
     cloverAuthUrl.searchParams.set('client_id', env.CLOVER_APP_ID);
-    cloverAuthUrl.searchParams.set('redirect_uri', `${apiUrl}/v1/onboarding/pos/clover/callback`);
+    cloverAuthUrl.searchParams.set('redirect_uri', redirectUri);
     cloverAuthUrl.searchParams.set('state', state);
     // Request all necessary permissions for full POS integration:
     // - Inventory: Read/Write for menu sync

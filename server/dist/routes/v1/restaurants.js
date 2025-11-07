@@ -53,16 +53,21 @@ restaurantRouter.patch('/:restaurantId', async (req, res) => {
     await assertRestaurantAccess(restaurantId, req.user?.restaurantId);
     // POS integration is handled separately via OAuth flow - do not update pos_type/pos_location_id here
     // These are managed by restaurant_pos_locations table
-    const { error } = await supabase
-        .from('restaurants')
-        .update({
+    const updateData = {
         name: req.body.name,
         phone_number: req.body.phoneNumber,
         tax_rate: req.body.taxRate,
         delivery_fee: req.body.deliveryFee,
         // pos_type and pos_location_id removed - handled by OAuth connections
         updated_at: new Date().toISOString()
-    })
+    };
+    // Only update assistant_name if provided (allows null/empty to clear it)
+    if (req.body.assistantName !== undefined) {
+        updateData.assistant_name = req.body.assistantName || null;
+    }
+    const { error } = await supabase
+        .from('restaurants')
+        .update(updateData)
         .eq('id', restaurantId);
     if (error) {
         return res.status(500).json({ message: 'Failed to update restaurant' });
@@ -103,11 +108,17 @@ restaurantRouter.get('/:restaurantId/calls', async (req, res, next) => {
         next(err);
     }
 });
-restaurantRouter.get('/:restaurantId/menu', async (req, res) => {
-    const { restaurantId } = req.params;
-    await assertRestaurantAccess(restaurantId, req.user?.restaurantId);
-    const menu = await listMenuItems(restaurantId);
-    res.json(menu);
+restaurantRouter.get('/:restaurantId/menu', async (req, res, next) => {
+    try {
+        const { restaurantId } = req.params;
+        await assertRestaurantAccess(restaurantId, req.user?.restaurantId);
+        // For dashboard view, show ALL menu items regardless of location_id
+        const menu = await listMenuItems(restaurantId, undefined, true);
+        res.json(menu);
+    }
+    catch (err) {
+        next(err);
+    }
 });
 // POS Configuration
 restaurantRouter.get('/:restaurantId/pos-config', async (req, res, next) => {

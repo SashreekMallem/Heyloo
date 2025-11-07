@@ -110,49 +110,41 @@ export async function listRecentCalls(restaurantId, limit = 20) {
     }
     return data ?? [];
 }
-export async function listMenuItems(restaurantId, locationId) {
+export async function listMenuItems(restaurantId, locationId, showAll) {
     // For multi-location support:
     // - Items with location_id = NULL are available at all locations
     // - Items with location_id = specific_id are only at that location
-    // - If locationId provided, show: location_id = locationId OR location_id = NULL
-    const { error: tenantError } = await supabase.rpc('set_tenant_id', {
-        p_tenant_id: restaurantId
-    });
-    if (tenantError) {
-        logger.error({ tenantError, restaurantId }, '[Menu] Failed to set tenant context');
+    // - If locationId provided: show items for that location OR items available at all locations (NULL)
+    // - If locationId NOT provided and showAll=false: ONLY show items available at all locations (NULL) - context-aware for VAPI
+    // - If locationId NOT provided and showAll=true: show ALL items regardless of location_id - for dashboard views
+    // Using service role key - no need for tenant context, it bypasses RLS
+    let query = supabase
+        .from('menu_items')
+        .select('id,name,description,price,category,is_available')
+        .eq('restaurant_id', restaurantId)
+        .eq('is_available', true);
+    if (locationId) {
+        // Filter: items for this location OR items available at all locations (NULL)
+        query = query.or(`location_id.eq.${locationId},location_id.is.null`);
+    }
+    else if (!showAll) {
+        // No locationId provided and showAll=false - only return items available at ALL locations (context-aware)
+        // This ensures multi-tenant isolation: don't show location-specific items without context
+        query = query.is('location_id', null);
+    }
+    // If showAll=true and no locationId, don't filter by location_id at all - show everything
+    query = query.order('category', { ascending: true })
+        .order('name', { ascending: true });
+    const { data, error } = await query;
+    if (error) {
+        logger.error({ error, restaurantId, locationId }, 'Failed to query menu items');
         throw Object.assign(new Error('Failed to load menu items'), {
             status: 500,
-            code: 'TENANT_CONTEXT_FAILED',
-            details: tenantError
+            code: 'QUERY_ERROR',
+            details: error
         });
     }
-    try {
-        let query = supabase
-            .from('menu_items')
-            .select('id,name,description,price,category,is_available')
-            .eq('restaurant_id', restaurantId)
-            .eq('is_available', true);
-        if (locationId) {
-            // Filter: items for this location OR items available at all locations (NULL)
-            query = query.or(`location_id.eq.${locationId},location_id.is.null`);
-        }
-        query = query.order('category', { ascending: true })
-            .order('name', { ascending: true });
-        const { data, error } = await query;
-        if (error) {
-            throw Object.assign(new Error('Failed to load menu items'), {
-                status: 500,
-                details: error
-            });
-        }
-        return data ?? [];
-    }
-    finally {
-        const { error: clearError } = await supabase.rpc('clear_tenant_id');
-        if (clearError) {
-            logger.warn({ clearError, restaurantId }, '[Menu] Failed to clear tenant context');
-        }
-    }
+    return data ?? [];
 }
 export async function listRestaurantCustomers(restaurantId) {
     const { data, error } = await supabase
