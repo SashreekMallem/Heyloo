@@ -5,10 +5,6 @@
       <stop offset="40%" stop-color="#8c7bff" />
       <stop offset="100%" stop-color="#ff4fa2" />
     </linearGradient>
-    <linearGradient id="glass" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1f2337" />
-      <stop offset="100%" stop-color="#06070d" />
-    </linearGradient>
     <filter id="innerGlow">
       <feGaussianBlur stdDeviation="12" result="blur" />
       <feComponentTransfer>
@@ -17,10 +13,10 @@
       <feBlend in="SourceGraphic" in2="blur" mode="screen" />
     </filter>
     <filter id="neon">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="6" result="blur" />
-      <feOffset dx="0" dy="4" />
+      <feGaussianBlur in="SourceAlpha" stdDeviation="10" result="blur" />
+      <feOffset dx="0" dy="0" />
       <feComponentTransfer>
-        <feFuncA type="linear" slope="0.35" />
+        <feFuncA type="linear" slope="0.5" />
       </feComponentTransfer>
       <feMerge>
         <feMergeNode />
@@ -29,8 +25,8 @@
     </filter>
   </defs>
 
-  <!-- hero stroke -->
-  <g transform="translate(300 300)" filter="url(#innerGlow)">
+  <!-- hero stroke with smooth edges -->
+  <g transform="translate(300 300)">
     <path
       d="M -90 110
          L -90 -110
@@ -40,22 +36,24 @@
          L 95 110"
       fill="none"
       stroke="url(#pulse)"
-      stroke-width="24"
+      stroke-width="26"
       stroke-linecap="round"
       stroke-linejoin="round"
       filter="url(#neon)"
     />
   </g>
 
-  <!-- subtle text -->
+  <!-- HEYLOO text integrated into logo -->
   <text
     x="300"
-    y="525"
+    y="520"
     text-anchor="middle"
     font-family="Sora, 'Segoe UI', sans-serif"
-    font-size="46"
-    letter-spacing="6"
-    fill="#f6f7ffbb">
+    font-size="42"
+    font-weight="600"
+    letter-spacing="8"
+    fill="#ffffff"
+    opacity="0.9">
     HEYLOO
   </text>
 </svg>
