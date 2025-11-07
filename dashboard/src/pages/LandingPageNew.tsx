@@ -397,12 +397,9 @@ function Navigation() {
           <img
             src={heylooLogo}
             alt="Heyloo logo"
-            className="w-16 h-16 drop-shadow-[0_8px_25px_rgba(91,255,250,0.35)] transition-transform group-hover:scale-105"
+            className="w-20 h-20 drop-shadow-[0_8px_25px_rgba(91,255,250,0.35)] transition-transform group-hover:scale-105"
           />
-          <div className="flex flex-col">
-            <span className="text-lg font-semibold tracking-wide text-white">Heyloo Voice Agency</span>
-            <span className="text-xs text-gray-400">White-label AI for restaurants</span>
-          </div>
+          <span className="text-2xl font-bold tracking-wide text-white">Heyloo</span>
         </Link>
 
         <div className="hidden md:flex items-center gap-8">
