@@ -392,28 +392,31 @@ function Navigation() {
       transition={{ duration: 0.6 }}
       className="fixed top-0 left-0 right-0 z-50 px-6 py-4"
     >
-      <div className="max-w-7xl mx-auto flex items-center justify-between">
-        <Link to="/" className="flex items-center gap-3 group">
+      <div className="max-w-7xl mx-auto flex items-center justify-between relative">
+        <Link to="/" className="flex items-center gap-4 group z-10">
           <img
             src={heylooLogo}
             alt="Heyloo logo"
-            className="w-20 h-20 drop-shadow-[0_8px_25px_rgba(91,255,250,0.35)] transition-transform group-hover:scale-105"
+            className="w-24 h-24 drop-shadow-[0_8px_25px_rgba(91,255,250,0.35)] transition-transform group-hover:scale-105 flex-shrink-0"
           />
-          <span className="text-2xl font-bold tracking-wide text-white">Heyloo</span>
+          <div className="flex flex-col justify-center">
+            <span className="text-2xl font-bold tracking-wide text-white leading-tight">Heyloo</span>
+            <span className="text-xs text-gray-400 uppercase tracking-wider leading-tight mt-0.5">HEYLOO</span>
+          </div>
         </Link>
 
-        <div className="hidden md:flex items-center gap-8">
-          <a href="#features" className="text-gray-400 hover:text-white transition-colors">Features</a>
-          <a href="#how-it-works" className="text-gray-400 hover:text-white transition-colors">How it Works</a>
-          <a href="#pricing" className="text-gray-400 hover:text-white transition-colors">Pricing</a>
+        <div className="hidden md:flex items-center gap-8 absolute left-1/2 transform -translate-x-1/2">
+          <a href="#features" className="text-gray-400 hover:text-white transition-colors text-sm font-medium">Features</a>
+          <a href="#how-it-works" className="text-gray-400 hover:text-white transition-colors text-sm font-medium">How it Works</a>
+          <a href="#pricing" className="text-gray-400 hover:text-white transition-colors text-sm font-medium">Pricing</a>
         </div>
 
-        <div className="flex items-center gap-4">
-          <Link to="/login" className="text-gray-400 hover:text-white transition-colors">
+        <div className="flex items-center gap-4 z-10">
+          <Link to="/login" className="text-gray-400 hover:text-white transition-colors text-sm font-medium">
             Login
           </Link>
           <Link to="/signup">
-            <button className="px-6 py-2 bg-white/10 hover:bg-white/20 backdrop-blur-sm border border-white/20 rounded-full font-medium transition-all">
+            <button className="px-6 py-2.5 bg-white/10 hover:bg-white/20 backdrop-blur-sm border border-white/20 rounded-full font-medium transition-all text-sm">
               Get Started
             </button>
           </Link>
