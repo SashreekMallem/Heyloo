@@ -31,10 +31,6 @@
 
   <rect width="600" height="600" rx="140" fill="url(#glass)" />
 
-  <!-- ambient light -->
-  <circle cx="180" cy="160" r="120" fill="#57fff133" />
-  <circle cx="430" cy="420" r="160" fill="#ff53a327" />
-
   <!-- hero stroke -->
   <g transform="translate(300 300)" filter="url(#innerGlow)">
     <path

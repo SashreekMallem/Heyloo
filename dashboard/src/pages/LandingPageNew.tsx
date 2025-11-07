@@ -4,6 +4,7 @@ import { motion, useScroll, useTransform, useInView } from 'framer-motion';
 import { Phone, MessageSquare, TrendingUp, Users, ArrowRight, Check, Zap, BarChart3, Clock, Sparkles, Bot, Headphones, Star, Shield } from 'lucide-react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
+import heylooLogo from '../assets/heyloo-logo.svg';
 
 // Advanced Particle System with Attractors (WebGPU-style physics simulation)
 function ParticleAttractors() {
@@ -392,12 +393,17 @@ function Navigation() {
       className="fixed top-0 left-0 right-0 z-50 px-6 py-4"
     >
       <div className="max-w-7xl mx-auto flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center">
-            <Phone className="w-5 h-5" />
+        <Link to="/" className="flex items-center gap-3 group">
+          <img
+            src={heylooLogo}
+            alt="Heyloo logo"
+            className="w-10 h-10 drop-shadow-[0_8px_25px_rgba(91,255,250,0.35)] transition-transform group-hover:scale-105"
+          />
+          <div className="flex flex-col">
+            <span className="text-lg font-semibold tracking-wide text-white">Heyloo Voice Agency</span>
+            <span className="text-xs text-gray-400">White-label AI for restaurants</span>
           </div>
-          <span className="text-xl font-bold">Heyloo</span>
-        </div>
+        </Link>
 
         <div className="hidden md:flex items-center gap-8">
           <a href="#features" className="text-gray-400 hover:text-white transition-colors">Features</a>
