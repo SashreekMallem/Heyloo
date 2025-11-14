@@ -1,7 +1,11 @@
 import axios from 'axios';
 import { useAuthStore } from '../hooks/useAuthStore';
+// Use Supabase Edge Functions URL
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL ?? 'https://fjfhwbtovmbooaqafdxb.supabase.co';
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? `${SUPABASE_URL}/functions/v1`;
+
 const api = axios.create({
-    baseURL: import.meta.env.VITE_API_URL ?? 'http://localhost:4000/v1',
+    baseURL: API_BASE_URL,
     timeout: 10000
 });
 api.interceptors.request.use((config) => {

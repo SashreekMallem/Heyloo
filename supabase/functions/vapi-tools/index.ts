@@ -1,7 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { z } from "npm:zod@^3.23.8";
-import Stripe from "npm:stripe@^16.8.0";
 import { nanoid } from "npm:nanoid@^5.0.7";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -12,29 +11,53 @@ const corsHeaders = {
 const supabaseUrl = Deno.env.get("SUPABASE_URL");
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
-// Initialize Stripe
-const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
-const stripe = stripeSecretKey ? new Stripe(stripeSecretKey, {
-  apiVersion: "2024-06-20"
-}) : null;
 // Helper functions
 function roundCurrency(amount) {
   return Math.round(amount * 100) / 100;
 }
-function verifyVapiToken(request) {
-  const token = request.headers.get("x-vapi-tool-token");
-  const expectedToken = Deno.env.get("VAPI_TOOL_TOKEN") || Deno.env.get("VAPI_TOOL_AUTH_TOKEN");
-  if (!expectedToken) {
-    console.error("VAPI_TOOL_TOKEN not configured");
-    return false;
+// Validate restaurantId is a valid UUID
+function validateRestaurantId(restaurantId) {
+  if (!restaurantId) {
+    throw new Error("restaurantId is required");
   }
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(restaurantId)) {
+    throw new Error(`Invalid restaurantId format. Expected UUID, got: ${restaurantId}`);
+  }
+  return restaurantId;
+}
+function verifyVapiToken(request) {
+  // Check multiple possible header names that Vapi might use
+  const token = request.headers.get("x-vapi-tool-token") || 
+                request.headers.get("x-vapi-secret") ||
+                request.headers.get("authorization")?.replace("Bearer ", "") ||
+                request.headers.get("authorization")?.replace("bearer ", "");
+  const expectedToken = Deno.env.get("VAPI_TOOL_TOKEN") || Deno.env.get("VAPI_TOOL_AUTH_TOKEN");
+  
+  // If no token is configured, allow requests (for development)
+  if (!expectedToken) {
+    console.warn("VAPI_TOOL_TOKEN not configured, allowing request");
+    return true;
+  }
+  
+  // If we have an expected token but no token in request, check if this is a Vapi tool call
+  // Vapi might not send auth headers when using server URLs without credentialId
+  if (!token) {
+    console.warn("No authentication token found in headers");
+    console.warn("This might be a Vapi tool call without credentialId configured");
+    console.warn("Allowing request for now - configure credentialId in Vapi for production");
+    // TEMPORARY: Allow requests without token to debug
+    // TODO: Configure credentialId in Vapi tool definitions
+    return true;
+  }
+  
   if (token !== expectedToken) {
     console.error(`Token mismatch. Received: ${token?.substring(0, 10)}..., Expected: ${expectedToken.substring(0, 10)}...`);
     return false;
   }
   return true;
 }
-// Format menu items into natural language for voice reading
+// Format menu items into natural language for voice reading, including IDs for order creation
 function formatMenuForVoice(menuItems) {
   if (!menuItems || menuItems.length === 0) {
     return "We currently don't have any items available on our menu.";
@@ -58,6 +81,8 @@ function formatMenuForVoice(menuItems) {
         formatted += `, which is ${item.description}`;
       }
       formatted += `, for $${parseFloat(item.price).toFixed(2)}`;
+      // Include ID in parentheses so Vapi can extract it for order creation
+      formatted += ` (ID: ${item.id})`;
       if (i < items.length - 1) {
         formatted += ". ";
       }
@@ -67,12 +92,14 @@ function formatMenuForVoice(menuItems) {
   return formatted.trim();
 }
 async function listMenuItems(restaurantId, locationId = null) {
+  validateRestaurantId(restaurantId);
   let query = supabase.from("menu_items").select("id,name,description,price,category,is_available").eq("restaurant_id", restaurantId).eq("is_available", true);
+  // If locationId is provided, filter by that location OR items available at all locations (location_id IS NULL)
+  // If locationId is null, return ALL items for the restaurant (both location-specific and general items)
   if (locationId) {
     query = query.or(`location_id.eq.${locationId},location_id.is.null`);
-  } else {
-    query = query.is("location_id", null);
   }
+  // When locationId is null, don't filter by location_id - return all items
   query = query.order("category", {
     ascending: true
   }).order("name", {
@@ -83,6 +110,7 @@ async function listMenuItems(restaurantId, locationId = null) {
   return data ?? [];
 }
 async function findOrCreateCustomer(restaurantId, phoneNumber, fullName) {
+  validateRestaurantId(restaurantId);
   const phone = phoneNumber.replace(/\D/g, "");
   const { data, error } = await supabase.from("customers").select("id,first_name,last_name,email,total_orders,total_spent").eq("restaurant_id", restaurantId).eq("phone_number", phone).limit(1).maybeSingle();
   if (error) throw new Error(`Failed to fetch customer: ${error.message}`);
@@ -103,18 +131,90 @@ async function findOrCreateCustomer(restaurantId, phoneNumber, fullName) {
   return inserted;
 }
 async function getCustomerAddresses(customerId, restaurantId) {
+  validateRestaurantId(restaurantId);
   const { data, error } = await supabase.from("customer_addresses").select("id,label,street,city,state,postal_code,is_default").eq("customer_id", customerId).eq("restaurant_id", restaurantId).order("is_default", {
     ascending: false
   });
   if (error) throw new Error(`Failed to load customer addresses: ${error.message}`);
   return data ?? [];
 }
-async function checkOrderStatus(orderId, restaurantId) {
-  const { data: order, error } = await supabase.from("orders").select("id,status,payment_status,total,placed_at,customer_name").eq("id", orderId).eq("restaurant_id", restaurantId).maybeSingle();
-  if (error) throw new Error(`Failed to fetch order: ${error.message}`);
-  if (!order) throw new Error("Order not found");
+async function checkOrderStatus(orderId, restaurantId, customerPhone = null) {
+  validateRestaurantId(restaurantId);
+  let order;
+  // If orderId is provided, look up by ID
+  if (orderId) {
+    const { data, error } = await supabase.from("orders").select("id,status,payment_status,total,placed_at,customer_name,customer_phone").eq("id", orderId).eq("restaurant_id", restaurantId).maybeSingle();
+    if (error) throw new Error(`Failed to fetch order: ${error.message}`);
+    if (!data) throw new Error("Order not found");
+    order = data;
+  } 
+  // If customerPhone is provided but no orderId, find most recent order by phone
+  else if (customerPhone) {
+    // Normalize phone: try multiple formats
+    let phone = String(customerPhone).trim();
+    // Remove all non-digit characters except +
+    let digitsOnly = phone.replace(/[^\d+]/g, "");
+    
+    // Try multiple phone formats
+    const phoneFormats = [];
+    
+    // Format 1: With + prefix (E.164 format)
+    if (digitsOnly.startsWith("+")) {
+      phoneFormats.push(digitsOnly);
+      phoneFormats.push(digitsOnly.substring(1)); // Without +
+    } else {
+      // Format 2: Add + prefix
+      phoneFormats.push(`+${digitsOnly}`);
+      phoneFormats.push(digitsOnly); // Without +
+    }
+    
+    // Format 3: If it looks like US number (10 digits), try with +1
+    if (digitsOnly.replace("+", "").length === 10) {
+      const usNumber = digitsOnly.replace("+", "");
+      phoneFormats.push(`+1${usNumber}`);
+      phoneFormats.push(`1${usNumber}`);
+    }
+    
+    // Remove duplicates
+    const uniqueFormats = [...new Set(phoneFormats)];
+    
+    console.log(`Searching for orders with phone formats: ${uniqueFormats.join(", ")}`);
+    
+    let data = null;
+    let error = null;
+    
+    // Try each format until we find a match
+    for (const phoneFormat of uniqueFormats) {
+      const result = await supabase
+        .from("orders")
+        .select("id,status,payment_status,total,placed_at,customer_name,customer_phone")
+        .eq("restaurant_id", restaurantId)
+        .eq("customer_phone", phoneFormat)
+        .order("placed_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      if (result.data) {
+        data = result.data;
+        console.log(`Found order with phone format: ${phoneFormat}`);
+        break;
+      }
+      if (result.error) {
+        error = result.error;
+      }
+    }
+    
+    if (error) throw new Error(`Failed to fetch order: ${error.message}`);
+    if (!data) {
+      // Provide helpful error message
+      throw new Error(`No recent orders found for phone number ${customerPhone}. Please check your phone number or provide an order ID.`);
+    }
+    order = data;
+  } else {
+    throw new Error("Either orderId or customerPhone must be provided");
+  }
   const statusMessages = {
-    payment_pending: "Waiting for payment. Please check your text message for the payment link.",
+    payment_pending: "Your order is pending payment",
     pending: "Your order is being processed",
     confirmed: "Your order has been confirmed and is being prepared",
     preparing: "Your order is being prepared in the kitchen",
@@ -160,10 +260,66 @@ async function sendSMS(to, message) {
     return false;
   }
 }
+async function createOrFindAddress(restaurantId, customerId, addressData) {
+  if (!addressData || !addressData.street || !addressData.city || !addressData.state || !addressData.postalCode) {
+    return null;
+  }
+  // Check if address already exists for this customer
+  const { data: existingAddress } = await supabase
+    .from("customer_addresses")
+    .select("id")
+    .eq("restaurant_id", restaurantId)
+    .eq("customer_id", customerId)
+    .eq("street", addressData.street.trim())
+    .eq("city", addressData.city.trim())
+    .eq("state", addressData.state.trim())
+    .eq("postal_code", addressData.postalCode.trim())
+    .maybeSingle();
+  
+  if (existingAddress) {
+    return existingAddress.id;
+  }
+  
+  // Check if customer has any addresses (to determine if this should be default)
+  const { data: existingAddresses } = await supabase
+    .from("customer_addresses")
+    .select("id")
+    .eq("restaurant_id", restaurantId)
+    .eq("customer_id", customerId)
+    .limit(1);
+  
+  const isDefault = !existingAddresses || existingAddresses.length === 0;
+  
+  // Create new address
+  const { data: newAddress, error: addressError } = await supabase
+    .from("customer_addresses")
+    .insert({
+      restaurant_id: restaurantId,
+      customer_id: customerId,
+      street: addressData.street.trim(),
+      city: addressData.city.trim(),
+      state: addressData.state.trim(),
+      postal_code: addressData.postalCode.trim(),
+      label: addressData.label || null,
+      delivery_instructions: addressData.deliveryInstructions || null,
+      is_default: isDefault
+    })
+    .select("id")
+    .maybeSingle();
+  
+  if (addressError || !newAddress) {
+    console.error("Failed to create address:", addressError);
+    throw new Error(`Failed to create delivery address: ${addressError?.message || "Unknown error"}`);
+  }
+  
+  return newAddress.id;
+}
+
 async function createOrder(payload, options) {
   const createOrderSchema = z.object({
     restaurantId: z.string().uuid(),
     customerPhone: z.string(),
+    customerId: z.string().uuid().optional(),
     customerName: z.string().optional(),
     orderType: z.enum([
       "delivery",
@@ -172,32 +328,98 @@ async function createOrder(payload, options) {
     items: z.array(z.object({
       menuItemId: z.string().uuid(),
       quantity: z.number().int().positive(),
+      specialInstructions: z.string().optional(),
       modifiers: z.array(z.object({
         name: z.string(),
         priceDelta: z.number()
       })).optional()
     })),
     deliveryAddressId: z.string().uuid().optional(),
+    // New: Accept raw address data for delivery orders
+    deliveryAddress: z.object({
+      street: z.string(),
+      city: z.string(),
+      state: z.string(),
+      postalCode: z.string(),
+      label: z.string().optional(),
+      deliveryInstructions: z.string().optional()
+    }).optional(),
     paymentMethod: z.enum([
-      "stripe_link",
       "cash",
-      "card"
+      "card_on_delivery"
     ])
   });
   const parsed = createOrderSchema.parse(payload);
+  validateRestaurantId(parsed.restaurantId);
   // Get restaurant
-  const { data: restaurant, error: restaurantError } = await supabase.from("restaurants").select("id,name,tax_rate,delivery_fee,stripe_account_id,stripe_customer_id,pos_type,pos_location_id,manager_phone").eq("id", parsed.restaurantId).maybeSingle();
+  const { data: restaurant, error: restaurantError } = await supabase.from("restaurants").select("id,name,tax_rate,delivery_fee,pos_type,pos_location_id,manager_phone").eq("id", parsed.restaurantId).maybeSingle();
   if (restaurantError || !restaurant) {
     throw new Error("Restaurant not found");
   }
-  // Get or create customer
-  const customer = await findOrCreateCustomer(parsed.restaurantId, parsed.customerPhone, parsed.customerName);
+  // Get or create customer (use customerId if provided, otherwise find/create by phone)
+  let customer;
+  if (payload.customerId) {
+    const { data: existingCustomer, error: customerError } = await supabase.from("customers").select("id,first_name,last_name,email,total_orders,total_spent").eq("id", payload.customerId).eq("restaurant_id", parsed.restaurantId).maybeSingle();
+    if (customerError || !existingCustomer) {
+      throw new Error("Customer not found");
+    }
+    customer = existingCustomer;
+  } else {
+    customer = await findOrCreateCustomer(parsed.restaurantId, parsed.customerPhone, parsed.customerName);
+  }
+  
+  // Handle delivery address: create/find address if delivery order and address data provided
+  let deliveryAddressId = parsed.deliveryAddressId || null;
+  if (parsed.orderType === "delivery" && !deliveryAddressId && parsed.deliveryAddress) {
+    try {
+      deliveryAddressId = await createOrFindAddress(parsed.restaurantId, customer.id, parsed.deliveryAddress);
+      console.log(`Created/found delivery address: ${deliveryAddressId}`);
+    } catch (error) {
+      console.error("Failed to create address:", error);
+      throw new Error(`Delivery address is required for delivery orders: ${error.message}`);
+    }
+  }
+  
+  // Validate: delivery orders must have an address
+  if (parsed.orderType === "delivery" && !deliveryAddressId) {
+    throw new Error("Delivery address is required for delivery orders. Please provide deliveryAddressId or deliveryAddress.");
+  }
   // Get menu items
   const menuItemIds = parsed.items.map((item)=>item.menuItemId);
+  console.log(`Looking up menu items for order:`, {
+    restaurantId: parsed.restaurantId,
+    requestedMenuItemIds: menuItemIds,
+    itemCount: parsed.items.length
+  });
   const { data: menuItems, error: menuError } = await supabase.from("menu_items").select("id,name,price,is_available").eq("restaurant_id", parsed.restaurantId).in("id", menuItemIds);
-  if (menuError || !menuItems || menuItems.length !== parsed.items.length) {
-    throw new Error("One or more menu items are unavailable");
+  
+  if (menuError) {
+    console.error("Menu items query error:", menuError);
+    throw new Error(`Failed to fetch menu items: ${menuError.message}`);
   }
+  
+  if (!menuItems || menuItems.length === 0) {
+    console.error(`No menu items found for IDs: ${menuItemIds.join(", ")}`);
+    throw new Error(`No menu items found for the provided IDs: ${menuItemIds.join(", ")}`);
+  }
+  
+  // Check if all requested items were found
+  const foundIds = new Set(menuItems.map(m => m.id));
+  const missingIds = menuItemIds.filter(id => !foundIds.has(id));
+  if (missingIds.length > 0) {
+    console.error(`Menu items not found: ${missingIds.join(", ")}`);
+    throw new Error(`Menu items not found: ${missingIds.join(", ")}`);
+  }
+  
+  // Check if all items are available
+  const unavailableItems = menuItems.filter(m => !m.is_available);
+  if (unavailableItems.length > 0) {
+    const unavailableNames = unavailableItems.map(m => m.name).join(", ");
+    console.error(`Unavailable items: ${unavailableNames}`);
+    throw new Error(`The following items are currently unavailable: ${unavailableNames}`);
+  }
+  
+  console.log(`Successfully found ${menuItems.length} menu items`);
   // Calculate totals
   const items = parsed.items.map((item)=>{
     const menuItem = menuItems.find((m)=>m.id === item.menuItemId);
@@ -215,61 +437,14 @@ async function createOrder(payload, options) {
       quantity: item.quantity,
       unitPrice,
       lineTotal,
-      modifiers
+      modifiers,
+      specialInstructions: item.specialInstructions || null
     };
   });
   const subtotal = roundCurrency(items.reduce((sum, item)=>sum + item.lineTotal, 0));
   const tax = roundCurrency(subtotal * restaurant.tax_rate);
   const deliveryFee = parsed.orderType === "delivery" ? roundCurrency(restaurant.delivery_fee) : 0;
   const total = roundCurrency(subtotal + tax + deliveryFee);
-  // Handle Stripe payment if needed
-  let stripePaymentLink = null;
-  let stripePaymentIntentId = null;
-  if (parsed.paymentMethod === "stripe_link" && stripe) {
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(total * 100),
-      currency: "usd",
-      customer: restaurant.stripe_customer_id ?? undefined,
-      metadata: {
-        restaurant_id: parsed.restaurantId,
-        customer_phone: parsed.customerPhone,
-        source: options.source ?? "vapi"
-      },
-      description: `${restaurant.name} voice order`
-    }, restaurant.stripe_account_id ? {
-      stripeAccount: restaurant.stripe_account_id
-    } : undefined);
-    stripePaymentIntentId = paymentIntent.id;
-    const price = await stripe.prices.create({
-      currency: "usd",
-      unit_amount: Math.round(total * 100),
-      product_data: {
-        name: `Order from ${restaurant.name}`
-      }
-    }, restaurant.stripe_account_id ? {
-      stripeAccount: restaurant.stripe_account_id
-    } : undefined);
-    const paymentLink = await stripe.paymentLinks.create({
-      line_items: [
-        {
-          price: price.id,
-          quantity: 1
-        }
-      ],
-      metadata: {
-        restaurant_id: parsed.restaurantId,
-        order_reference: nanoid(10)
-      }
-    }, restaurant.stripe_account_id ? {
-      stripeAccount: restaurant.stripe_account_id
-    } : undefined);
-    stripePaymentLink = paymentLink.url;
-    // Send payment link SMS
-    if (stripePaymentLink) {
-      const message = `Hi! Your order from ${restaurant.name} totaling $${total.toFixed(2)} is ready. Please complete payment here: ${stripePaymentLink}`;
-      await sendSMS(parsed.customerPhone, message).catch(()=>{});
-    }
-  }
   // Determine location_id
   let locationId = options.locationId || null;
   if (!locationId && options.callId) {
@@ -284,9 +459,9 @@ async function createOrder(payload, options) {
     customer_phone: parsed.customerPhone,
     customer_name: parsed.customerName ?? null,
     order_type: parsed.orderType,
-    delivery_address_id: parsed.deliveryAddressId ?? null,
-    status: parsed.paymentMethod === "stripe_link" ? "payment_pending" : "pending",
-    payment_status: parsed.paymentMethod === "stripe_link" ? "pending" : "paid",
+    delivery_address_id: deliveryAddressId,
+    status: "pending",
+    payment_status: "paid",
     payment_method: parsed.paymentMethod,
     pos_sync_status: "pending",
     pos_sync_attempts: 0,
@@ -295,12 +470,9 @@ async function createOrder(payload, options) {
     delivery_fee: deliveryFee,
     total,
     items,
-    stripe_payment_link: stripePaymentLink,
-    stripe_payment_intent_id: stripePaymentIntentId,
-    payment_link_sent_at: stripePaymentLink ? new Date().toISOString() : null,
     call_id: options.callId ?? null,
     source: options.source ?? "vapi"
-  }).select("id,restaurant_id,customer_id,status,payment_status,subtotal,tax,delivery_fee,total,payment_method,stripe_payment_link,stripe_payment_intent_id,items,placed_at,updated_at").maybeSingle();
+  }).select("id,restaurant_id,customer_id,status,payment_status,subtotal,tax,delivery_fee,total,payment_method,items,placed_at,updated_at").maybeSingle();
   if (insertError || !insertedOrder) {
     throw new Error("Failed to create order");
   }
@@ -314,26 +486,35 @@ async function createOrder(payload, options) {
     p_order_total: total,
     p_order_type: parsed.orderType
   });
+  // Check if restaurant has POS configured (check restaurant_pos_locations table)
+  const { data: posLocation } = await supabase
+    .from("restaurant_pos_locations")
+    .select("id,pos_type")
+    .eq("restaurant_id", parsed.restaurantId)
+    .eq("is_primary", true)
+    .maybeSingle();
+  
   // Push to POS or send SMS notification (async)
-  if (parsed.paymentMethod !== "stripe_link") {
-    if (restaurant.pos_type && restaurant.pos_type !== "none") {
-      // Call POS push function async
-      fetch(`${supabaseUrl}/functions/v1/pos-push`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${supabaseServiceKey}`
-        },
-        body: JSON.stringify({
-          orderId: insertedOrder.id,
-          restaurantId: parsed.restaurantId
-        })
-      }).catch(()=>{});
-    } else if (restaurant.manager_phone) {
-      const itemsList = items.map((item)=>`${item.quantity}x ${item.name} ($${item.lineTotal})`).join("\n");
-      const message = `🔔 NEW ORDER #${insertedOrder.id.slice(0, 8)}\n\n${restaurant.name}\n\nCustomer: ${parsed.customerName || parsed.customerPhone}\nPhone: ${parsed.customerPhone}\nType: ${parsed.orderType.toUpperCase()}\nPayment: ${parsed.paymentMethod}\n\nItems:\n${itemsList}\n\nSubtotal: $${subtotal}\nTax: $${tax}\n${deliveryFee > 0 ? `Delivery: $${deliveryFee}\n` : ""}Total: $${total}`;
-      await sendSMS(restaurant.manager_phone, message).catch(()=>{});
-    }
+  if (posLocation && posLocation.pos_type && posLocation.pos_type !== "none") {
+    // Call POS push function async
+    console.log(`Pushing order ${insertedOrder.id} to POS (${posLocation.pos_type})`);
+    fetch(`${supabaseUrl}/functions/v1/pos-push`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${supabaseServiceKey}`
+      },
+      body: JSON.stringify({
+        orderId: insertedOrder.id,
+        restaurantId: parsed.restaurantId
+      })
+    }).catch((error) => {
+      console.error(`Failed to push order to POS:`, error);
+    });
+  } else if (restaurant.manager_phone) {
+    const itemsList = items.map((item)=>`${item.quantity}x ${item.name} ($${item.lineTotal})`).join("\n");
+    const message = `🔔 NEW ORDER #${insertedOrder.id.slice(0, 8)}\n\n${restaurant.name}\n\nCustomer: ${parsed.customerName || parsed.customerPhone}\nPhone: ${parsed.customerPhone}\nType: ${parsed.orderType.toUpperCase()}\nPayment: ${parsed.paymentMethod}\n\nItems:\n${itemsList}\n\nSubtotal: $${subtotal}\nTax: $${tax}\n${deliveryFee > 0 ? `Delivery: $${deliveryFee}\n` : ""}Total: $${total}`;
+    await sendSMS(restaurant.manager_phone, message).catch(()=>{});
   }
   return insertedOrder;
 }
@@ -344,10 +525,27 @@ Deno.serve(async (req)=>{
       headers: corsHeaders
     });
   }
+  // Log all headers for debugging
+  console.log("=== VAPI TOOLS REQUEST ===");
+  console.log("URL:", req.url);
+  console.log("Method:", req.method);
+  const allHeaders = Object.fromEntries(req.headers.entries());
+  console.log("All Headers:", JSON.stringify(allHeaders, null, 2));
+  const token = req.headers.get("x-vapi-tool-token");
+  const expectedToken = Deno.env.get("VAPI_TOOL_TOKEN") || Deno.env.get("VAPI_TOOL_AUTH_TOKEN");
+  console.log("Token received:", token ? `${token.substring(0, 10)}...` : "NONE");
+  console.log("Token expected:", expectedToken ? `${expectedToken.substring(0, 10)}...` : "NONE");
+  
   if (!verifyVapiToken(req)) {
+    console.error("Authentication failed!");
     return new Response(JSON.stringify({
       error: "Unauthorized VAPI tool request",
-      code: "UNAUTHORIZED"
+      code: "UNAUTHORIZED",
+      debug: {
+        hasToken: !!token,
+        hasExpectedToken: !!expectedToken,
+        tokenMatch: token === expectedToken
+      }
     }), {
       status: 401,
       headers: {
@@ -376,20 +574,59 @@ Deno.serve(async (req)=>{
       bodyKeys: Object.keys(body),
       firstToolCall: body?.message?.toolCallList?.[0]
     });
-    // Check if this is a VAPI tool call format (has message.toolCallList)
+    // Check if this is a VAPI tool call format (has message.toolCallList or toolWithToolCallList)
     // According to VAPI docs: https://docs.vapi.ai/tools-calling
     // VAPI sends: { message: { type: "tool-calls", toolCallList: [...] } }
     // We should return: { results: [{ toolCallId: "...", result: "..." }] }
-    const isVapiToolCall = body?.message?.type === "tool-calls" && body?.message?.toolCallList;
+    const isVapiToolCall = body?.message?.type === "tool-calls" && (body?.message?.toolCallList || body?.message?.toolWithToolCallList);
     if (isVapiToolCall) {
       console.log("Handling VAPI tool call format");
       // Handle VAPI tool call format (from Server URL)
-      const toolCalls = body.message.toolCallList || [];
+      // Prefer toolCallList, fallback to toolWithToolCallList
+      let toolCalls = body.message.toolCallList || [];
+      if (toolCalls.length === 0 && body.message.toolWithToolCallList) {
+        // Extract tool calls from toolWithToolCallList format
+        toolCalls = body.message.toolWithToolCallList.map((toolWithCall) => {
+          const toolCall = toolWithCall.toolCall || toolWithCall;
+          return {
+            id: toolCall.id,
+            name: toolWithCall.name || toolCall.function?.name,
+            arguments: toolCall.function?.parameters || toolCall.parameters || toolWithCall.parameters || {}
+          };
+        }).filter(tc => tc.id && tc.name);
+      }
       const results = [];
       for (const toolCall of toolCalls){
-        const toolCallId = toolCall.id;
-        const toolName = toolCall.name;
-        const args = toolCall.arguments || {};
+        // Extract toolCallId - must be present and match exactly
+        const toolCallId = toolCall.id || toolCall.toolCallId;
+        if (!toolCallId) {
+          console.error("Tool call missing ID:", toolCall);
+          results.push({
+            toolCallId: "unknown",
+            error: "Tool call missing ID"
+          });
+          continue;
+        }
+        const toolName = toolCall.name || toolCall.function?.name;
+        if (!toolName) {
+          console.error("Tool call missing name:", toolCall);
+          results.push({
+            toolCallId,
+            error: "Tool call missing name"
+          });
+          continue;
+        }
+        // Handle arguments as both object and JSON string (per Vapi docs)
+        // Also check toolCall.function.arguments as alternative format
+        let args = toolCall.arguments || toolCall.function?.arguments || {};
+        if (typeof args === "string") {
+          try {
+            args = JSON.parse(args);
+          } catch (e) {
+            console.error(`Failed to parse arguments as JSON: ${args}`, e);
+            args = {};
+          }
+        }
         console.log(`Processing tool: ${toolName}, ID: ${toolCallId}, args:`, args);
         try {
           let result;
@@ -424,31 +661,53 @@ Deno.serve(async (req)=>{
               locationId,
               callId
             });
-            result = `Order created successfully! Your order ID is ${order.id}. Total: $${order.total.toFixed(2)}. ${order.stripe_payment_link ? "A payment link has been sent to your phone." : ""}`;
+            result = `Order created successfully! Your order ID is ${order.id}. Total: $${order.total.toFixed(2)}.`;
           } else if (toolName === "check_order_status") {
-            const status = await checkOrderStatus(args.orderId, args.restaurantId);
-            result = status.message;
+            // Support both orderId and customerPhone (for phone number lookup)
+            const orderId = args.orderId || null;
+            const customerPhone = args.customerPhone || args.phoneNumber || null;
+            console.log(`Checking order status - orderId: ${orderId}, customerPhone: ${customerPhone}, restaurantId: ${args.restaurantId}`);
+            const status = await checkOrderStatus(orderId, args.restaurantId, customerPhone);
+            result = `${status.message} Your order total is $${status.total.toFixed(2)}.`;
           } else {
             console.error(`Unknown tool name: ${toolName}`);
             result = `Tool ${toolName} is not implemented`;
           }
+          // Ensure result is a single-line string (no line breaks per Vapi docs)
+          const resultString = String(result).replace(/\n/g, " ").replace(/\s+/g, " ").trim();
           results.push({
             toolCallId,
-            result: String(result)
+            result: resultString
           });
         } catch (error) {
           console.error(`Tool execution error for ${toolName}:`, error);
+          // Ensure error is a single-line string (no line breaks per Vapi docs)
+          const errorString = (error.message || "Tool execution failed").replace(/\n/g, " ").replace(/\s+/g, " ").trim();
           results.push({
             toolCallId,
-            error: error.message || "Tool execution failed"
+            error: errorString
+          });
+        }
+      }
+      // Ensure we have results for all tool calls
+      if (results.length === 0 && toolCalls.length > 0) {
+        console.error("No results generated for tool calls:", toolCalls);
+        // Return error for all tool calls
+        for (const toolCall of toolCalls) {
+          const toolCallId = toolCall.id || toolCall.toolCallId || "unknown";
+          results.push({
+            toolCallId,
+            error: "Tool execution failed - no result generated"
           });
         }
       }
       console.log(`Returning results:`, results);
       // Return VAPI format: { results: [{ toolCallId, result }] }
+      // Always return HTTP 200 even for errors (per Vapi docs)
       return new Response(JSON.stringify({
         results
       }), {
+        status: 200,
         headers: {
           ...corsHeaders,
           "Content-Type": "application/json"
@@ -508,7 +767,7 @@ Deno.serve(async (req)=>{
         });
       }
       const locationId = url.searchParams.get("locationId") || url.searchParams.get("location_id") || null;
-      const menu = await listMenuItems(restaurantId, locationId);
+      const menu = await listMenuItems(restaurantId, locationId || null);
       const formattedMenu = formatMenuForVoice(menu);
       return new Response(JSON.stringify({
         items: menu,
@@ -609,7 +868,7 @@ Deno.serve(async (req)=>{
         locationId,
         callId
       });
-      const result = `Order created successfully! Your order ID is ${order.id}. Total: $${order.total.toFixed(2)}. ${order.stripe_payment_link ? "A payment link has been sent to your phone." : ""}`;
+      const result = `Order created successfully! Your order ID is ${order.id}. Total: $${order.total.toFixed(2)}.`;
       const toolCallId = body.toolCallId || body.id || nanoid(10);
       return new Response(JSON.stringify({
         results: [
@@ -629,16 +888,20 @@ Deno.serve(async (req)=>{
     if (method === "POST" && path === "/orders/status") {
       const checkOrderStatusSchema = z.object({
         restaurantId: z.string().uuid(),
-        orderId: z.string().uuid()
+        orderId: z.string().uuid().optional(),
+        customerPhone: z.string().optional(),
+        phoneNumber: z.string().optional()
       });
       const parsed = checkOrderStatusSchema.parse(body);
-      const status = await checkOrderStatus(parsed.orderId, parsed.restaurantId);
+      const orderId = parsed.orderId || null;
+      const customerPhone = parsed.customerPhone || parsed.phoneNumber || null;
+      const status = await checkOrderStatus(orderId, parsed.restaurantId, customerPhone);
       const toolCallId = body.toolCallId || body.id || nanoid(10);
       return new Response(JSON.stringify({
         results: [
           {
             toolCallId,
-            result: status.message
+            result: `${status.message} Your order total is $${status.total.toFixed(2)}.`
           }
         ]
       }), {

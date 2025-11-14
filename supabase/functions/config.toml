@@ -12,3 +12,6 @@ verify_jwt = false
 
 [functions.clover-webhook]
 verify_jwt = false
+
+[functions.vapi-tools]
+verify_jwt = false

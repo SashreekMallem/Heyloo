@@ -167,16 +167,26 @@ async function handlePosOAuthCallback(restaurantId, provider, code, state, callb
       const accessToken = tokenResponse.data.access_token;
       // Use merchant_id from callback URL if provided, otherwise from token response
       const merchantId = callbackMerchantId || tokenResponse.data.merchant_id || tokenResponse.data.merchant_uuid;
+      const accessTokenExpiration = tokenResponse.data.access_token_expiration;
+      const refreshTokenExpiration = tokenResponse.data.refresh_token_expiration;
       console.log("✅ [Clover OAuth] Token exchange successful:", {
         hasAccessToken: !!accessToken,
         hasMerchantId: !!merchantId,
         merchantIdSource: callbackMerchantId ? "callback_url" : "token_response",
+        hasAccessTokenExpiration: !!accessTokenExpiration,
+        hasRefreshTokenExpiration: !!refreshTokenExpiration,
+        accessTokenExpirationRaw: accessTokenExpiration,
+        refreshTokenExpirationRaw: refreshTokenExpiration,
+        accessTokenExpirationType: typeof accessTokenExpiration,
+        refreshTokenExpirationType: typeof refreshTokenExpiration,
         responseKeys: Object.keys(tokenResponse.data)
       });
       return {
         accessToken,
         refreshToken: tokenResponse.data.refresh_token,
         merchantId,
+        accessTokenExpiration,
+        refreshTokenExpiration,
         merchants: [
           {
             id: merchantId,
@@ -205,15 +215,78 @@ async function connectMultipleLocations(restaurantId, provider, tokens, selected
   for (const selectedId of selectedIds){
     const locationData = provider === "square" ? tokens.locations?.find((l)=>l.id === selectedId) : tokens.merchants?.find((m)=>m.id === selectedId);
     if (!locationData) continue;
-    const { data: location } = await supabase.from("restaurant_pos_locations").insert({
+    
+    // Check if location already exists (for re-authorization)
+    const existingLocationQuery = supabase
+      .from("restaurant_pos_locations")
+      .select("id, address")
+      .eq("restaurant_id", restaurantId)
+      .eq("pos_type", provider);
+    
+    if (provider === "square") {
+      existingLocationQuery.eq("pos_location_id", selectedId);
+    } else if (provider === "clover") {
+      existingLocationQuery.eq("pos_merchant_id", selectedId);
+    }
+    
+    const { data: existingLocation } = await existingLocationQuery.maybeSingle();
+    
+    // Prepare token expiration data for storage
+    const addressData = existingLocation?.address || {};
+    if (tokens.accessTokenExpiration || tokens.refreshTokenExpiration) {
+      addressData.token_expirations = {
+        access_token_expires_at: tokens.accessTokenExpiration ? new Date(tokens.accessTokenExpiration * 1000).toISOString() : null,
+        refresh_token_expires_at: tokens.refreshTokenExpiration ? new Date(tokens.refreshTokenExpiration * 1000).toISOString() : null,
+        last_refreshed_at: new Date().toISOString()
+      };
+    }
+    
+    const locationDataToSave: any = {
       restaurant_id: restaurantId,
       pos_type: provider,
-      pos_location_id: selectedId,
       access_token: tokens.accessToken,
       refresh_token: tokens.refreshToken || null,
       is_active: true,
-      is_primary: selectedIds.indexOf(selectedId) === 0
-    }).select("id").single();
+      is_primary: selectedIds.indexOf(selectedId) === 0,
+      address: addressData,
+      updated_at: new Date().toISOString()
+    };
+    
+    if (provider === "square") {
+      locationDataToSave.pos_location_id = selectedId;
+    } else if (provider === "clover") {
+      locationDataToSave.pos_merchant_id = selectedId;
+    }
+    
+    let location;
+    if (existingLocation) {
+      // Update existing location
+      const { data: updatedLocation } = await supabase
+        .from("restaurant_pos_locations")
+        .update(locationDataToSave)
+        .eq("id", existingLocation.id)
+        .select("id")
+        .single();
+      location = updatedLocation;
+      console.log("🔄 [POS Connect] Updated existing location:", {
+        locationId: existingLocation.id,
+        provider,
+        selectedId
+      });
+    } else {
+      // Insert new location
+      const { data: newLocation } = await supabase
+        .from("restaurant_pos_locations")
+        .insert(locationDataToSave)
+        .select("id")
+        .single();
+      location = newLocation;
+      console.log("➕ [POS Connect] Created new location:", {
+        provider,
+        selectedId
+      });
+    }
+    
     if (location) connectedLocationIds.push(location.id);
   }
   return {
@@ -292,7 +365,11 @@ Deno.serve(async (req)=>{
       });
     }
     if (method === "GET" && path.includes("/pos/") && path.endsWith("/auth")) {
-      const provider = path.split("/")[2];
+      // Path format: /onboarding/pos/{provider}/auth
+      // Split: ["", "onboarding", "pos", "{provider}", "auth"]
+      const pathParts = path.split("/").filter(p => p);
+      const providerIndex = pathParts.indexOf("pos") + 1;
+      const provider = pathParts[providerIndex];
       const restaurantId = url1.searchParams.get("restaurantId");
       const frontendUrl = url1.searchParams.get("frontendUrl");
       if (!restaurantId) {
@@ -363,10 +440,23 @@ Deno.serve(async (req)=>{
           }
         });
       }
+      // Provider not supported
+      return new Response(JSON.stringify({
+        error: `Unsupported provider: ${provider || "unknown"}`
+      }), {
+        status: 400,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json"
+        }
+      });
     }
     // GET /pos/:provider/callback
     if (method === "GET" && path.includes("/pos/") && path.includes("/callback")) {
-      const provider = path.split("/")[2];
+      // Path format: /onboarding/pos/{provider}/callback
+      const pathParts = path.split("/").filter(p => p);
+      const providerIndex = pathParts.indexOf("pos") + 1;
+      const provider = pathParts[providerIndex];
       const code = url1.searchParams.get("code");
       const state = url1.searchParams.get("state");
       // Clover sends merchant_id in callback URL
@@ -410,7 +500,8 @@ Deno.serve(async (req)=>{
         locationsCount: tokens.locations?.length || 0
       });
       const sessionId = nanoid();
-      await supabase.from("pos_oauth_sessions").insert({
+      // Store expiration times in session metadata if available
+      const sessionData: any = {
         id: sessionId,
         restaurant_id: restaurantId,
         pos_type: provider,
@@ -420,7 +511,17 @@ Deno.serve(async (req)=>{
         locations: tokens.locations || null,
         merchants: tokens.merchants || null,
         expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString()
-      });
+      };
+      
+      // Store token expiration times if available (for Clover)
+      if (tokens.accessTokenExpiration || tokens.refreshTokenExpiration) {
+        sessionData.token_expirations = {
+          access_token_expires_at: tokens.accessTokenExpiration ? new Date(tokens.accessTokenExpiration * 1000).toISOString() : null,
+          refresh_token_expires_at: tokens.refreshTokenExpiration ? new Date(tokens.refreshTokenExpiration * 1000).toISOString() : null
+        };
+      }
+      
+      await supabase.from("pos_oauth_sessions").insert(sessionData);
       const hasLocations = tokens.locations && tokens.locations.length > 0 || tokens.merchants && tokens.merchants.length > 0;
       console.log("🔍 [OAuth Callback] Checking auto-connect:", {
         hasLocations,
@@ -463,7 +564,10 @@ Deno.serve(async (req)=>{
       });
     }
     if (method === "GET" && path.includes("/pos/") && path.includes("/locations")) {
-      const provider = path.split("/")[2];
+      // Path format: /onboarding/pos/{provider}/locations
+      const pathParts = path.split("/").filter(p => p);
+      const providerIndex = pathParts.indexOf("pos") + 1;
+      const provider = pathParts[providerIndex];
       const session = url1.searchParams.get("session");
       if (!session) {
         return new Response(JSON.stringify({
@@ -521,7 +625,10 @@ Deno.serve(async (req)=>{
       });
     }
     if (method === "POST" && path.includes("/pos/") && path.includes("/finalize")) {
-      const provider = path.split("/")[2];
+      // Path format: /onboarding/pos/{provider}/finalize
+      const pathParts = path.split("/").filter(p => p);
+      const providerIndex = pathParts.indexOf("pos") + 1;
+      const provider = pathParts[providerIndex];
       const body = await req.json();
       const { session, locationIds = [], merchantIds = [] } = body;
       if (!session) {
@@ -550,12 +657,20 @@ Deno.serve(async (req)=>{
       const locations = oauthSession.locations ? typeof oauthSession.locations === "string" ? JSON.parse(oauthSession.locations) : oauthSession.locations : [];
       const merchants = oauthSession.merchants ? typeof oauthSession.merchants === "string" ? JSON.parse(oauthSession.merchants) : oauthSession.merchants : [];
       const selectedIds = provider === "square" ? locationIds : merchantIds;
+      
+      // Extract token expiration times from session if available
+      const tokenExpirations = oauthSession.token_expirations || {};
+      const accessTokenExpiration = tokenExpirations.access_token_expires_at ? Math.floor(new Date(tokenExpirations.access_token_expires_at).getTime() / 1000) : undefined;
+      const refreshTokenExpiration = tokenExpirations.refresh_token_expires_at ? Math.floor(new Date(tokenExpirations.refresh_token_expires_at).getTime() / 1000) : undefined;
+      
       const { locationIds: connectedLocationIds } = await connectMultipleLocations(oauthSession.restaurant_id, provider, {
         accessToken: oauthSession.access_token,
         refreshToken: oauthSession.refresh_token || undefined,
         locations,
         merchants,
-        merchantId: oauthSession.merchant_id
+        merchantId: oauthSession.merchant_id,
+        accessTokenExpiration,
+        refreshTokenExpiration
       }, selectedIds);
       await supabase.from("pos_oauth_sessions").delete().eq("id", session);
       // Trigger menu sync asynchronously for the first connected location (fire and forget)
