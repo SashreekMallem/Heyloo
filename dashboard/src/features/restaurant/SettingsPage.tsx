@@ -25,6 +25,7 @@ import { useAuthStore } from '../../hooks/useAuthStore';
 import { api } from '../../api/client';
 import { initiatePosAuth, getPosLocations, finalizePosConnection } from '../../api/onboarding';
 import { triggerMenuSync } from '../../api/pos';
+import { ManualModeBanner } from '../../components/ManualModeBanner';
 
 const DAYS_OF_WEEK = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
@@ -37,6 +38,7 @@ export function RestaurantSettingsPage() {
   const [isConnectingPos, setIsConnectingPos] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [showManualConfirm, setShowManualConfirm] = useState(false);
   
   // Location selection state for multi-location POS
   const [showLocationSelector, setShowLocationSelector] = useState(false);
@@ -65,6 +67,35 @@ export function RestaurantSettingsPage() {
     },
     enabled: !!user?.restaurantId
   });
+
+  const manualMode = Boolean(restaurant?.manual_mode);
+
+  const manualModeMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      api.patch(`/restaurants/${user!.restaurantId}`, {
+        manualMode: enabled
+      }),
+    onSuccess: () => {
+      setShowManualConfirm(false);
+      queryClient.invalidateQueries({ queryKey: ['restaurant-details', user?.restaurantId] });
+      queryClient.invalidateQueries({ queryKey: ['pos-config', user?.restaurantId] });
+    },
+    onError: (error: any) => {
+      alert(`Failed to update manual mode: ${error.response?.data?.message || error.message}`);
+    }
+  });
+
+  const handleManualToggle = (nextValue: boolean) => {
+    if (nextValue) {
+      setShowManualConfirm(true);
+    } else {
+      manualModeMutation.mutate(false);
+    }
+  };
+
+  const confirmManualEnable = () => {
+    manualModeMutation.mutate(true);
+  };
 
   const [formData, setFormData] = useState({
     name: '',
@@ -626,6 +657,68 @@ export function RestaurantSettingsPage() {
         </div>
       )}
 
+      {manualMode ? (
+        <ManualModeBanner>
+          <div className="mt-3 flex items-center gap-3">
+            <button
+              type="button"
+              disabled={manualModeMutation.isPending}
+              onClick={() => handleManualToggle(false)}
+              className="px-4 py-2 rounded-full bg-white text-slate-900 font-medium disabled:opacity-60"
+            >
+              Disable Manual Mode
+            </button>
+          </div>
+        </ManualModeBanner>
+      ) : (
+        <div className="glass-panel p-6 flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-white/90">Manual Mode</h3>
+            <p className="text-sm text-white/60">
+              Enable this if you do not have a POS connected. You will manage menu, customers, and orders
+              directly inside the dashboard.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={manualModeMutation.isPending}
+            onClick={() => handleManualToggle(true)}
+            className="px-4 py-2 rounded-full bg-white text-slate-900 font-semibold disabled:opacity-60"
+          >
+            Enable Manual Mode
+          </button>
+        </div>
+      )}
+
+      {showManualConfirm && (
+        <div className="glass-panel p-6 space-y-3 border border-amber-500/30">
+          <h3 className="text-lg font-semibold text-white">Enable Manual Mode?</h3>
+          <p className="text-sm text-white/70">
+            POS sync will be disabled and you will need to manage menu items and orders manually.
+            You can switch back at any time.
+          </p>
+          <div className="flex gap-3 justify-end">
+            <button
+              type="button"
+              onClick={() => {
+                setShowManualConfirm(false);
+              }}
+              className="px-4 py-2 rounded-full bg-white/10 border border-white/20"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={confirmManualEnable}
+              disabled={manualModeMutation.isPending}
+              className="px-4 py-2 rounded-full bg-white text-slate-900 font-semibold disabled:opacity-60"
+            >
+              Enable Manual Mode
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Basic Information */}
       <div className="glass-panel p-8 space-y-6">
         <div className="flex items-center gap-3">
@@ -1003,6 +1096,7 @@ export function RestaurantSettingsPage() {
       </div>
 
       {/* POS Integration */}
+      {!manualMode && (
       <div className="glass-panel p-8 space-y-6">
         <div className="flex items-center justify-between">
           <div>
@@ -1160,6 +1254,7 @@ export function RestaurantSettingsPage() {
           )}
         </div>
       </div>
+      )}
 
       {/* Save Button */}
       <div className="flex items-center justify-end gap-3 pt-6 border-t border-white/10">

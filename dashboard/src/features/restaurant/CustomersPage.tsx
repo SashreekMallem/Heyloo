@@ -1,14 +1,36 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Users, Phone, Mail, DollarSign, Package, MapPin } from 'lucide-react';
 
 import { fetchRestaurantCustomers, fetchCustomerAddresses } from '../../api/customers';
+import {
+  fetchRestaurantDetails,
+  createManualCustomer,
+  updateManualCustomer,
+  deleteManualCustomer
+} from '../../api/restaurants';
 import { DataTable } from '../../components/DataTable';
 import { useAuthStore } from '../../hooks/useAuthStore';
 
 export function RestaurantCustomersPage() {
   const { user } = useAuthStore();
+  const queryClient = useQueryClient();
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
+  const [showCustomerForm, setShowCustomerForm] = useState(false);
+  const [editingCustomer, setEditingCustomer] = useState<any | null>(null);
+  const [customerForm, setCustomerForm] = useState({
+    firstName: '',
+    lastName: '',
+    phoneNumber: '',
+    email: '',
+    notes: ''
+  });
+
+  const { data: restaurantDetails } = useQuery({
+    enabled: Boolean(user?.restaurantId),
+    queryKey: ['restaurant-details', user?.restaurantId],
+    queryFn: () => fetchRestaurantDetails(user!.restaurantId!)
+  });
 
   const { data: customers, isLoading } = useQuery({
     enabled: Boolean(user?.restaurantId),
@@ -30,6 +52,54 @@ export function RestaurantCustomersPage() {
         new: customers.filter((c) => c.totalOrders === 1).length
       }
     : { vip: 0, loyal: 0, returning: 0, new: 0 };
+
+  const manualMode = Boolean(restaurantDetails?.manual_mode);
+
+  const upsertCustomerMutation = useMutation({
+    mutationFn: async () => {
+      const payload = { ...customerForm };
+      if (editingCustomer) {
+        return updateManualCustomer(user!.restaurantId!, editingCustomer.id, payload);
+      }
+      return createManualCustomer(user!.restaurantId!, payload);
+    },
+    onSuccess: () => {
+      setShowCustomerForm(false);
+      setEditingCustomer(null);
+      setCustomerForm({ firstName: '', lastName: '', phoneNumber: '', email: '', notes: '' });
+      queryClient.invalidateQueries({ queryKey: ['restaurant-customers', user?.restaurantId] });
+    },
+    onError: (error: any) => {
+      alert(`Failed to save customer: ${error.response?.data?.message || error.message}`);
+    }
+  });
+
+  const deleteCustomerMutation = useMutation({
+    mutationFn: (customerId: string) => deleteManualCustomer(user!.restaurantId!, customerId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['restaurant-customers', user?.restaurantId] });
+    },
+    onError: (error: any) => {
+      alert(`Failed to delete customer: ${error.response?.data?.message || error.message}`);
+    }
+  });
+
+  const openCustomerForm = (customer?: any) => {
+    if (customer) {
+      setEditingCustomer(customer);
+      setCustomerForm({
+        firstName: customer.first_name || '',
+        lastName: customer.last_name || '',
+        phoneNumber: customer.phone_number || '',
+        email: customer.email || '',
+        notes: customer.notes || ''
+      });
+    } else {
+      setEditingCustomer(null);
+      setCustomerForm({ firstName: '', lastName: '', phoneNumber: '', email: '', notes: '' });
+    }
+    setShowCustomerForm(true);
+  };
 
   return (
     <div className="space-y-8 text-white">
@@ -75,6 +145,100 @@ export function RestaurantCustomersPage() {
           <p className="text-3xl font-bold">{customerSegments.new}</p>
           <p className="text-xs text-white/40 mt-1">1 order</p>
         </div>
+      </div>
+
+      {manualMode && showCustomerForm && (
+        <section className="glass-panel p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-white/90">
+              {editingCustomer ? 'Edit Customer' : 'Add Customer'}
+            </h3>
+            <button
+              type="button"
+              onClick={() => {
+                setShowCustomerForm(false);
+                setEditingCustomer(null);
+              }}
+              className="text-white/60 hover:text-white"
+            >
+              Cancel
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <label className="space-y-2 text-sm text-white/70">
+              First Name
+              <input
+                className="w-full rounded-lg bg-white/10 border border-white/10 px-3 py-2 text-white"
+                value={customerForm.firstName}
+                onChange={(event) => setCustomerForm((prev) => ({ ...prev, firstName: event.target.value }))}
+              />
+            </label>
+            <label className="space-y-2 text-sm text-white/70">
+              Last Name
+              <input
+                className="w-full rounded-lg bg-white/10 border border-white/10 px-3 py-2 text-white"
+                value={customerForm.lastName}
+                onChange={(event) => setCustomerForm((prev) => ({ ...prev, lastName: event.target.value }))}
+              />
+            </label>
+            <label className="space-y-2 text-sm text-white/70">
+              Phone Number
+              <input
+                className="w-full rounded-lg bg-white/10 border border-white/10 px-3 py-2 text-white"
+                value={customerForm.phoneNumber}
+                onChange={(event) => setCustomerForm((prev) => ({ ...prev, phoneNumber: event.target.value }))}
+              />
+            </label>
+            <label className="space-y-2 text-sm text-white/70">
+              Email
+              <input
+                className="w-full rounded-lg bg-white/10 border border-white/10 px-3 py-2 text-white"
+                value={customerForm.email}
+                onChange={(event) => setCustomerForm((prev) => ({ ...prev, email: event.target.value }))}
+              />
+            </label>
+            <label className="space-y-2 text-sm text-white/70 md:col-span-2">
+              Notes
+              <textarea
+                className="w-full rounded-lg bg-white/10 border border-white/10 px-3 py-2 text-white"
+                value={customerForm.notes}
+                onChange={(event) => setCustomerForm((prev) => ({ ...prev, notes: event.target.value }))}
+              />
+            </label>
+          </div>
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={() => upsertCustomerMutation.mutate()}
+              disabled={upsertCustomerMutation.isPending}
+              className="px-4 py-2 rounded-full bg-white text-slate-900 font-medium"
+            >
+              {upsertCustomerMutation.isPending ? 'Saving…' : 'Save Customer'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowCustomerForm(false);
+                setEditingCustomer(null);
+              }}
+              className="px-4 py-2 rounded-full bg-white/10 border border-white/10"
+            >
+              Cancel
+            </button>
+          </div>
+        </section>
+      )}
+
+      <div className="flex justify-end">
+        {manualMode && (
+          <button
+            type="button"
+            onClick={() => openCustomerForm()}
+            className="px-4 py-2 rounded-full bg-white text-slate-900 font-medium"
+          >
+            Add Customer
+          </button>
+        )}
       </div>
 
       {isLoading ? (
@@ -162,18 +326,36 @@ export function RestaurantCustomersPage() {
               {
                 header: 'Actions',
                 accessor: (row: any) => (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedCustomerId(
-                        selectedCustomerId === row.id ? null : row.id
-                      )
-                    }
-                    className="flex items-center gap-2 px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-sm transition-colors"
-                  >
-                    <MapPin className="h-4 w-4" />
-                    {selectedCustomerId === row.id ? 'Hide' : 'View'} Addresses
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedCustomerId(selectedCustomerId === row.id ? null : row.id)
+                      }
+                      className="flex items-center gap-2 px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-sm transition-colors"
+                    >
+                      <MapPin className="h-4 w-4" />
+                      {selectedCustomerId === row.id ? 'Hide' : 'View'} Addresses
+                    </button>
+                    {manualMode && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => openCustomerForm(row)}
+                          className="px-3 py-1 rounded-full bg-white/10 text-xs hover:bg-white/20"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteCustomerMutation.mutate(row.id)}
+                          className="px-3 py-1 rounded-full bg-rose-500/20 text-xs text-rose-200 hover:bg-rose-500/30"
+                        >
+                          Delete
+                        </button>
+                      </>
+                    )}
+                  </div>
                 )
               }
             ]}
@@ -215,4 +397,3 @@ export function RestaurantCustomersPage() {
     </div>
   );
 }
-

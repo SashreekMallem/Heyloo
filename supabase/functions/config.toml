@@ -1,0 +1,14 @@
+[functions.restaurants]
+verify_jwt = false
+
+[functions.pos]
+verify_jwt = false
+
+[functions.pos-push]
+verify_jwt = false
+
+[functions.pos-sync]
+verify_jwt = false
+
+[functions.clover-webhook]
+verify_jwt = false

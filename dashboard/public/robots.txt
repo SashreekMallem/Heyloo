@@ -1,0 +1,21 @@
+User-agent: *
+Allow: /
+
+# Sitemap
+Sitemap: https://heyloo.com/sitemap.xml
+
+# Important pages
+Allow: /
+Allow: /login
+Allow: /onboarding
+Allow: /privacy
+Allow: /terms
+Allow: /support
+
+# Disallow admin/dashboard areas
+Disallow: /platform/
+Disallow: /restaurant/
+
+# Crawl-delay
+Crawl-delay: 1
+
