@@ -56,14 +56,20 @@ pricing, 70–85% margin, 50 clients → $10k+ MRR, fully self-serve onboarding.
 
 ### Layer 2 — Vertical adapters
 
-One interface, four implementations, each anchored to a representative platform:
+One interface, one implementation per vertical, launch order set by the vertical
+research (`docs/VERTICAL_RESEARCH.md` — evidence-based revision of the brief's
+original four):
 
-| Vertical | Adapter | Anchor integration (validate API access first) |
-|---|---|---|
-| Restaurants | `adapters/restaurant` | Square (exists — port), Clover (exists — port); Toast later (API is partner-gated; validate before promising) |
-| Dental | `adapters/dental` | Open Dental (open API, self-serve) or NexHealth (aggregator over Dentrix/Eaglesoft) — **requires Retell HIPAA BAA signed** |
-| Motels | `adapters/motel` | Cloudbeds (public API + marketplace) |
-| Real estate | `adapters/realestate` | Follow Up Boss (open API, simple auth) — lead capture + showing scheduling |
+| Wave | Vertical | Adapter | Anchor integration (all self-serve verified) |
+|---|---|---|---|
+| 1 | Auto repair | `adapters/autorepair` | **Shopmonkey** — API on every plan, self-generated token, no partner gate |
+| 1 | Legal intake | `adapters/legal` | **Clio** — Grade-A self-serve API, OAuth2, sandbox; book onto Clio calendar + create matter/contact |
+| 2 | Veterinary | `adapters/vet` | **ezyVet** (Vetspire as alt) — public docs, light registration |
+| 2 | Motels | `adapters/motel` | **Cloudbeds** — owner self-generates API key; `postReservation` + rate/availability reads |
+| 3 | Dental | `adapters/dental` | **NexHealth** aggregator (all direct PMSs are gated/on-prem) — requires Retell BAA + validated production onboarding |
+| 3 | Any-Square business | `adapters/square-bookings` | **Square Bookings API** — one adapter covering salons/barbers/any Square service business |
+| Kept, not led | Restaurants | `adapters/restaurant` | **Square Orders** (ported from current repo; serves existing client); pilot **ItsaCheckmate** for Toast/Clover reach. Toast direct = months-long partner cert, do not block on it |
+| Later | Real estate | `adapters/realestate` | **Follow Up Boss** — easiest build but most crowded price point; enter only with a teams-focused angle |
 
 `IntegrationAdapter` interface: `syncCatalog`, `pushBooking/pushOrder`,
 `checkAvailability`, `handleWebhook`, `refreshAuth` — one status-mapping table
@@ -113,21 +119,24 @@ bookings, resources, availability, offerings) with timestamped, reproducible
 migrations; auth/RLS rebuild; metering from actual cost; transfer/voicemail/
 after-hours/SMS; automated phone provisioning.
 
-**Phase 2 — Self-serve onboarding + restaurant re-platform (weeks 4–7):**
-signup → Stripe Checkout → provision flow; port Square/Clover into
-`adapters/restaurant` (fixing tax/fee omission, dedup, idempotency, status
-mapping); migrate the existing live client; dashboard de-verticalized
-(tenant branding config, role-guarded routes, error states, tokens out of
-localStorage or mitigated).
+**Phase 2 — Self-serve onboarding + Wave-1 adapters (weeks 4–7):**
+signup → Stripe Checkout → provision flow; build `adapters/autorepair`
+(Shopmonkey) and `adapters/legal` (Clio) — both self-serve APIs, no partner
+queues; dashboard rebuilt vertical-neutral (tenant branding, role-guarded
+routes, error states, sane token handling). If the second Wave-1 adapter
+touches Layer 1 significantly, the abstraction is wrong — fix it before
+Wave 2. In parallel: port the Square restaurant adapter (fixing tax/fee
+omission, dedup, idempotency) to migrate the existing live client off the
+old system, without leading GTM on restaurants.
 
-**Phase 3 — Vertical #2 as the adapter-model proof (weeks 7–10):** dental
-(sign Retell BAA; Open Dental/NexHealth adapter; booking flow end-to-end).
-If adding dental touches Layer 1 significantly, the abstraction is wrong —
-fix it before verticals #3/#4.
+**Phase 3 — Wave 2 (weeks 7–10):** `adapters/vet` (ezyVet) and
+`adapters/motel` (Cloudbeds, including the paste-an-API-key connection mode);
+begin outreach to Wave-1 verticals while building.
 
-**Phase 4 — Motels + real estate + scale (weeks 10–14):** Cloudbeds and
-Follow Up Boss adapters; per-vertical margin dashboards; alerting/monitoring;
-load testing before the 50-client push.
+**Phase 4 — Wave 3 + scale (weeks 10–14):** dental via NexHealth (sign Retell
+BAA; validate NexHealth production onboarding with their dev team first) and/or
+the Square Bookings cross-vertical wedge; per-vertical margin dashboards;
+alerting/monitoring; load testing before the 50-client push.
 
 **Parallel ops workstream (not this repo):** Apollo → Claude research →
 Instantly/Smartlead → n8n pipeline. Back-of-envelope: at ~2% cold-email
