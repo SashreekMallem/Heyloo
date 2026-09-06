@@ -23,32 +23,62 @@ acute missed-call pain, $299/mo budget, low voice-AI saturation.
 | 9 | Home services | Jobber (GraphQL, self-serve) | ServiceTitan enterprise-gated; Housecall Pro API behind $279/mo tier | 7 | 5 | Extreme ($300–5k emergency jobs) | Brutal: Avoca $125M+ raised, ~$1B valuation |
 | 10 | Med spa | — | Mindbody partner-gated; Zenoti customer-gated **and** shipping its own AI receptionist | 4 | 4 | Good economics, blocked access | Platform-native AI = worst position |
 
-## Recommended launch order
+## Install-base & money model (follow-up research pass)
 
-**Wave 1 (launch verticals): Auto repair (Shopmonkey) + Legal intake (Clio).**
-Both have the two things that matter most for a solo builder: truly self-serve
-booking-write APIs (prototype in days, no waiting on a partner queue) and
-underserved buyers with brutal missed-call economics. Legal has the single best
-ROI pitch in the study; auto has the single most open API and no runaway
-incumbent.
+A second research pass answered "does the anchor actually conquer its market?"
+with hard install-base numbers. Assumptions: ~$500/mo effective ARPU
+($299 base + usage); target 50 clients / $25k MRR. **Fallback mode** = the
+agent serves any business without deep integration (answer, capture, book onto
+our calendar, SMS the business) — the anchor caps *deep integration*, not sales.
 
-**Wave 2: Veterinary (ezyVet) + Motels (Cloudbeds).** Vet has the best
-per-clinic loss numbers and a light registration gate. Motels are the
-lowest-competition wedge from the original brief — but the addressable base at
-launch is Cloudbeds' ~2,300 US properties, so it's a beachhead, not a TAM.
+| Vertical | Anchor US install base (confidence) | MRR @1% capture | $25k from anchor alone? | Deep integration needed to close? | Competition |
+|---|---|---|---|---|---|
+| Auto repair | Tekmetric **15,000+** shops (med-high), Shopmonkey ~5-6k (med); only ~10-13% of 230k shops on any cloud SMS | $75k (Tek) / $30k (SM) | **Yes — <0.5% needed** | No — SMS'd booking acceptable | Moderate, no dominant incumbent |
+| Veterinary | ezyVet ~3-4k US + Vetspire ~800 (low conf); **25k+ of 30-33k clinics on legacy AVImark/Cornerstone** → fallback-mode market | $20-25k | Marginal (~1%) | Moderate — fallback fine for intake | Moderate, no scaled incumbent |
+| Real estate | FUB ~8-10k paying team accounts (low conf, extrapolated); fallback mode addresses full ~100k-team market | $40-50k | ~At the line | **Low — fallback nearly as good** | High — crowded at exactly $299 |
+| Legal | Clio 400k professionals **global** ($5B valuation) — **no verified US account count** | speculative | Plausible, unverifiable | Low-moderate | Smith.ai incumbent at $293 + attorney trust friction |
+| Dental | NexHealth **5,000** practices (~3% of 170k) | $25k exactly | Needs exactly 1% | Mod-high (patients expect real slots) | **Worst — 15-25 vendors**, NexHealth confers no moat (rivals use it too) |
+| Home services | Jobber 100k+ accounts — but solo crews already paying Jobber $169-599/mo | $350k+ on paper | Yes on paper | High (dispatch expectations) | **Severe — Avoca, $125M raised, $1B valuation** |
+| Restaurants | Square-restaurant count unverifiable (6sense's 1.7k is a severe undercount) | unreliable | Unknown | High | Worst crowding + 3-5% margins |
+| Motels | Cloudbeds **2,337 US** (high conf — cross-checked) | $11.7k | **No — 2% capture still <$25k** | Moderate | Moderate, but mom-and-pop budgets |
+
+## Recommended launch order (final, money-weighted)
+
+**Wave 1: Auto repair + Veterinary.**
+- **Auto** is the clearest path to $25k MRR in the study: Tekmetric's 15k+
+  shops alone need <0.5% capture; Shopmonkey adds ~6k with the most open API
+  found anywhere; the ~200k legacy-SMS shops are fallback-mode market; no
+  funded incumbent owns independents. Build **Shopmonkey first** (confirmed
+  self-serve booking writes), verify Tekmetric's write API in week 1 (its
+  public docs confirm reads; writes need confirmation) and add it fast.
+- **Vet** rides on fallback mode: 25k+ clinics sit on legacy systems *no*
+  competitor can deep-integrate with either — the sale is "we answer and book;
+  ezyVet users get slots written into their PIMS." Best per-clinic loss
+  economics ($100-182k/yr) and no scaled voice-AI incumbent.
+
+**Wave 2: Real estate (Follow Up Boss, teams-only angle) — fallback-first.**
+The FUB write is trivial and barely needed; the whole ~100k-team market is
+addressable. Enter only with differentiation (teams/brokerages, speed-to-lead
+metrics), because Structurely/Ylopo/Roof.ai already sell at $299.
+**Legal (Clio)** is the alternative Wave-2 pick — huge on paper, but US
+numbers are unverified and Smith.ai + attorney trust friction are real;
+validate with 10 discovery calls before committing the adapter.
 
 **Wave 3 / opportunistic:**
-- **Dental via NexHealth** — still attractive (huge pain, huge LTV) but enter
-  knowing it's a knife-fight with 15+ funded vendors; requires Retell BAA +
-  BAA chain, and NexHealth production onboarding must be validated first.
-- **Square Appointments wedge** — one adapter that serves any Square-running
-  service business (salons, barbers, detailers); cheap to add since we already
-  build Square auth for restaurants.
-- **Restaurants** — keep the (ported) Square adapter to serve the existing live
-  client and any inbound demand, but **do not lead GTM here**: most saturated
-  vertical found, and only ~13% of the market is reachable without partner gates.
-- **Real estate via Follow Up Boss** — easiest build in the study; enter later
-  only with a differentiated angle (teams/brokerages, not solo agents).
+- **Dental via NexHealth** — huge pain and LTV, but NexHealth's 5k practices
+  give no moat (competitors plug into it too) and the field has 15-25 vendors;
+  requires Retell BAA + validated NexHealth production onboarding. Enter only
+  with a wedge.
+- **Square Appointments wedge** — cheap add once Square auth exists.
+- **Restaurants** — keep the ported Square adapter for the existing live client
+  and inbound demand only; do not lead GTM (worst crowding, thinnest margins,
+  unverifiable anchor numbers).
+- **Home services** — despite Jobber's 100k accounts, deprioritized: Avoca
+  ($125M raised, $1B valuation) owns this lane and Jobber's solo-crew users
+  are the hardest $299/mo budget conversation.
+- **Motels via Cloudbeds** — **dropped from launch**: anchor confirmed too
+  small (2,337 US properties; 2% capture still misses $25k MRR). Revisit only
+  as fallback-mode territory or if a second PMS partnership lands.
 
 ## What changed vs the original brief
 

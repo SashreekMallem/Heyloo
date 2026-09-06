@@ -60,16 +60,21 @@ One interface, one implementation per vertical, launch order set by the vertical
 research (`docs/VERTICAL_RESEARCH.md` — evidence-based revision of the brief's
 original four):
 
-| Wave | Vertical | Adapter | Anchor integration (all self-serve verified) |
+| Wave | Vertical | Adapter | Anchor integration + money case (install-base research) |
 |---|---|---|---|
-| 1 | Auto repair | `adapters/autorepair` | **Shopmonkey** — API on every plan, self-generated token, no partner gate |
-| 1 | Legal intake | `adapters/legal` | **Clio** — Grade-A self-serve API, OAuth2, sandbox; book onto Clio calendar + create matter/contact |
-| 2 | Veterinary | `adapters/vet` | **ezyVet** (Vetspire as alt) — public docs, light registration |
-| 2 | Motels | `adapters/motel` | **Cloudbeds** — owner self-generates API key; `postReservation` + rate/availability reads |
-| 3 | Dental | `adapters/dental` | **NexHealth** aggregator (all direct PMSs are gated/on-prem) — requires Retell BAA + validated production onboarding |
-| 3 | Any-Square business | `adapters/square-bookings` | **Square Bookings API** — one adapter covering salons/barbers/any Square service business |
-| Kept, not led | Restaurants | `adapters/restaurant` | **Square Orders** (ported from current repo; serves existing client); pilot **ItsaCheckmate** for Toast/Clover reach. Toast direct = months-long partner cert, do not block on it |
-| Later | Real estate | `adapters/realestate` | **Follow Up Boss** — easiest build but most crowded price point; enter only with a teams-focused angle |
+| 1 | Auto repair | `adapters/autorepair` | **Shopmonkey** first (self-serve writes, ~6k shops) + **Tekmetric** fast-follow (15k+ shops — verify write API week 1). <0.5% of Tekmetric alone hits $25k MRR; ~200k legacy shops = fallback-mode market |
+| 1 | Veterinary | `adapters/vet` | **ezyVet** (~3-4k US clinics) for deep integration; **fallback mode is the real market** — 25k+ clinics on legacy AVImark/Cornerstone that nobody can integrate with |
+| 2 | Real estate | `adapters/realestate` | **Follow Up Boss** (trivial write, barely needed) — fallback-first across ~100k teams; teams-only positioning vs crowded $299 field |
+| 2 (alt) | Legal intake | `adapters/legal` | **Clio** — biggest platform on paper ($5B, 400k professionals) but US account count unverified; run 10 discovery calls before committing (Smith.ai incumbent + attorney trust friction) |
+| 3 | Dental | `adapters/dental` | **NexHealth** (5k practices, no moat — rivals use it too); Retell BAA + validated onboarding required; enter only with a wedge |
+| 3 | Any-Square business | `adapters/square-bookings` | **Square Bookings API** — cheap add once Square auth exists |
+| Kept, not led | Restaurants | `adapters/restaurant` | **Square Orders** (ported; serves existing client + inbound only). Worst crowding, 3-5% margins, Toast partner-gated |
+| Dropped | Motels | — | **Cloudbeds confirmed too small** (2,337 US properties; 2% capture < $25k MRR). Fallback-mode territory only |
+| Dropped | Home services | — | Jobber's 100k accounts are spoken for: **Avoca ($125M, $1B valuation)** owns the lane; solo crews are the hardest $299 budget ask |
+
+Fallback mode (no integration: answer → capture → book on our calendar → SMS
+the business) is a first-class product tier, not a stopgap — in auto, vet, and
+real estate it is what makes the market bigger than any anchor's install base.
 
 `IntegrationAdapter` interface: `syncCatalog`, `pushBooking/pushOrder`,
 `checkAvailability`, `handleWebhook`, `refreshAuth` — one status-mapping table
@@ -120,18 +125,20 @@ migrations; auth/RLS rebuild; metering from actual cost; transfer/voicemail/
 after-hours/SMS; automated phone provisioning.
 
 **Phase 2 — Self-serve onboarding + Wave-1 adapters (weeks 4–7):**
-signup → Stripe Checkout → provision flow; build `adapters/autorepair`
-(Shopmonkey) and `adapters/legal` (Clio) — both self-serve APIs, no partner
-queues; dashboard rebuilt vertical-neutral (tenant branding, role-guarded
-routes, error states, sane token handling). If the second Wave-1 adapter
-touches Layer 1 significantly, the abstraction is wrong — fix it before
-Wave 2. In parallel: port the Square restaurant adapter (fixing tax/fee
-omission, dedup, idempotency) to migrate the existing live client off the
-old system, without leading GTM on restaurants.
+signup → Stripe Checkout → provision flow, with **fallback mode shipping
+first** (works for any business, no integration); build `adapters/autorepair`
+(Shopmonkey now; Tekmetric write-API verified week 1 and added as soon as
+confirmed) and `adapters/vet` (ezyVet); dashboard rebuilt vertical-neutral
+(tenant branding, role-guarded routes, error states, sane token handling).
+If the second Wave-1 adapter touches Layer 1 significantly, the abstraction
+is wrong — fix it before Wave 2. In parallel: port the Square restaurant
+adapter (fixing tax/fee omission, dedup, idempotency) to migrate the existing
+live client off the old system, without leading GTM on restaurants.
 
-**Phase 3 — Wave 2 (weeks 7–10):** `adapters/vet` (ezyVet) and
-`adapters/motel` (Cloudbeds, including the paste-an-API-key connection mode);
-begin outreach to Wave-1 verticals while building.
+**Phase 3 — Wave 2 (weeks 7–10):** `adapters/realestate` (Follow Up Boss,
+teams-only positioning) — or `adapters/legal` (Clio) if the 10 discovery
+calls validate attorney willingness; begin outreach to Wave-1 verticals
+while building.
 
 **Phase 4 — Wave 3 + scale (weeks 10–14):** dental via NexHealth (sign Retell
 BAA; validate NexHealth production onboarding with their dev team first) and/or
