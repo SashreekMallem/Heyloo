@@ -668,3 +668,164 @@ the race-winner's row; `create_order` mirrors the same pattern against
   in `scripts/ci/rls-cross-tenant-probe.ts` (T1's file, unrelated to this
   task) — left untouched per scope discipline; `biome check
   supabase/functions` (this task's actual surface) is clean.
+
+## T6 — Vertical agent templates + red-team suite (Wave 2)
+
+**What was built** — `packages/templates/` (touched exclusively; no other
+path modified except adding `@heyloo/adapter-retell`/`@types/node` as
+devDependencies + a package-local `vitest.config.ts` mirroring the pattern
+already established in `packages/canonical-types`/`packages/adapters/retell`):
+
+- **Shared building blocks** (`src/shared/`): `disclosure.ts` (the one
+  `DISCLOSURE_LINE` constant every template composes `{{business_name}}` +
+  `{{assistant_name}}` into, per SYSTEM_DESIGN §14's persona-name salvage);
+  `fragments.ts` (SYSTEM_DESIGN §4.5 silence/give-up/escalation/warm-
+  transfer/low-confidence rules, §4.3's one-field-at-a-time/digit-by-digit
+  rules, and MASTER_SPEC §3.4/§3.5/§3.6/§3.7's waitlist/cancellation-policy/
+  consent/identity-fallback fragments — task item 2's "silence/give-up/
+  escalation rules... encoded as prompt-fragment constants shared across
+  templates"); `tools.ts` (one builder per canonical voice tool, so every
+  template gets identical JSON-Schema + `authorization.scope`, which is
+  what makes the red-team suite's cross-template invariants — not just
+  per-template spot checks — actually hold); `global-intents.ts` and
+  `utility-states.ts` (shared `human_request`/`solicitor`/generic-emergency
+  targets + the `manage_booking` reschedule/cancel branch, reused by every
+  vertical); `system-prompt.ts` (composes a vertical intro with the shared
+  fragments).
+- **The 8 vertical templates** (`src/verticals/`), each a typed
+  `AgentTemplate` conforming to `@heyloo/canonical-types`' `zAgentTemplate`:
+  auto repair / dental / motel / restaurant = `conversation_flow`; veterinary
+  = `conversation_flow` + a global `emergency` intent (`reachable_from:
+  "any"`) targeting a dedicated red-flag-triage-FIRST state sequence; legal
+  = `multi_prompt` with the no-advice guardrail + `legal_advice_given`
+  extraction appended to literally every state (including the shared
+  transfer/solicitor/emergency ones) via a `withLegalGuardrail` map, not
+  left to just the system prompt; real estate / generic = `single_prompt`.
+  Every template declares all three required global intents
+  (`emergency`/`human_request`/`solicitor`), each `reachable_from: "any"`;
+  every booking-capable template's `manage_booking` state carries the
+  MASTER_SPEC §3.7 identity-fallback rule; every booking/order-capable
+  template's system prompt carries the §3.6 consent ask and the
+  cancellation-policy read-out; restaurant wires both `create_booking`
+  (reservations) and `create_order` (MASTER_SPEC §3.0, with an explicit
+  allergy ask + full read-back + delivery-radius-decline handling in
+  prompt); motel wires `send_payment_link` for deposits (§3.2) plus the
+  `nearest_alternative` no-availability UX; dental's system prompt defers
+  DOB/insurance to a secure post-call form link (PHI stays out of the
+  transcript).
+- **Registry + build artifact** (task item 4): `src/registry.ts` exports
+  `TEMPLATE_DEFINITIONS`/`TEMPLATE_REGISTRY` (key/name/version/template);
+  `src/scripts/generate-build-artifact.ts` runs as a post-`tsc -b` step
+  (wired into `package.json`'s `build` script) and writes
+  `dist/templates.build.json` — every template is re-validated against
+  `zAgentTemplate` before being written, so the artifact can never contain
+  content that wouldn't pass the same gate a real `agent_templates` insert
+  applies. This is the seed-script-consumable export the provisioning saga
+  needs; no seed script itself was built (out of T6's stated scope — "a
+  seed script OR export").
+- **Red-team suite** (`src/red-team/`, task item 3): `structural.test.ts`
+  asserts every guarantee directly against the canonical `AgentTemplate`
+  (disclosure composition, all three global intents present and
+  `reachable_from: "any"` on every template, `lookup_customer` scoped
+  `caller_number`, `transfer_call` declared with ZERO parameters and
+  `tenant_config_only` scope on every template that has it, the legal
+  no-advice guardrail present on every legal state, vet triage-FIRST
+  ordering, dental PHI deferral, restaurant allergy-ask + dual booking/
+  order tools, motel rate discipline, consent/identity-fallback/waitlist
+  fragments present wherever their trigger condition applies);
+  `compiler-gate.test.ts` covers the one guarantee that genuinely needs the
+  T2 compiler — every template compiles with `disclosureVerified: true` for
+  its own `compile_target` — via `RetellProvider.compileTemplate` (the
+  adapter's public `VoiceProvider` method), never touching the Retell-
+  shaped `providerPayload` (CLAUDE.md Rule 2 stays intact: no
+  provider-specific shape is imported/narrowed outside `packages/
+  adapters/*`); `prompt-lint.ts` statically flags leftover `${...}`
+  template-literal syntax or an unrecognized `{{...}}` placeholder across
+  every prompt fragment and tool description (the "no template-injection
+  sinks" check); `injection-fixtures.ts` is a typed dataset of adversarial
+  caller-turn strings + the structural `expectation` each should uphold;
+  `README.md` documents how a future task would wire this dataset into
+  Retell's batch-simulation API (already flagged `supportsBatchSimulation
+  Testing: true` on `RETELL_CAPABILITIES`) as a CI gate — per the task's
+  explicit boundary, this package does **not** call Retell itself.
+
+**Gaps found and the decision taken (CLAUDE.md Rule 4 — documented, not
+redesigned)**
+
+- **Vertical naming mismatch, T1 vs T2** — T1's real migration
+  (`supabase/migrations/20260907130100_tenancy.sql`) constrains
+  `tenants.vertical` to `('auto_repair','veterinary','legal','dental',
+  'real_estate','motel','restaurant','generic')` (matching BACKEND_SPEC's
+  prose and this task's own wording), but `@heyloo/canonical-types`'
+  `vertical.ts` (T2, already merged) declares `VERTICALS = ["auto","vet",
+  "legal","dental","real_estate","motel","restaurant","generic"]`, and
+  `dynamicVariableOverridesSchemaForVertical` switches on those SHORT names
+  to pick a vertical's `zAgentTemplate.tools`... `dynamic_variable_overrides`
+  Zod schema. Since `zAgentTemplate.vertical` is `zVertical.or(z.string().
+  min(1))` (any non-empty string validates), both spellings would pass
+  schema validation, but only the short form (`"auto"`/`"vet"`) makes
+  `dynamicVariableOverridesSchemaForVertical` resolve to the CORRECT
+  per-vertical schema instead of silently falling through to
+  `zGenericOverrides`. Decision: every template's `vertical` field uses
+  the canonical-types short form (`"auto"`, `"vet"`, ...) — the literal
+  contract this task was told to conform to — while file/registry-key
+  naming stays close to this task's own wording (`auto-repair.ts` /
+  `AUTO_REPAIR_TEMPLATE` / registry key `"auto_repair"`) for
+  discoverability. Whichever task wires `TEMPLATE_REGISTRY` into a real
+  `agent_templates` seed insert will need to either update T1's check
+  constraint to the short names or translate at insert time — flagged here
+  rather than silently guessed.
+- **No dedicated waitlist tool** — MASTER_SPEC §3.4 describes offering a
+  waitlist on `none_available`, and T1 already has a real `waitlist_entries`
+  table + a cancellation-trigger notifier (confirmed in T3's own
+  `cancel_booking.ts` docstring), but no `join_waitlist` voice tool exists
+  in `@heyloo/canonical-types`' `TOOL_NAMES` (only the 9 tools BACKEND_SPEC
+  §7.2/MASTER_SPEC §3.0/§3.2 actually specify). Every template's waitlist-
+  offer fragment therefore routes the caller's waitlist request through
+  `take_message` (with a `"Waitlist request:"`-prefixed message) rather
+  than a real `waitlist_entries` insert — flagged as a follow-up worth a
+  dedicated tool once volume justifies it, not silently modeled as if a
+  real tool existed.
+- **Motel rate table / restaurant catalog are dynamic variables, not tool
+  calls** — SYSTEM_DESIGN §4.3 says "rate only from the owner-configured
+  rate table via tool call" and "items from tool-backed catalog only", but
+  there is no `get_rate_table`/`get_menu` tool in the canonical tool set;
+  per SYSTEM_DESIGN §5 ("static context... rides in dynamic variables at
+  call start — zero tool calls"), both are modeled as `{{rate_table}}`/
+  `{{menu_text}}` dynamic variables instead, with an explicit prompt rule
+  never to invent a price/item beyond what's given (and, for restaurant,
+  `create_order`'s existing server-side item validation as the real
+  backstop regardless of what the model says). Noted inline in
+  `verticals/motel.ts`'s docstring too.
+- **Dynamic-variable coverage gap in `@heyloo/canonical-types`** — the
+  templates reference `{{cancellation_policy_text}}`, `{{tow_partner_name}}`
+  /`{{tow_partner_phone}}`, `{{species_treated}}`, `{{emergency_referral_
+  name}}`/`{{emergency_referral_phone}}`, `{{vehicle_makes_serviced}}`,
+  `{{practice_areas}}`, `{{consult_fee_text}}`, `{{deposit_policy_text}}`,
+  `{{rate_table}}`, and `{{menu_text}}` — all MASTER_SPEC §3.5 per-vertical
+  config or the shared cancellation-policy field — but T2's
+  `AgentDynamicVariables` zod schema (`voice-provider.ts`) only enumerates
+  the base fields (`business_name`, `assistant_name`, `manager_name`, etc.)
+  and does not yet flatten `agent_configs.dynamic_variable_overrides`'
+  per-vertical keys into the actual dynamic-variables map sent to Retell.
+  This doesn't block authoring templates (Retell's dynamic-variable
+  mechanism is just a key/value map; the template layer only needs the
+  variable's name), but whichever task wires `/voice/inbound`'s resolver
+  end-to-end needs to widen that flattening — flagged rather than silently
+  assumed to already work.
+- **Root-level `pnpm run typecheck`/`lint`/`test` were NOT fully green at
+  the time this task ran** them, but not because of anything in
+  `packages/templates/`: this branch had concurrent, uncommitted Wave-2
+  work in progress from other tasks touching `supabase/functions/**`
+  (`admin/handler.ts`, `_shared/compiler/template-compiler.test.ts`,
+  `api-a2p-register`, `webhooks-stripe`) and `packages/ui/**` — a stale
+  `UI_PACKAGE_VERSION` test expectation, a raw-SQL tagged-template misuse,
+  and a couple of test/implementation mismatches in in-progress A2P/dunning
+  logic, all outside this task's exclusive path. Verified in isolation:
+  `pnpm --filter @heyloo/templates build|typecheck|test` and `biome check
+  packages/templates` are all clean (104 tests passing); `@heyloo/
+  canonical-types` and `@heyloo/adapter-retell` also build/typecheck clean
+  independently. Per CLAUDE.md Rule 4 (scope discipline), none of the
+  other tasks' in-progress files were touched to make the ROOT command
+  green — that would mean editing outside this task's exclusive path on a
+  shared, actively-being-edited branch.

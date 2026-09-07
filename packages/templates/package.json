@@ -2,7 +2,7 @@
   "name": "@heyloo/templates",
   "version": "0.0.0",
   "private": true,
-  "description": "The 8 vertical agent templates in canonical format (auto, vet, legal, dental, real estate, motel, restaurant, generic) — SYSTEM_DESIGN §4. Placeholder until T6.",
+  "description": "The 8 vertical agent templates in canonical format (auto repair, veterinary, legal, dental, real estate, motel, restaurant, generic) — SYSTEM_DESIGN §4, MASTER_SPEC §3.5/§3.6/§3.7. Includes the shared prompt-fragment/tool/global-intent building blocks and the red-team adversarial test suite.",
   "type": "module",
   "license": "UNLICENSED",
   "main": "./dist/index.js",
@@ -14,7 +14,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && node ./dist/scripts/generate-build-artifact.js",
     "clean": "rm -rf dist *.tsbuildinfo",
     "typecheck": "tsc -b --pretty",
     "test": "vitest run"
@@ -23,6 +23,8 @@
     "@heyloo/canonical-types": "workspace:*"
   },
   "devDependencies": {
+    "@heyloo/adapter-retell": "workspace:*",
+    "@types/node": "22.20.1",
     "typescript": "5.9.3",
     "vitest": "5.0.0"
   }
