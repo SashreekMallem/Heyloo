@@ -9,7 +9,7 @@ import { defineConfig } from "vitest/config";
 // local iteration.
 export default defineConfig({
   test: {
-    projects: ["packages/*", "apps/*"],
+    projects: ["packages/*", "packages/adapters/*", "apps/*", "supabase/functions"],
     // Exclude compiled output alongside the usual defaults — each package's
     // `build` runs before `test` (turbo dependsOn: ["^build"]), so without
     // this a package's own dist/**/*.test.js would otherwise be picked up

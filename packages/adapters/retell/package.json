@@ -1,8 +1,8 @@
 {
-  "name": "@heyloo/canonical-types",
+  "name": "@heyloo/adapter-retell",
   "version": "0.0.0",
   "private": true,
-  "description": "Provider-agnostic types shared across Heyloo: voice/agent schema, tenant domain model, tool contracts. Nothing here may import a provider SDK — see packages/adapters/README.md.",
+  "description": "Retell (voice provider) adapter — the ONLY package allowed to import a Retell payload shape or call the Retell REST API directly (CLAUDE.md Rule 2, packages/adapters/README.md). Implements VoiceProvider from @heyloo/canonical-types.",
   "type": "module",
   "license": "UNLICENSED",
   "main": "./dist/index.js",
@@ -20,9 +20,11 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@heyloo/canonical-types": "workspace:*",
     "zod": "4.5.4"
   },
   "devDependencies": {
+    "@types/node": "22.20.1",
     "typescript": "5.9.3",
     "vitest": "5.0.0"
   }

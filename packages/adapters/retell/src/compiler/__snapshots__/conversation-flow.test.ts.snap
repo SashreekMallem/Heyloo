@@ -1,0 +1,154 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`compileConversationFlow > matches the golden-file snapshot for the auto vertical fixture 1`] = `
+{
+  "global_prompt": "You are the friendly front-desk assistant for an auto repair shop.",
+  "nodes": [
+    {
+      "edges": [
+        {
+          "destination_node_id": "collect_vehicle",
+          "id": "edge_greeting_collect_vehicle_0",
+          "transition_condition": {
+            "prompt": "wants_to_book_service",
+            "type": "prompt",
+          },
+        },
+      ],
+      "id": "greeting",
+      "instruction": {
+        "text": "Thanks for calling Joe's Auto Repair, this is their AI assistant — this call may be recorded.
+
+Greet the caller and ask how you can help today.",
+        "type": "prompt",
+      },
+      "name": "Greeting",
+      "tool_ids": [],
+      "type": "conversation",
+    },
+    {
+      "edges": [
+        {
+          "destination_node_id": "check_time",
+          "id": "edge_collect_vehicle_check_time_1",
+          "transition_condition": {
+            "prompt": "vehicle_info_collected",
+            "type": "prompt",
+          },
+        },
+      ],
+      "id": "collect_vehicle",
+      "instruction": {
+        "text": "Ask for the vehicle's year, make, and model.",
+        "type": "prompt",
+      },
+      "name": "Collect vehicle info",
+      "tool_ids": [],
+      "type": "conversation",
+    },
+    {
+      "edges": [
+        {
+          "destination_node_id": "confirm_booking",
+          "id": "edge_check_time_confirm_booking_2",
+          "transition_condition": {
+            "prompt": "slot_selected",
+            "type": "prompt",
+          },
+        },
+      ],
+      "id": "check_time",
+      "instruction": {
+        "text": "Ask what day/time works, then check availability.",
+        "type": "prompt",
+      },
+      "name": "Check availability",
+      "tool_ids": [
+        "check_availability",
+      ],
+      "type": "conversation",
+    },
+    {
+      "edges": [],
+      "id": "confirm_booking",
+      "instruction": {
+        "text": "Confirm the details and create the booking.",
+        "type": "prompt",
+      },
+      "name": "Confirm booking",
+      "tool_ids": [
+        "create_booking",
+      ],
+      "type": "conversation",
+    },
+    {
+      "edges": [],
+      "global_node": true,
+      "id": "triage_emergency",
+      "instruction": {
+        "text": "The caller has an urgent safety issue — offer a tow partner referral.",
+        "type": "prompt",
+      },
+      "name": "Emergency triage",
+      "tool_ids": [
+        "take_message",
+      ],
+      "type": "conversation",
+    },
+  ],
+  "start_node_id": "greeting",
+  "tools": [
+    {
+      "description": "Check open service bay slots.",
+      "name": "check_availability",
+      "parameters": {
+        "properties": {
+          "date_range": {
+            "type": "object",
+          },
+        },
+        "required": [
+          "date_range",
+        ],
+        "type": "object",
+      },
+      "type": "custom",
+      "url": "https://example.supabase.co/functions/v1/voice-tools",
+    },
+    {
+      "description": "Create a service booking.",
+      "name": "create_booking",
+      "parameters": {
+        "properties": {
+          "resource_id": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "resource_id",
+        ],
+        "type": "object",
+      },
+      "type": "custom",
+      "url": "https://example.supabase.co/functions/v1/voice-tools",
+    },
+    {
+      "description": "Record a message for the shop to follow up.",
+      "name": "take_message",
+      "parameters": {
+        "properties": {
+          "message_text": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "message_text",
+        ],
+        "type": "object",
+      },
+      "type": "custom",
+      "url": "https://example.supabase.co/functions/v1/voice-tools",
+    },
+  ],
+}
+`;

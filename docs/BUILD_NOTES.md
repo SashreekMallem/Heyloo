@@ -365,3 +365,143 @@ set for that day.
   password sign-in, PostgREST reads) has not been exercised end-to-end
   against a real running Supabase instance in this environment — it will
   get real coverage on the first CI run with Docker available.
+
+## T2 — Canonical types + Retell provider layer (Wave 1)
+
+**What was built**
+
+- `packages/canonical-types` (replacing T0's placeholder): Zod schemas + TS
+  types for the canonical `AgentTemplate` (states/transitions/global_intents/
+  tools, BACKEND_SPEC §1.3) with structural cross-validation (unique state
+  ids/tool names, every `allowed_tools`/transition/global-intent reference
+  resolves to a declared state or tool, `single_prompt` requires a non-empty
+  `system_prompt`); MASTER_SPEC §3.5's 6 per-vertical
+  `dynamic_variable_overrides` schemas (dental/vet/auto/legal/motel/
+  restaurant, plus real_estate/generic on the shared base) via
+  `dynamicVariableOverridesSchemaForVertical(vertical)`; §3.6's `consent`
+  shape; the `VoiceProvider` interface (`ProviderCapabilities` flags,
+  `InboundCallContext`/`InboundCallResolution`, `ToolCallRequest`/
+  `ToolCallResult`, `CallEndedEvent` + `CanonicalCostBreakdown` with
+  `granularity: 'exact'|'estimated'`, agent-lifecycle/phone-import
+  input/result types); the 12-class call taxonomy enum
+  (`CALL_CLASSIFICATIONS`); request/response schemas for every voice tool in
+  BACKEND_SPEC §7.2 plus MASTER_SPEC §3.0 `create_order` (delivery orders
+  hard-require `delivery_address`, structurally enforced by a `.check()`)
+  and §3.2 `send_payment_link`; a generic `InboundWebhookEnvelope` factory
+  for webhook dedup; E.164 (`zE164`/`normalizeToE164`, NANP-only best-effort
+  normalization — no libphonenumber dependency, zero-runtime-deps-beyond-zod
+  constraint) and money (`zCents`/`zSignedCents`/`centsFromDollars`/
+  `formatCentsUSD`/`addCents`) helpers; a generic `VoiceProviderError`
+  taxonomy (`SignatureVerificationError`, `PayloadValidationError`,
+  `DisclosureGateError`) every adapter is expected to throw. 126 tests across
+  9 files, every schema exercised with both valid and invalid fixtures.
+- `packages/adapters/retell` (new — T0 had scaffolded no adapter packages
+  yet, per its README's "do not scaffold ahead of the owning task" rule):
+  `RetellProvider implements VoiceProvider` (`provider.ts`), a dependency-free
+  REST client with exponential-backoff retry on 429/5xx and typed,
+  non-retryable errors on 4xx (`client.ts`), HMAC webhook-signature
+  verification (`signature.ts`, `v={ts},d={hex}` over `raw_body+timestamp`,
+  5-minute replay window, `timingSafeEqual` comparison), inbound-call
+  resolve/build (`inbound.ts`), tool-call verify+parse+build (`tool-call.ts`,
+  G6 caller-number extraction for the `lookup_customer` authorization
+  cross-check), `call_ended` webhook verify+parse+cost-normalization
+  (`call-events.ts`), agent lifecycle create/update/publish (`agents.ts`,
+  the real two-step Retell protocol: create/update the underlying
+  conversation-flow-or-retell-llm resource, THEN create/update the agent
+  whose `response_engine` references it), Twilio-number import
+  (`numbers.ts`), and **the template compiler**
+  (`compiler/{conversation-flow,multi-prompt,single-prompt}.ts` +
+  `disclosure-gate.ts` + `index.ts`): lowers one canonical `AgentTemplate`
+  into Retell's shape per `compile_target`, injects `disclosure_line`
+  verbatim into the first turn's text at compile time (start node's
+  instruction for `conversation_flow`, starting state's `state_prompt` for
+  `multi_prompt`, the very first line of `general_prompt` for
+  `single_prompt`), and lowers `global_intents` into Retell's global-node
+  mechanism for `conversation_flow` (marking the target node `global_node:
+  true` when `reachable_from: "any"`, or adding explicit edges from a scoped
+  list) and into universal-reachability edges for `multi_prompt` (no
+  separate global-node primitive there) or textual escape instructions for
+  `single_prompt` (no graph at all). The disclosure gate is a pure,
+  non-throwing structural self-check (`verifyDisclosureGate` /
+  `CompiledAgentPayload.disclosureVerified`); the actual HARD refusal to
+  call Retell lives at the publish boundary — `createOrUpdateRetellAgent`
+  throws `DisclosureGateError` and makes zero HTTP calls when the gate
+  failed. 95 tests across 14 files: golden-file snapshot tests (one fixture
+  per compile_target — auto/conversation_flow, legal/multi_prompt,
+  real_estate/single_prompt, matching SYSTEM_DESIGN §4.1's vertical->engine
+  mapping) plus contract tests on hand-built fixture webhook payloads for
+  every VERIFY-flagged shape below, plus REST-flow tests against a mocked
+  `fetch` for the client/agents/numbers/provider orchestration.
+- `docs/VERIFY.md` (new): every assumed Retell wire shape (VERIFY-1 through
+  VERIFY-8 — webhook signature scheme, inbound-call/tool-call/call-lifecycle
+  webhook envelopes, cost-breakdown fields, agent-lifecycle REST shapes,
+  phone-number import, and the Conversation-Flow/Retell-LLM node/edge
+  schema itself) with its source (indexed WebSearch snippet vs. the spec
+  docs' own prior research), what's confirmed vs. assumed, and what a later
+  build agent must verify against a live sandbox before go-live.
+  `docs.retellai.com` was confirmed live-blocked
+  (`EGRESS_BLOCKED` from `WebFetch`) in this environment per CLAUDE.md
+  Rule 1 item 2, so every shape traces to either the already-Rule-1-researched
+  spec docs or an indexed WebSearch snippet, never invented from memory.
+  VERIFY-8 (the Conversation-Flow/Retell-LLM wire schema itself) is flagged
+  as the highest-risk item — this codebase's own internally-consistent
+  modeling, structurally sound but with field names T4 must confirm against
+  a live sandbox before the first real publish.
+
+**Deviations / gaps found and fixed (Rule 4)**
+
+- Root `vitest.config.ts`'s `projects` glob (`["packages/*", "apps/*"]` at
+  the time T2 started, plus `"supabase/functions"` added by a concurrent
+  task) did not include `packages/adapters/*` — a real gap, since
+  `pnpm-workspace.yaml` already covers that path and a root `vitest run`
+  would otherwise silently skip every adapter package's tests. Fixed by
+  adding `"packages/adapters/*"` to the glob.
+- Discovered (and fixed, in both `packages/canonical-types` and
+  `packages/adapters/retell`) a duplicate-test-execution bug inherent to
+  this monorepo's shape: each package's `build` script (`tsc -b`) emits
+  compiled `.test.js` files into `dist/` alongside `.d.ts` declarations;
+  turbo's `test` task runs each package's own `vitest run` with no
+  package-local exclude, so `dist/**/*.test.js` gets discovered and run a
+  *second* time next to `src/**/*.test.ts` (confirmed directly: 18 files/
+  252 tests instead of 9/126 for canonical-types alone). The root
+  `vitest.config.ts` already documents this exact failure mode and excludes
+  `dist` — but that exclude only applies to a single root-level `vitest
+  run`, not to turbo's per-package invocation. Fixed with a small
+  package-local `vitest.config.ts` (excluding `dist`/`.turbo`/`coverage`) in
+  both of this task's packages, mirroring the root config's own comment and
+  exclude list.
+- `packages/adapters/retell/package.json` needed `@types/node` (Node
+  globals — `fetch`, `Response`, `Buffer`, `node:crypto` — aren't declared
+  without it); pinned to `22.20.1` to match the version `supabase/functions`
+  (T3) already uses, for consistency.
+
+**Deferred / left for later tasks**
+
+- VERIFY-1 through VERIFY-8 in `docs/VERIFY.md` — every one needs
+  confirmation against a live Retell sandbox account before its dependent
+  code path (T3's edge functions consuming `RetellProvider`, T4's
+  provisioning saga performing the first real agent publish) goes live.
+  VERIFY-8 (Conversation-Flow/Retell-LLM wire field names) is the highest
+  risk and should be confirmed first.
+- `RetellProvider.createOrUpdateAgent`'s update-in-place path (`PATCH
+  /update-agent/{id}`) does not yet handle API_AND_FLOWS.md A.1's flagged
+  "a flow shared by multiple agents propagates to all of them" /
+  "`PATCH /update-conversation-flow/{id}` can 400 on a flow already
+  referenced by a published agent version" cases — T4's provisioning saga
+  (which owns retries/compensation) must confirm the safe multi-tenant
+  update pattern (one flow per tenant vs. one flow per template version
+  shared across tenants' agents) against a staging workspace first, per
+  that doc's own note.
+- `RetellProvider` does not implement `GET /get-call` (nightly
+  reconciliation) or `GET /get-concurrency` — both explicitly T3/cockpit
+  scope per BUILD_PLAN Wave 1 (T3) and SYSTEM_DESIGN §11, not named among
+  T2's required `VoiceProvider` methods. `normalizeCostBreakdown`
+  (`call-events.ts`) is exported and reusable by T3's reconciliation job
+  once it fetches a `get-call` response, so no duplicate cost-normalization
+  logic should be needed there.
+- `packages/adapters/twilio` (A2P 10DLC, number search/purchase, Lookup
+  API) is explicitly T2-4/T3/T4 per `packages/adapters/README.md`'s table
+  but was not built here — T2's assignment text scoped this task to
+  `packages/adapters/retell` only ("packages/adapters/retell: the
+  RetellProvider..."); Twilio's own adapter is left for whichever of T3/T4
+  actually needs to call it first, per the README's existing table.

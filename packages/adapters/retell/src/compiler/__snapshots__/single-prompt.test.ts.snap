@@ -1,0 +1,28 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`compileSinglePrompt > matches the golden-file snapshot for the real_estate vertical fixture 1`] = `
+{
+  "general_prompt": "Thanks for calling Riverside Realty, this is their AI assistant — this call may be recorded.
+
+You are a friendly assistant for a real estate agency. Qualify buyers/sellers conversationally in about 2 minutes.",
+  "general_tools": [
+    {
+      "description": "Record contact info and callback preference.",
+      "name": "take_message",
+      "parameters": {
+        "properties": {
+          "message_text": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "message_text",
+        ],
+        "type": "object",
+      },
+      "type": "custom",
+      "url": "https://example.supabase.co/functions/v1/voice-tools",
+    },
+  ],
+}
+`;
