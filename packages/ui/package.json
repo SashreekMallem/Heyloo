@@ -1,0 +1,29 @@
+{
+  "name": "@heyloo/ui",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared UI components for the tenant dashboard, admin cockpit, and partner portal (T5). Placeholder until the frontend stack decision doc merges.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "typecheck": "tsc -b --pretty",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@heyloo/canonical-types": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "5.0.0"
+  }
+}

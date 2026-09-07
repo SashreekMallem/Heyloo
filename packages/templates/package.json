@@ -1,0 +1,29 @@
+{
+  "name": "@heyloo/templates",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The 8 vertical agent templates in canonical format (auto, vet, legal, dental, real estate, motel, restaurant, generic) — SYSTEM_DESIGN §4. Placeholder until T6.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "typecheck": "tsc -b --pretty",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@heyloo/canonical-types": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "5.0.0"
+  }
+}

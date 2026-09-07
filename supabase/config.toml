@@ -1,0 +1,43 @@
+# Supabase CLI project config — stub.
+#
+# This is intentionally minimal. T1 (supabase/migrations/) and T3
+# (supabase/functions/voice-*) fill in the real project_id, auth hook
+# wiring, and per-function settings as those pieces land. Until then this
+# file exists so `supabase` CLI commands (db lint, db diff, functions
+# serve) have a valid project root to run against in CI and locally.
+#
+# Verify every section below against the current Supabase CLI config
+# reference (supabase.com/docs/guides/local-development/cli/config) before
+# adding real values — schema changes across CLI versions.
+
+project_id = "heyloo"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 17
+
+[studio]
+enabled = true
+port = 54323
+
+[auth]
+enabled = true
+# Custom Access Token Hook (tenant_id in app_metadata) is wired in T1 —
+# SYSTEM_DESIGN §2/§6, CLAUDE.md Rule 2.
+site_url = "http://localhost:3000"
+
+[storage]
+enabled = true
+
+[edge_runtime]
+enabled = true
+
+[analytics]
+enabled = false

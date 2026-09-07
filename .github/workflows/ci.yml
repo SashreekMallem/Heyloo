@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in sync with package.json#packageManager and .nvmrc-equivalent below.
+  NODE_VERSION: "22"
+
+jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run test
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+
+  migrations-check:
+    name: Migrations check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check for migrations
+        id: migrations
+        run: |
+          count=$(find supabase/migrations -maxdepth 1 -name '*.sql' | wc -l | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+      - uses: supabase/setup-cli@v3
+        if: steps.migrations.outputs.count != '0'
+        with:
+          version: latest
+      # T1 (supabase/migrations/) lands the real schema. Once migrations
+      # exist, this step lints them for schema errors and diffs local
+      # migration files against a linked/preview database — verify the
+      # exact flags against the current Supabase CLI docs
+      # (supabase.com/docs/reference/cli/supabase-db-lint,
+      # supabase-db-diff) before wiring the linked project (CLAUDE.md
+      # Rule 1). Until then this job no-ops cleanly so CI stays green.
+      - name: supabase db lint / diff
+        if: steps.migrations.outputs.count != '0'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          echo "::notice::${{ steps.migrations.outputs.count }} migration(s) found — wire 'supabase db lint'/'supabase db diff --linked' here once T1's schema lands and SUPABASE_ACCESS_TOKEN/project ref are configured."
+      - name: No migrations yet
+        if: steps.migrations.outputs.count == '0'
+        run: echo "::notice::No migrations in supabase/migrations/ yet (T1) — nothing to lint. Placeholder job, no-op."
+
+  rls-probe:
+    name: RLS cross-tenant probe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Placeholder — CLAUDE.md Rule 2 requires this stay green and
+      # non-optional once wired: T1 adds the actual probe (a test that
+      # provisions two tenants, authenticates as one via a JWT carrying
+      # its tenant_id in app_metadata, and asserts every cross-tenant
+      # SELECT/INSERT/UPDATE/DELETE against the other tenant's rows
+      # returns 0 rows / is rejected by RLS). Until T1 lands there is no
+      # database to probe, so this job documents the contract and exits 0
+      # rather than silently skipping.
+      - name: Placeholder — wired in T1
+        run: |
+          echo "::notice::RLS cross-tenant probe not yet wired — lands with the schema in T1 (supabase/migrations/, docs/BUILD_PLAN.md). This job is a placeholder so the CI shape (and the requirement that it stay green) is visible from commit one."

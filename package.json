@@ -1,0 +1,29 @@
+{
+  "name": "heyloo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Heyloo — multi-tenant voice-AI answering/booking SaaS. Monorepo root.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "biome check .",
+    "lint:fix": "biome check . --write",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "clean": "turbo run clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.12",
+    "@vitest/coverage-v8": "5.0.0",
+    "turbo": "2.10.12",
+    "typescript": "5.9.3",
+    "vitest": "5.0.0"
+  }
+}

@@ -1,0 +1,81 @@
+// Lint/format: Biome (single Rust tool, formatter+linter+import-organizer in
+// one config, ~10-25x faster than ESLint on this size of codebase — chosen
+// over ESLint+Prettier since this is a greenfield monorepo with no existing
+// plugin-ecosystem dependency to preserve; see docs/BUILD_NOTES.md T0 entry).
+//
+// TODO(T2/T4/T7/T8/T10): as each provider adapter is built, add its SDK
+// package name below to noRestrictedImports.options.paths so core code can
+// never import it directly (packages/adapters/README.md has the full list
+// and owning task). Names confirmed so far: retell-sdk (T2), twilio (T2-4),
+// stripe (T4), @paypal/paypal-server-sdk (T4), @sentry/node (T10). Still
+// unconfirmed — verify exact npm package name against the vendor's docs
+// before adding (CLAUDE.md Rule 1): Shopmonkey, ezyVet, Square, Google/
+// Outlook Calendar (T7); Apollo, Smartlead/Instantly, Outscraper (T8).
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.12/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": true,
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/.turbo",
+      "!**/coverage",
+      "!**/node_modules",
+      "!**/legacy",
+      "!pnpm-lock.yaml",
+      "!.vscode",
+      "!.playwright-mcp"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "style": {
+        "noRestrictedImports": {
+          "level": "error",
+          "options": {
+            "paths": {
+              "retell-sdk": "Provider SDKs may only be imported from packages/adapters/* — see packages/adapters/README.md (CLAUDE.md Rule 2, provider isolation).",
+              "twilio": "Provider SDKs may only be imported from packages/adapters/* — see packages/adapters/README.md (CLAUDE.md Rule 2, provider isolation).",
+              "stripe": "Provider SDKs may only be imported from packages/adapters/* — see packages/adapters/README.md (CLAUDE.md Rule 2, provider isolation).",
+              "@paypal/paypal-server-sdk": "Provider SDKs may only be imported from packages/adapters/* — see packages/adapters/README.md (CLAUDE.md Rule 2, provider isolation).",
+              "@sentry/node": "Provider SDKs may only be imported from packages/adapters/* — see packages/adapters/README.md (CLAUDE.md Rule 2, provider isolation)."
+            }
+          }
+        }
+      }
+    }
+  },
+  "assist": {
+    "enabled": true,
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["packages/adapters/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": "off"
+          }
+        }
+      }
+    }
+  ]
+}

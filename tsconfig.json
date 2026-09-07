@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/canonical-types" },
+    { "path": "packages/ui" },
+    { "path": "packages/templates" }
+  ]
+}

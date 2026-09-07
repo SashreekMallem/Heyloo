@@ -1,8 +1,40 @@
-node_modules
+# Dependencies
+node_modules/
 
-# Env files (never commit secrets)
+# Build output
+dist/
+build/
+*.tsbuildinfo
+.turbo/
+
+# Test / coverage
+coverage/
+.vitest-cache/
+
+# Env files — never commit real values; .env.example documents every var.
 .env
 .env.*
+!.env.example
 *.env
 server/.env
 server/.env.*
+
+# Supabase local dev
+supabase/.temp/
+supabase/.branches/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Logs
+logs/
+*.log
+
+# Playwright / test artifacts (not part of the build)
+.playwright-mcp/
+test-results/
+playwright-report/
