@@ -72,9 +72,18 @@ original four):
 | Dropped | Motels | — | **Cloudbeds confirmed too small** (2,337 US properties; 2% capture < $25k MRR). Fallback-mode territory only |
 | Dropped | Home services | — | Jobber's 100k accounts are spoken for: **Avoca ($125M, $1B valuation)** owns the lane; solo crews are the hardest $299 budget ask |
 
-Fallback mode (no integration: answer → capture → book on our calendar → SMS
-the business) is a first-class product tier, not a stopgap — in auto, vet, and
-real estate it is what makes the market bigger than any anchor's install base.
+**Product-tier decision (owner-confirmed): message-first core is PRIMARY,
+integrations are SECONDARY.**
+- **Primary tier — works for any business, day one:** answer → converse →
+  store the booking/order/lead in OUR database → deliver to the business the
+  way they want it: SMS, email, Airtable sync, and our dashboard. No
+  integration required to go live. Signup is open to **any** business type
+  (a generic agent template covers unlisted verticals); the vertical waves
+  above steer outreach/marketing only — they never gate who can buy.
+- **Secondary tier — the upsell/retention layer:** the Layer-2 adapters that
+  write bookings directly into the customer's POS/PMS/CRM (Shopmonkey, ezyVet,
+  Square, Follow Up Boss, …). Sold as the premium tier; in auto, vet, and real
+  estate it is what makes the market bigger than any anchor's install base.
 
 `IntegrationAdapter` interface: `syncCatalog`, `pushBooking/pushOrder`,
 `checkAvailability`, `handleWebhook`, `refreshAuth` — one status-mapping table
