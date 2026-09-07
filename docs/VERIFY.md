@@ -414,3 +414,86 @@ a wrong assumption above means Sentry silently doesn't receive events, not
 that any function call breaks; still worth confirming per
 `docs/OPS_RUNBOOK.md` §2's manual verification step before relying on this
 for production alerting.
+
+## T7 — Deep-integration adapters (`packages/adapters/{shopmonkey,ezyvet,
+## google-calendar,square}`, `supabase/functions/{webhooks-pos,
+## worker-adapter-push,api-adapter-connect,_shared/providers/*}`)
+
+Per the task's own instruction that these four vendors' docs are "generally
+reachable online," `WebFetch` was tried directly against `shopmonkey.dev`
+and `developer.squareup.com` first — both returned `EGRESS_BLOCKED` in this
+environment, the same experience every prior task logged for its own
+assigned vendor docs. `WebSearch` (server-side, not blocked) was used
+instead per CLAUDE.md Rule 1 item 2 for every item below; nothing here
+traces to memory. This extends (does not replace) the existing
+`## Square (webhooks-pos)` entry above, which T3 wrote for the
+`handleWebhook` verify/normalize slice only.
+
+| Item | Assumed shape | Confidence | Confirm against |
+|---|---|---|---|
+| Shopmonkey auth model | A self-generated, pasted API key (Bearer token) minted from an authenticated Shopmonkey session via a `/apikey` route — resolved this way over API_AND_FLOWS.md's per-adapter section's literal "OAuth2 Bearer tokens via `/auth/login`" line, reconciling it with that same document's own preamble calling Shopmonkey a "self-generated paste-key" adapter (see `packages/adapters/shopmonkey/src/client.ts`'s docstring for the full reasoning) | Medium — the `/apikey` route's existence and behavior (mints a key carrying the requesting user's own permissions, optionally time-limited) is corroborated by an indexed summary of Shopmonkey's own docs; the exact route path/response shape was not independently re-derived | `shopmonkey.dev`'s Authentication guide |
+| Shopmonkey base URL | `https://api.shopmonkey.cloud/v3` | Low — not independently confirmed; the "v3" path segment is corroborated (an indexed summary confirms "v3... will be the first part of the path for any URL"), the host itself is an educated guess following common SaaS API-subdomain convention | `shopmonkey.dev`'s Quickstart/Overview pages, or a real API key's first authenticated call |
+| Shopmonkey labor rate / customer / appointment endpoints (`/laborrate`, `/customer`, `/appointment`) | Assumed REST-conventional paths/fields (`GET /laborrate` -> `{data: [...]}`, `GET /customer?phone=...`, `POST /appointment` with `customerId`/`laborRateId`/`bayId`/`startAt`/`endAt`) | Low — no first-party fetch of the actual endpoint reference reached in this build; every field name here is a documented hypothesis, guarded by a runtime Zod validator per CLAUDE.md Rule 1 item 2 (`packages/adapters/shopmonkey/src/{catalog,booking}.ts`) | `shopmonkey.dev`'s API reference, once reachable, or a real sandbox account |
+| Shopmonkey webhook signature scheme | `HMAC-SHA256(rawBody)`, hex, header `x-shopmonkey-signature` | Low — a documented hypothesis (the common webhook-HMAC pattern), not corroborated against Shopmonkey's own docs at all; BACKEND_SPEC §7.6 itself flags this as unconfirmed | `shopmonkey.dev`'s Webhooks guide |
+| Shopmonkey webhook/two-way-sync coverage for staff-made reschedules/cancellations | Unknown whether a webhook exists at all — `pullChanges` (poll-based, `GET /appointment?updatedAfter=...`) is wired as the adapter's real two-way sync path regardless of the webhook path's fate | Low | Same as above |
+| ezyVet auth model | OAuth2 Client Credentials grant, 12h access-token TTL, partner-gated (`partner_id` + platform-level `client_id`/`client_secret`, one set shared across every connected practice) | High for the grant type/TTL (independently corroborated by both API_AND_FLOWS.md's own prior research and fresh WebSearch during this build); Medium for the exact token-endpoint path (`{practiceBaseUrl}/oauth/access_token`) and grant-body field names (`partner_id` alongside the standard `client_id`/`client_secret`/`grant_type`) — not independently re-derived from a first-party source | `developers.ezyvet.com/docs/v1/` |
+| ezyVet per-practice base URL | Each connected practice ("database") has its own base URL — modeled as `adapter_connections.metadata.baseUrl`, supplied by the tenant at connect time (`api-adapter-connect`'s `paste_key` action for ezyVet) since there is no per-tenant OAuth redirect to derive it from | Medium — the per-database API shape itself is well-corroborated; the exact URL pattern (subdomain vs. path-based) was not independently confirmed | `developers.ezyvet.com`, or direct confirmation from the practice's ezyVet admin during onboarding |
+| ezyVet rate limit | 180 calls/minute per database per partner — enforced client-side via a sliding-window limiter (`packages/adapters/ezyvet/src/client.ts`) | High — stated directly in API_AND_FLOWS.md A.6's own prior research | `developers.ezyvet.com`'s rate-limiting docs |
+| ezyVet appointment-type/contact/appointment endpoints (`/appointmenttype`, `/contact`, `/appointment`) | Assumed REST-conventional paths/fields, matching the ~216-endpoint noun-per-resource convention API_AND_FLOWS.md A.6 describes | Low — same posture as Shopmonkey's endpoints above: a documented hypothesis behind a runtime Zod validator, not a first-party-confirmed shape | `developers.ezyvet.com/docs/v1/` |
+| ezyVet webhook coverage for appointment changes | Assumed NOT confirmed to exist at all (API_AND_FLOWS.md A.6 and VERTICAL_RESEARCH.md both flag this explicitly) — `handleWebhook` always returns `{valid: false}` with an explicit reason rather than guessing a scheme; `pullChanges` (poll) is the only two-way sync path wired for this adapter | Medium-high confidence this absence-of-confirmation is real, not just an indexing gap (two independent prior research passes both flag it) | `developers.ezyvet.com`, direct vendor confirmation |
+| Square OAuth (`/oauth2/authorize`, `/oauth2/token`) | Standard authorization-code + refresh_token grants at `connect.squareup.com`; refresh-token-obtained access tokens expire 30 days after issuance, SAME refresh token returned (not rotated) | High — independently corroborated by fresh WebSearch during this build against multiple Square API-reference pages | `developer.squareup.com/docs/oauth-api/overview`, `.../migrate-to-refresh-tokens` |
+| Square Bookings (`/v2/bookings`, `/v2/bookings/availability/search`) | `POST /v2/bookings` requires `Booking.location_id`/`start_at`/`AppointmentSegment.team_member_id`/`service_variation_id`/`service_variation_version`; supports an `idempotency_key` body field | High — independently corroborated by fresh WebSearch against Square's own Bookings API reference during this build (matches SYSTEM_DESIGN §14's salvage note) | `developer.squareup.com/reference/square/bookings-api` |
+| Square Catalog (`POST /v2/catalog/search`, price at `variations[0].item_variation_data.price_money.amount`) | Unchanged from T3's original salvage-note hypothesis | Medium (carried forward, not re-verified this pass beyond the fresh WebSearch corroborating the endpoint path itself) | `developer.squareup.com/reference/square/catalog-api` |
+| Square webhook signature header name (`x-square-hmacsha256-signature`) | Confirmed via fresh WebSearch during this build (multiple independent sources name this exact header) — raises confidence on the existing `## Square (webhooks-pos)` entry above from "Low" toward "Medium-high" for the header name/algorithm specifically, though the overall scheme is still flagged for a live-sandbox re-verify per that entry | Medium-high (this build's re-check) | `developer.squareup.com/docs/webhooks/step3validate` |
+| Square `Square-Version` header / API version pinning | Assumed required on every REST call, pinned to a specific date string (`2026-01-22` in this build, VERIFY: bump before go-live) | Medium — the header's existence and date-versioning convention is standard/well-known for Square's API; the specific date pinned is a build-time placeholder, not something to verify per se, just to keep current | `developer.squareup.com/docs/build-basics/versioning` |
+| Google Calendar OAuth | Standard Google OAuth2 authorization-code flow, `access_type=offline&prompt=consent` for a refresh token, `https://www.googleapis.com/auth/calendar` scope | High — standard, extremely well-documented OAuth2 pattern | `developers.google.com/identity/protocols/oauth2/web-server` |
+| Google Calendar `freeBusy`/`events.insert`/`events.list`/`events.watch` | Assumed field names (`timeMin`/`timeMax`/`items[].id`; `start.dateTime`/`end.dateTime`; `showDeleted`/`orderBy=updated`/`updatedMin`; `id`/`type: "web_hook"`/`address`/`token`/`params.ttl`) | Medium-high — independently corroborated by fresh WebSearch during this build against multiple Google Calendar API reference/guide pages | `developers.google.com/workspace/calendar/api/v3/reference/*` |
+| Google Calendar watch-channel default TTL | 604800 seconds (7 days); no documented maximum found in this pass | Medium — corroborated by fresh WebSearch, but the search explicitly could not confirm an upper bound | `developers.google.com/workspace/calendar/api/guides/push` |
+| Google Calendar push-notification body | Confirmed (both by this build's own design reasoning and WebSearch corroboration) to carry NO diffable event content — only `X-Goog-*` headers (`Channel-ID`/`Channel-Token`/`Resource-ID`/`Resource-State`/`Message-Number`) identifying the channel and its state; the actual delta requires a separate `events.list` call | High — this "notification carries no payload, fetch after" pattern is independently corroborated across Google's own push-notification docs for every watched resource type, and matches the identical Clover/Square salvage-note pattern already relied on elsewhere in this codebase | Same as above |
+
+**Design decisions flagged here as genuine gaps, not vendor-API VERIFY items:**
+
+- **`adapter_connections.access_token`/`refresh_token` are stored as
+  plaintext.** Encrypting these at rest (pgsodium/Vault, or an
+  application-layer envelope) needs a decision this task cannot make blind
+  (which KMS, key-rotation story, and whether Supabase Vault is even
+  provisioned on the target project) — flagged in the migration's own
+  comment (`20260907160000_t7_adapter_connections.sql`) and here. Treat
+  this as a pre-go-live blocker for any adapter carrying a real OAuth
+  refresh token (Square, Google Calendar), not a nice-to-have.
+- **Offering/resource -> provider-catalog-id mapping rides in the existing
+  generic `metadata` jsonb column** (`offerings.metadata.adapter_external_id.
+  <provider>`, `resources.metadata.adapter_external_id.<provider>`) rather
+  than a dedicated mapping table, since T7's build directive authorized
+  exactly ONE new migration (spent on `adapter_connections`/
+  `adapter_sync_state`). A future task adding a real "catalog sync writes a
+  mapping table" flow (populated automatically from `syncCatalog` rather
+  than requiring a human to hand-edit `metadata` JSON) is the more robust
+  long-term design — flagged here and in `docs/BUILD_NOTES.md`'s T7 entry.
+- **The poll-based two-way sync (`pollAdapterChanges`,
+  `worker-adapter-push/handler.ts`) is contract-tested but NOT wired to any
+  scheduler.** BACKEND_SPEC §7.6 calls for "poll-back on a schedule" — that
+  schedule (a new `job-adapter-sync` cron function + `pg_cron` entry) is
+  T3/T4's established territory (`job-*` functions), outside this task's
+  exclusive paths (`webhooks-pos/`, `worker-adapter-push/`,
+  `_shared/providers/*.ts`). Flagged as a named follow-up, not silently
+  assumed solved.
+- **`IntegrationAdapter` (the canonical interface every
+  `packages/adapters/{shopmonkey,ezyvet,google-calendar,square}` package
+  implements) is intentionally duplicated four times** rather than living
+  in `@heyloo/canonical-types` (T2's package, alongside `VoiceProvider`) —
+  this task's exclusive paths list only the four adapter directories, not
+  `packages/canonical-types`. See `packages/adapters/shopmonkey/src/
+  adapter-types.ts`'s own docstring for the full reasoning (mirrors T4's
+  identical precedent for `_shared/compiler/template-compiler.ts`
+  duplicating `packages/adapters/retell/src/compiler/*`).
+- **Every Node-package adapter (`packages/adapters/*`) is duplicated again
+  as a lean `_shared/providers/*.ts` module for the Deno Edge Function
+  runtime** — same Deno/Node workspace-package boundary T3 and T4 already
+  documented for Retell/Twilio/Stripe/PayPal/Anthropic/Resend and the
+  template compiler, applied here to all four T7 adapters. The Node
+  packages are the reference implementation (fully unit-tested against the
+  canonical `IntegrationAdapter` contract) for any future Node-side
+  consumer (a CLI tool, a non-Deno service, or a future admin-cockpit
+  "sync catalog now" action's test suite); the `_shared/providers/*.ts`
+  versions are what actually runs in production today.

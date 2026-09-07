@@ -1,0 +1,31 @@
+{
+  "name": "@heyloo/adapter-google-calendar",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Google Calendar adapter (generic calendar fallback, G10) \u2014 the ONLY package allowed to reference a Google Calendar payload shape or call its REST API directly (CLAUDE.md Rule 2, packages/adapters/README.md). Implements IntegrationAdapter (see src/adapter-types.ts).",
+  "type": "module",
+  "license": "UNLICENSED",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "typecheck": "tsc -b --pretty",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@heyloo/canonical-types": "workspace:*",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3",
+    "vitest": "5.0.0"
+  }
+}

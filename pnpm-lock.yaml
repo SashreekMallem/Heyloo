@@ -155,7 +155,83 @@ importers:
         specifier: 5.0.0
         version: 5.0.0(@opentelemetry/api@1.9.1)(@types/node@22.20.1)(@vitest/coverage-v8@5.0.0)(jsdom@30.0.1)(vite@8.2.2(@types/node@22.20.1)(jiti@2.7.0)(terser@5.51.2)(yaml@2.9.0))
 
+  packages/adapters/ezyvet:
+    dependencies:
+      '@heyloo/canonical-types':
+        specifier: workspace:*
+        version: link:../../canonical-types
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
+    devDependencies:
+      '@types/node':
+        specifier: 22.20.1
+        version: 22.20.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.0
+        version: 5.0.0(@opentelemetry/api@1.9.1)(@types/node@22.20.1)(@vitest/coverage-v8@5.0.0)(jsdom@30.0.1)(vite@8.2.2(@types/node@22.20.1)(jiti@2.7.0)(terser@5.51.2)(yaml@2.9.0))
+
+  packages/adapters/google-calendar:
+    dependencies:
+      '@heyloo/canonical-types':
+        specifier: workspace:*
+        version: link:../../canonical-types
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
+    devDependencies:
+      '@types/node':
+        specifier: 22.20.1
+        version: 22.20.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.0
+        version: 5.0.0(@opentelemetry/api@1.9.1)(@types/node@22.20.1)(@vitest/coverage-v8@5.0.0)(jsdom@30.0.1)(vite@8.2.2(@types/node@22.20.1)(jiti@2.7.0)(terser@5.51.2)(yaml@2.9.0))
+
   packages/adapters/retell:
+    dependencies:
+      '@heyloo/canonical-types':
+        specifier: workspace:*
+        version: link:../../canonical-types
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
+    devDependencies:
+      '@types/node':
+        specifier: 22.20.1
+        version: 22.20.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.0
+        version: 5.0.0(@opentelemetry/api@1.9.1)(@types/node@22.20.1)(@vitest/coverage-v8@5.0.0)(jsdom@30.0.1)(vite@8.2.2(@types/node@22.20.1)(jiti@2.7.0)(terser@5.51.2)(yaml@2.9.0))
+
+  packages/adapters/shopmonkey:
+    dependencies:
+      '@heyloo/canonical-types':
+        specifier: workspace:*
+        version: link:../../canonical-types
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
+    devDependencies:
+      '@types/node':
+        specifier: 22.20.1
+        version: 22.20.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.0
+        version: 5.0.0(@opentelemetry/api@1.9.1)(@types/node@22.20.1)(@vitest/coverage-v8@5.0.0)(jsdom@30.0.1)(vite@8.2.2(@types/node@22.20.1)(jiti@2.7.0)(terser@5.51.2)(yaml@2.9.0))
+
+  packages/adapters/square:
     dependencies:
       '@heyloo/canonical-types':
         specifier: workspace:*

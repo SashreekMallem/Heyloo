@@ -1,6 +1,188 @@
 import { timingSafeEqual } from "../crypto.js";
 
 /**
+ * T7 addition: catalog/booking/order/availability/auth REST calls (this
+ * file previously implemented ONLY `handleWebhook`'s verify+normalize step,
+ * per T3's explicit scope note above). Portable — no SDK, plain `fetch`,
+ * mirroring the `packages/adapters/square` Node package's logic (documented
+ * intentional duplication, see that package's `webhook.ts` docstring: Deno
+ * cannot import a pnpm workspace package here). Base URL matches the
+ * Node package's default (`SQUARE_PRODUCTION_BASE_URL`); `Square-Version`
+ * pinned the same way. VERIFY (docs/VERIFY.md): identical caveats as the
+ * Node package — `developer.squareup.com` was egress-blocked in this build.
+ */
+export const SQUARE_BASE_URL = "https://connect.squareup.com";
+const SQUARE_API_VERSION = "2026-01-22";
+
+export type SquareFetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+async function squareRequest(
+  fetchImpl: SquareFetch,
+  accessToken: string,
+  method: "GET" | "POST",
+  path: string,
+  body?: unknown,
+): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const res = await fetchImpl(`${SQUARE_BASE_URL}${path}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json",
+      "square-version": SQUARE_API_VERSION,
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  const parsedBody = await res.json().catch(() => undefined);
+  return { ok: res.ok, status: res.status, body: parsedBody };
+}
+
+export async function searchSquareCatalog(
+  fetchImpl: SquareFetch,
+  accessToken: string,
+  cursor?: string,
+) {
+  return squareRequest(fetchImpl, accessToken, "POST", "/v2/catalog/search", {
+    object_types: ["ITEM"],
+    include_deleted_objects: false,
+    ...(cursor ? { cursor } : {}),
+  });
+}
+
+export async function searchSquareBookingAvailability(
+  fetchImpl: SquareFetch,
+  accessToken: string,
+  params: { locationId: string; startAt: string; endAt: string; serviceVariationId?: string },
+) {
+  return squareRequest(fetchImpl, accessToken, "POST", "/v2/bookings/availability/search", {
+    query: {
+      filter: {
+        start_at_range: { start_at: params.startAt, end_at: params.endAt },
+        location_id: params.locationId,
+        ...(params.serviceVariationId
+          ? { segment_filters: [{ service_variation_id: params.serviceVariationId }] }
+          : {}),
+      },
+    },
+  });
+}
+
+export async function createSquareBooking(
+  fetchImpl: SquareFetch,
+  accessToken: string,
+  params: {
+    idempotencyKey: string;
+    locationId: string;
+    startAt: string;
+    teamMemberId: string;
+    serviceVariationId: string;
+    customerNote: string;
+  },
+) {
+  return squareRequest(fetchImpl, accessToken, "POST", "/v2/bookings", {
+    idempotency_key: params.idempotencyKey,
+    booking: {
+      location_id: params.locationId,
+      start_at: params.startAt,
+      customer_note: params.customerNote,
+      appointment_segments: [
+        {
+          team_member_id: params.teamMemberId,
+          service_variation_id: params.serviceVariationId,
+          service_variation_version: 1,
+        },
+      ],
+    },
+  });
+}
+
+/** Fulfillment shape differs pickup vs delivery vs dine-in (SYSTEM_DESIGN
+ * §14 salvage note) — same mapping as `packages/adapters/square/src/
+ * booking.ts`'s `buildFulfillments`. */
+function buildSquareFulfillments(params: {
+  fulfillmentType: "pickup" | "delivery" | "dine_in";
+  customerName?: string | undefined;
+  customerPhoneE164?: string | undefined;
+  deliveryAddress?: Record<string, unknown> | undefined;
+}): unknown[] {
+  if (params.fulfillmentType === "pickup") {
+    return [
+      {
+        type: "PICKUP",
+        pickup_details: { recipient: { display_name: params.customerName ?? "Phone order" } },
+      },
+    ];
+  }
+  if (params.fulfillmentType === "delivery") {
+    return [
+      {
+        type: "DELIVERY",
+        delivery_details: {
+          recipient: {
+            display_name: params.customerName ?? "Phone order",
+            phone_number: params.customerPhoneE164,
+            address: params.deliveryAddress,
+          },
+        },
+      },
+    ];
+  }
+  return [];
+}
+
+export async function createSquareOrder(
+  fetchImpl: SquareFetch,
+  accessToken: string,
+  params: {
+    idempotencyKey: string;
+    locationId: string;
+    items: {
+      name: string;
+      qty: number;
+      unitPriceCents: number;
+      modifiers?: string[] | undefined;
+    }[];
+    fulfillmentType: "pickup" | "delivery" | "dine_in";
+    customerName?: string | undefined;
+    customerPhoneE164?: string | undefined;
+    deliveryAddress?: Record<string, unknown> | undefined;
+  },
+) {
+  const fulfillments = buildSquareFulfillments(params);
+  return squareRequest(fetchImpl, accessToken, "POST", "/v2/orders", {
+    idempotency_key: params.idempotencyKey,
+    order: {
+      location_id: params.locationId,
+      line_items: params.items.map((item) => ({
+        name: item.name,
+        quantity: String(item.qty),
+        base_price_money: { amount: item.unitPriceCents, currency: "USD" },
+        ...(item.modifiers && item.modifiers.length > 0 ? { note: item.modifiers.join(", ") } : {}),
+      })),
+      ...(fulfillments.length > 0 ? { fulfillments } : {}),
+    },
+  });
+}
+
+/** `POST /oauth2/token`, `grant_type=refresh_token` — API_AND_FLOWS.md A.6. */
+export async function refreshSquareToken(
+  fetchImpl: SquareFetch,
+  params: { clientId: string; clientSecret: string; refreshToken: string },
+) {
+  const res = await fetchImpl(`${SQUARE_BASE_URL}/oauth2/token`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "square-version": SQUARE_API_VERSION },
+    body: JSON.stringify({
+      client_id: params.clientId,
+      client_secret: params.clientSecret,
+      grant_type: "refresh_token",
+      refresh_token: params.refreshToken,
+    }),
+  });
+  const body = await res.json().catch(() => undefined);
+  return { ok: res.ok, status: res.status, body };
+}
+
+/**
  * Square webhook signature verification + canonical normalization
  * (`/webhooks-pos/square` — BACKEND_SPEC §7.6, T3's assigned "wire Square
  * salvage-shape as the first handleWebhook"). Scheme carried forward from

@@ -131,3 +131,9 @@ verify_jwt = true
 verify_jwt = true
 [functions.forwarding-verify]
 verify_jwt = true
+# api-adapter-connect (T7): tenant-owner/admin JWT verified by Supabase,
+# then the function itself resolves tenant_id from `memberships` and
+# additionally checks role in ('owner','admin') — same "JWT verification
+# alone is not sufficient" posture as admin/api-provision above.
+[functions.api-adapter-connect]
+verify_jwt = true

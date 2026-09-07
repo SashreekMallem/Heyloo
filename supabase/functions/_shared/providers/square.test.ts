@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { normalizeSquareWebhook, verifySquareSignature } from "./square.js";
+import {
+  createSquareBooking,
+  createSquareOrder,
+  normalizeSquareWebhook,
+  refreshSquareToken,
+  searchSquareBookingAvailability,
+  searchSquareCatalog,
+  verifySquareSignature,
+} from "./square.js";
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
 
 const SIGNATURE_KEY = "test-square-signature-key";
 const NOTIFICATION_URL = "https://heyloo.example.com/functions/v1/webhooks-pos/square";
@@ -94,5 +109,91 @@ describe("normalizeSquareWebhook", () => {
       external_id: null,
       changes: {},
     });
+  });
+});
+
+describe("Square REST calls (T7 additions)", () => {
+  it("searchSquareCatalog posts the documented object_types/cursor shape", async () => {
+    let captured: any;
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      captured = JSON.parse(String(init?.body));
+      return jsonResponse({ objects: [] });
+    }) as any;
+    const result = await searchSquareCatalog(fetchImpl, "token", "cursor_1");
+    expect(result.ok).toBe(true);
+    expect(captured).toEqual({
+      object_types: ["ITEM"],
+      include_deleted_objects: false,
+      cursor: "cursor_1",
+    });
+  });
+
+  it("searchSquareBookingAvailability posts the documented filter shape", async () => {
+    let captured: any;
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      captured = JSON.parse(String(init?.body));
+      return jsonResponse({ availabilities: [] });
+    }) as any;
+    await searchSquareBookingAvailability(fetchImpl, "token", {
+      locationId: "loc_1",
+      startAt: "2026-09-10T00:00:00Z",
+      endAt: "2026-09-11T00:00:00Z",
+    });
+    expect(captured.query.filter.location_id).toBe("loc_1");
+  });
+
+  it("createSquareBooking carries the idempotency_key and required Booking fields", async () => {
+    let captured: any;
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      captured = JSON.parse(String(init?.body));
+      return jsonResponse({ booking: { id: "booking_1" } });
+    }) as any;
+    const result = await createSquareBooking(fetchImpl, "token", {
+      idempotencyKey: "call_1:slot_1",
+      locationId: "loc_1",
+      startAt: "2026-09-10T14:00:00Z",
+      teamMemberId: "team_1",
+      serviceVariationId: "svc_1",
+      customerNote: "Jane Doe +15551234567",
+    });
+    expect(result.ok).toBe(true);
+    expect(captured.idempotency_key).toBe("call_1:slot_1");
+    expect(captured.booking.appointment_segments[0]).toEqual({
+      team_member_id: "team_1",
+      service_variation_id: "svc_1",
+      service_variation_version: 1,
+    });
+  });
+
+  it("createSquareOrder builds a DELIVERY fulfillment for a delivery order", async () => {
+    let captured: any;
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      captured = JSON.parse(String(init?.body));
+      return jsonResponse({ order: { id: "order_1" } });
+    }) as any;
+    await createSquareOrder(fetchImpl, "token", {
+      idempotencyKey: "order_1",
+      locationId: "loc_1",
+      items: [{ name: "Burger", qty: 1, unitPriceCents: 899 }],
+      fulfillmentType: "delivery",
+      customerName: "Jane Doe",
+      customerPhoneE164: "+15551234567",
+      deliveryAddress: { line1: "42 Oak St" },
+    });
+    expect(captured.order.fulfillments[0].type).toBe("DELIVERY");
+    expect(captured.order.fulfillments[0].delivery_details.recipient.phone_number).toBe(
+      "+15551234567",
+    );
+  });
+
+  it("refreshSquareToken posts the refresh_token grant and surfaces a non-2xx as !ok (never throws)", async () => {
+    const fetchImpl = (async () => jsonResponse({ type: "invalid_grant" }, 401)) as any;
+    const result = await refreshSquareToken(fetchImpl, {
+      clientId: "c1",
+      clientSecret: "s1",
+      refreshToken: "r1",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(401);
   });
 });

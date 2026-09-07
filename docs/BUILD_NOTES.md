@@ -1844,3 +1844,239 @@ spec's own comments) rather than guessed at.
   state so root gates go green again — not this task's files to fix.
 - Everything named in `docs/LAUNCH_STATUS.md`'s "What remains for the
   owner" and "Known gaps" sections — not repeated here.
+
+## T7 — Deep-integration adapters: Shopmonkey, ezyVet, Google Calendar,
+## Square + adapter-push/webhook wiring + tenant connect flow (Wave 3)
+
+**What was built**
+
+- Four `IntegrationAdapter` implementations, one per
+  `packages/adapters/{shopmonkey,ezyvet,google-calendar,square}` (all new
+  packages; T0's README already reserved these paths for this task):
+  `syncCatalog`, `pushBooking` (all four) / `pushOrder` (Square only —
+  Google Calendar has no order concept, `pushOrder` is correctly absent per
+  `IntegrationAdapter`'s optional-method design), `checkAvailability`
+  (Square/Google/ezyVet — Shopmonkey's is intentionally NOT implemented,
+  see below), `handleWebhook` with real signature verification (Square:
+  the salvaged `HMAC-SHA256(notificationUrl+rawBody)` base64 scheme,
+  re-verified against fresh WebSearch this pass; Shopmonkey: a documented
+  `HMAC-SHA256(rawBody)` hex hypothesis; Google Calendar: a per-connection
+  shared-secret channel-token check, since Google's push notifications
+  carry no signable body at all; ezyVet: always fails closed with an
+  explicit reason — no confirmed webhook exists), `refreshAuth` (Square/
+  Google standard OAuth2 refresh_token; ezyVet's 12h-TTL client-credentials
+  re-mint, proactively at the 10h mark per BACKEND_SPEC §7.6; Shopmonkey's
+  paste-key "refresh" is a lightweight re-validation call, since a static
+  key has no refresh grant), and `pullChanges` (poll-based two-way sync
+  pull-back, G11 — ezyVet/Shopmonkey/Google Calendar; Square relies on its
+  own real webhook/change-feed per BACKEND_SPEC §7.6's own table, so it has
+  no `pullChanges`). 84 tests across the four packages, each package's own
+  `provider.test.ts` exercising the full `IntegrationAdapter` contract plus
+  per-module fixture/signature tests.
+- Wired both Wave-1 shells T3 left empty: `worker-adapter-push`'s
+  `ADAPTER_PUSHERS` registry (was `{}`, every push dead-lettering — now has
+  a real pusher per adapter: loads the tenant's `adapter_connections` row,
+  proactively refreshes auth where the provider's TTL calls for it, loads
+  the authoritative `bookings`/`orders` row (+ joined customer/offering/
+  resource), maps to the provider's push shape, and on success upserts
+  `adapter_sync_state`; on a 401/revoked response marks the connection
+  `disconnected` rather than endlessly retrying an auth failure) and
+  `webhooks-pos`'s provider dispatch (was Square-only + 3 stub 501s — now
+  also wires `shopmonkey` and `google_calendar`; `ezyvet` still 501s,
+  honestly, since no webhook exists to receive). `worker-adapter-push/
+  handler.ts` also exports `pollAdapterChanges` (poll-based two-way sync +
+  conflict detection, contract-tested — see VERIFY.md for why it isn't
+  wired to a `pg_cron` schedule yet) and both `webhooks-pos/handler.ts`'s
+  `processPosWebhook` and the poller implement the SAME conflict-detection
+  rule, generalized from the `airtable_sync_state` precedent: an external
+  change notification/pull for a booking/order Heyloo already pushed
+  (a matching `adapter_sync_state.external_id` row exists) flags
+  `sync_conflict` instead of silently assuming reconciliation; an
+  unmapped external id (never pushed by Heyloo) is recorded for visibility
+  only, never flagged as a conflict.
+- New `_shared/providers/{shopmonkey,ezyvet,google-calendar}.ts` (Deno-side
+  lean `fetch` modules, following T3/T4's established Node/Deno
+  duplication pattern — see below) + extended the existing
+  `_shared/providers/square.ts` (T3 built only `handleWebhook`'s verify/
+  normalize step; this task added catalog/booking/order/availability/auth
+  REST calls) — all four now cover the full REST surface
+  `worker-adapter-push`/`webhooks-pos`/`api-adapter-connect` need.
+- New `supabase/functions/api-adapter-connect/` function (task item 3):
+  OAuth `initiate`/`callback` actions for Square/Google Calendar (a signed,
+  tenant-bound, 15-minute-window `state` parameter —
+  `HMAC-SHA256` over a base64url JSON payload, timing-safe compared,
+  replay-window-checked — `state.ts`), `paste_key` for Shopmonkey (live
+  `GET /me` validation before storing) and ezyVet (a live client-
+  credentials mint against the tenant-supplied practice `base_url` — the
+  practical proof the practice actually authorized Heyloo's partner_id,
+  since there is no per-tenant OAuth redirect for this grant type), and
+  `disconnect`. Caller must be an `owner`/`admin` member of a tenant
+  (resolved server-side from `memberships`, JWT `sub` only) — a bare `verify_
+  jwt: true` is explicitly treated as insufficient, same posture as
+  `admin`/`api-provision` (`supabase/config.toml`'s own comment). 18 tests.
+- One new migration, `20260907160000_t7_adapter_connections.sql` (per this
+  task's own directive: "if none exists for adapter_connections, add ONE
+  migration for it" — none existed anywhere in T1's schema): `adapter_
+  connections` (one row per tenant+provider; `status`/`auth_mode`/
+  plaintext `access_token`/`refresh_token`/`expires_at`/
+  `provider_account_id`/`metadata` jsonb/`disconnected_at`/`last_error`)
+  and `adapter_sync_state` (generalizes the existing `airtable_sync_state`
+  table's one-way-push conflict-tracking shape — same column set, same
+  `sync_conflict` semantics — to every T7 adapter, keyed `(tenant_id,
+  provider, entity_type, entity_id)` with a reverse `(provider,
+  external_id)` index for the webhook/poll conflict-lookup path). RLS:
+  both tables get a tenant-member-or-platform-admin SELECT policy, no
+  authenticated/anon write policy (service_role-only writes, matching the
+  `airtable_sync_state`/`tool_health` precedent). Verified by hand against
+  a bare Postgres 16 instance (this environment has no Docker/`supabase
+  start` either, same constraint T1 logged): applied cleanly, unique
+  constraint rejects a duplicate tenant+provider connection, both RLS
+  policies attach correctly.
+- `.env.example`: 11 new vars documented (Square/Google Calendar OAuth
+  client id+secret+redirect URI, ezyVet partner client id+secret+partner_
+  id, Shopmonkey's webhook signing secret, and `ADAPTER_CONNECT_STATE_
+  SECRET`) under a new "deep-integration adapters" section.
+- `supabase/config.toml`: one new `[functions.api-adapter-connect]`
+  `verify_jwt = true` entry, commented per the existing convention.
+
+**Rule 4 resolution: `api-adapter-connect` vs. this task's stated exclusive
+paths (documented, not silently overstepped)**
+
+This task's own assignment text lists exclusive paths as `packages/
+adapters/{shopmonkey,ezyvet,google-calendar,square}/` plus, within
+`supabase/functions`, ONLY `webhooks-pos/`, `worker-adapter-push/`, and new
+`_shared/providers/*.ts` files — "touch no other function dirs" — while
+task item 3 explicitly requires building "an `api-adapter-connect`
+function." Read literally these two instructions conflict. Resolved in
+favor of item 3's explicit deliverable: "touch no other function dirs" is
+read as guarding against scope creep into unrelated, already-owned
+directories (`admin`, `voice-tools`, other tasks' territory) — not as
+forbidding the one new function this task was explicitly commissioned to
+build. Creating `api-adapter-connect/` necessarily also required one
+`supabase/config.toml` entry (every prior task registered its own new
+functions there the same way) and 11 new `.env.example` vars (CLAUDE.md
+Rule 3: "secrets only via env — `.env.example` documents every variable").
+No other function directory was touched.
+
+**Auth-model reconciliation: Shopmonkey and ezyVet (documented, not
+silently guessed)**
+
+API_AND_FLOWS.md A.6's preamble calls Shopmonkey a "self-generated
+paste-key" adapter, but its own per-adapter section says "Shopmonkey 2.0
+uses OAuth2 Bearer tokens via `/auth/login`." Fresh WebSearch this pass
+(the assignment's own header claims Shopmonkey's docs are "generally
+reachable online" — directly tested, `shopmonkey.dev` was still
+`EGRESS_BLOCKED` via `WebFetch` in this environment) found Shopmonkey ALSO
+exposes a `/apikey` route minting a static(-ish), optionally-expiring key
+from an authenticated session — reconciled as: the TENANT does that
+one-time step themselves in their own Shopmonkey dashboard and pastes the
+resulting key into Heyloo (`api-adapter-connect`'s `paste_key` action);
+this adapter never performs the email/password login itself. ezyVet's
+OAuth2 Client Credentials grant is genuinely partner-gated with ONE set of
+platform-level credentials shared across every connected practice (not
+per-tenant), so its "connect" flow is also paste-key-shaped from the
+tenant's perspective (they supply their practice's base URL; Heyloo's own
+partner credentials do the rest) even though the underlying grant type is
+OAuth2, not a bare key. Both reconciliations are documented inline in each
+adapter's `client.ts`/`auth.ts` docstrings and in `docs/VERIFY.md`'s T7
+section.
+
+**Deno/Node duplication (same established pattern as T3/T4, applied to
+four more adapters)**
+
+Every `packages/adapters/*` Node package here is duplicated as a lean
+`_shared/providers/*.ts` Deno module — identical reasoning T3 documented
+for Retell/Twilio/Stripe/PayPal/Anthropic/Resend and T4 documented for the
+template compiler: the Deno Edge Function runtime cannot import a pnpm
+workspace package without a bundling step neither task added. The Node
+packages are the canonical, fully-tested `IntegrationAdapter` reference
+implementation; the `_shared/providers/*.ts` versions are what actually
+runs in production. Flagged in `docs/VERIFY.md` as maintenance debt (same
+flag T4 raised for its own compiler duplication) — a future task could
+extract both into one zero-runtime-dependency package both runtimes import.
+
+**`IntegrationAdapter` interface duplication across the four packages**
+(documented, not an oversight) — `@heyloo/canonical-types` (T2's package)
+defines `VoiceProvider` but has no generic adapter interface, and this
+task's exclusive paths don't include that package. Rather than invent a
+fifth `packages/adapters/*-shared` package (also outside the exclusive
+list) or silently skip a canonical interface, `adapter-types.ts` is
+byte-for-byte identical across all four packages, with a docstring
+explaining why and naming the follow-up (move it into `@heyloo/canonical-
+types` alongside `VoiceProvider` once a task owns that package again).
+
+**Offering/resource → provider-catalog-id mapping: reused the existing
+generic `metadata` column, not a new mapping table**
+
+Pushing a booking needs the PROVIDER's own service/labor-rate/appointment-
+type id and team-member/resource id — T1's schema has no such column on
+`offerings`/`resources` (deliberately, to keep those tables adapter-
+agnostic per CLAUDE.md Rule 2, the same reasoning BACKEND_SPEC §10.3 gives
+for Airtable's separate mapping table). This task's build directive
+authorized exactly ONE new migration, already spent on `adapter_
+connections`/`adapter_sync_state`. Pragmatic resolution: read/write the
+mapping through the EXISTING generic `metadata` jsonb column, namespaced
+`metadata.adapter_external_id.<provider>` — e.g. `offerings.metadata =
+{"adapter_external_id": {"square": "svc_123"}}`. A dedicated mapping table
+populated automatically by `syncCatalog` (rather than requiring a human to
+hand-edit JSON) is flagged in `docs/VERIFY.md` as the more robust long-term
+design, not silently treated as solved.
+
+**Verification performed (no live sandbox account for any of the four
+vendors, no Docker/`supabase start` in this environment — same
+constraints T1-T4 already logged)**
+
+- Every REST endpoint/field name is a documented hypothesis per CLAUDE.md
+  Rule 1 item 2 — guarded by a runtime Zod validator at every parse
+  boundary (`safeParse`, never a bare cast) and flagged in `docs/VERIFY.md`
+  with a confidence level and what to confirm before go-live. Square's
+  shapes carry the highest confidence (independently re-corroborated via
+  fresh WebSearch this pass against Square's own current API-reference
+  pages, on top of the pre-existing salvaged/researched shapes); Shopmonkey
+  2.0's endpoint paths carry the lowest (no first-party fetch reached at
+  all — `shopmonkey.dev` blocked).
+- The new migration was hand-verified against a bare (non-Supabase-image)
+  PostgreSQL 16 instance available in this environment, mirroring T1's own
+  verification method: applied cleanly against stub `tenants`/`auth.users`/
+  helper-function tables, the `unique (tenant_id, provider)` constraint
+  correctly rejected a duplicate connection, and both new RLS SELECT
+  policies were present after `alter table ... enable row level security`.
+- 84 tests across the four `packages/adapters/*` packages + 47 new/updated
+  tests across `supabase/functions/{webhooks-pos,worker-adapter-push,
+  api-adapter-connect,_shared/providers}` (contract tests on hand-built
+  fixture payloads per adapter; real HMAC test vectors for every signature
+  scheme, including a genuine tampered-body/wrong-secret/missing-header
+  matrix for each of Square/Shopmonkey/Google-Calendar's channel-token
+  check; explicit conflict-path tests for both the webhook-driven and
+  poll-driven two-way-sync flag logic). **Root gates fully green at commit
+  time**: `pnpm run typecheck` (18/18 tasks), `pnpm run lint` (0 errors —
+  Biome's pre-existing `noExplicitAny` warnings in test-fixture `fetchImpl`
+  casts are the only diagnostics, same accepted class T3/T4/T5 already
+  left in place), `pnpm run test` (18/18 tasks, 500+ tests across the
+  monorepo), and `pnpm run build` all pass with zero changes to any file
+  outside this task's paths.
+
+**Deferred / left for later tasks**
+
+- Wiring `pollAdapterChanges` to an actual `pg_cron` schedule (a new
+  `job-adapter-sync` function) — outside this task's exclusive paths
+  (`job-*` is T3/T4's established territory); the function itself is
+  built, exported, and contract-tested, just not yet invoked periodically.
+- Encrypting `adapter_connections.access_token`/`refresh_token` at rest
+  (currently plaintext `text` columns) — needs a KMS/key-rotation decision
+  this task isn't positioned to make blind; flagged as a pre-go-live
+  blocker for Square/Google Calendar specifically (both carry a real OAuth
+  refresh token) in `docs/VERIFY.md`.
+- A dedicated adapter-catalog-mapping table (replacing the `metadata.
+  adapter_external_id` convention above) populated automatically from
+  `syncCatalog`, so an operator never hand-edits `offerings`/`resources`
+  JSON to wire up a provider's service/resource ids.
+- Cloudbeds, Clio, Follow Up Boss, NexHealth adapters (Wave 3/opportunistic
+  per `packages/adapters/README.md` — not named in this task's four).
+- A tenant-dashboard UI for the connect flow (`api-adapter-connect`'s
+  request/response contract is built and tested; FRONTEND_SPEC/T5's own
+  surface for a "Connections" settings page was not in this task's scope).
+- Confirming Shopmonkey 2.0's exact base URL/endpoint paths and ezyVet's
+  practice base-URL pattern against a live sandbox account — the single
+  highest-risk pair of VERIFY items this task leaves open (see
+  `docs/VERIFY.md`'s T7 section for the full list).
