@@ -23,6 +23,10 @@ const RETELL_API_KEY = optionalEnv("RETELL_API_KEY");
 const VOICE_TOOLS_WEBHOOK_URL = optionalEnv("VOICE_TOOLS_WEBHOOK_URL");
 const SUPABASE_URL = optionalEnv("SUPABASE_URL");
 const SUPABASE_SECRET_KEY = optionalEnv("SUPABASE_SECRET_KEY");
+const SMARTLEAD_API_KEY = optionalEnv("SMARTLEAD_API_KEY");
+const OUTREACH_CAN_SPAM_FOOTER = optionalEnv("OUTREACH_CAN_SPAM_FOOTER");
+const RESEND_API_KEY = optionalEnv("RESEND_API_KEY");
+const RESEND_FROM_ADDRESS = optionalEnv("RESEND_FROM_ADDRESS");
 
 const adminDeps: AdminDeps = {
   ...(RETELL_API_KEY && VOICE_TOOLS_WEBHOOK_URL
@@ -38,6 +42,18 @@ const adminDeps: AdminDeps = {
     ? {
         supabaseAdmin: { fetchImpl: fetch, url: SUPABASE_URL, serviceRoleKey: SUPABASE_SECRET_KEY },
       }
+    : {}),
+  ...(SMARTLEAD_API_KEY && OUTREACH_CAN_SPAM_FOOTER
+    ? {
+        outreach: {
+          smartleadFetchImpl: fetch,
+          smartleadApiKey: SMARTLEAD_API_KEY,
+          canSpamFooter: OUTREACH_CAN_SPAM_FOOTER,
+        },
+      }
+    : {}),
+  ...(RESEND_API_KEY && RESEND_FROM_ADDRESS
+    ? { resend: { fetchImpl: fetch, apiKey: RESEND_API_KEY, fromAddress: RESEND_FROM_ADDRESS } }
     : {}),
 };
 
@@ -79,6 +95,7 @@ Deno.serve(async (req: Request) => {
       claims,
       body,
       adminUserId: claims?.sub ?? null,
+      query: Object.fromEntries(url.searchParams.entries()),
       ...(req.headers.get("x-forwarded-for")
         ? { ipAddress: req.headers.get("x-forwarded-for") as string }
         : {}),

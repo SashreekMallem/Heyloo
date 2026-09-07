@@ -5,6 +5,9 @@ import {
   type CompilerAgentTemplate,
   compileTemplate,
 } from "../_shared/compiler/template-compiler.js";
+import { isSuppressed } from "../_shared/lead-dedup.js";
+import type { ResendFetch } from "../_shared/providers/resend.js";
+import { sendEmail } from "../_shared/providers/resend.js";
 import type { RetellFetch } from "../_shared/providers/retell.js";
 import {
   createAgent,
@@ -12,8 +15,14 @@ import {
   createRetellLLM,
   publishAgentVersion,
 } from "../_shared/providers/retell.js";
+import type { SmartleadFetch } from "../_shared/providers/smartlead.js";
+import {
+  createCampaign as createSmartleadCampaign,
+  updateCampaignStatus as updateSmartleadCampaignStatus,
+} from "../_shared/providers/smartlead.js";
 import type { SupabaseAdminFetch } from "../_shared/providers/supabase-admin.js";
 import { generateMagicLink, getUserEmailById } from "../_shared/providers/supabase-admin.js";
+import { renderTemplate } from "../_shared/templates.js";
 import type { Logger, SqlClient } from "../_shared/types.js";
 
 /**
@@ -23,16 +32,20 @@ import type { Logger, SqlClient } from "../_shared/types.js";
  * `admin_actions`; AAL2 is required (session-level — see admin-auth.ts's
  * own caveat about true 15-minute freshness) for impersonation specifically.
  *
- * Scope note (docs/BUILD_NOTES.md T3/T4 entries): BACKEND_SPEC §7.7 names
+ * Scope note (docs/BUILD_NOTES.md T3/T4/T8 entries): BACKEND_SPEC §7.7 names
  * ten endpoint groups. T3 implemented Tenants (list/get/patch) and Alerts
  * (list/ack) fully, plus impersonation's AAL2 gate + audit-log write (token
  * minting itself deferred). T4 completes impersonation (real
  * `generate_link` mint, `deps.supabaseAdmin` required) and implements
  * Margin cockpit, Config Lab, Referral P&L (+ payout-override), CAC, and
  * Templates (+ publish via `_shared/compiler/template-compiler.ts` and the
- * Retell publish call). Support, Outreach, and Feature flags remain an
- * explicit `501 not_implemented` (never a silent 200) — outside T4's named
- * scope, left for a later wave.
+ * Retell publish call). T8 completes the Outreach group (leads, campaign
+ * CRUD, add-leads, funnel, reply feed + one-click actions, a per-vertical
+ * CAC rollup — distinct from the channel-level `GET /admin-cac` T4 already
+ * built). Support and Feature flags remain an explicit `501 not_implemented`
+ * (never a silent 200) — outside T8's named scope (task explicitly scopes
+ * this build to the Outreach group only within `admin/`), left for a later
+ * wave.
  */
 
 export interface AdminRequestContext {
@@ -43,6 +56,9 @@ export interface AdminRequestContext {
   adminUserId: string | null;
   ipAddress?: string;
   userAgent?: string;
+  /** Parsed `URL.searchParams` — only the Outreach group's list/filter
+   * routes read this today (T8); every other group ignores it. */
+  query?: Record<string, string>;
 }
 
 export interface AdminResponse {
@@ -51,11 +67,26 @@ export interface AdminResponse {
 }
 
 /** Provider clients only some route groups need — optional so every
- * existing caller/test that doesn't touch impersonation-mint or
- * template-publish keeps working unchanged. */
+ * existing caller/test that doesn't touch impersonation-mint,
+ * template-publish, or outreach-campaign-provider-calls keeps working
+ * unchanged. */
 export interface AdminDeps {
   retell?: { fetchImpl: RetellFetch; apiKey: string; toolWebhookUrl: string };
   supabaseAdmin?: { fetchImpl: SupabaseAdminFetch; url: string; serviceRoleKey: string };
+  /** Smartlead client + the CAN-SPAM footer text every created campaign
+   * must carry (compliance hard rule, T8) — deliberately all-or-nothing:
+   * when this is unset, campaign-create/status-change degrade to a `501`
+   * rather than ever creating a campaign with no footer configured. */
+  outreach?: {
+    smartleadFetchImpl: SmartleadFetch;
+    smartleadApiKey: string;
+    canSpamFooter: string;
+  };
+  /** Used only by the Outreach group's "mark interested -> demo link send"
+   * reply action (T8) — a direct Resend send, deliberately NOT routed
+   * through `messages_outbound`/`worker-messages-outbound` (that table's
+   * `tenant_id` is `NOT NULL`; a cold-outreach lead has no tenant yet). */
+  resend?: { fetchImpl: ResendFetch; apiKey: string; fromAddress: string };
 }
 
 function segments(path: string): string[] {
@@ -699,7 +730,366 @@ async function handleTemplates(
   return { status: 404, body: { error: "not_found" } };
 }
 
-const NOT_YET_IMPLEMENTED_PREFIXES = ["admin-support-requests", "admin-outreach", "admin-flags"];
+// ---------------------------------------------------------------------
+// Outreach (BACKEND_SPEC §7.7 Outreach group; §1.8 tables; T8). Every
+// mutating route re-checks `suppression_list` before touching a lead
+// (compliance rule: "suppression checked before every lead add") and
+// writes `admin_actions`. `leads.phone` is read here only for display/
+// dedup — it is NEVER passed to any voice/batch-call path anywhere in
+// this codebase (SYSTEM_DESIGN §11 TCPA rule; outreach is email-only).
+// ---------------------------------------------------------------------
+async function handleOutreach(
+  sql: SqlClient,
+  ctx: AdminRequestContext,
+  deps: AdminDeps,
+): Promise<AdminResponse> {
+  const parts = segments(ctx.path);
+  // ["admin-outreach", "leads"|"campaigns"|"funnel"|"replies"|"cac"|"suppression", id?, action?]
+  const resource = parts[1];
+  const query = ctx.query ?? {};
+
+  if (resource === "leads" && ctx.method === "GET" && !parts[2]) {
+    const status = query["status"];
+    const vertical = query["vertical"];
+    const source = query["source"];
+    const rows = await sql<Record<string, unknown>>`
+      select id, source, vertical, company_name, contact_name, email, phone, status, created_at
+      from public.leads
+      where (${status ?? null}::text is null or status = ${status ?? null})
+        and (${vertical ?? null}::text is null or vertical = ${vertical ?? null})
+        and (${source ?? null}::text is null or source = ${source ?? null})
+      order by created_at desc
+      limit 200
+    `;
+    return { status: 200, body: { leads: rows } };
+  }
+
+  if (resource === "suppression" && ctx.method === "POST" && !parts[2]) {
+    const body = (ctx.body ?? {}) as { contact?: string; reason?: string };
+    if (!body.contact) return { status: 422, body: { error: "missing_contact" } };
+    const reason = body.reason ?? "manual";
+    if (!["unsubscribe", "bounce", "complaint", "manual"].includes(reason)) {
+      return { status: 422, body: { error: "invalid_reason" } };
+    }
+    await sql`
+      insert into public.suppression_list (contact, reason)
+      values (${body.contact.trim().toLowerCase()}, ${reason})
+      on conflict (contact) do nothing
+    `;
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "outreach_suppression_add",
+        targetType: "suppression_list",
+        after: { contact: body.contact, reason },
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return { status: 200, body: { suppressed: true } };
+  }
+
+  if (resource === "campaigns" && ctx.method === "GET" && !parts[2]) {
+    const rows = await sql<Record<string, unknown>>`
+      select id, name, vertical, sender_domain, provider, status, external_campaign_id, complaint_rate, created_at
+      from public.campaigns order by created_at desc limit 100
+    `;
+    return { status: 200, body: { campaigns: rows } };
+  }
+
+  if (resource === "campaigns" && ctx.method === "POST" && !parts[2]) {
+    if (!deps.outreach) return { status: 501, body: { error: "outreach_sender_not_configured" } };
+    const body = (ctx.body ?? {}) as {
+      name?: string;
+      vertical?: string;
+      sender_domain?: string;
+      provider?: string;
+    };
+    if (!body.name || !body.sender_domain) {
+      return { status: 422, body: { error: "missing_name_or_sender_domain" } };
+    }
+    const provider = body.provider ?? "smartlead";
+    if (provider !== "smartlead") {
+      // Compliance/scope: only the Smartlead adapter is implemented (see
+      // this module's provider-choice docstring) — never silently accept
+      // a provider value this build can't actually create a campaign for.
+      return { status: 422, body: { error: "unsupported_provider" } };
+    }
+
+    const created = await createSmartleadCampaign(
+      deps.outreach.smartleadFetchImpl,
+      deps.outreach.smartleadApiKey,
+      {
+        name: body.name,
+      },
+    );
+    if (!created.ok || !created.externalCampaignId) {
+      return { status: 502, body: { error: "smartlead_campaign_create_failed" } };
+    }
+
+    const inserted = await sql<{ id: string }>`
+      insert into public.campaigns (name, vertical, sender_domain, provider, status, external_campaign_id)
+      values (${body.name}, ${body.vertical ?? null}, ${body.sender_domain}, ${provider}, 'draft', ${created.externalCampaignId})
+      returning id
+    `;
+    const campaignId = inserted[0]?.id;
+    if (!campaignId) return { status: 500, body: { error: "campaign_create_failed" } };
+
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "outreach_campaign_create",
+        targetType: "campaign",
+        targetId: campaignId,
+        after: { name: body.name, provider, external_campaign_id: created.externalCampaignId },
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return {
+      status: 201,
+      body: { campaign_id: campaignId, external_campaign_id: created.externalCampaignId },
+    };
+  }
+
+  if (resource === "campaigns" && ctx.method === "PATCH" && parts[2] && !parts[3]) {
+    const campaignId = parts[2];
+    const body = (ctx.body ?? {}) as { status?: string };
+    if (!body.status || !["draft", "warming", "active", "paused"].includes(body.status)) {
+      return { status: 422, body: { error: "invalid_status" } };
+    }
+    const before = (
+      await sql<Record<string, unknown>>`select * from public.campaigns where id = ${campaignId}`
+    )[0];
+    if (!before) return { status: 404, body: { error: "campaign_not_found" } };
+
+    await sql`update public.campaigns set status = ${body.status} where id = ${campaignId}`;
+
+    if (deps.outreach && before["provider"] === "smartlead" && before["external_campaign_id"]) {
+      const providerStatus =
+        body.status === "active" ? "START" : body.status === "paused" ? "PAUSED" : undefined;
+      if (providerStatus) {
+        await updateSmartleadCampaignStatus(
+          deps.outreach.smartleadFetchImpl,
+          deps.outreach.smartleadApiKey,
+          before["external_campaign_id"] as string,
+          providerStatus,
+        );
+      }
+    }
+
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "outreach_campaign_status_change",
+        targetType: "campaign",
+        targetId: campaignId,
+        before: { status: before["status"] },
+        after: { status: body.status },
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return { status: 200, body: { campaign_id: campaignId, status: body.status } };
+  }
+
+  if (resource === "campaigns" && ctx.method === "POST" && parts[2] && parts[3] === "add-leads") {
+    const campaignId = parts[2] as string;
+    const body = (ctx.body ?? {}) as { lead_ids?: string[] };
+    if (!Array.isArray(body.lead_ids) || body.lead_ids.length === 0) {
+      return { status: 422, body: { error: "missing_lead_ids" } };
+    }
+    const campaignRows = await sql<{
+      id: string;
+    }>`select id from public.campaigns where id = ${campaignId}`;
+    if (!campaignRows[0]) return { status: 404, body: { error: "campaign_not_found" } };
+
+    let added = 0;
+    let skippedSuppressed = 0;
+    let skippedNotEligible = 0;
+    for (const leadId of body.lead_ids) {
+      const leadRows = await sql<{
+        id: string;
+        email: string | null;
+        phone: string | null;
+        status: string;
+      }>`
+        select id, email, phone, status from public.leads where id = ${leadId}
+      `;
+      const lead = leadRows[0];
+      if (lead?.status !== "new") {
+        skippedNotEligible += 1;
+        continue;
+      }
+      // Re-checked here, not just at fetch time — the suppression list can
+      // grow between lead-fetch and campaign-add (compliance rule).
+      if (await isSuppressed(sql, { email: lead.email, phone: lead.phone })) {
+        skippedSuppressed += 1;
+        continue;
+      }
+      await sql`
+        insert into public.send_events (campaign_id, lead_id, step_index, status)
+        values (${campaignId}, ${leadId}, 0, 'queued')
+      `;
+      await sql`update public.leads set status = 'queued' where id = ${leadId}`;
+      added += 1;
+    }
+
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "outreach_campaign_add_leads",
+        targetType: "campaign",
+        targetId: campaignId,
+        after: {
+          added,
+          skipped_suppressed: skippedSuppressed,
+          skipped_not_eligible: skippedNotEligible,
+        },
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return {
+      status: 200,
+      body: {
+        added,
+        skipped_suppressed: skippedSuppressed,
+        skipped_not_eligible: skippedNotEligible,
+      },
+    };
+  }
+
+  if (resource === "funnel" && ctx.method === "GET") {
+    const byStatus = await sql<{ status: string; count: number }>`
+      select status, count(*)::int as count from public.leads group by status
+    `;
+    const byIntent = await sql<{ ai_intent: string | null; count: number }>`
+      select ai_intent, count(*)::int as count from public.replies group by ai_intent
+    `;
+    return { status: 200, body: { leads_by_status: byStatus, replies_by_intent: byIntent } };
+  }
+
+  if (resource === "replies" && ctx.method === "GET" && !parts[2]) {
+    const rows = await sql<Record<string, unknown>>`
+      select r.id, r.body, r.ai_intent, r.received_at,
+             l.id as lead_id, l.company_name, l.contact_name, l.email, l.status as lead_status,
+             c.name as campaign_name
+      from public.replies r
+      join public.leads l on l.id = r.lead_id
+      left join public.send_events se on se.id = r.send_event_id
+      left join public.campaigns c on c.id = se.campaign_id
+      order by r.received_at desc
+      limit 200
+    `;
+    return { status: 200, body: { replies: rows } };
+  }
+
+  if (resource === "replies" && ctx.method === "POST" && parts[2] && parts[3] === "actions") {
+    const replyId = parts[2] as string;
+    const body = (ctx.body ?? {}) as { action?: string; tenant_id?: string };
+    const replyRows = await sql<{ id: string; lead_id: string }>`
+      select id, lead_id from public.replies where id = ${replyId}
+    `;
+    const reply = replyRows[0];
+    if (!reply) return { status: 404, body: { error: "reply_not_found" } };
+
+    const leadRows = await sql<{
+      id: string;
+      email: string | null;
+      phone: string | null;
+      contact_name: string | null;
+    }>`
+      select id, email, phone, contact_name from public.leads where id = ${reply.lead_id}
+    `;
+    const lead = leadRows[0];
+    if (!lead) return { status: 404, body: { error: "lead_not_found" } };
+
+    if (body.action === "mark_interested") {
+      if (!lead.email) return { status: 422, body: { error: "lead_has_no_email" } };
+      if (!deps.resend) return { status: 501, body: { error: "resend_not_configured" } };
+      // A direct send, not the tenant-scoped `messages_outbound` pipeline —
+      // this lead has no tenant yet (see AdminDeps.resend's docstring).
+      const rendered = renderTemplate("outreach_demo_followup", {
+        contact_name: lead.contact_name,
+        demo_url: "https://heyloo.ai/demo",
+      });
+      const sendResult = await sendEmail(deps.resend.fetchImpl, deps.resend.apiKey, {
+        from: deps.resend.fromAddress,
+        to: lead.email,
+        subject: rendered.subject ?? "See your AI receptionist in action",
+        html: `<p>${rendered.body}</p>`,
+      });
+      if (!sendResult.ok) return { status: 502, body: { error: "demo_followup_send_failed" } };
+      await sql`update public.leads set status = 'replied' where id = ${lead.id} and status <> 'converted'`;
+    } else if (body.action === "suppress") {
+      const contact = (lead.email ?? lead.phone)?.trim().toLowerCase();
+      if (contact) {
+        await sql`insert into public.suppression_list (contact, reason) values (${contact}, 'manual') on conflict (contact) do nothing`;
+      }
+      await sql`update public.leads set status = 'suppressed' where id = ${lead.id}`;
+    } else if (body.action === "convert") {
+      if (!body.tenant_id) return { status: 422, body: { error: "missing_tenant_id" } };
+      await sql`update public.leads set status = 'converted', converted_tenant_id = ${body.tenant_id} where id = ${lead.id}`;
+      await sql`update public.cac_events set tenant_id = ${body.tenant_id} where lead_id = ${lead.id} and tenant_id is null`;
+    } else {
+      return { status: 422, body: { error: "unknown_action" } };
+    }
+
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: `outreach_reply_${body.action}`,
+        targetType: "lead",
+        targetId: lead.id,
+        after: { reply_id: replyId, ...(body.tenant_id ? { tenant_id: body.tenant_id } : {}) },
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return { status: 200, body: { action: body.action, lead_id: lead.id } };
+  }
+
+  if (resource === "cac" && ctx.method === "GET") {
+    // Per-vertical CAC rollup (task's own wording) — distinct from `GET
+    // /admin-cac`'s channel-level rollup (T4, `handleCac` above): that
+    // group stays untouched (this build's exclusive admin/ surface is the
+    // Outreach group only), so the vertical view lives under this prefix
+    // instead of extending that one.
+    const rows = await sql<{
+      vertical: string | null;
+      total_cost_cents: number;
+      lead_count: number;
+      converted_tenant_count: number;
+    }>`
+      select
+        l.vertical,
+        sum(ce.cost_cents)::int as total_cost_cents,
+        count(distinct ce.lead_id)::int as lead_count,
+        count(distinct ce.tenant_id) filter (where ce.tenant_id is not null)::int as converted_tenant_count
+      from public.cac_events ce
+      join public.leads l on l.id = ce.lead_id
+      group by l.vertical
+      order by total_cost_cents desc
+    `;
+    return {
+      status: 200,
+      body: {
+        verticals: rows.map((r) => ({
+          ...r,
+          cac_cents:
+            r.converted_tenant_count > 0
+              ? Math.round(r.total_cost_cents / r.converted_tenant_count)
+              : null,
+        })),
+      },
+    };
+  }
+
+  return { status: 404, body: { error: "not_found" } };
+}
+
+const NOT_YET_IMPLEMENTED_PREFIXES = ["admin-support-requests", "admin-flags"];
 
 export async function routeAdminRequest(
   sql: SqlClient,
@@ -719,6 +1109,7 @@ export async function routeAdminRequest(
   if (first === "admin-referrals") return handleReferrals(sql, ctx);
   if (first === "admin-cac") return handleCac(sql, ctx);
   if (first === "admin-templates") return handleTemplates(sql, ctx, deps);
+  if (first === "admin-outreach") return handleOutreach(sql, ctx, deps);
 
   if (first && NOT_YET_IMPLEMENTED_PREFIXES.includes(first)) {
     logger.info("admin_route_not_yet_implemented", { path: ctx.path });

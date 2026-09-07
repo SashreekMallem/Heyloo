@@ -23,7 +23,8 @@ export type TemplateKey =
   | "referral_payout_receipt"
   | "dunning_payment_failed"
   | "reminder"
-  | "review_request";
+  | "review_request"
+  | "outreach_demo_followup";
 
 export interface RenderedMessage {
   subject?: string;
@@ -103,6 +104,13 @@ export function renderTemplate(
       return { body: `Reminder: you have an appointment ${str("start_local", "coming up")}.` };
     case "review_request":
       return { body: `Thanks for choosing us! Mind leaving a quick review? ${str("review_url")}` };
+    case "outreach_demo_followup":
+      return {
+        subject: "See your AI receptionist in action",
+        body:
+          `Hi ${str("contact_name", "there")} — thanks for your interest! Here's a live demo you can ` +
+          `try right now: ${str("demo_url")}`,
+      };
     default:
       return { body: "" };
   }

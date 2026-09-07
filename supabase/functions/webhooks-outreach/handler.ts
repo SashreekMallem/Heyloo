@@ -1,10 +1,15 @@
+import type { AnthropicFetch } from "../_shared/providers/anthropic.js";
+import { classifyReplyIntent } from "../_shared/providers/anthropic.js";
+import type { SmartleadFetch } from "../_shared/providers/smartlead.js";
+import { updateCampaignStatus } from "../_shared/providers/smartlead.js";
 import type { SqlClient } from "../_shared/types.js";
 
 /**
  * `/webhooks-outreach` background processing (BACKEND_SPEC §7.5). Provider
- * payload (Smartlead/Instantly) is normalized to this canonical shape by
- * the Deno `index.ts` before reaching here — VERIFY.md: exact provider
- * field names per BACKEND_SPEC §7.5's own flag.
+ * payload (Smartlead) is normalized to this canonical shape by the Deno
+ * `index.ts` before reaching here — VERIFY.md: field names for
+ * `EMAIL_REPLY`'s reply-body key specifically, and whether Smartlead
+ * exposes a distinct spam-complaint event at all, remain flagged.
  */
 export interface NormalizedOutreachEvent {
   campaign_external_id: string;
@@ -15,16 +20,33 @@ export interface NormalizedOutreachEvent {
   provider_message_id?: string;
 }
 
+/** Optional — reply classification and the provider-side campaign pause
+ * both degrade gracefully (skip, never throw) when unset, same convention
+ * as every other optional-deps group in this codebase (`admin/handler.ts`'s
+ * `AdminDeps`). */
+export interface OutreachEventDeps {
+  anthropic?: { fetchImpl: AnthropicFetch; apiKey: string; model: string };
+  smartlead?: { fetchImpl: SmartleadFetch; apiKey: string };
+}
+
 const COMPLAINT_AUTO_PAUSE_RATE = 0.003; // 0.3% — CAN-SPAM hard rule (SYSTEM_DESIGN §11)
 
 export async function processOutreachEvent(
   sql: SqlClient,
   event: NormalizedOutreachEvent,
+  deps: OutreachEventDeps = {},
 ): Promise<void> {
-  const campaignRows = await sql<{ id: string }>`
-    select id from public.campaigns where id::text = ${event.campaign_external_id} limit 1
+  const campaignRows = await sql<{
+    id: string;
+    provider: string;
+    external_campaign_id: string | null;
+  }>`
+    select id, provider, external_campaign_id from public.campaigns
+    where external_campaign_id = ${event.campaign_external_id} or id::text = ${event.campaign_external_id}
+    limit 1
   `;
-  const campaignId = campaignRows[0]?.id ?? null;
+  const campaign = campaignRows[0] ?? null;
+  const campaignId = campaign?.id ?? null;
 
   if (event.provider_message_id) {
     await sql`
@@ -44,13 +66,33 @@ export async function processOutreachEvent(
       : [];
     const sendEvent = sendEventRows[0];
     if (sendEvent) {
-      await sql`
+      const insertedReply = await sql<{ id: string }>`
         insert into public.replies (send_event_id, lead_id, body, received_at)
         values (${sendEvent.id}, ${sendEvent.lead_id}, ${event.body ?? ""}, ${event.occurred_at}::timestamptz)
+        returning id
       `;
-      // Claude intent classification runs fully async (a separate queue/job,
-      // not this webhook's concern) — `replies.ai_intent` stays null until
-      // that pass completes.
+      const replyId = insertedReply[0]?.id;
+
+      // Sync haiku classification (BACKEND_SPEC §1.8/§7.5) — a failed/
+      // unset classification leaves `ai_intent` null and the reply
+      // surfaces in an "unclassified" admin queue rather than guessing
+      // (API_AND_FLOWS.md A.5's documented failure-handling rule).
+      if (replyId && deps.anthropic) {
+        const intent = await classifyReplyIntent(
+          deps.anthropic.fetchImpl,
+          deps.anthropic.apiKey,
+          deps.anthropic.model,
+          event.body ?? "",
+        );
+        if (intent) {
+          await sql`update public.replies set ai_intent = ${intent} where id = ${replyId}`;
+        }
+      }
+
+      await sql`
+        update public.leads set status = 'replied'
+        where id = ${sendEvent.lead_id} and status not in ('suppressed', 'converted')
+      `;
     }
     return;
   }
@@ -79,6 +121,16 @@ export async function processOutreachEvent(
       const rate = rateRows[0]?.complaint_rate ?? 0;
       if (rate >= COMPLAINT_AUTO_PAUSE_RATE) {
         await sql`update public.campaigns set status = 'paused' where id = ${campaignId}`;
+        // Back the local flag with a real stop-sending call at the sender
+        // platform — never a local-DB-only pause (CAN-SPAM hard rule).
+        if (deps.smartlead && campaign?.provider === "smartlead" && campaign.external_campaign_id) {
+          await updateCampaignStatus(
+            deps.smartlead.fetchImpl,
+            deps.smartlead.apiKey,
+            campaign.external_campaign_id,
+            "PAUSED",
+          );
+        }
       }
     }
   }

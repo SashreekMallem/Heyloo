@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createLogger } from "../_shared/logger.js";
 import type { SqlClient } from "../_shared/types.js";
 import type { AdminRequestContext } from "./handler.js";
@@ -423,7 +423,11 @@ describe("routeAdminRequest — alerts group", () => {
 describe("routeAdminRequest — not-yet-implemented groups", () => {
   it("returns 501 (never a silent 200) for an unimplemented endpoint group", async () => {
     const { sql } = makeSql();
-    const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-outreach/leads" }), logger);
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-support-requests" }),
+      logger,
+    );
     expect(result.status).toBe(501);
   });
 
@@ -431,5 +435,272 @@ describe("routeAdminRequest — not-yet-implemented groups", () => {
     const { sql } = makeSql();
     const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-nonexistent" }), logger);
     expect(result.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Outreach group (T8 — BACKEND_SPEC §7.7). Was a `501` shell (T3); this
+// build completes it.
+// ---------------------------------------------------------------------
+function jsonRes(body: unknown, ok = true, status = 200): Response {
+  return {
+    ok,
+    status,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  } as unknown as Response;
+}
+
+describe("routeAdminRequest — outreach group", () => {
+  it("lists leads, optionally filtered by query params", async () => {
+    const { sql, calls } = makeSql({
+      "from public.leads": [{ id: "l1", status: "new", vertical: "legal" }],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-outreach/leads", query: { status: "new" } }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    expect((result.body as { leads: unknown[] }).leads).toHaveLength(1);
+    expect(calls[0]?.values).toContain("new");
+  });
+
+  it("adds a manual suppression entry", async () => {
+    const { sql, calls } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-outreach/suppression",
+        body: { contact: "a@example.com" },
+      }),
+      logger,
+    );
+    expect(result).toEqual({ status: 200, body: { suppressed: true } });
+    expect(calls.some((c) => c.text.includes("insert into public.suppression_list"))).toBe(true);
+  });
+
+  it("returns 501 for campaign create when outreach deps aren't configured", async () => {
+    const { sql } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-outreach/campaigns",
+        body: { name: "Q1 legal", sender_domain: "mail.heyloo.ai" },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(501);
+  });
+
+  it("creates a campaign via Smartlead and stores its external id", async () => {
+    const { sql, calls } = makeSql({ "insert into public.campaigns": [{ id: "camp_1" }] });
+    const fetchImpl = vi.fn(async () => jsonRes({ id: 555 })) as never;
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-outreach/campaigns",
+        body: { name: "Q1 legal", sender_domain: "mail.heyloo.ai" },
+      }),
+      logger,
+      {
+        outreach: {
+          smartleadFetchImpl: fetchImpl,
+          smartleadApiKey: "key",
+          canSpamFooter: "Acme, 123 Main St",
+        },
+      },
+    );
+    expect(result).toEqual({
+      status: 201,
+      body: { campaign_id: "camp_1", external_campaign_id: "555" },
+    });
+    expect(calls.some((c) => c.text.includes("insert into public.campaigns"))).toBe(true);
+  });
+
+  it("rejects a campaign create for an unsupported provider", async () => {
+    const { sql } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-outreach/campaigns",
+        body: { name: "x", sender_domain: "mail.heyloo.ai", provider: "instantly" },
+      }),
+      logger,
+      {
+        outreach: {
+          smartleadFetchImpl: vi.fn() as never,
+          smartleadApiKey: "key",
+          canSpamFooter: "footer",
+        },
+      },
+    );
+    expect(result).toEqual({ status: 422, body: { error: "unsupported_provider" } });
+  });
+
+  it("adds eligible, non-suppressed leads to a campaign and skips the rest", async () => {
+    const { sql, calls } = makeSql({
+      "from public.campaigns where id": [{ id: "camp1" }],
+      "from public.leads where id": [
+        { id: "l1", email: "a@example.com", phone: null, status: "new" },
+      ],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-outreach/campaigns/camp1/add-leads",
+        body: { lead_ids: ["l1"] },
+      }),
+      logger,
+    );
+    expect(result).toEqual({
+      status: 200,
+      body: { added: 1, skipped_suppressed: 0, skipped_not_eligible: 0 },
+    });
+    expect(calls.some((c) => c.text.includes("insert into public.send_events"))).toBe(true);
+  });
+
+  it("skips a suppressed lead on add-leads", async () => {
+    const { sql } = makeSql({
+      "from public.campaigns where id": [{ id: "camp1" }],
+      "from public.leads where id": [
+        { id: "l1", email: "a@example.com", phone: null, status: "new" },
+      ],
+      "from public.suppression_list": [{ id: "s1" }],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-outreach/campaigns/camp1/add-leads",
+        body: { lead_ids: ["l1"] },
+      }),
+      logger,
+    );
+    expect(result).toEqual({
+      status: 200,
+      body: { added: 0, skipped_suppressed: 1, skipped_not_eligible: 0 },
+    });
+  });
+
+  it("returns the reply feed and a funnel summary", async () => {
+    const { sql } = makeSql({
+      "from public.replies r": [{ id: "r1", body: "interested!", ai_intent: "interested" }],
+      "group by status": [{ status: "new", count: 3 }],
+      "group by ai_intent": [{ ai_intent: "interested", count: 1 }],
+    });
+    const repliesResult = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-outreach/replies" }),
+      logger,
+    );
+    expect(repliesResult.status).toBe(200);
+    const funnelResult = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-outreach/funnel" }),
+      logger,
+    );
+    expect(funnelResult.status).toBe(200);
+  });
+
+  it("suppresses a lead via the reply one-click action", async () => {
+    const { sql, calls } = makeSql({
+      "from public.replies where id": [{ id: "reply1", lead_id: "l1" }],
+      "from public.leads where id": [
+        { id: "l1", email: "a@example.com", phone: null, contact_name: "Jane" },
+      ],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-outreach/replies/reply1/actions",
+        body: { action: "suppress" },
+      }),
+      logger,
+    );
+    expect(result).toEqual({ status: 200, body: { action: "suppress", lead_id: "l1" } });
+    expect(calls.some((c) => c.text.includes("insert into public.suppression_list"))).toBe(true);
+    expect(calls.some((c) => c.text.includes("status = 'suppressed'"))).toBe(true);
+  });
+
+  it("converts a lead via the reply one-click action and closes the CAC loop", async () => {
+    const { sql, calls } = makeSql({
+      "from public.replies where id": [{ id: "reply1", lead_id: "l1" }],
+      "from public.leads where id": [
+        { id: "l1", email: "a@example.com", phone: null, contact_name: "Jane" },
+      ],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-outreach/replies/reply1/actions",
+        body: { action: "convert", tenant_id: "t1" },
+      }),
+      logger,
+    );
+    expect(result).toEqual({ status: 200, body: { action: "convert", lead_id: "l1" } });
+    expect(calls.some((c) => c.text.includes("converted_tenant_id"))).toBe(true);
+    expect(calls.some((c) => c.text.includes("update public.cac_events set tenant_id"))).toBe(true);
+  });
+
+  it("returns 501 for mark_interested when resend deps aren't configured", async () => {
+    const { sql } = makeSql({
+      "from public.replies where id": [{ id: "reply1", lead_id: "l1" }],
+      "from public.leads where id": [
+        { id: "l1", email: "a@example.com", phone: null, contact_name: "Jane" },
+      ],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-outreach/replies/reply1/actions",
+        body: { action: "mark_interested" },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(501);
+  });
+
+  it("sends a demo-followup email via Resend for mark_interested when configured", async () => {
+    const { sql, calls } = makeSql({
+      "from public.replies where id": [{ id: "reply1", lead_id: "l1" }],
+      "from public.leads where id": [
+        { id: "l1", email: "a@example.com", phone: null, contact_name: "Jane" },
+      ],
+    });
+    const fetchImpl = vi.fn(async () => jsonRes({ id: "email_1" })) as never;
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-outreach/replies/reply1/actions",
+        body: { action: "mark_interested" },
+      }),
+      logger,
+      { resend: { fetchImpl, apiKey: "key", fromAddress: "sales@heyloo.ai" } },
+    );
+    expect(result).toEqual({ status: 200, body: { action: "mark_interested", lead_id: "l1" } });
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(calls.some((c) => c.text.includes("status = 'replied'"))).toBe(true);
+  });
+
+  it("rolls up CAC per vertical", async () => {
+    const { sql } = makeSql({
+      "join public.leads l on l.id = ce.lead_id": [
+        { vertical: "legal", total_cost_cents: 500, lead_count: 5, converted_tenant_count: 1 },
+      ],
+    });
+    const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-outreach/cac" }), logger);
+    expect(result.status).toBe(200);
+    const body = result.body as { verticals: { cac_cents: number | null }[] };
+    expect(body.verticals[0]?.cac_cents).toBe(500);
   });
 });

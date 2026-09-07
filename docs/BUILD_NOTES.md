@@ -1337,3 +1337,232 @@ fixed, not apps/web-specific application bugs)**
 - The `leads.source` enum value and `referral_partners` FTC-disclosure
   columns T5 couldn't find in T1's migrations (see above) — needs a
   migration from whoever owns `supabase/migrations` next.
+
+## T8 — Outreach engine: lead fetch, Claude personalization, Smartlead
+## send, reply classification, admin outreach panel (Wave 3)
+
+**What was built** — exclusive paths per the task: `admin/` outreach
+endpoint group only, `api-outreach-*`, `job-outreach-*`,
+`_shared/providers/{apollo,outscraper,smartlead,anthropic}.ts`, plus one
+schema migration for genuine gaps found along the way.
+
+- **`_shared/providers/apollo.ts`** (new): `searchPeople` (`POST
+  /api/v1/mixed_people/api_search`, credit-free), `searchOrganizations`
+  (`POST /api/v1/mixed_companies/search`), `bulkEnrichOrganizations`
+  (`POST /api/v1/organizations/bulk_enrich`, up to 10 domains/call,
+  merge-only-on-match per A.5's "never block on a failed enrichment"
+  rule). **`_shared/providers/outscraper.ts`** (new): `startGoogleMapsSearch`
+  (`GET /maps/search-v3`, always `async=true`) + `pollGoogleMapsResults`
+  against the returned `results_location`. **`_shared/providers/
+  smartlead.ts`** (new): `createCampaign`, `addLeadsToCampaign` (up to 400/
+  call), `createWebhook`, `updateCampaignStatus` (`PATCH
+  /campaigns/{id}/status`, `START`/`PAUSED`/`STOPPED`) — MASTER_SPEC's
+  Smartlead-is-the-chosen-sender binding is implemented; Instantly is not
+  (schema still allows `campaigns.provider = 'instantly'`, but
+  `admin-outreach`'s campaign-create route rejects it with `422
+  unsupported_provider` rather than silently no-opping).
+  **`_shared/providers/anthropic.ts`** (extended, not duplicated): added
+  Message Batches API support (`createMessageBatch`/`getMessageBatch`/
+  `getMessageBatchResults`/`batchResultText`) and a sync
+  `classifyReplyIntent` helper. Every provider call is plain `fetch` (no
+  SDK), following T3's own established `_shared/providers/*.ts` pattern for
+  this Deno runtime — not a new decision, see that module's docstring.
+- **Rule 1 (docs-first) disclosure**: `docs.apollo.io`/`docs.smartlead.ai`/
+  `docs.outscraper.com` all returned `EGRESS_BLOCKED`/`ENOTFOUND` to
+  WebFetch in this build, exactly like every prior task's experience with
+  vendor doc sites — despite the task text asserting these specific docs
+  are reachable. WebSearch (server-side) was used instead per CLAUDE.md
+  Rule 1 item 2 and returned real, indexed summaries of each vendor's
+  current API reference for every endpoint used here (paths, auth scheme,
+  request/response field names) — every shape is logged in `docs/VERIFY.md`
+  with a confidence level, not assumed from training-data memory. Two
+  concrete gaps found this way and worth calling out: (1) Smartlead's
+  documented webhook event catalog (`EMAIL_SENT/OPEN/LINK_CLICK/REPLY/
+  BOUNCE`, `LEAD_UNSUBSCRIBED`, `LEAD_CATEGORY_UPDATED`) has **no distinct
+  spam-complaint event** — the CAN-SPAM 0.3% auto-pause rule (BACKEND_SPEC
+  §1.8) is fully implemented and unit-tested, but in production it can
+  currently only be triggered by a manual `POST /admin-outreach/replies/
+  :id/actions {action:"suppress"}`-style admin action or a future
+  bounce-rate proxy, never a live complaint webhook, until this is
+  reconfirmed; (2) the People Search endpoint is `/mixed_people/api_search`,
+  not the more obvious `/mixed_people/search` (the latter 403s on
+  non-enterprise plans per the indexed summary) — used deliberately.
+- **`api-outreach-fetch-leads`** (new function, standalone per the task's
+  own exclusive-paths list rather than folded into `admin/`): Apollo people
+  search or Outscraper Google Maps pull (caller picks `source` explicitly;
+  MASTER_PLAN's per-vertical default lives in the future admin UI, not
+  hard-coded server-side), optional Apollo org enrichment, dedup against
+  `suppression_list` + existing `leads` BEFORE insert (compliance rule),
+  drops any candidate with neither email nor phone before dedup (A.5:
+  "nothing to personalize toward"), writes `leads` rows + `pipeline_costs`
+  (`list_cost`, Outscraper's own documented "~$3/1,000 records" estimate)
+  + per-lead `cac_events` (`channel='cold_email'`, `tenant_id` left null
+  until conversion). Apollo credit-to-dollar cost is deliberately **not**
+  fabricated (A.5 itself says this needs the account's real plan to
+  convert) — enrichment facts are merged onto the lead regardless, no cost
+  row is written for an unknown $ amount.
+- **`job-outreach-personalize` + `job-outreach-personalize-collect`** (new,
+  two jobs not one — BACKEND_SPEC §1.8/Flow 5 step 3, MASTER_PLAN's "haiku
+  research -> sonnet hook" pattern): the Message Batches API is genuinely
+  asynchronous (results within hours), so a single cron invocation
+  submitting a batch and blocking on it would either time out or defeat the
+  point of the cheaper async API. The **submit** job scrapes+sanitizes
+  (G21, reusing `_shared/html-text.ts`/`sanitize.ts`) each queued lead's own
+  site when known, batches every such lead's `claude-haiku-4-5` "research"
+  request in ONE `createMessageBatch` call (`custom_id = leads.id`, so
+  results apply with no separate id-mapping table), and stamps
+  `leads.enrichment.research_batch_id`. The **collect** job polls every
+  in-flight batch id; once `processing_status: "ended"`, it runs the
+  `claude-sonnet-5` opening-line "hook" write per lead — as a **plain sync
+  call, not a second batch** (a deliberate scope decision: by the time a
+  batch ends, the lead set is already bounded to that one submit run, and a
+  third submit-then-poll stage adds real complexity for a marginal saving
+  on an already-cheap, short prompt) — stores
+  `leads.enrichment.personalization`, logs the ~$0.02/lead estimate
+  (SYSTEM_DESIGN §3) into `pipeline_costs`/`cac_events`, and pushes the
+  lead into Smartlead via `addLeadsToCampaign` (looked up through the
+  `send_events` row the admin's add-leads action created). A
+  `refusal`/error on either the research batch result or the hook call
+  falls back to a generic, non-personalized opener rather than ever
+  blocking the send (A.5's documented failure-handling rule, unit tested).
+- **`webhooks-outreach` completed, not duplicated** (task item 3 — read
+  T3's existing handler first, per instruction): `processOutreachEvent`
+  gained an optional `deps` parameter (back-compatible — every existing
+  T3 test still passes unmodified). On a reply, it now (a) runs
+  `classifyReplyIntent` synchronously on `claude-haiku-4-5` when Anthropic
+  deps are configured, storing `replies.ai_intent` (left null, surfacing in
+  an "unclassified" queue, on any failure — never guessed); (b) marks the
+  lead `status = 'replied'`. The complaint auto-pause now also calls
+  Smartlead's real `PATCH /campaigns/{id}/status` (`PAUSED`) when
+  Smartlead deps are configured — never a local-DB-only pause flag. The
+  Deno `index.ts`'s `normalizeProviderPayload` placeholder (T3's own
+  explicit "MUST be replaced before go-live" comment) is replaced with a
+  real Smartlead event-type mapping table; an event type this build
+  deliberately doesn't act on (`EMAIL_SENT`/`LEAD_CATEGORY_UPDATED`) now
+  acks with `200 {ignored:true}` rather than either mis-mapping it or
+  400ing (a 400 here would look like a broken webhook to Smartlead's own
+  retry logic).
+- **`admin/handler.ts` Outreach group completed** (was `501`, task item 4):
+  `GET/POST /admin-outreach/leads`, `POST /admin-outreach/suppression`
+  (manual add), `GET/POST/PATCH /admin-outreach/campaigns` (create runs the
+  real Smartlead campaign-create call and stores the returned external id;
+  status-change calls Smartlead's real status endpoint too), `POST
+  /admin-outreach/campaigns/:id/add-leads` (re-checks suppression — it can
+  grow between fetch-time and add-time — inserts a `send_events`
+  `step_index=0`/`status='queued'` row per lead, which is what the
+  personalize-collect job later joins through to find the right campaign),
+  `GET /admin-outreach/funnel`, `GET /admin-outreach/replies` (feed, joined
+  to leads/campaigns) + `POST /admin-outreach/replies/:id/actions`
+  (`mark_interested` sends a demo-followup email via a **direct Resend
+  call**, deliberately NOT through `messages_outbound`/`worker-messages-
+  outbound` — that table's `tenant_id` is `NOT NULL` and a cold-outreach
+  lead has no tenant yet, a real constraint conflict found while wiring
+  this; `suppress` inserts into `suppression_list` + flips lead status;
+  `convert` sets `leads.converted_tenant_id`/`status='converted'` and backs
+  the CAC loop by setting `cac_events.tenant_id` on that lead's existing
+  cost rows), and `GET /admin-outreach/cac` — a **per-vertical** CAC
+  rollup, deliberately a NEW route under the Outreach prefix rather than
+  extending T4's existing channel-level `GET /admin-cac`: the task scopes
+  this build to the Outreach group only within `admin/`, so T4's `handleCac`
+  function is untouched. `AdminRequestContext` gained an optional `query`
+  field (parsed `URLSearchParams`, wired in `admin/index.ts`) — the first
+  admin route to need query-string filtering; every existing route ignores
+  it, zero behavior change elsewhere. `AdminDeps` gained `outreach`
+  (Smartlead client + the CAN-SPAM footer text) and `resend` — both
+  all-or-nothing optional groups that degrade to a `501` (never a silent
+  200/guessed default) when unconfigured, matching the existing
+  `retell`/`supabaseAdmin` convention exactly. The stale test asserting
+  `/admin-outreach/*` returns `501` (T3's placeholder-era test) was updated
+  to point at `/admin-support-requests` instead, which is still a real
+  `501` (Support/Feature-flags remain out of this task's scope).
+- **Compliance, hard-coded (task item 5)**:
+  - CAN-SPAM footer: `admin-outreach`'s campaign-create/status-change
+    routes require `deps.outreach` (which bundles `canSpamFooter`, itself
+    required at env-var wiring time in `admin/index.ts`) — a campaign
+    literally cannot be created without this configured; the footer text
+    rides into Smartlead as a `custom_fields.can_spam_footer` merge
+    variable on every lead pushed by the personalize-collect job.
+  - Suppression checked before every lead add: enforced at BOTH points a
+    lead can be added — `api-outreach-fetch-leads`'s insert path and
+    `admin-outreach`'s add-to-campaign action (re-checked, since the list
+    can grow in between) — via one shared `_shared/lead-dedup.ts` used by
+    both.
+  - No AI-voice calling of leads: verified by inspection (`grep -rn
+    "leads\." supabase/functions/voice-*` and `_shared/providers/retell.ts`)
+    — `leads.phone` is read only for display/dedup in the outreach admin
+    surface and is never passed to `voice-inbound`/`voice-tools`/any
+    Retell call-creation path anywhere in this build. `handleOutreach`'s own
+    docstring states this invariant explicitly rather than leaving it
+    implicit.
+- **New migration** `20260907150000_t8_outreach_extensions.sql` (the one
+  migration this task's scope allows, following T4's own precedent of
+  adding exactly the schema this task's real integration work needs, no
+  more): `campaigns.external_campaign_id` (BACKEND_SPEC §1.8's `campaigns`
+  DDL has nowhere to store Smartlead's own campaign id — without it,
+  `/webhooks-outreach` has no real way to map an inbound webhook's
+  `campaign_id` back to a local row; T3's original handler assumed the
+  local uuid WAS the external id, which is never true against a real
+  Smartlead account) + a partial unique index on `(provider,
+  external_campaign_id)`; `leads.converted_tenant_id` (Flow 5 step 8 names
+  this column explicitly — "leads.converted_tenant_id set, closing the
+  loop" — and it didn't exist); lookup indexes on `leads(lower(email))`/
+  `leads(phone)`/`leads(converted_tenant_id)` for the dedup/CAC-rollup
+  query paths this task added.
+- **Tests**: 350/350 passing across the whole `supabase/functions/**`
+  surface (up from T4's 300 — every new file plus the two files this task
+  extended), `tsc -p tsconfig.json --noEmit` clean, `biome check
+  supabase/functions supabase/migrations` clean (the one remaining warning,
+  `useOptionalChain` in `webhooks-twilio-sms/handler.ts`, is pre-existing
+  T3 code this task didn't touch — confirmed via `git diff --stat`).
+
+**Deviations / gaps found (Rule 4 — documented, not silently guessed)**
+
+- Smartlead's documented event catalog has no spam-complaint webhook (see
+  Rule 1 disclosure above) — flagged in both `docs/VERIFY.md` and this
+  entry rather than left to look like the auto-pause rule "just works" in
+  production.
+- `campaigns.provider = 'instantly'` still passes the DB check constraint
+  (BACKEND_SPEC's own enum), but no Instantly adapter exists — the
+  admin-outreach campaign-create route explicitly rejects that value
+  (`422 unsupported_provider`) rather than silently accepting a provider
+  it can't actually call.
+- The reply-body field name inside Smartlead's real `EMAIL_REPLY` webhook
+  payload is genuinely unconfirmed (tried in priority order:
+  `reply_message`/`reply_body`/`email_body`/`message`) — flagged in
+  `docs/VERIFY.md`, needs a live sandbox delivery to confirm before
+  go-live.
+- The demo-agent generator itself (T9, concurrent/unbuilt at the time this
+  task ran) is not depended on — the "mark interested" reply action sends
+  a generic demo-followup email pointing at the public `/demo` marketing
+  page rather than minting a per-lead seeded demo agent, so this works
+  standalone regardless of T9's build order.
+- Apollo credit-to-dollar cost conversion (enrichment step) is not
+  fabricated — see above; whoever owns the CAC dashboard's accuracy next
+  should confirm the account's actual plan rate and wire a real
+  `pipeline_costs`/`cac_events` write for it.
+- `job-outreach-personalize-collect`'s hook-writing step is a synchronous
+  `claude-sonnet-5` call, not a second Batches API round-trip — a
+  deliberate scope decision (see above), not a missed opportunity; revisit
+  if per-lead volume grows enough that this stops being marginal.
+
+**Deferred / left for later tasks**
+
+- A live Smartlead sandbox account to actually confirm: the People
+  Search/webhook field names flagged above, whether
+  `custom_fields.opening_line` actually rides into a sequence's email body
+  as a merge variable (this build assumes Smartlead's own sequence-template
+  merge-field mechanism handles that — no sequence-step-authoring API is
+  called here), and the real webhook payload for every event type.
+  `docs/VERIFY.md` names every one of these explicitly.
+- Support/Outreach... — Feature flags (`admin-flags`) and Support
+  (`admin-support-requests`) remain `501`, out of this task's named scope.
+- A `join_waitlist`-style dedicated tool doesn't apply here, but the
+  analogous gap for outreach: no sequence/step-authoring UI exists yet
+  (campaign create makes an empty draft campaign at Smartlead; authoring
+  the actual email sequence steps is assumed to happen in the Smartlead
+  dashboard directly, not through this admin surface) — flagged as a real
+  product gap for whoever builds the outreach admin frontend.
+- Reconciling `send_events`/`campaigns` against a live Smartlead account's
+  real numeric campaign ids (this build treats `external_campaign_id` as
+  opaque `text`, storing whatever Smartlead returns verbatim) once a real
+  account exists.
