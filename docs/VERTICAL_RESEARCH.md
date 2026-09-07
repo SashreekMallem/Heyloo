@@ -76,9 +76,13 @@ validate with 10 discovery calls before committing the adapter.
 - **Home services** — despite Jobber's 100k accounts, deprioritized: Avoca
   ($125M raised, $1B valuation) owns this lane and Jobber's solo-crew users
   are the hardest $299/mo budget conversation.
-- **Motels via Cloudbeds** — **dropped from launch**: anchor confirmed too
-  small (2,337 US properties; 2% capture still misses $25k MRR). Revisit only
-  as fallback-mode territory or if a second PMS partnership lands.
+- **Motels — reinstated as a Wave-3 message-first vertical** (owner decision:
+  the message-first core is the primary product, so the Cloudbeds anchor size
+  no longer caps the market). All ~45k US motels are addressable via the
+  primary tier; the desk confirms reservation requests, or the agent quotes
+  from owner-maintained room/rate config. Cloudbeds's 2,337 US properties
+  stay relevant only as the deep-integration upsell. Outreach caveats stand:
+  thin mom-and-pop budgets, AAHOA/state-association lists rather than Apollo.
 
 ## What changed vs the original brief
 

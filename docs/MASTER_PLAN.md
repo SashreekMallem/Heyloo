@@ -69,7 +69,7 @@ original four):
 | 3 | Dental | `adapters/dental` | **NexHealth** (5k practices, no moat — rivals use it too); Retell BAA + validated onboarding required; enter only with a wedge |
 | 3 | Any-Square business | `adapters/square-bookings` | **Square Bookings API** — cheap add once Square auth exists |
 | Kept, not led | Restaurants | `adapters/restaurant` | **Square Orders** (ported; serves existing client + inbound only). Worst crowding, 3-5% margins, Toast partner-gated |
-| Dropped | Motels | — | **Cloudbeds confirmed too small** (2,337 US properties; 2% capture < $25k MRR). Fallback-mode territory only |
+| 3 | Motels | `adapters/motel` (opportunistic) | **Message-first vertical**: all ~45k US motels addressable via the primary tier (night-shift pain, low competition at sub-50-room tier); reservation requests confirmed by the desk, or quoted from owner-maintained room/rate config in our dashboard. **Cloudbeds** adapter (2,337 US properties) built as upsell when demand shows — too small to be the market, fine as the premium tier. Outreach caveats: mom-and-pop budgets, AAHOA/association lists instead of Apollo |
 | Dropped | Home services | — | Jobber's 100k accounts are spoken for: **Avoca ($125M, $1B valuation)** owns the lane; solo crews are the hardest $299 budget ask |
 
 **Product-tier decision (owner-confirmed): message-first core is PRIMARY,
