@@ -138,7 +138,12 @@ signup → Stripe Checkout → provision flow, with **fallback mode shipping
 first** (works for any business, no integration); build `adapters/autorepair`
 (Shopmonkey now; Tekmetric write-API verified week 1 and added as soon as
 confirmed) and `adapters/vet` (ezyVet); dashboard rebuilt vertical-neutral
-(tenant branding, role-guarded routes, error states, sane token handling).
+as a **live app**: real-time feed of calls and bookings via Supabase Realtime
+subscriptions (no refresh/polling), in-call "ringing now" indicator, new-booking
+ping with browser/push notification, transcripts + recordings attached to each
+call, booking status management (confirm/reschedule/cancel → triggers customer
+SMS), plus tenant branding, role-guarded routes, error states, and sane token
+handling.
 If the second Wave-1 adapter touches Layer 1 significantly, the abstraction
 is wrong — fix it before Wave 2. In parallel: port the Square restaurant
 adapter (fixing tax/fee omission, dedup, idempotency) to migrate the existing
