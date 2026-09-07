@@ -172,8 +172,13 @@ enrichment: `classification` (12-enum), `outcome`, `sentiment`,
 `call_successful`, `call_summary`, `follow_up_needed`, `urgency_flag`
 (set IN-call on red-flags, never waiting for post-call), `message_text`,
 `structured_booking_payload` (vertical schema), `extracted_entities`,
-`disconnection_reason`, latency fields, tool-call stats. Vertical custom
-post-call fields map to Retell's typed Bool/Text/Number/Enum extraction.
+`disconnection_reason`, latency fields, tool-call stats — **plus (from the
+old system's production experience): `state_trace` (which conversation-graph
+states the call visited — essential for debugging compiled flows),
+`variable_values` (the dynamic context the agent actually had at call
+time), and `stereo_recording_url` (dual-channel, for QA/disputes)**.
+Vertical custom post-call fields map to Retell's typed Bool/Text/Number/Enum
+extraction.
 
 ### 4.5 Conversation quality & disclosure rules
 
@@ -413,7 +418,64 @@ abuse, referral fraud, feature flags, tax-nexus tracking). **Low:** G37–41.
   tests at purchased concurrency · per-vertical pricing experiments ·
   scale toward 50 customers.
 
-## 14. Owner decisions (open)
+## 14. Carry-overs from the old codebase (salvage pass)
+
+The old system served a real restaurant customer; a dedicated salvage pass
+mined it for features/knowledge the rebuild should keep:
+
+**Features v2 lacked — now adopted:**
+- **Manual mode** (adopt as-is, generalized): a per-tenant "I'll handle it
+  myself" switch — dashboard banner, consequence-explaining confirm dialog,
+  CRUD unlocks, orders/bookings routed to SMS. This is the field-tested UI
+  for the message-first primary tier and a trust feature for nervous
+  first-week customers.
+- **Support tickets** (adopt redesigned): tenant-facing tickets linked to
+  call_id/booking, internal-vs-visible notes, status lifecycle — the paper
+  trail for the "transfer request"/"after-hours message" call classes.
+- **Tenant API tokens** (Phase 2/3, redesigned — hashed this time):
+  per-tenant external API access; a real differentiator for customers who
+  want to pull their own data.
+- **Customer segmentation** (adopt): VIP/Loyal/Returning/New by lifetime
+  activity on the customers page.
+- **Rich AI-context settings** (adopt into template dynamic variables):
+  manager name/phone, "special instructions for the AI" free text, parking
+  info, accessibility notes, prep time, delivery radius/minimums, accepted
+  payment types — real fields a real business needed.
+- **Assistant persona name** (adopt): owner names their AI; composes with
+  the mandatory disclosure — "Hi, this is Maria, the AI assistant for
+  Joe's Pizza — this call may be recorded."
+- **Adapter revocation handling** (adopt, generalized to all adapters):
+  on provider-side OAuth revocation webhook, mark connection disconnected +
+  dashboard banner — never silently fail future pushes.
+
+**Hard-won API knowledge preserved for the restaurant adapter port**
+(reference: `CLOVER_CRUD_DOCUMENTATION.md`, kept):
+- Clover: refresh at min(10% lifetime left, 1h); refresh tokens live 14
+  days and are ROTATED on every refresh (must save the new one); merchant_id
+  parsed from the access-token JWT or callback param, not the token
+  exchange; orders = create then POST line items individually, `unitQty`
+  not `quantity`, integer cents, never send `id`; webhooks carry no payload
+  (fetch the order after).
+- Square: catalog via POST /v2/catalog/search; price at
+  `variations[0].item_variation_data.price_money.amount`; delivery vs
+  pickup need different `fulfillments` shapes; webhook signature =
+  HMAC-SHA256(notificationUrl + rawBody), base64.
+
+**UX patterns worth reusing:** OAuth popup + triple-sent postMessage +
+meta-refresh fallback pages (with a FIXED origin check); auto-connect when
+one location / picker when many; reauthorize-updates-not-duplicates rule;
+secret-reveal-once modal; live call feed beside metric cards; collapsible
+sync-log viewer; single connection-lifecycle card (connect/reauth/
+disconnect/sync-now/last-sync); explanatory empty states; the date-range
+pill UI (rebuilt on tenant-timezone boundaries); the production SMS
+notification template wording; the atomic `ON CONFLICT ... DO UPDATE`
+daily-usage upsert shape.
+
+**Explicitly skipped:** Vapi Squads/per-business KBs (never actually built;
+the compiled state-graph + dynamic-variables design supersedes it), the
+hardcoded call-center KPI stubs (keep the vocabulary, not the fake numbers).
+
+## 15. Owner decisions (open)
 
 1. Referral $X + qualification rule (+ referred-customer free month?).
 2. Approve the per-vertical price card (§1) or launch flat $299.
