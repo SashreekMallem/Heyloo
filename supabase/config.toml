@@ -29,9 +29,19 @@ port = 54323
 
 [auth]
 enabled = true
-# Custom Access Token Hook (tenant_id in app_metadata) is wired in T1 —
-# SYSTEM_DESIGN §2/§6, CLAUDE.md Rule 2.
 site_url = "http://localhost:3000"
+
+# Custom Access Token Hook (tenant_id/role/platform_admin/referral_partner_id
+# in app_metadata) — SYSTEM_DESIGN §2/§6, CLAUDE.md Rule 2, BACKEND_SPEC
+# §3.1/§11.2. Function defined in
+# supabase/migrations/20260907131400_functions_triggers.sql. Verified
+# against current supabase.com/docs (Rule 1): the uri form is
+# pg-functions://<database>/<schema>/<function-name>; local dev requires a
+# `supabase stop && supabase start` cycle (not just `db reset`) to pick up
+# a config.toml hook change.
+[auth.hook.custom_access_token]
+enabled = true
+uri = "pg-functions://postgres/public/custom_access_token_hook"
 
 [storage]
 enabled = true
@@ -41,3 +51,11 @@ enabled = true
 
 [analytics]
 enabled = false
+
+# Seed data (supabase/seed/seed.sql) — platform_settings price cards + one
+# demo tenant per vertical with resources/offerings/hours for local dev.
+# Runs after all migrations, on first `supabase start` and every
+# `supabase db reset`. No real credentials — see supabase/seed/seed.sql header.
+[db.seed]
+enabled = true
+sql_paths = ['./seed/*.sql']

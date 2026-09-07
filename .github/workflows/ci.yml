@@ -81,19 +81,26 @@ jobs:
         if: steps.migrations.outputs.count != '0'
         with:
           version: latest
-      # T1 (supabase/migrations/) lands the real schema. Once migrations
-      # exist, this step lints them for schema errors and diffs local
-      # migration files against a linked/preview database — verify the
-      # exact flags against the current Supabase CLI docs
-      # (supabase.com/docs/reference/cli/supabase-db-lint,
-      # supabase-db-diff) before wiring the linked project (CLAUDE.md
-      # Rule 1). Until then this job no-ops cleanly so CI stays green.
-      - name: supabase db lint / diff
+      # `supabase start` applies every migration in supabase/migrations/ (in
+      # filename order) plus supabase/seed/*.sql against a fresh local
+      # Postgres in Docker (ubuntu-latest runners ship Docker preinstalled)
+      # — this is the real schema-syntax + FK/constraint + RLS-policy
+      # verification, not just a lint pass. `supabase db lint` then runs
+      # plpgsql_check against every schema in that already-running local
+      # database. --fail-on warning makes a real finding block the job
+      # (verified current flag/behavior against supabase.com/docs, Rule 1:
+      # default fail-on is "none", which would otherwise always exit 0).
+      - name: supabase start (applies all migrations + seed)
         if: steps.migrations.outputs.count != '0'
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        run: |
-          echo "::notice::${{ steps.migrations.outputs.count }} migration(s) found — wire 'supabase db lint'/'supabase db diff --linked' here once T1's schema lands and SUPABASE_ACCESS_TOKEN/project ref are configured."
+        run: supabase start
+      - name: supabase db lint
+        if: steps.migrations.outputs.count != '0'
+        run: supabase db lint --fail-on warning
+      # `supabase db diff --linked` (schema drift against a linked hosted
+      # project) is a separate, deliberately NOT-wired check: it needs a
+      # real Supabase project + SUPABASE_ACCESS_TOKEN/SUPABASE_PROJECT_ID
+      # repo secrets that don't exist yet at this stage of the build —
+      # tracked as a deploy-time follow-up in docs/DEPLOY.md, not a T1 gap.
       - name: No migrations yet
         if: steps.migrations.outputs.count == '0'
         run: echo "::notice::No migrations in supabase/migrations/ yet (T1) — nothing to lint. Placeholder job, no-op."
@@ -103,14 +110,47 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # Placeholder — CLAUDE.md Rule 2 requires this stay green and
-      # non-optional once wired: T1 adds the actual probe (a test that
-      # provisions two tenants, authenticates as one via a JWT carrying
-      # its tenant_id in app_metadata, and asserts every cross-tenant
-      # SELECT/INSERT/UPDATE/DELETE against the other tenant's rows
-      # returns 0 rows / is rejected by RLS). Until T1 lands there is no
-      # database to probe, so this job documents the contract and exits 0
-      # rather than silently skipping.
-      - name: Placeholder — wired in T1
+      - name: Check for migrations
+        id: migrations
         run: |
-          echo "::notice::RLS cross-tenant probe not yet wired — lands with the schema in T1 (supabase/migrations/, docs/BUILD_PLAN.md). This job is a placeholder so the CI shape (and the requirement that it stay green) is visible from commit one."
+          count=$(find supabase/migrations -maxdepth 1 -name '*.sql' | wc -l | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+      - uses: supabase/setup-cli@v3
+        if: steps.migrations.outputs.count != '0'
+        with:
+          version: latest
+      - uses: actions/setup-node@v7
+        if: steps.migrations.outputs.count != '0'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: supabase start (applies all migrations + seed)
+        if: steps.migrations.outputs.count != '0'
+        run: supabase start
+      # `supabase status -o env` prints the local project's connection
+      # details in shell-sourceable KEY=VALUE form (API_URL, ANON_KEY,
+      # SERVICE_ROLE_KEY, among others — verify current field names against
+      # `supabase status --help`/supabase.com/docs if this step starts
+      # failing to source correctly, Rule 1) — remapped here to the names
+      # scripts/ci/rls-cross-tenant-probe.ts reads (SUPABASE_URL,
+      # SUPABASE_PUBLISHABLE_KEY/SUPABASE_ANON_KEY,
+      # SUPABASE_SECRET_KEY/SUPABASE_SERVICE_ROLE_KEY — the script accepts
+      # either naming).
+      - name: Export local Supabase connection env
+        if: steps.migrations.outputs.count != '0'
+        run: |
+          supabase status -o env > /tmp/supabase-status.env
+          set -a
+          # shellcheck disable=SC1091
+          source /tmp/supabase-status.env
+          set +a
+          {
+            echo "SUPABASE_URL=$API_URL"
+            echo "SUPABASE_ANON_KEY=$ANON_KEY"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY"
+          } >> "$GITHUB_ENV"
+      - name: Run RLS cross-tenant probe
+        if: steps.migrations.outputs.count != '0'
+        run: node --experimental-strip-types scripts/ci/rls-cross-tenant-probe.ts
+      - name: No migrations yet
+        if: steps.migrations.outputs.count == '0'
+        run: echo "::notice::No migrations in supabase/migrations/ yet (T1) — nothing to probe. Placeholder job, no-op."
