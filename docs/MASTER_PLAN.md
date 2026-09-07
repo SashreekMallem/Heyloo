@@ -138,15 +138,15 @@ signup → Stripe Checkout → provision flow, with **fallback mode shipping
 first** (works for any business, no integration); build `adapters/autorepair`
 (Shopmonkey now; Tekmetric write-API verified week 1 and added as soon as
 confirmed) and `adapters/vet` (ezyVet); dashboard rebuilt vertical-neutral
-as a **live-feeling app via lightweight polling (owner decision: no Supabase
-Realtime/websockets)**: a per-tenant `last_activity` timestamp bumped by
-trigger on call/booking writes; the frontend polls only that tiny value
-(~10s interval + refetch-on-focus, TanStack Query) and refetches rows when
-it changes. New-booking/browser-push and SMS notifications fire server-side
-on the write itself, independent of polling. Transcripts + recordings
-attached to each call, booking status management (confirm/reschedule/cancel
-→ triggers customer SMS), plus tenant branding, role-guarded routes, error
-states, and sane token handling.
+as a **live app with update-triggered, tenant-scoped realtime (owner
+decision)**: a DB trigger on call/booking writes broadcasts a minimal
+"updated" event onto that tenant's **private Realtime channel only** —
+nothing fires unless their data changed, and nobody else receives it; the
+frontend refetches on the event (no polling loops, no postgres_changes
+fan-out). New-booking/browser-push and SMS notifications fire server-side on
+the write itself. Transcripts + recordings attached to each call, booking
+status management (confirm/reschedule/cancel → triggers customer SMS), plus
+tenant branding, role-guarded routes, error states, and sane token handling.
 If the second Wave-1 adapter touches Layer 1 significantly, the abstraction
 is wrong — fix it before Wave 2. In parallel: port the Square restaurant
 adapter (fixing tax/fee omission, dedup, idempotency) to migrate the existing
