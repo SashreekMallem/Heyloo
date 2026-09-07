@@ -5,8 +5,8 @@ import { z } from "zod";
  * JWT (`verify_jwt: true` in config.toml), never trusted from the body. */
 export const CheckoutRequestSchema = z.object({
   vertical: z.enum([
-    "auto_repair",
-    "veterinary",
+    "auto",
+    "vet",
     "legal",
     "dental",
     "real_estate",

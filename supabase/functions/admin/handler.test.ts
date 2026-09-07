@@ -55,7 +55,7 @@ describe("routeAdminRequest — tenants group", () => {
   it("lists tenants on GET /admin-tenants", async () => {
     const { sql } = makeSql({
       "from public.tenants where deleted_at": [
-        { id: "t1", name: "Acme", vertical: "auto_repair", status: "active" },
+        { id: "t1", name: "Acme", vertical: "auto", status: "active" },
       ],
     });
     const result = await routeAdminRequest(sql, baseCtx(), logger);
@@ -222,7 +222,7 @@ describe("routeAdminRequest — config-lab group", () => {
       baseCtx({
         method: "POST",
         path: "/admin-config-lab/simulate",
-        body: { vertical: "auto_repair", overage_cents: 50 },
+        body: { vertical: "auto", overage_cents: 50 },
       }),
       logger,
     );
@@ -312,7 +312,7 @@ describe("routeAdminRequest — cac group", () => {
 describe("routeAdminRequest — templates group", () => {
   const templateRow = {
     id: "tpl1",
-    vertical: "auto_repair",
+    vertical: "auto",
     version: 1,
     compile_target: "conversation_flow",
     system_prompt: "help callers",

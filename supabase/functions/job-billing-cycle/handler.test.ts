@@ -25,7 +25,7 @@ describe("billOneTenant", () => {
   const row = {
     tenant_id: "t1",
     stripe_customer_id: "cus_1",
-    vertical: "auto_repair",
+    vertical: "auto",
     price_version: "v1",
     base_cents: 9900,
     included_minutes: 500,

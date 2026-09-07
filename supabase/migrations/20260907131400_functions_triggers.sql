@@ -92,8 +92,8 @@ returns trigger language plpgsql as $$
 begin
   if new.avg_transaction_value_cents is null then
     new.avg_transaction_value_cents := case new.vertical
-      when 'auto_repair'   then 55000
-      when 'veterinary'    then 17500
+      when 'auto'   then 55000
+      when 'vet'    then 17500
       when 'legal'         then 250000
       when 'dental'        then 65000
       when 'real_estate'   then 800000

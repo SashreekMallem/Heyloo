@@ -43,7 +43,7 @@ describe("registerA2p", () => {
       [
         {
           name: "Joe",
-          vertical: "auto_repair",
+          vertical: "auto",
           a2p_status: "verified",
           a2p_messaging_service_sid: "MG1",
           a2p_campaign_sid: "CU1",
@@ -64,7 +64,7 @@ describe("registerA2p", () => {
       [
         {
           name: "Joe's Auto",
-          vertical: "auto_repair",
+          vertical: "auto",
           a2p_status: "pending_verification",
           a2p_messaging_service_sid: null,
           a2p_campaign_sid: null,
@@ -100,7 +100,7 @@ describe("registerA2p", () => {
       [
         {
           name: "Joe's Auto",
-          vertical: "auto_repair",
+          vertical: "auto",
           a2p_status: "pending_verification",
           a2p_messaging_service_sid: "MG1",
           a2p_campaign_sid: null,
@@ -118,7 +118,7 @@ describe("registerA2p", () => {
       [
         {
           name: "Joe's Auto",
-          vertical: "auto_repair",
+          vertical: "auto",
           a2p_status: "pending_verification",
           a2p_messaging_service_sid: "MG1",
           a2p_campaign_sid: "CU1",
@@ -137,7 +137,7 @@ describe("registerA2p", () => {
       [
         {
           name: "Joe's Auto",
-          vertical: "auto_repair",
+          vertical: "auto",
           a2p_status: "pending_verification",
           a2p_messaging_service_sid: "MG1",
           a2p_campaign_sid: "CU1",
@@ -161,7 +161,7 @@ describe("registerA2p", () => {
       [
         {
           name: "Joe's Auto",
-          vertical: "auto_repair",
+          vertical: "auto",
           a2p_status: "pending_verification",
           a2p_messaging_service_sid: null,
           a2p_campaign_sid: null,

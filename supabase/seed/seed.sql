@@ -16,8 +16,8 @@
 -- ===================================================================
 
 insert into public.platform_settings (key, value) values
-  ('price_card_auto_repair',  '{"base_cents":29900,"included_minutes":300,"overage_cents":35}'),
-  ('price_card_veterinary',   '{"base_cents":34900,"included_minutes":500,"overage_cents":40}'),
+  ('price_card_auto',  '{"base_cents":29900,"included_minutes":300,"overage_cents":35}'),
+  ('price_card_vet',   '{"base_cents":34900,"included_minutes":500,"overage_cents":40}'),
   ('price_card_legal',        '{"base_cents":39900,"included_minutes":300,"overage_cents":45}'),
   ('price_card_dental',       '{"base_cents":34900,"included_minutes":350,"overage_cents":40}'),
   ('price_card_real_estate',  '{"base_cents":34900,"included_minutes":150,"overage_cents":40}'),
@@ -37,7 +37,7 @@ on conflict (key) do update set value = excluded.value, updated_at = now();
 -- 2. Demo tenants (one per vertical) + resources/offerings/hours
 -- ===================================================================
 
--- ---- auto_repair --------------------------------------------------
+-- ---- auto --------------------------------------------------
 do $$
 declare
   v_tenant_id uuid;
@@ -45,7 +45,7 @@ declare
   v_bay2 uuid;
 begin
   insert into public.tenants (name, slug, vertical, business_type, timezone, business_hours)
-  values ('Demo Auto Repair', 'demo-auto-repair', 'auto_repair', 'Auto repair shop', 'America/New_York',
+  values ('Demo Auto Repair', 'demo-auto-repair', 'auto', 'Auto repair shop', 'America/New_York',
     '{"mon":[{"open":"08:00","close":"18:00"}],"tue":[{"open":"08:00","close":"18:00"}],
       "wed":[{"open":"08:00","close":"18:00"}],"thu":[{"open":"08:00","close":"18:00"}],
       "fri":[{"open":"08:00","close":"18:00"}],"sat":[{"open":"09:00","close":"13:00"}],"sun":[]}'::jsonb)
@@ -63,14 +63,14 @@ begin
   perform public.fn_regenerate_availability_slots(v_tenant_id, v_bay2);
 end $$;
 
--- ---- veterinary -----------------------------------------------------
+-- ---- vet -----------------------------------------------------
 do $$
 declare
   v_tenant_id uuid;
   v_room1 uuid;
 begin
   insert into public.tenants (name, slug, vertical, business_type, timezone, business_hours)
-  values ('Demo Veterinary Clinic', 'demo-veterinary', 'veterinary', 'Veterinary clinic', 'America/Chicago',
+  values ('Demo Veterinary Clinic', 'demo-vet', 'vet', 'Veterinary clinic', 'America/Chicago',
     '{"mon":[{"open":"08:00","close":"18:00"}],"tue":[{"open":"08:00","close":"18:00"}],
       "wed":[{"open":"08:00","close":"18:00"}],"thu":[{"open":"08:00","close":"18:00"}],
       "fri":[{"open":"08:00","close":"18:00"}],"sat":[{"open":"09:00","close":"12:00"}],"sun":[]}'::jsonb)

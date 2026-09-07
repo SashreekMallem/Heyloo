@@ -21,7 +21,7 @@ function makeDeps(overrides: Partial<Parameters<typeof handleCheckout>[3]> = {})
 }
 
 const VALID_BODY = {
-  vertical: "auto_repair",
+  vertical: "auto",
   business_name: "Joe's Auto",
   email: "joe@example.com",
 };

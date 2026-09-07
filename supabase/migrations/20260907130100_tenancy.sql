@@ -12,7 +12,7 @@ create table public.tenants (
   name text not null,
   slug text not null,
   vertical text not null
-    check (vertical in ('auto_repair','veterinary','legal','dental',
+    check (vertical in ('auto','vet','legal','dental',
                          'real_estate','motel','restaurant','generic')),
   business_type text,
   plan_code text not null default 'standard',
