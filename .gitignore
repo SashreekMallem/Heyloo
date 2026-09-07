@@ -40,3 +40,8 @@ logs/
 .playwright-mcp/
 test-results/
 playwright-report/
+# Saved auth storageState from the "setup" project (T9,
+# apps/web/tests/e2e/auth.setup.ts) — real (local-Supabase-only) session
+# tokens, never committed even though they're only ever valid against a
+# throwaway local `supabase start` instance.
+playwright/.auth/

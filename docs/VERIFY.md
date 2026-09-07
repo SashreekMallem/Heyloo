@@ -385,3 +385,32 @@ summary of that vendor's own current API reference pages, not memory.
 Already folded into the `## Anthropic` table above (Message Batches API row
 + the model-id row) rather than duplicated here — listed in this section
 header only so a reader searching "T8" finds the pointer.
+
+## T9 — Ops hardening (Sentry wiring, `supabase/functions/_shared/sentry.ts`)
+
+`develop.sentry.dev` (Sentry's own SDK/protocol documentation) returned
+`EGRESS_BLOCKED` to `WebFetch` in this build, matching every prior task's
+identical experience with vendor doc sites. `WebSearch` (server-side, not
+blocked) surfaced indexed summaries of Sentry's own publicly-documented
+Envelope protocol and DSN format, corroborated across multiple independent
+sources (Sentry's own developer-docs page titles, third-party
+fetch-based-reporter implementations for edge-adjacent runtimes like
+Cloudflare Workers, which face the identical "no full SDK" constraint this
+codebase does) — no first-party fetch, per CLAUDE.md Rule 1 item 2.
+
+| Item | Assumed shape | Confidence | Confirm against |
+|---|---|---|---|
+| DSN format | `https://<public_key>@<host>/<path_prefix>/<project_id>` — a standard-library-parseable URL (`new URL(dsn)`, username = public key, last path segment = project id, any remaining path = a self-hosted subpath prefix) | High — DSN's URL-shaped format is long-stable and independently confirmed across every SDK's own source/docs | Sentry project Settings → Client Keys (DSN), for a real DSN's exact shape |
+| Envelope endpoint | `POST https://<host><path_prefix>/api/<project_id>/envelope/` | High — consistently named across Sentry's developer docs and third-party summaries | `develop.sentry.dev`'s envelope/transport reference, once reachable |
+| Envelope wire format | Three newline-delimited JSON lines: envelope header (`{event_id, sent_at, dsn}`), item header (`{type: "event", content_type: "application/json"}`), event payload (`{event_id, timestamp, platform, level, logger, message: {formatted}, environment, release, tags, extra}`) | Medium-high — the three-line structure and header field names are independently confirmed via multiple indexed summaries of Sentry's own envelope spec; the exact permitted/expected key set on the innermost event payload (beyond what this build actually sends) was not exhaustively enumerated from a first-party source | Send one real event (see `docs/OPS_RUNBOOK.md` §2's verification step) and confirm it renders correctly in the Sentry Issues UI — the practical, sufficient confirmation for this build's actual usage (message-only events, no exception/stacktrace payloads) |
+| `Content-Type: application/x-sentry-envelope` on the POST body | Confirmed via an indexed summary explicitly naming this as the envelope endpoint's expected content type (with `text/plain`/form-encoded also accepted to minimize CORS preflights — irrelevant here, this is a server-to-server call) | High | Same as above |
+| Auth via the envelope header's own `dsn` field (rather than a separate `X-Sentry-Auth` header) | Confirmed via an indexed summary: "the Envelope endpoint allows authentication via an Envelope header by setting the dsn Envelope header to the full DSN string" | Medium-high — explicitly stated in an indexed developer-docs summary, not independently re-derived | Same as above — a `401`/`403` on the real test send would mean this auth path needs the additional `X-Sentry-Auth` header instead |
+
+**Code:** `supabase/functions/_shared/sentry.ts` (`parseDsn`,
+`envelopeEndpoint`, `buildErrorEnvelope`, `sendToSentry`), wired into
+`supabase/functions/_shared/logger.ts`'s `error()` path. Fail-open by
+design regardless of outcome here (see that file's own header comment) —
+a wrong assumption above means Sentry silently doesn't receive events, not
+that any function call breaks; still worth confirming per
+`docs/OPS_RUNBOOK.md` §2's manual verification step before relying on this
+for production alerting.

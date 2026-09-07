@@ -1,0 +1,181 @@
+# Launch Status
+
+Snapshot as of this build's last commit (T9, Wave 4 — ops hardening, deploy
+guide, E2E pass; see `docs/BUILD_NOTES.md`'s T9 entry for the full account).
+Three sections: what's built, what the owner still has to do, and an honest
+gaps list compiled from every prior task's own `docs/BUILD_NOTES.md`/
+`docs/VERIFY.md` disclosures — nothing here is new information, it's the
+consolidated version a launch decision actually needs.
+
+## What's built
+
+| Wave | Task | What it delivered | Tests |
+|---|---|---|---|
+| 0 | T0 | pnpm/Turborepo monorepo, strict TS, Biome, Vitest, base CI | smoke tests |
+| 1 | T1 | Full schema (49 tables), RLS on every table + CI cross-tenant probe, Custom Access Token Hook, seed data (8 verticals) | verified via direct SQL harness (no Docker in that build env — see its own entry) |
+| 1 | T2 | Canonical types, `VoiceProvider` interface, Retell adapter, template compiler (disclosure-gate enforced) | 126 (canonical-types) + 95 (adapter-retell) = 221 |
+| 1 | T3 | Voice hot path (`/voice-inbound`, `/voice-tools`'s 9 tools, `/voice-events`), all webhook consumers, admin router (2/9 groups), workers, cron jobs | 253 |
+| 2 | T4 | Stripe checkout/billing, 6 more admin groups, PayPal payouts, A2P registration, dunning, waitlist auto-book | 300 (cumulative) |
+| 2 | T5 | `apps/web` (every FRONTEND_SPEC surface), `packages/ui`, `packages/supabase-client`, realtime provider, 2 Playwright smoke specs | 4 (apps/web unit) + component tests across `packages/ui`/`supabase-client` |
+| 2 | T6 | 8 vertical agent templates, red-team adversarial suite, compiler-gate tests | 104 |
+| 3 | T8 | Outreach engine (Apollo/Outscraper fetch, Claude personalize, Smartlead send, reply classification), admin outreach panel | 350 (cumulative) |
+| 4 | **T9 (this task)** | Sentry wiring (`_shared/sentry.ts` + `logger.ts`, env-gated), `docs/OPS_RUNBOOK.md`, `docs/DEPLOY.md`, CI completion (`e2e`/`repo-hygiene` jobs, clean-build assertion, actionlint-clean), 3 new Playwright specs + auth infrastructure, `scripts/e2e-backend.ts` | 397 (`supabase/functions` cumulative, +20 from this task) |
+
+**Not yet done by any task** (real, not oversight): `packages/adapters/
+shopmonkey`/`ezyvet`/`google-calendar`/`square` and their webhook/two-way-
+sync wiring (Wave 3, T7 — confirmed in progress but uncommitted at the time
+this task ran; see below), `admin-support-requests`/`admin-flags` (still
+`501`), a `/webhooks-paypal` consumer, a dedicated health-check endpoint.
+
+Current total: **~726 tests passing** across
+`supabase/functions` (397) + `packages/canonical-types` (126) +
+`packages/adapters/retell` (95) + `packages/templates` (104) +
+`apps/web` (4), plus the CI-only `rls-cross-tenant-probe`/`migrations-check`/
+`db lint` checks that need a live Postgres (GitHub-hosted runners have
+Docker; this and every prior build agent's sandbox did not).
+
+**Concurrent work-in-progress at the time this task ran** (T7, adapters —
+explicitly out of this task's scope per its own instructions): `packages/
+adapters/square` fails `pnpm --filter @heyloo/adapter-square run typecheck`
+today (missing `zod`/`@heyloo/canonical-types` resolution — a mid-edit
+state, not a design flaw), and `supabase/functions/webhooks-pos/*` +
+`supabase/functions/_shared/providers/square.ts` + `pnpm-lock.yaml` carry
+uncommitted changes in this shared working tree. **Root `pnpm run
+typecheck`/`lint` are not green as of this commit for that reason** —
+confirmed via scoped runs that every file this task actually touched is
+clean (`biome check docs .github scripts apps/web/tests
+supabase/functions/_shared` → 0 errors; `tsc --noEmit` clean in
+`supabase/functions` and `apps/web`; the full `supabase/functions` Vitest
+suite — 397/397 — passes). This mirrors the exact situation T4's and T6's
+own BUILD_NOTES entries each independently observed and left alone, for the
+same reason: editing another task's in-progress files on a shared branch is
+out of scope, not this task's bug to fix.
+
+## What remains for the owner
+
+Everything in `docs/DEPLOY.md` §1 (accounts to create) and §4 (live
+Retell-sandbox VERIFY confirmations) — no build agent can create accounts,
+click through vendor dashboards, or sign legal agreements. In priority
+order (matching DEPLOY.md's own lead-time ordering):
+
+1. **Start Twilio A2P brand registration and Smartlead domain warm-up
+   today** — both have multi-day/multi-week lead time and should not be
+   the last thing blocking launch.
+2. **File the Retell support ticket** (`docs/DEPLOY.md` §4.1's seven
+   questions) — the highest-risk unconfirmed item in the whole codebase
+   (VERIFY-8, the Conversation-Flow wire schema) depends on this.
+3. Create every account in `docs/DEPLOY.md` §1, run `scripts/setup-
+   stripe.ts`, complete the deploy sequence in §3 (including the cron/queue
+   SQL registration in §3.6 — genuinely not wired anywhere in code, a
+   real one-time setup step).
+4. Run the live-sandbox VERIFY confirmations (§4.2) before the first real
+   template publish.
+5. Clear the counsel checklist (`docs/DEPLOY.md` §5) — several items block
+   product copy (the disclosure line, recording retention window) that's
+   compiled into every agent template, so resolve these before, not after,
+   onboarding real tenants.
+6. Run the go-live smoke checklist (`docs/DEPLOY.md` §6) end to end against
+   production before calling it launched.
+7. Set up uptime monitoring + a status page (`docs/OPS_RUNBOOK.md` §3-§4)
+   and do one dry-run of the backup/restore drill (§5) before the first
+   real tenant's data exists to lose.
+8. Merge T7's adapter work once it lands, resolve the root-gate red state
+   noted above, and decide whether to build the two remaining `501` admin
+   groups (Support, Feature flags) and a `/webhooks-paypal` consumer before
+   or after initial launch (none of these block a phone call from being
+   answered and billed correctly — they're operational-completeness items).
+
+## Known gaps (compiled from every task's own disclosures)
+
+Grouped by how much it matters at launch, not by which task found it —
+cross-referenced against `docs/VERIFY.md` and every `docs/BUILD_NOTES.md`
+entry's own "Deferred / left for later tasks" section, so nothing here is a
+new finding, only a consolidated one.
+
+### Would affect a real call/booking if unresolved
+
+- **VERIFY-8** (Retell Conversation-Flow/Retell-LLM wire field names) — see
+  above, the single highest-priority item.
+- **VERIFY-1** (Retell webhook signature scheme / which key actually signs
+  it) — a wrong assumption here means every inbound Retell webhook fails
+  closed (loud, not silent, but still blocks every call).
+- **`call_cost` unit/enum** (VERIFY-4) — unconfirmed cents-vs-dollars is a
+  real billing-accuracy risk, not cosmetic.
+- **Recording retention window** — no hard default shipped in code; an
+  explicit open item pending counsel input (`docs/SYSTEM_DESIGN.md` §15).
+- **No dedicated health-check endpoint** — `docs/OPS_RUNBOOK.md` §3's
+  uptime-monitoring workaround (expect `401` from `/voice-inbound`) is a
+  real but imperfect substitute.
+
+### Would affect billing/growth accuracy but not call-answering itself
+
+- **`/webhooks-paypal` consumer doesn't exist** — `job-referral-payouts`'s
+  success means "PayPal accepted the batch," not "every partner was
+  actually paid"; `referral_payouts.status` never advances past `'sent'`.
+- **Apollo credit-to-dollar conversion not implemented** — CAC dashboard
+  under-counts true Apollo spend until wired.
+- **Smartlead has no distinct spam-complaint webhook event** (per every
+  indexed source found) — the CAN-SPAM 0.3% auto-pause rule is fully built
+  and unit-tested but cannot fire from a live signal today, only a manual
+  admin action.
+- **Per-tenant fan-out on template publish** doesn't exist — publishing a
+  template update validates + publishes the template itself but does not
+  re-publish every already-provisioned tenant's own agent (needs a
+  rollout-strategy decision — all-at-once vs. staged/canary — not made
+  anywhere yet).
+- **`packages/supabase-client/database.types.ts` is hand-maintained**, not
+  generated from the live schema — a real drift risk with no CI check
+  tying the two together yet.
+
+### Operational completeness (nice-to-have before scaling past pilots)
+
+- `admin-support-requests`/`admin-flags` remain `501` (out of every task's
+  named scope so far).
+- `worker-adapter-push`'s adapter registry is empty until T7's Shopmonkey/
+  ezyVet/Google-Calendar/Square adapters land — every push currently
+  dead-letters after 6 attempts (by design, never silently "succeeds").
+- Tenant impersonation mints a real magic link when `supabaseAdmin` deps
+  are configured, but the exact GoTrue `generate_link` response field
+  nesting is unconfirmed against a live call (`_shared/providers/
+  supabase-admin.ts` checks both shapes defensively).
+- The `_shared/compiler/template-compiler.ts` vs.
+  `packages/adapters/retell/src/compiler/*` duplication (Deno/Node
+  workspace-package boundary) is tracked maintenance debt, not a
+  correctness risk today.
+- CI's `e2e` job (this task) only runs the unauthenticated Playwright
+  specs; the three authenticated ones (dashboard realtime, forwarding
+  wizard, admin AAL2) are real and pass a source-level review but were
+  never executed anywhere (no Docker/no browser install in any build
+  agent's sandbox) — run them for real, locally or in an expanded CI job,
+  before treating them as a release gate. Same for `scripts/e2e-backend.ts`.
+- Full Playwright execution has never happened in any build agent's
+  environment (`cdn.playwright.dev` is network-blocked in every sandbox
+  used across this entire build) — every spec in `apps/web/tests/e2e/` is
+  unexecuted-but-reviewed, not proven-passing, until run somewhere with
+  browser install + (for the authenticated specs) a local Supabase
+  instance.
+
+### Explicitly scoped out, not forgotten
+
+- A dedicated `join_waitlist` voice tool (waitlist requests currently route
+  through `take_message`).
+- An Instantly outreach adapter (Smartlead is the bound sender; Instantly
+  is explicitly rejected with `422` today).
+- Real-time in-audio card-number redaction (the payment-link flow avoids
+  the issue by design instead — confirm this is an acceptable substitute
+  with your PCI assessor, `docs/DEPLOY.md` §5).
+- A tenant-facing dental BAA flow (frontend + signed-document record) —
+  Retell's own BAA (§1.2) is separate from this and does not substitute for
+  it.
+
+## Related documents
+
+- `docs/DEPLOY.md` — accounts, env vars, deploy sequence, VERIFY resolution
+  workflow, counsel checklist, go-live smoke checklist.
+- `docs/OPS_RUNBOOK.md` — logging conventions, Sentry, uptime monitoring,
+  incident/status-page automation, backup/restore drills, break-glass
+  continuity.
+- `docs/VERIFY.md` — every external-API-shape assumption, by task, with
+  confidence level and what to confirm before relying on it.
+- `docs/BUILD_NOTES.md` — the full build history, task by task, including
+  every deviation from spec and why.

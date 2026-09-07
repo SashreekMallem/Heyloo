@@ -66,6 +66,104 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
+      # Clean-build assertion (T9): a real build must never write a
+      # tracked-and-then-modified file, or drop a new untracked file
+      # outside the already-gitignored build-output directories
+      # (dist/.next/.turbo/*.tsbuildinfo — CLAUDE.md Rule 3, "no committed
+      # build output"). `git status --porcelain` is empty iff nothing
+      # changed relative to the checked-out commit.
+      - name: Assert build left the working tree clean
+        run: |
+          dirty=$(git status --porcelain)
+          if [ -n "$dirty" ]; then
+            echo "::error::pnpm run build modified/added tracked-relevant files — build output must stay gitignored:"
+            echo "$dirty"
+            exit 1
+          fi
+          echo "Working tree clean after build."
+
+  repo-hygiene:
+    name: Repo hygiene (large files, no stray compiled JS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Large-file guard (CLAUDE.md Rule 3 — "no committed build output,
+      # binaries"). Scoped to this build's own tree (`legacy/` is the
+      # pre-existing old codebase kept read-only for reference —
+      # SYSTEM_DESIGN §14 — and predates this rule; it is deliberately not
+      # policed here). Threshold: 1MB, matching this task's brief.
+      - name: Large file guard (>1MB, excluding legacy/)
+        run: |
+          large=$(git ls-files -z \
+            | grep -zv '^legacy/' \
+            | xargs -0 -I{} sh -c 'test -f "{}" && stat -c "%s %n" "{}"' 2>/dev/null \
+            | awk '$1 > 1048576 {print}')
+          if [ -n "$large" ]; then
+            echo "::error::Tracked file(s) over 1MB found outside legacy/ (bytes, path):"
+            echo "$large"
+            exit 1
+          fi
+          echo "No tracked file outside legacy/ exceeds 1MB."
+      # No-stray-JS guard (CLAUDE.md Rule 3 — "no compiled-JS siblings").
+      # Flags a committed `.js` file sitting next to a same-named `.ts`/
+      # `.tsx` source file — the old repo's own failure mode this rule
+      # exists to prevent. `legacy/` excluded for the same reason as above.
+      - name: No stray compiled .js next to .ts/.tsx source (excluding legacy/)
+        run: |
+          stray=""
+          for f in $(git ls-files '*.js' | grep -v '^legacy/'); do
+            base="${f%.js}"
+            if [ -f "${base}.ts" ] || [ -f "${base}.tsx" ]; then
+              stray="${stray}${f}\n"
+            fi
+          done
+          if [ -n "$stray" ]; then
+            echo "::error::Compiled .js file(s) committed next to their .ts/.tsx source:"
+            printf '%b' "$stray"
+            exit 1
+          fi
+          echo "No stray compiled .js siblings found."
+
+  e2e:
+    name: Playwright E2E (apps/web)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install Playwright Chromium
+        run: pnpm --filter web exec playwright install --with-deps chromium
+      # Deliberately NOT running `supabase start` here (T9) — the
+      # authenticated specs (dashboard-realtime, forwarding-wizard,
+      # admin-aal2-authenticated) self-skip whenever
+      # `isLocalSupabaseReachable()` is false (apps/web/tests/e2e/support/
+      # auth-state.ts), which is exactly this job's situation, so they no-op
+      # cleanly rather than failing. Wiring a real `supabase start` +
+      # `supabase functions serve` here is future work if a maintainer wants
+      # full authenticated coverage in CI — see docs/DEPLOY.md's E2E section
+      # and docs/BUILD_NOTES.md's T9 entry for exactly what that would need.
+      - name: Run Playwright specs
+        working-directory: apps/web
+        env:
+          # `next build`/`next start` need *some* value for these (see
+          # src/lib/env.ts) — intentionally unreachable placeholders, never
+          # a real project, matching apps/web/.env.local's own local-dev
+          # placeholders. `SUPABASE_URL`/`SUPABASE_SECRET_KEY` are
+          # deliberately left UNSET here — that pair (not mere presence, but
+          # a `127.0.0.1`/`localhost` host) is what
+          # `isLocalSupabaseReachable()` gates the authenticated specs on;
+          # setting them to a placeholder pair would make those specs try to
+          # reach that placeholder host instead of skipping cleanly. See
+          # apps/web/tests/e2e/support/auth-state.ts.
+          NEXT_PUBLIC_SUPABASE_URL: "https://placeholder.supabase.co"
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_placeholder"
+          SIGNUP_DRAFT_SECRET: "ci-placeholder-secret-not-for-prod"
+          APP_BASE_URL: "http://localhost:3000"
+        run: pnpm exec playwright test
 
   migrations-check:
     name: Migrations check

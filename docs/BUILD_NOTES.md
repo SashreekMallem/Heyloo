@@ -1566,3 +1566,281 @@ schema migration for genuine gaps found along the way.
   real numeric campaign ids (this build treats `external_campaign_id` as
   opaque `text`, storing whatever Smartlead returns verbatim) once a real
   account exists.
+
+## T9 — Ops hardening, deploy guide, E2E pass (Wave 4)
+
+**Note on numbering**: this task corresponds to `docs/BUILD_PLAN.md`'s
+Wave 4 **T10+T11** (ops wiring + `docs/DEPLOY.md`, and the E2E pass),
+combined into one assignment and labeled "T9" by the orchestrating
+session — a different thing from BUILD_PLAN's own Wave 3 "T9 demo-agent
+generator," which turned out to already be covered by T3's
+`api-demo-agent` edge function + T5's `/demo` frontend flow (confirmed by
+reading both — no separate demo-agent task was needed). Flagging this
+once here so a future reader searching BUILD_NOTES for "T9" isn't
+confused by the two different meanings.
+
+**Exclusive paths per this task's own scope**: `docs/`, `.github/
+workflows/`, `apps/web/tests/`, `scripts/`, and `supabase/functions/
+_shared/` only (for Sentry/logging wiring). Did not touch `packages/
+adapters/**`, `webhooks-pos`, `worker-adapter-push`, the admin outreach
+group, `api-outreach-*`, or `_shared/providers/{shopmonkey,ezyvet,
+google-calendar,square,apollo,outscraper,smartlead,anthropic}` — T7's
+in-progress, uncommitted work at the time this task ran (see "Concurrent
+WIP" below).
+
+**What was built**
+
+- **Sentry wiring, env-gated** (`supabase/functions/_shared/sentry.ts`,
+  new): a dependency-free Sentry error reporter over the public Envelope
+  HTTP API — no `@sentry/*` SDK (same Deno/Node-workspace-boundary
+  rationale every `_shared/providers/*.ts` module already documents).
+  `parseDsn`/`envelopeEndpoint`/`buildErrorEnvelope` are pure and unit
+  tested without any network call; `sendToSentry` is the one impure
+  fire-and-forget fetch wrapper, swallowing every failure (a Sentry outage
+  must never become the application's own failure). Wired transparently
+  into `_shared/logger.ts`: every one of the 20+ functions that already
+  call `createLogger({ fn: "..." })` gets Sentry reporting on `.error()`
+  automatically, with zero call-site changes anywhere outside `_shared/`
+  — the only path this task's `_shared/`-only scope actually allows for
+  "wiring in" a cross-cutting concern used by every function. Inert
+  (zero network calls, zero behavior change) whenever `SENTRY_DSN` is
+  unset, which is every existing test's situation. A logger's fixed
+  `base` fields become Sentry `tags`; a given `.error()` call's `fields`
+  become `extra` context — documented as the low-/high-cardinality split
+  in `docs/OPS_RUNBOOK.md` §1. 20 new tests (`_shared/sentry.test.ts` +
+  `_shared/logger.test.ts`), the full `supabase/functions` suite stays
+  green (397/397 after this change, up from 350 — T8's own count plus
+  this task's 20 plus whatever T7's in-progress WIP contributes to the
+  same shared working tree's test run).
+- **`docs/DEPLOY.md`** (new, the flagship deliverable): every account to
+  create in lead-time order (Twilio A2P first — multi-day lead time —
+  then Retell incl. a concrete 7-question support-ticket list synthesized
+  from `docs/VERIFY.md`'s actual open items plus SYSTEM_DESIGN §13's named
+  Week-0 ticket topics, since no literal "7 questions" list exists
+  verbatim anywhere in the specs; Supabase, Vercel, Stripe incl. running
+  `scripts/setup-stripe.ts`, PayPal, Resend, Apollo, Outscraper, Smartlead
+  incl. sending-domain warm-up, PostHog, Sentry, Anthropic, Airtable),
+  every `.env.example` var mapped to its source, the exact deploy sequence
+  (`supabase db push` → secrets → `functions deploy` respecting
+  `config.toml`'s per-function `verify_jwt` → `scripts/setup-stripe.ts` →
+  **cron/queue registration SQL**, a genuine gap this task found and
+  documents concretely below → Vercel setup incl. region pinning), the
+  `docs/VERIFY.md` resolution workflow (which items need a live Retell
+  sandbox test and exactly how to run each), a counsel checklist (BIPA,
+  recording consent, HIPAA BAA chain, TCPA, CAN-SPAM, PCI, FTC/1099, DPA),
+  and a 10-step go-live smoke checklist (signup → test call → booking →
+  SMS → dashboard → margin-cockpit row → billing → uptime monitor →
+  status page).
+- **`docs/OPS_RUNBOOK.md`** (new): structured-logging conventions (event-
+  name `msg` style, low-/high-cardinality field discipline, level
+  discipline, what never to log), the Sentry setup + verification
+  procedure, uptime-monitoring setup (concrete tool + exact request/
+  expected-status config — see the `/voice-inbound` gap noted below),
+  incident/status-page automation (wired to the uptime monitors from
+  §3 plus a pointer to `job-retell-health-failover`'s already-built
+  business-continuity fallback), a quarterly backup/restore drill
+  (step-by-step: scratch project → restore → re-run `scripts/ci/
+  rls-cross-tenant-probe.ts` against it as a real structural sanity check,
+  not just "the restore didn't error" → deploy functions → tear down), and
+  solo-founder break-glass continuity (a named trusted contact, a
+  password-manager vault, explicitly NOT a standing extra admin credential
+  inside the product).
+- **CI completion** (`.github/workflows/ci.yml`): a **clean-build
+  assertion** appended to the existing `build` job (`git status
+  --porcelain` must be empty after `pnpm run build` — verified this
+  actually holds on the real repo before adding it as a gate); a new
+  **`repo-hygiene`** job (large-file guard >1MB and no-stray-compiled-.js-
+  next-to-.ts guard, both scoped to exclude `legacy/` — confirmed by
+  running both checks directly against the real repo first: `legacy/`
+  genuinely does carry two >1MB `.glb` binary files, predating these
+  rules, so excluding it was necessary, not just cautious; the rest of the
+  tree is clean today, both checks pass); a new **`e2e`** job (installs
+  Playwright's Chromium, builds+starts `apps/web` with placeholder-but-
+  functional env vars mirroring `apps/web/.env.local`'s own local-dev
+  convention, runs the full Playwright suite — deliberately does NOT run
+  `supabase start`, so the three new authenticated specs below self-skip
+  cleanly rather than trying to reach a placeholder Supabase host, which
+  was confirmed to be the actual risk during design: see `apps/web/tests/
+  e2e/support/auth-state.ts`'s `isLocalSupabaseReachable()`, which checks
+  for a real `127.0.0.1`/`localhost` `SUPABASE_URL`, not mere truthiness,
+  specifically because this CI job's own placeholder env vars would
+  otherwise satisfy a naive truthiness check and hang the job). Validated
+  the whole workflow file with `actionlint` (downloaded directly for this
+  task, v1.7.7 — zero findings) and a plain YAML parse, since no
+  `actionlint` binary was pre-installed.
+- **Playwright E2E expansion** (`apps/web/tests/e2e/`): three new specs —
+  `dashboard-realtime.spec.ts` (a real service-role `call_logs` INSERT,
+  asserting the tenant-scoped realtime broadcast lands a new row on
+  `/dashboard/calls` without a page reload — the missing end-to-end leg of
+  T5's own already-unit-tested `TenantRealtimeProvider`), `admin-aal2.spec.ts`
+  + `admin-aal2-authenticated.spec.ts` (unauthenticated redirect coverage
+  for two nested `/cockpit` routes, plus the one authenticated AAL2-adjacent
+  branch that's actually scriptable without programmatically enrolling a
+  real TOTP factor: a fresh `platform_admins` row with no verified MFA
+  factor yet correctly lands on `/mfa/enroll`), and
+  `forwarding-wizard.spec.ts` (an active tenant owner reaches `/signup/
+  forwarding` and sees real server-fetched wizard content). All three
+  need a real session past `middleware.ts`'s server-side `supabase.auth.
+  getUser()` call — confirmed by reading the source that this cannot be
+  satisfied by browser-level `page.route()` mocking (the same limitation
+  T5's own BUILD_NOTES entry already found for the signup wizard's step 2),
+  so this task built the **correct** fix instead of a workaround: a
+  Playwright "setup project" (`auth.setup.ts`, Playwright's own documented
+  auth pattern) that provisions real test users against a **real** local
+  `supabase start` instance (`support/provision-test-users.ts`, dependency-
+  free `fetch`-based admin-API calls, mirroring `scripts/ci/rls-cross-
+  tenant-probe.ts`'s established convention) and logs each in through the
+  **real** `/login` form in a real browser — never a fabricated session
+  cookie (which would mean guessing at `@supabase/ssr`'s internal cookie
+  encoding, an unnecessary and fragile risk this task deliberately avoided).
+  `playwright.config.ts` gained a `setup`/`chromium` project split with a
+  `dependencies` edge, so the authenticated specs' `storageState` files
+  exist by the time they run — but only when `auth.setup.ts`'s own tests
+  didn't self-skip. `support/auth-state.ts`'s `authStorageState()` helper
+  additionally guards against a nonexistent storageState file crashing
+  browser-context creation (as opposed to a clean `test.skip()`, which runs
+  too late to prevent that).
+- **`scripts/e2e-backend.ts`** (new): a non-Playwright backend E2E smoke —
+  real signed Retell webhook HTTP requests (the exact `X-Retell-Signature:
+  v=...,d=...` scheme `_shared/retell-signature.ts` verifies, re-implemented
+  here with `node:crypto` since `scripts/` stays dependency-free by
+  established convention) against the real `/voice-tools` and `/voice-
+  events` functions, asserting real Postgres state afterward: `check_
+  availability` returns real generated slots (via a real `fn_regenerate_
+  availability_slots` RPC call, not hand-crafted rows), `create_booking`'s
+  idempotency key is honored on an identical retry (same booking_id, no
+  duplicate/constraint error), and `/voice-events`'s `call_ended` handling
+  — fast-ack then background cost-ingestion (polled for, since it's
+  genuinely async behind `EdgeRuntime.waitUntil`) plus webhook-dedup (an
+  identical redelivery must not double-process) — all verified end to end.
+  Every field name/response shape used here (`{result: {...}}` envelope,
+  `confirmed`/`booking_id`, `fn_regenerate_availability_slots`'s exact
+  `p_tenant_id`/`p_resource_id` parameter names) was cross-checked directly
+  against the real handler/migration source before being written, not
+  assumed from the spec docs' prose — this is the one place in this task
+  where that extra verification step caught nothing wrong, which is itself
+  worth recording: the existing T3/T4 implementations matched their own
+  spec text exactly.
+- Small deferred-fix pass: `.env.example` gained `SENTRY_ENVIRONMENT`/
+  `SENTRY_RELEASE` (the two new env vars `_shared/sentry.ts`/`logger.ts`
+  actually read, previously undocumented — CLAUDE.md Rule 3 requires every
+  var to have a comment); `.gitignore` gained `playwright/.auth/` (the
+  saved-storageState directory the new auth infrastructure writes real,
+  if throwaway-local-only, session tokens into — must never be committed).
+
+**Root-gate status (task item 6) — concurrent T7 WIP confirmed, documented
+rather than worked around**
+
+Root `pnpm run typecheck`/`lint` are **not** green as of this commit.
+Root cause confirmed directly (not assumed): `pnpm --filter
+@heyloo/adapter-square run typecheck` fails with 19 errors (`Cannot find
+module 'zod'`/`'@heyloo/canonical-types'`, missing Node lib types) — a
+mid-edit package state, and `git status --porcelain` shows uncommitted
+changes to `supabase/functions/webhooks-pos/handler.ts`+`.test.ts`,
+`supabase/functions/_shared/providers/square.{ts,test.ts}`, and
+`pnpm-lock.yaml` sitting in this shared working tree. All of these are
+explicitly T7's named exclusive paths per this task's own instructions
+("skip anything touching files T7/T8 are working on... packages/adapters,
+webhooks-pos, worker-adapter-push... DO NOT touch those") and were left
+untouched. Verified this task's own surface is fully clean in isolation:
+`biome check docs .github scripts apps/web/tests supabase/functions/
+_shared` → 0 errors (`git ls-files` confirms none of those T7 paths are
+under any directory this command touches); `tsc --noEmit` clean in both
+`supabase/functions` and `apps/web`; the complete `supabase/functions`
+Vitest suite (397 tests) and every other package's suite (`canonical-types`
+126, `adapter-retell` 95, `templates` 104, `web` 4) all pass. This mirrors
+exactly what T4's and T6's own BUILD_NOTES entries each already documented
+for the mirror-image situation (a concurrent task's in-progress files
+looking like breakage from the outside) — not re-litigated as a bug to fix
+here, since fixing T7's in-progress package is outside this task's
+exclusive paths on a shared branch.
+
+**Deviations / gaps found (Rule 4 — documented, not silently guessed)**
+
+- **No pg_cron schedule or pgmq queue is registered anywhere in this
+  codebase** — confirmed directly (`grep -rn "cron.schedule\|pgmq\."
+  supabase/migrations/*.sql` returns nothing): every migration only
+  creates the `pg_cron`/`pgmq`/`pg_net` extensions (T1's own entry already
+  flagged this as intentionally out of its scope; T3/T4's entries assumed
+  "T3/T4 own the actual queue/cron wiring" without either actually adding
+  it). This is a genuine, real gap this task found and closed the only way
+  available within its own paths: `docs/DEPLOY.md` §3.6 now carries the
+  exact, copy-pasteable `pgmq.create`/`cron.schedule` SQL for every queue
+  and every job's real cadence (cross-referenced from each function's own
+  `index.ts` docstring, e.g. `job-billing-cycle`'s `0 1 * * *`,
+  `job-retell-health-failover`'s every-2-minutes) — a migration would have
+  been the more idiomatic home for this, but `supabase/migrations/` is
+  outside this task's exclusive paths on a branch where schema ownership
+  belongs to other tasks; flagged here explicitly rather than silently
+  worked around.
+- **No dedicated health-check endpoint exists** — `/voice-inbound` is
+  POST-only and requires a real signed body to return `200`; confirmed by
+  reading `voice-inbound/index.ts` directly (`405` on any `GET`). Adding a
+  proper `GET /health` function would mean creating a new function
+  directory outside `supabase/functions/_shared/`, outside this task's
+  exclusive paths — documented as a real, recommended follow-up in
+  `docs/OPS_RUNBOOK.md` §3 instead, with a concrete interim workaround
+  (monitor for a stable `401` on an unsigned POST, which proves the
+  function is deployed and reachable without needing a real Retell
+  payload) that this task verified is at least a meaningful liveness
+  signal, not a guess.
+- **PayPal webhook consumer scoped out, not built** — the orchestrating
+  session's own task text named this as a candidate "small deferred fix,"
+  but on inspection it would need a new function directory (outside
+  `_shared/`), `supabase/config.toml` wiring, and real webhook-signature-
+  verification design work (PayPal's payout-item event shapes) — not
+  "small" by CLAUDE.md Rule 2's own bar for a webhook consumer (verify →
+  dedup → fast-ack, fail closed), and adjacent to the payments/referral
+  surface. Left as an explicit, named gap in `docs/LAUNCH_STATUS.md`
+  rather than built under time pressure with unverified vendor-webhook
+  assumptions.
+- Root's Node-version bump (22→24, flagged as a low-priority safe follow-up
+  by T0) was considered and left alone — bumping `.github/workflows/
+  ci.yml`'s `NODE_VERSION` alone, without also bumping root `package.json`'s
+  `engines`/local dev expectations (both outside this task's exclusive
+  paths), would create a mismatch between what CI runs and what's
+  documented as the floor; not done here for that reason, still tracked as
+  T0's own open item.
+- Observed (not fixed, out of scope — `apps/web/next.config.ts` isn't
+  under `apps/web/tests/`): a `next start` run during this task's own
+  verification logged a deprecation warning
+  (`@sentry/nextjs`'s `withSentryConfig` import path) — cosmetic, doesn't
+  affect functionality, flagged here for whoever next touches that file.
+
+**Verification performed**
+
+Every code change in this task was actually run, not just typechecked:
+the full `supabase/functions` Vitest suite (397/397) before and after each
+edit; `tsc --noEmit` clean on both `supabase/functions` and `apps/web`;
+`biome check` clean (0 errors) on every path this task touched; `actionlint`
+(downloaded fresh, v1.7.7) clean on the modified `ci.yml`; a real
+`pnpm --filter web run build` (twice — once with the developer's existing
+`.env.local`, once with `.env.local` temporarily moved aside and only the
+CI job's exact placeholder env vars set, to prove the `e2e` CI job's
+env-var choice is sufficient) followed by a real `next start` and `curl`
+against `/dashboard`, `/cockpit`, `/login`, and `/api/signup/draft` —
+confirmed the exact redirect chains this task's new specs assert on. The
+Playwright specs themselves (new and pre-existing) could **not** be
+executed: `pnpm --filter web exec playwright install chromium` fails with
+`403` from `cdn.playwright.dev` in this sandbox (network-blocked,
+confirmed directly, not assumed) — matching T5's own identical finding.
+Every new spec's assertions were instead built by reading the exact
+component/handler/redirect source they exercise (documented inline in each
+spec's own comments) rather than guessed at.
+
+**Deferred / left for later tasks**
+
+- Running the three new authenticated Playwright specs and
+  `scripts/e2e-backend.ts` for real, somewhere with Docker + a browser
+  install available (see `docs/LAUNCH_STATUS.md`'s gaps list) — reviewed
+  and cross-referenced against source, never executed.
+- Wiring `supabase start` into CI's `e2e` job so the authenticated specs
+  run for real on every push, if a maintainer decides that's worth the
+  added CI time/complexity (`.github/workflows/ci.yml`'s `e2e` job own
+  comment names exactly what this would need).
+- A dedicated `GET /health` edge function (see above).
+- A `/webhooks-paypal` consumer (see above).
+- Resolving T7's in-progress `packages/adapters/square`/`webhooks-pos`
+  state so root gates go green again — not this task's files to fix.
+- Everything named in `docs/LAUNCH_STATUS.md`'s "What remains for the
+  owner" and "Known gaps" sections — not repeated here.
