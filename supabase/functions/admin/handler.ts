@@ -1,6 +1,19 @@
 import { writeAdminAction } from "../_shared/admin-actions.js";
 import type { AdminJwtClaims } from "../_shared/admin-auth.js";
 import { isAal2, isPlatformAdmin } from "../_shared/admin-auth.js";
+import {
+  type CompilerAgentTemplate,
+  compileTemplate,
+} from "../_shared/compiler/template-compiler.js";
+import type { RetellFetch } from "../_shared/providers/retell.js";
+import {
+  createAgent,
+  createConversationFlow,
+  createRetellLLM,
+  publishAgentVersion,
+} from "../_shared/providers/retell.js";
+import type { SupabaseAdminFetch } from "../_shared/providers/supabase-admin.js";
+import { generateMagicLink, getUserEmailById } from "../_shared/providers/supabase-admin.js";
 import type { Logger, SqlClient } from "../_shared/types.js";
 
 /**
@@ -10,17 +23,16 @@ import type { Logger, SqlClient } from "../_shared/types.js";
  * `admin_actions`; AAL2 is required (session-level — see admin-auth.ts's
  * own caveat about true 15-minute freshness) for impersonation specifically.
  *
- * Scope note (BUILD_NOTES): BACKEND_SPEC §7.7 names nine endpoint groups
- * (Tenants, Margin cockpit, Config Lab, Referral P&L, CAC, Alerts,
- * Templates, Support, Outreach, Feature flags). This build implements
- * Tenants (list/get/patch/impersonate) and Alerts (list/ack) fully — the
- * two groups with the clearest, already-available data sources and the
- * security-relevant impersonation/AAL2 path — and shells the rest as an
- * explicit `501 not_implemented` (never a silent 200) so the admin
- * dashboard's own build-out (a later wave) has a real, visible contract to
- * fill in rather than guessed-at response shapes for margin-cockpit views,
- * Config Lab simulation, referral payout overrides, CAC joins, template
- * publish (which needs T2's compiler), and outreach/flags CRUD.
+ * Scope note (docs/BUILD_NOTES.md T3/T4 entries): BACKEND_SPEC §7.7 names
+ * ten endpoint groups. T3 implemented Tenants (list/get/patch) and Alerts
+ * (list/ack) fully, plus impersonation's AAL2 gate + audit-log write (token
+ * minting itself deferred). T4 completes impersonation (real
+ * `generate_link` mint, `deps.supabaseAdmin` required) and implements
+ * Margin cockpit, Config Lab, Referral P&L (+ payout-override), CAC, and
+ * Templates (+ publish via `_shared/compiler/template-compiler.ts` and the
+ * Retell publish call). Support, Outreach, and Feature flags remain an
+ * explicit `501 not_implemented` (never a silent 200) — outside T4's named
+ * scope, left for a later wave.
  */
 
 export interface AdminRequestContext {
@@ -38,6 +50,14 @@ export interface AdminResponse {
   body: unknown;
 }
 
+/** Provider clients only some route groups need — optional so every
+ * existing caller/test that doesn't touch impersonation-mint or
+ * template-publish keeps working unchanged. */
+export interface AdminDeps {
+  retell?: { fetchImpl: RetellFetch; apiKey: string; toolWebhookUrl: string };
+  supabaseAdmin?: { fetchImpl: SupabaseAdminFetch; url: string; serviceRoleKey: string };
+}
+
 function segments(path: string): string[] {
   return path.split("/").filter(Boolean);
 }
@@ -46,6 +66,7 @@ async function handleTenants(
   sql: SqlClient,
   ctx: AdminRequestContext,
   logger: Logger,
+  deps: AdminDeps,
 ): Promise<AdminResponse> {
   const parts = segments(ctx.path); // ["admin-tenants", ":id"?, "impersonate"?]
   const tenantId = parts[1];
@@ -140,12 +161,40 @@ async function handleTenants(
       admin_user_id: ctx.adminUserId,
       tenant_id: tenantId,
     });
-    // Minting the actual short-lived scoped session token is a Supabase
-    // Auth Admin API call (VERIFY.md: confirm current
-    // `admin.generateLink`/session-impersonation mechanism) — not modeled
-    // here; the audit-log write above is the security-relevant part this
-    // build guarantees happens before any such token is issued.
-    return { status: 501, body: { error: "impersonation_token_mint_not_implemented" } };
+
+    if (!deps.supabaseAdmin) {
+      // Minting the actual short-lived scoped session token is a Supabase
+      // Auth Admin API call (VERIFY.md: confirm current `generate_link`
+      // mechanism) — the audit-log write above is the security-relevant
+      // part this build guarantees happens regardless of whether the mint
+      // itself is wired for this deploy.
+      return { status: 501, body: { error: "impersonation_token_mint_not_implemented" } };
+    }
+
+    const ownerRows = await sql<{ user_id: string }>`
+      select user_id from public.memberships where tenant_id = ${tenantId} and role = 'owner' limit 1
+    `;
+    const ownerUserId = ownerRows[0]?.user_id;
+    if (!ownerUserId) return { status: 404, body: { error: "tenant_owner_not_found" } };
+
+    const email = await getUserEmailById(
+      deps.supabaseAdmin.fetchImpl,
+      deps.supabaseAdmin.url,
+      deps.supabaseAdmin.serviceRoleKey,
+      ownerUserId,
+    );
+    if (!email) return { status: 502, body: { error: "owner_email_lookup_failed" } };
+
+    const link = await generateMagicLink(
+      deps.supabaseAdmin.fetchImpl,
+      deps.supabaseAdmin.url,
+      deps.supabaseAdmin.serviceRoleKey,
+      email,
+    );
+    if (!link.ok || !link.actionLink) {
+      return { status: 502, body: { error: "impersonation_link_mint_failed" } };
+    }
+    return { status: 200, body: { impersonation_link: link.actionLink, tenant_id: tenantId } };
   }
 
   return { status: 404, body: { error: "not_found" } };
@@ -176,29 +225,500 @@ async function handleAlerts(sql: SqlClient, ctx: AdminRequestContext): Promise<A
   return { status: 404, body: { error: "not_found" } };
 }
 
-const NOT_YET_IMPLEMENTED_PREFIXES = [
-  "admin-cockpit",
-  "admin-config-lab",
-  "admin-referrals",
-  "admin-cac",
-  "admin-templates",
-  "admin-support-requests",
-  "admin-outreach",
-  "admin-flags",
-];
+// ---------------------------------------------------------------------
+// Margin cockpit (BACKEND_SPEC §7.7) — reads T1's §6 views + cost_events/
+// revenue_events directly for drill-down. No writes, no admin_actions.
+// ---------------------------------------------------------------------
+async function handleCockpit(sql: SqlClient, ctx: AdminRequestContext): Promise<AdminResponse> {
+  const parts = segments(ctx.path); // ["admin-cockpit", "<page>"]
+  const page = parts[1];
+  if (ctx.method !== "GET") return { status: 404, body: { error: "not_found" } };
+
+  if (page === "waterfall") {
+    const rows = await sql<{ revenue_cents: number; cost_cents: number; margin_cents: number }>`
+      select coalesce(sum(revenue_cents),0)::int as revenue_cents,
+             coalesce(sum(cost_cents),0)::int as cost_cents,
+             coalesce(sum(margin_cents),0)::int as margin_cents
+      from public.v_tenant_margin
+    `;
+    return {
+      status: 200,
+      body: { waterfall: rows[0] ?? { revenue_cents: 0, cost_cents: 0, margin_cents: 0 } },
+    };
+  }
+
+  if (page === "per-customer-margin") {
+    const rows = await sql<Record<string, unknown>>`
+      select * from public.v_tenant_margin order by margin_cents asc limit 200
+    `;
+    return { status: 200, body: { tenants: rows } };
+  }
+
+  if (page === "per-call-cost") {
+    const rows = await sql<Record<string, unknown>>`
+      select * from public.v_call_cost_vs_billed order by provider_cost_cents desc nulls last limit 100
+    `;
+    return { status: 200, body: { calls: rows } };
+  }
+
+  if (page === "repricing-drift") {
+    // BACKEND_SPEC §8's "price drift >8%" needs a per-provider/product cost
+    // BASELINE this build has no platform_settings key for yet (T1/T3 left
+    // it as a literal-thresholds follow-up) — rather than guess a baseline,
+    // this surfaces the current trailing-30-day average unit cost per
+    // provider/product so an admin can eyeball drift manually until a real
+    // baseline key is introduced (docs/BUILD_NOTES.md T4 entry).
+    const rows = await sql<{
+      provider: string;
+      product: string;
+      avg_unit_cost_cents: number;
+      sample_count: number;
+    }>`
+      select provider, product, avg(unit_cost_cents)::numeric(12,4) as avg_unit_cost_cents, count(*)::int as sample_count
+      from public.cost_events
+      where occurred_at >= now() - interval '30 days' and unit_cost_cents is not null
+      group by provider, product
+      order by provider, product
+    `;
+    return { status: 200, body: { drift: rows, baseline_configured: false } };
+  }
+
+  if (page === "bottleneck") {
+    const rows = await sql<{
+      tool_name: string;
+      calls: number;
+      error_rate: number;
+      p95_ms: number;
+    }>`
+      select
+        tool_name,
+        count(*)::int as calls,
+        (count(*) filter (where not success))::numeric / nullif(count(*), 0) as error_rate,
+        percentile_cont(0.95) within group (order by latency_ms) as p95_ms
+      from public.tool_health
+      where occurred_at >= now() - interval '1 hour'
+      group by tool_name
+      order by p95_ms desc nulls last
+    `;
+    return { status: 200, body: { tools: rows } };
+  }
+
+  if (page === "alerts") {
+    const rows = await sql<Record<string, unknown>>`
+      select * from public.alerts where status = 'open' order by created_at desc limit 100
+    `;
+    return { status: 200, body: { alerts: rows } };
+  }
+
+  return { status: 404, body: { error: "not_found" } };
+}
+
+// ---------------------------------------------------------------------
+// Config Lab (BACKEND_SPEC §7.7) — "what-if" margin projection against a
+// proposed price-card edit, WITHOUT committing it to platform_settings.
+// ---------------------------------------------------------------------
+interface PriceCardValue {
+  base_cents: number;
+  included_minutes: number;
+  overage_cents: number;
+}
+
+async function handleConfigLab(sql: SqlClient, ctx: AdminRequestContext): Promise<AdminResponse> {
+  const parts = segments(ctx.path); // ["admin-config-lab", "simulate"]
+  if (parts[1] !== "simulate" || (ctx.method !== "GET" && ctx.method !== "POST")) {
+    return { status: 404, body: { error: "not_found" } };
+  }
+
+  const body = (ctx.body ?? {}) as Partial<PriceCardValue> & { vertical?: string };
+  if (!body.vertical) return { status: 422, body: { error: "missing_vertical" } };
+
+  const currentRows = await sql<{ value: PriceCardValue }>`
+    select value from public.platform_settings where key = ${`price_card_${body.vertical}`}
+  `;
+  const current = currentRows[0]?.value;
+  if (!current) return { status: 404, body: { error: "unknown_vertical" } };
+
+  const proposed: PriceCardValue = {
+    base_cents: body.base_cents ?? current.base_cents,
+    included_minutes: body.included_minutes ?? current.included_minutes,
+    overage_cents: body.overage_cents ?? current.overage_cents,
+  };
+
+  const usageRows = await sql<{ tenant_id: string; billable_minutes: number }>`
+    select t.id as tenant_id, coalesce(sum(ud.billable_minutes), 0) as billable_minutes
+    from public.tenants t
+    left join public.usage_daily ud on ud.tenant_id = t.id and ud.date >= date_trunc('month', now())::date
+    where t.vertical = ${body.vertical} and t.deleted_at is null and t.status = 'active'
+    group by t.id
+  `;
+
+  const costRows = await sql<{ cost_cents: number }>`
+    select coalesce(sum(ce.total_cost_cents), 0)::int as cost_cents
+    from public.cost_events ce
+    join public.tenants t on t.id = ce.tenant_id
+    where t.vertical = ${body.vertical} and ce.occurred_at >= date_trunc('month', now())
+  `;
+  const costCents = costRows[0]?.cost_cents ?? 0;
+
+  const project = (card: PriceCardValue) => {
+    let revenue = 0;
+    for (const row of usageRows) {
+      const overage = Math.max(0, row.billable_minutes - card.included_minutes);
+      revenue += card.base_cents + Math.round(overage * card.overage_cents);
+    }
+    return { revenue_cents: revenue, cost_cents: costCents, margin_cents: revenue - costCents };
+  };
+
+  return {
+    status: 200,
+    body: {
+      vertical: body.vertical,
+      tenant_count: usageRows.length,
+      current: project(current),
+      simulated: project(proposed),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------
+// Referral P&L (BACKEND_SPEC §7.7)
+// ---------------------------------------------------------------------
+async function handleReferrals(sql: SqlClient, ctx: AdminRequestContext): Promise<AdminResponse> {
+  const parts = segments(ctx.path); // ["admin-referrals", ":commission_event_id"?, "payout-override"?]
+  const commissionEventId = parts[1];
+
+  if (ctx.method === "GET" && !commissionEventId) {
+    const rows = await sql<Record<string, unknown>>`
+      select * from public.v_referral_pnl order by accrued_cents desc nulls last limit 200
+    `;
+    return { status: 200, body: { referral_partners: rows } };
+  }
+
+  if (ctx.method === "POST" && commissionEventId && parts[2] === "payout-override") {
+    const body = (ctx.body ?? {}) as { amount_cents?: number };
+    if (typeof body.amount_cents !== "number" || body.amount_cents < 0) {
+      return { status: 422, body: { error: "invalid_amount_cents" } };
+    }
+    const before = (
+      await sql<Record<string, unknown>>`
+        select * from public.commission_events where id = ${commissionEventId}
+      `
+    )[0];
+    if (!before) return { status: 404, body: { error: "commission_event_not_found" } };
+    if (before["status"] !== "accrued") {
+      return { status: 409, body: { error: "commission_already_batched_or_paid" } };
+    }
+
+    const after = (
+      await sql<Record<string, unknown>>`
+        update public.commission_events set amount_cents = ${body.amount_cents}
+        where id = ${commissionEventId}
+        returning *
+      `
+    )[0];
+
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "referral_payout_override",
+        targetType: "referral",
+        targetId: commissionEventId,
+        before,
+        after,
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return { status: 200, body: { commission_event: after } };
+  }
+
+  return { status: 404, body: { error: "not_found" } };
+}
+
+// ---------------------------------------------------------------------
+// CAC (BACKEND_SPEC §7.7) — reads cac_events joined to leads/campaigns.
+// ---------------------------------------------------------------------
+async function handleCac(sql: SqlClient, ctx: AdminRequestContext): Promise<AdminResponse> {
+  if (ctx.method !== "GET") return { status: 404, body: { error: "not_found" } };
+  const rows = await sql<{
+    channel: string;
+    total_cost_cents: number;
+    lead_count: number;
+    converted_tenant_count: number;
+  }>`
+    select
+      channel,
+      sum(cost_cents)::int as total_cost_cents,
+      count(*) filter (where lead_id is not null)::int as lead_count,
+      count(distinct tenant_id) filter (where tenant_id is not null)::int as converted_tenant_count
+    from public.cac_events
+    group by channel
+    order by total_cost_cents desc
+  `;
+  return {
+    status: 200,
+    body: {
+      channels: rows.map((r) => ({
+        ...r,
+        cac_cents:
+          r.converted_tenant_count > 0
+            ? Math.round(r.total_cost_cents / r.converted_tenant_count)
+            : null,
+      })),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------
+// Templates (BACKEND_SPEC §7.7) — CRUD + publish (compiler +
+// _shared/compiler/template-compiler.ts + Retell publish call, following
+// T3's _shared/providers pattern since Deno can't import
+// packages/adapters/retell directly — see that module's docstring).
+// ---------------------------------------------------------------------
+function toCompilerTemplate(row: Record<string, unknown>): CompilerAgentTemplate {
+  return {
+    compile_target: row["compile_target"] as CompilerAgentTemplate["compile_target"],
+    system_prompt: (row["system_prompt"] as string | null) ?? null,
+    states: (row["states"] as CompilerAgentTemplate["states"]) ?? [],
+    transitions: (row["transitions"] as CompilerAgentTemplate["transitions"]) ?? [],
+    global_intents: (row["global_intents"] as CompilerAgentTemplate["global_intents"]) ?? [],
+    tools: (row["tools"] as CompilerAgentTemplate["tools"]) ?? [],
+    disclosure_line: row["disclosure_line"] as string,
+  };
+}
+
+async function handleTemplates(
+  sql: SqlClient,
+  ctx: AdminRequestContext,
+  deps: AdminDeps,
+): Promise<AdminResponse> {
+  const parts = segments(ctx.path); // ["admin-templates", ":id"?, "publish"?]
+  const templateId = parts[1];
+
+  if (ctx.method === "GET" && !templateId) {
+    const rows = await sql<Record<string, unknown>>`
+      select id, vertical, name, version, compile_target, voice_id, model, is_active, created_at
+      from public.agent_templates order by vertical, version desc
+    `;
+    return { status: 200, body: { templates: rows } };
+  }
+
+  if (ctx.method === "GET" && templateId && parts[2] === undefined) {
+    const row = (
+      await sql<
+        Record<string, unknown>
+      >`select * from public.agent_templates where id = ${templateId}`
+    )[0];
+    if (!row) return { status: 404, body: { error: "template_not_found" } };
+    return { status: 200, body: { template: row } };
+  }
+
+  if (ctx.method === "POST" && !templateId) {
+    const body = (ctx.body ?? {}) as Record<string, unknown>;
+    const required = [
+      "vertical",
+      "name",
+      "version",
+      "compile_target",
+      "voice_id",
+      "model",
+      "disclosure_line",
+    ];
+    for (const field of required) {
+      if (body[field] === undefined) return { status: 422, body: { error: `missing_${field}` } };
+    }
+    const inserted = (
+      await sql<{ id: string }>`
+        insert into public.agent_templates (
+          vertical, name, version, compile_target, system_prompt, states, transitions,
+          global_intents, tools, voice_id, model, disclosure_line, created_by
+        ) values (
+          ${body["vertical"] as string}, ${body["name"] as string}, ${body["version"] as number},
+          ${body["compile_target"] as string}, ${(body["system_prompt"] as string) ?? null},
+          ${JSON.stringify(body["states"] ?? [])}::jsonb, ${JSON.stringify(body["transitions"] ?? [])}::jsonb,
+          ${JSON.stringify(body["global_intents"] ?? [])}::jsonb, ${JSON.stringify(body["tools"] ?? [])}::jsonb,
+          ${body["voice_id"] as string}, ${body["model"] as string}, ${body["disclosure_line"] as string},
+          ${ctx.adminUserId}
+        )
+        returning id
+      `
+    )[0];
+    if (!inserted) return { status: 500, body: { error: "template_create_failed" } };
+    return { status: 201, body: { template_id: inserted.id } };
+  }
+
+  if (ctx.method === "PATCH" && templateId && parts[2] === undefined) {
+    const before = (
+      await sql<
+        Record<string, unknown>
+      >`select * from public.agent_templates where id = ${templateId}`
+    )[0];
+    if (!before) return { status: 404, body: { error: "template_not_found" } };
+
+    const patch = (ctx.body ?? {}) as Record<string, unknown>;
+    let didUpdate = false;
+    // One explicit statement per editable field (never a dynamic-identifier
+    // query) — matches `handleTenants`' PATCH pattern; `SqlClient` is a
+    // plain tagged-template callable, not postgres.js's richer `Sql`
+    // object, so there is no safe `sql(column)` dynamic-identifier helper
+    // to reach for here even if it looked tempting.
+    if ("name" in patch) {
+      didUpdate = true;
+      await sql`update public.agent_templates set name = ${patch["name"] as string} where id = ${templateId}`;
+    }
+    if ("system_prompt" in patch) {
+      didUpdate = true;
+      await sql`update public.agent_templates set system_prompt = ${patch["system_prompt"] as string} where id = ${templateId}`;
+    }
+    if ("states" in patch) {
+      didUpdate = true;
+      await sql`update public.agent_templates set states = ${JSON.stringify(patch["states"])}::jsonb where id = ${templateId}`;
+    }
+    if ("transitions" in patch) {
+      didUpdate = true;
+      await sql`update public.agent_templates set transitions = ${JSON.stringify(patch["transitions"])}::jsonb where id = ${templateId}`;
+    }
+    if ("global_intents" in patch) {
+      didUpdate = true;
+      await sql`update public.agent_templates set global_intents = ${JSON.stringify(patch["global_intents"])}::jsonb where id = ${templateId}`;
+    }
+    if ("tools" in patch) {
+      didUpdate = true;
+      await sql`update public.agent_templates set tools = ${JSON.stringify(patch["tools"])}::jsonb where id = ${templateId}`;
+    }
+    if ("voice_id" in patch) {
+      didUpdate = true;
+      await sql`update public.agent_templates set voice_id = ${patch["voice_id"] as string} where id = ${templateId}`;
+    }
+    if ("model" in patch) {
+      didUpdate = true;
+      await sql`update public.agent_templates set model = ${patch["model"] as string} where id = ${templateId}`;
+    }
+    if ("disclosure_line" in patch) {
+      didUpdate = true;
+      await sql`update public.agent_templates set disclosure_line = ${patch["disclosure_line"] as string} where id = ${templateId}`;
+    }
+    if (!didUpdate) return { status: 422, body: { error: "no_valid_fields" } };
+
+    const after = (
+      await sql<
+        Record<string, unknown>
+      >`select * from public.agent_templates where id = ${templateId}`
+    )[0];
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "template_edit",
+        targetType: "agent_template",
+        targetId: templateId,
+        before,
+        after,
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return { status: 200, body: { template: after } };
+  }
+
+  if (ctx.method === "POST" && templateId && parts[2] === "publish") {
+    const row = (
+      await sql<
+        Record<string, unknown>
+      >`select * from public.agent_templates where id = ${templateId}`
+    )[0];
+    if (!row) return { status: 404, body: { error: "template_not_found" } };
+    if (!deps.retell) return { status: 501, body: { error: "retell_publish_not_configured" } };
+
+    const template = toCompilerTemplate(row);
+    const compiled = compileTemplate(template, deps.retell.toolWebhookUrl);
+    if (!compiled.disclosureVerified) {
+      return { status: 422, body: { error: "disclosure_gate_failed" } };
+    }
+
+    const flowPayload = { ...compiled.flow.body, model: row["model"] };
+    const flowResult =
+      compiled.flow.kind === "conversation_flow"
+        ? await createConversationFlow(deps.retell.fetchImpl, deps.retell.apiKey, flowPayload)
+        : await createRetellLLM(deps.retell.fetchImpl, deps.retell.apiKey, flowPayload);
+    const flowBody = flowResult.body as { conversation_flow_id?: string; llm_id?: string };
+    const flowId = flowBody.conversation_flow_id ?? flowBody.llm_id;
+    if (!flowResult.ok || !flowId) {
+      return { status: 502, body: { error: "retell_flow_create_failed" } };
+    }
+
+    const responseEngine =
+      compiled.flow.kind === "conversation_flow"
+        ? { type: "conversation-flow", conversation_flow_id: flowId }
+        : { type: "retell-llm", llm_id: flowId };
+    const agentResult = await createAgent(deps.retell.fetchImpl, deps.retell.apiKey, {
+      agent_name: `heyloo-template-${templateId}-v${row["version"]}`,
+      voice_id: row["voice_id"],
+      response_engine: responseEngine,
+    });
+    const agentBody = agentResult.body as { agent_id?: string };
+    if (!agentResult.ok || !agentBody.agent_id) {
+      return { status: 502, body: { error: "retell_agent_create_failed" } };
+    }
+
+    const publishResult = await publishAgentVersion(
+      deps.retell.fetchImpl,
+      deps.retell.apiKey,
+      agentBody.agent_id,
+    );
+    if (!publishResult.ok) {
+      return { status: 502, body: { error: "retell_publish_failed" } };
+    }
+
+    await sql`update public.agent_templates set is_active = false where vertical = ${row["vertical"] as string} and id <> ${templateId}`;
+    await sql`update public.agent_templates set is_active = true where id = ${templateId}`;
+
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "template_publish",
+        targetType: "agent_template",
+        targetId: templateId,
+        before: { is_active: row["is_active"] },
+        after: { is_active: true, retell_agent_id: agentBody.agent_id, retell_flow_id: flowId },
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+
+    return {
+      status: 200,
+      body: {
+        published: true,
+        template_id: templateId,
+        retell_agent_id: agentBody.agent_id,
+        retell_flow_id: flowId,
+      },
+    };
+  }
+
+  return { status: 404, body: { error: "not_found" } };
+}
+
+const NOT_YET_IMPLEMENTED_PREFIXES = ["admin-support-requests", "admin-outreach", "admin-flags"];
 
 export async function routeAdminRequest(
   sql: SqlClient,
   ctx: AdminRequestContext,
   logger: Logger,
+  deps: AdminDeps = {},
 ): Promise<AdminResponse> {
   if (!isPlatformAdmin(ctx.claims)) {
     return { status: 403, body: { error: "not_a_platform_admin" } };
   }
 
   const [first] = segments(ctx.path);
-  if (first === "admin-tenants") return handleTenants(sql, ctx, logger);
+  if (first === "admin-tenants") return handleTenants(sql, ctx, logger, deps);
   if (first === "admin-alerts") return handleAlerts(sql, ctx);
+  if (first === "admin-cockpit") return handleCockpit(sql, ctx);
+  if (first === "admin-config-lab") return handleConfigLab(sql, ctx);
+  if (first === "admin-referrals") return handleReferrals(sql, ctx);
+  if (first === "admin-cac") return handleCac(sql, ctx);
+  if (first === "admin-templates") return handleTemplates(sql, ctx, deps);
 
   if (first && NOT_YET_IMPLEMENTED_PREFIXES.includes(first)) {
     logger.info("admin_route_not_yet_implemented", { path: ctx.path });

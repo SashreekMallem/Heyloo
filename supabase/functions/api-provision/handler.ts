@@ -1,5 +1,9 @@
 import type { RetellFetch } from "../_shared/providers/retell.js";
-import { createAgent, importPhoneNumber, publishAgent } from "../_shared/providers/retell.js";
+import {
+  createAgent,
+  importPhoneNumber,
+  publishAgentVersion,
+} from "../_shared/providers/retell.js";
 import type { TwilioFetch } from "../_shared/providers/twilio.js";
 import { purchasePhoneNumber } from "../_shared/providers/twilio.js";
 import { enqueue, QUEUE_NAMES } from "../_shared/queue.js";
@@ -218,7 +222,7 @@ export async function runProvisioningSaga(
 
     // 6. Publish agent.
     await recordStep(sql, tenantId, "publish_agent", "in_progress");
-    const published = await publishAgent(deps.retellFetch, deps.retellApiKey, retellAgentId);
+    const published = await publishAgentVersion(deps.retellFetch, deps.retellApiKey, retellAgentId);
     if (!published.ok) {
       await recordStep(
         sql,

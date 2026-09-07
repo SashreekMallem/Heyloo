@@ -6,11 +6,40 @@
 
 import type { AdminJwtClaims } from "../_shared/admin-auth.js";
 import { getSql } from "../_shared/deno/db.js";
+import { optionalEnv } from "../_shared/deno/env.js";
 import { createLogger } from "../_shared/logger.js";
 import { jsonResponse } from "../_shared/responses.js";
+import type { AdminDeps } from "./handler.js";
 import { routeAdminRequest } from "./handler.js";
 
 const logger = createLogger({ fn: "admin" });
+
+// These are only required by specific route groups (templates publish;
+// tenants impersonate) rather than every admin invocation — read as
+// optional here and the handler degrades gracefully (a documented 501,
+// never a crash at cold-start) when a given deploy hasn't set them yet,
+// consistent with how narrowly-needed the underlying features are.
+const RETELL_API_KEY = optionalEnv("RETELL_API_KEY");
+const VOICE_TOOLS_WEBHOOK_URL = optionalEnv("VOICE_TOOLS_WEBHOOK_URL");
+const SUPABASE_URL = optionalEnv("SUPABASE_URL");
+const SUPABASE_SECRET_KEY = optionalEnv("SUPABASE_SECRET_KEY");
+
+const adminDeps: AdminDeps = {
+  ...(RETELL_API_KEY && VOICE_TOOLS_WEBHOOK_URL
+    ? {
+        retell: {
+          fetchImpl: fetch,
+          apiKey: RETELL_API_KEY,
+          toolWebhookUrl: VOICE_TOOLS_WEBHOOK_URL,
+        },
+      }
+    : {}),
+  ...(SUPABASE_URL && SUPABASE_SECRET_KEY
+    ? {
+        supabaseAdmin: { fetchImpl: fetch, url: SUPABASE_URL, serviceRoleKey: SUPABASE_SECRET_KEY },
+      }
+    : {}),
+};
 
 interface FullJwtPayload extends AdminJwtClaims {
   sub?: string;
@@ -58,6 +87,7 @@ Deno.serve(async (req: Request) => {
         : {}),
     },
     logger,
+    adminDeps,
   );
 
   return jsonResponse(result.body, { status: result.status });

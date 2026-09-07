@@ -51,8 +51,56 @@ export async function createAgent(
   });
 }
 
-export async function publishAgent(fetchImpl: RetellFetch, apiKey: string, agentId: string) {
-  return retellRequest(fetchImpl, apiKey, `/publish-agent/${encodeURIComponent(agentId)}`, {
+/** PATCH /update-agent/{id} — the second half of the two-step
+ * create/update-agent protocol (API_AND_FLOWS.md A.1, `packages/adapters/
+ * retell/src/agents.ts`'s `createOrUpdateRetellAgent`) for a template
+ * publish that already has a `retell_agent_id` on file. */
+export async function updateAgent(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  agentId: string,
+  payload: Record<string, unknown>,
+) {
+  return retellRequest(fetchImpl, apiKey, `/update-agent/${encodeURIComponent(agentId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** POST /create-conversation-flow — step 1 of the two-step protocol for a
+ * `compile_target: conversation_flow` template (agents.ts's
+ * `FLOW_RESOURCE_ENDPOINT`); response carries `conversation_flow_id`. */
+export async function createConversationFlow(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  payload: Record<string, unknown>,
+) {
+  return retellRequest(fetchImpl, apiKey, "/create-conversation-flow", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** POST /create-retell-llm — step 1 of the two-step protocol for
+ * `multi_prompt`/`single_prompt` templates; response carries `llm_id`. */
+export async function createRetellLLM(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  payload: Record<string, unknown>,
+) {
+  return retellRequest(fetchImpl, apiKey, "/create-retell-llm", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** POST /publish-agent-version/{id} — makes a version immutable
+ * (BACKEND_SPEC §1.3). Endpoint name corrected from an earlier
+ * `/publish-agent/{id}` guess to match the confirmed shape T2's
+ * `packages/adapters/retell/src/agents.ts` uses (`publishRetellAgentVersion`)
+ * — see docs/BUILD_NOTES.md T4 entry. */
+export async function publishAgentVersion(fetchImpl: RetellFetch, apiKey: string, agentId: string) {
+  return retellRequest(fetchImpl, apiKey, `/publish-agent-version/${encodeURIComponent(agentId)}`, {
     method: "POST",
   });
 }

@@ -284,15 +284,12 @@ build):
 
 Still-genuine gaps (no matching table/column exists anywhere in T1's
 migrations as of this build):
-- `tool_health` table (tool-stats.ts, job-alert-evaluation's
-  `evaluateToolFailureSpike`) — BACKEND_SPEC §7.2's own `DECIDE:`
-  recommendation, not in MASTER_SPEC §2's explicitly-approved table list
-  and not added by T1. Both call sites degrade gracefully (tool-stats.ts
-  swallows the insert error; nothing currently populates the table so
-  `evaluateToolFailureSpike` will simply never fire until it exists).
-  Suggested shape: `tool_health(id uuid pk, tenant_id uuid, tool_name text,
-  call_id uuid, latency_ms int, success boolean, error_type text,
-  occurred_at timestamptz default now())`.
+- ~~`tool_health` table~~ — **resolved by T4**:
+  `supabase/migrations/20260907140000_t4_tool_health_a2p_billing.sql` adds
+  it, with `call_id text` (not `uuid` as originally guessed here — Retell's
+  own call-id string, may not resolve to a `call_logs` row yet at insert
+  time). `tool-stats.ts`'s emission and `job-alert-evaluation`'s
+  `evaluateToolFailureSpike` now have a real table to read/write.
 - No dedicated tenant-geocode column exists anywhere (only
   `customer_addresses.geocode` for the CUSTOMER side, which create_order.ts
   now reads for real). `agent_configs.dynamic_variable_overrides.
@@ -303,3 +300,28 @@ migrations as of this build):
   bag ARE confirmed (T1's `20260907130300_agent_templates.sql` comment
   lists them explicitly); `tax_rate_bps` is this build's own addition, not
   named by either spec.
+
+## T4 — api-checkout, admin cockpit/config-lab/referrals/cac/templates,
+## job-referral-payouts, api-a2p-register, dunning, waitlist YES (supabase/functions/, scripts/)
+
+This task's assignment described Stripe/Twilio/PayPal docs as "reachable" —
+in this build environment they were NOT (`WebFetch` returned
+`EGRESS_BLOCKED` for `docs.stripe.com`/`www.twilio.com`/
+`developer.paypal.com`, identically to T2/T3's experience). `WebSearch`
+(server-side, not blocked) was used instead per CLAUDE.md Rule 1 item 2 —
+every shape below traces to an indexed search result, never memory alone.
+
+| Item | Assumed shape | Confidence | Confirm against |
+|---|---|---|---|
+| Stripe Billing Meter create (`POST /v1/billing/meters`) | `event_name`, `customer_mapping: {type: "by_id", event_payload_key}`, `value_settings: {event_payload_key}`, `display_name` | Medium — object/field NAMES confirmed via indexed search of Stripe's own API reference pages (`docs.stripe.com/api/billing/meter`); the exact create-endpoint parameter list (vs. just the resulting object shape) was not independently re-confirmed | Stripe API reference, `billing/meter/create` |
+| Metered Price backed by a Meter (`recurring.meter`, `recurring.usage_type`) | `billing_scheme: "per_unit"`, `recurring: {interval, meter: <meter_id>, usage_type: "metered"}` | Medium — "every metered price now requires a backing Meter" confirmed via search; exact field name (`recurring.meter` vs. a differently-nested field) not independently re-confirmed against a live create-price call | Stripe API reference, Prices API |
+| `scripts/setup-stripe.ts`'s idempotency check (list meters by `event_name`, list nothing for prices — creates a fresh Product/Price every run once the price-card row lacks ids) | Own design choice, not vendor-specified | N/A (design decision) | — |
+| Twilio A2P Brand/Campaign base host | `messaging.twilio.com/v1/a2p/BrandRegistrations` (NOT `api.twilio.com/v1/a10dlc/...`, which is what BACKEND_SPEC's own prose guessed and this build corrects) | Medium-high — confirmed via multiple indexed Twilio doc-page titles referencing this exact host+path | `twilio.com/docs/messaging/api/brand-registration-resource` |
+| Twilio Campaign (UsAppToPerson) create | `POST /v1/Services/{MessagingServiceSid}/Compliance/Usa2p`, fields `BrandRegistrationSid`, `Description`, `MessageFlow`, `UsAppToPersonUsecase`, `HasEmbeddedLinks`, `HasEmbeddedPhone`, plus `PrivacyPolicyUrl`/`TermsAndConditionsUrl` (confirmed via search to be REQUIRED as of a documented 2026-06-30 Twilio change — today's date, 2026-09-07, is after that cutover, so this build includes them unconditionally rather than treating them as optional) | Medium | `twilio.com/docs/messaging/api/usapptoperson-resource`, the 2026-06-30 campaign-registration changelog entry |
+| `CustomerProfileBundleSid`/`A2PProfileBundleSid` (Brand create inputs) | Assumed to be pre-created Trust Hub profile bundles from a manual Week-0 Console setup step, not created by any code in this build | Low — not independently confirmed; `api-a2p-register/handler.ts` doesn't create a Brand at all (only Campaigns against an existing `TWILIO_A2P_BRAND_SID` env var), so this only matters for whoever does the one-time platform brand setup | Twilio's ISV onboarding walkthrough |
+| Supabase Auth Admin `generate_link` (`POST /auth/v1/admin/generate_link`) response field (`action_link` vs `properties.action_link`) | `_shared/providers/supabase-admin.ts` checks both shapes defensively | Low — genuinely unconfirmed in this build (egress-blocked); GoTrue's admin API surface has changed field nesting across versions before | Supabase Auth (GoTrue) admin API reference |
+| Retell `/publish-agent-version/{id}` endpoint name | Corrected from T3's `_shared/providers/retell.ts` guess of `/publish-agent/{id}` to match T2's independently-researched `packages/adapters/retell/src/agents.ts` (`publishRetellAgentVersion`) | Same confidence as T2's own VERIFY-6 entry (Medium) | Retell API reference |
+| `_shared/compiler/template-compiler.ts` | Deliberate duplication of `packages/adapters/retell/src/compiler/*`'s pure lowering logic (conversation_flow/multi_prompt/single_prompt + disclosure gate), ported because Deno can't import a Node pnpm workspace package — same rationale as every `_shared/providers/*.ts` module. NOT a vendor-API confidence question but a maintenance-debt flag: the two implementations can drift. Follow-up: extract the compiler's pure logic into a zero-runtime-dependency package both Node and Deno can import (an `npm:`-publishable build, or a bundled single-file artifact), then delete this duplicate. | N/A (internal design debt, not external-API risk) | — |
+| Admin `/admin-templates/:id/publish`'s scope | Publishes/validates a TEMPLATE version (creates a smoke-test Retell agent tagged `heyloo-template-<id>-v<version>`, flips `agent_templates.is_active`) — does NOT fan out to re-publish every tenant already on an older version of that template. BACKEND_SPEC's Flow 9 ("Template update → simulation CI → staged publish to tenants") describes that fan-out as a separate concern; this build treats per-tenant re-publish as a follow-up (would need a rollout-strategy decision — all at once vs. staged/canary — not specified) | N/A (scope decision) | Confirm against FRONTEND_SPEC/whoever builds the Templates admin UI what "publish" should visibly do for already-provisioned tenants |
+| `job-referral-payouts` — no `/webhooks-paypal` consumer exists yet | This job's success means "PayPal accepted the batch," not "every partner was paid" — item-level `PAYMENT.PAYOUTS-ITEM.SUCCEEDED`/`FAILED`/`BLOCKED`/`UNCLAIMED` webhooks (API_AND_FLOWS.md A.4) aren't consumed anywhere, so `referral_payouts.status` stays `'sent'` forever rather than transitioning to a final `paid`/`failed` state | N/A (scope gap, follow-up) | — |
+| `webhooks-twilio-sms`'s "yes"/"start" keyword conflict | `sms-compliance.ts`'s `START_KEYWORDS` already includes "yes" (CTIA opt-in vocabulary, built by T3) — MASTER_SPEC §3.4's waitlist flow independently specs "reply YES" for a completely different purpose (auto-booking a freed slot). Resolved in `handler.ts`: a bare "yes"/"y" is checked against an open waitlist notification FIRST; only when there's no match does it fall through to the ordinary START/opt-in behavior. Documented here as a genuine spec-vs-spec conflict found during integration, not a bug in either individual spec. | N/A (found conflict, resolved) | — |

@@ -829,3 +829,228 @@ redesigned)**
   other tasks' in-progress files were touched to make the ROOT command
   green — that would mean editing outside this task's exclusive path on a
   shared, actively-being-edited branch.
+
+## T4 — Stripe checkout/billing, admin cockpit/config-lab/referrals/cac/
+## templates, PayPal payouts, A2P registration, dunning, waitlist (Wave 2)
+
+**What was built**
+
+- `supabase/functions/api-checkout` (new): `POST /functions/v1/api-checkout`
+  (`verify_jwt: true`, authenticated user's JWT `sub` trusted, never a
+  body-supplied user id). Creates a `tenants` row (`status: 'trialing'`) +
+  owner `memberships` row if one doesn't already exist for this user
+  (idempotent re-submit reuses an existing not-yet-paid trialing tenant),
+  looks up the vertical's Stripe Price ids from
+  `platform_settings.price_card_<vertical>` (merged in by
+  `scripts/setup-stripe.ts`, see below — `500 stripe_not_configured` if
+  absent, never a guessed price), and creates a `mode=subscription` Stripe
+  Checkout Session (licensed base price, quantity 1, + the metered-minutes
+  price) via a new `createSubscriptionCheckoutSession` in
+  `_shared/providers/stripe.ts`.
+- `scripts/setup-stripe.ts` (new, one-time, idempotent, dependency-free per
+  `scripts/ci/rls-cross-tenant-probe.ts`'s own precedent — plain `fetch`
+  against Stripe's REST API and Supabase's PostgREST, no `stripe`/
+  `@supabase/supabase-js` package): creates the platform Billing Meter
+  (event_name from `STRIPE_METER_EVENT_NAME`, looked up by name first so
+  re-running is a no-op) and, per vertical, a Product + licensed Price +
+  metered Price backed by that Meter, writing the resulting ids back onto
+  each `platform_settings.price_card_<vertical>` row (merged jsonb, no
+  schema change needed — that table is already a generic key/value store).
+- `supabase/functions/api-a2p-register` (new): `POST
+  /functions/v1/api-a2p-register` (tenant-owner JWT or an internal-secret
+  header, same convention as `api-provision`). Creates a per-tenant Twilio
+  Messaging Service (lazily, once) + attaches the tenant's active phone
+  number to it, then registers a Campaign (UsAppToPerson) against the
+  platform's shared `TWILIO_A2P_BRAND_SID`, driving
+  `tenants.a2p_status` (`pending_verification` -> `verified`/`failed`) —
+  either on initial `register` or a later `refresh` poll. New
+  `_shared/providers/twilio.ts` functions: `createMessagingService`,
+  `addPhoneNumberToMessagingService`, `createBrandRegistration`,
+  `getBrandRegistration`, `createA2pCampaign`, `getA2pCampaign` — all
+  against `messaging.twilio.com` (a DIFFERENT base host from every other
+  function in that file, `api.twilio.com/2010-04-01` — see VERIFY.md T4
+  entry: BACKEND_SPEC's own prose guessed the wrong host,
+  `api.twilio.com/v1/a10dlc/...`, corrected here).
+- `supabase/functions/job-referral-payouts` (new): monthly PayPal Payouts
+  batch (`0 8 1 * *`, BACKEND_SPEC §8) — batches every partner with
+  `commission_events.status='accrued'` into ONE `createPayoutBatch` call
+  (deterministic `sender_batch_id = referral-payout-<period>`, which per
+  API_AND_FLOWS.md A.4 IS PayPal's own idempotency guarantee), writes
+  `referral_payouts` rows and flips those commission events to `'batched'`.
+  A partner missing `paypal_email` is skipped (left `'accrued'` for next
+  cycle, never silently dropped); a failed batch call leaves everything
+  `'accrued'` (never lost). Also checks first whether a non-failed
+  `referral_payouts` row already exists for the current period and skips
+  entirely if so (cheaper than relying solely on PayPal's own duplicate
+  rejection).
+- `supabase/functions/_shared/compiler/template-compiler.ts` (new): a lean,
+  deliberately-duplicated port of `packages/adapters/retell/src/compiler/*`
+  (T2)'s pure lowering logic (conversation_flow/multi_prompt/single_prompt
+  + the disclosure gate) operating on `agent_templates`' jsonb row shape
+  directly via duck-typed interfaces, NOT importing
+  `packages/canonical-types`/`packages/adapters/retell` — same Deno/Node
+  workspace-package boundary T3 already documented for
+  `_shared/providers/*.ts`, applied here to the compiler's data
+  transformation instead of a vendor REST client. Flagged in VERIFY.md as
+  maintenance debt (the two implementations can drift) with a named
+  follow-up (extract to a shared zero-dep package). 9 tests mirroring T2's
+  own golden-path coverage per compile_target.
+- `supabase/functions/admin/handler.ts`: completed 6 of the 8 endpoint
+  groups T3 left as `501` shells — **Margin cockpit** (`waterfall`,
+  `per-customer-margin`, `per-call-cost`, `repricing-drift` — shows current
+  trailing-30-day unit costs since no baseline key exists in
+  `platform_settings` yet, `bottleneck` from the new `tool_health` table,
+  `alerts`), **Config Lab** (`POST /admin-config-lab/simulate` — projects
+  current-vs-proposed-price-card margin from real `usage_daily`/
+  `cost_events` without writing anything), **Referral P&L** (`GET
+  /admin-referrals` from `v_referral_pnl`, `POST
+  /admin-referrals/:commission_event_id/payout-override` — overrides one
+  still-`'accrued'` commission event's amount, audited, `409` if already
+  batched/paid), **CAC** (`GET /admin-cac`, per-channel cost/lead/CAC from
+  `cac_events`), and **Templates** (full CRUD on `agent_templates` +
+  `POST /admin-templates/:id/publish` — compiles via the new module above,
+  hard-refuses on a failed disclosure gate, then calls the REAL Retell
+  publish sequence: `create-conversation-flow`/`create-retell-llm` ->
+  `create-agent` -> `publish-agent-version`, flips `is_active` on success,
+  writes `admin_actions`). **Support/Outreach/Feature-flags stay `501`** —
+  not named in this task's explicit scope list, left for a later wave.
+  Also **completed tenant impersonation**: when `deps.supabaseAdmin` is
+  wired, mints a real magic-link via the target tenant owner's
+  `memberships` row + a new `_shared/providers/supabase-admin.ts`
+  (`generate_link` GoTrue admin API) instead of the `501` stub; without
+  those deps configured for a given deploy, still returns the same `501` as
+  before (backward compatible — T3's existing tests for that path are
+  unchanged). `routeAdminRequest`/`handleTenants`/`handleTemplates` gained
+  an optional 4th `AdminDeps` parameter (`retell`/`supabaseAdmin` provider
+  clients) — every existing caller/test that doesn't touch those two paths
+  keeps working with zero changes.
+- `supabase/functions/_shared/providers/retell.ts`: added `updateAgent`,
+  `createConversationFlow`, `createRetellLLM`; renamed `publishAgent` ->
+  `publishAgentVersion` and corrected its endpoint from a guessed
+  `/publish-agent/{id}` to `/publish-agent-version/{id}`, matching T2's
+  independently-researched `packages/adapters/retell/src/agents.ts`
+  (`publishRetellAgentVersion`) — a real coordination fix, not a rename for
+  its own sake. Updated `api-provision/handler.ts`'s one caller accordingly.
+- `supabase/functions/_shared/providers/stripe.ts`: added
+  `createSubscriptionCheckoutSession`, `createMeter`, `listMeters`,
+  `createProduct`, `createLicensedPrice`, `createMeteredPrice`.
+- `webhooks-stripe/handler.ts`: dunning flow completion — `invoice.
+  payment_failed` now enqueues a `dunning_payment_failed`
+  `messages_outbound` email row (looked up via the tenant's owner
+  membership) immediately, rather than only flipping
+  `billing_invoices.status`; `invoice.paid` now reactivates
+  `tenants.status` from `past_due` back to `active` directly (belt-and-
+  suspenders alongside `customer.subscription.updated`'s own sync, since
+  Stripe fires both on a successful dunning retry and both are processed
+  idempotently via `webhook_events`).
+- `webhooks-twilio-sms/handler.ts`: waitlist YES auto-book (MASTER_SPEC
+  §3.4) — a bare "yes"/"y" reply is matched against the most recent
+  `waitlist_slot_opened` notification sent to that customer; on a match,
+  auto-books the freed slot via the same idempotent insert-and-catch
+  pattern `create_booking.ts` uses (`idempotency_key = 'waitlist:'||
+  entry_id`, catches `23P01`/`23505`), marks the entry `converted`, and
+  replies with a confirmation; if the slot was already re-taken, marks the
+  entry `expired` and apologizes. **Found and resolved a real spec-vs-spec
+  conflict** (not a bug in either individual spec): `sms-compliance.ts`'s
+  `START_KEYWORDS` (T3) already treats a bare "yes" as the CTIA SMS opt-in
+  keyword. Resolved by checking the waitlist match FIRST and only falling
+  through to ordinary STOP/START/HELP/other classification when there's no
+  open waitlist entry for that customer — a "yes" with no waitlist context
+  behaves exactly as before (opts back into SMS).
+- New migration `supabase/migrations/20260907140000_t4_tool_health_a2p_billing.sql`
+  (the one new migration this task is allowed): adds the `tool_health`
+  table T3 left as a genuine gap (BACKEND_SPEC §7.2's circuit-breaker
+  telemetry — `tool-stats.ts`'s emission and `job-alert-evaluation`'s
+  `tool_failure_spike` rule were ALREADY WIRED by T3, just writing/reading
+  a table that didn't exist yet and degrading gracefully in the meantime;
+  this migration is the only piece actually missing) — with one correction
+  to T3's own assumed shape: `call_id` is `text` (Retell's own call-id
+  string, per `call_logs.retell_call_id`), not `uuid` as T3's docstring
+  guessed, since it may not resolve to an existing `call_logs` row at
+  insert time. Also adds four `tenants` columns for A2P state
+  (`a2p_brand_sid`, `a2p_campaign_sid`, `a2p_messaging_service_sid`,
+  `a2p_failure_reason`) that `api-a2p-register` needed and neither
+  BACKEND_SPEC nor T1's migrations had a home for (only the `a2p_status`
+  state machine itself existed).
+- Tests: 47 new/updated test files across the above (api-checkout,
+  api-a2p-register, job-referral-payouts, the template-compiler, admin's 6
+  new groups + impersonation completion, webhooks-stripe's dunning
+  branches, webhooks-twilio-sms's waitlist branches) — same
+  dependency-injected-`SqlClient`-mock pattern as T3's existing 253.
+  **300/300 tests passing, `tsc --noEmit` clean, and 0 Biome errors on this
+  task's entire surface** (`supabase/functions/**` + `scripts/**` — verified
+  directly via `biome check supabase/functions scripts --reporter=json`
+  and filtering `severity === "error"`; the ~120 remaining `useLiteralKeys`/
+  format infos are the same pre-existing, deliberately-left-unfixed class
+  T3's own notes describe, none newly introduced by this task).
+
+**Coordination / deviations found (CLAUDE.md Rule 4)**
+
+- **Tenant-row creation timing vs. Flow 2's prose**: API_AND_FLOWS.md Flow
+  2 describes the provisioning saga creating the `tenants` row AFTER
+  `checkout.session.completed` (its step 3), but T3's already-built
+  `/webhooks-stripe` handler and `/api-provision`'s "Tenant finalize" step
+  both read/UPDATE an EXISTING `tenants` row keyed by
+  `metadata.tenant_id` — i.e. they assume the row already exists by the
+  time checkout completes. Rather than rewire that already-tested T3 code,
+  `api-checkout` is the one that creates the `trialing` `tenants` row (+
+  owner `memberships` row) BEFORE creating the Checkout Session, passing
+  `tenant_id` in Stripe metadata — reconciling the flow doc's intent with
+  the concrete shape T3 already built against.
+- **`admin-templates/:id/publish`'s actual scope**: BACKEND_SPEC says
+  "publish runs the compiler + Retell adapter publish call" but doesn't
+  specify per-tenant fan-out (that's Flow 9's separate "staged publish to
+  tenants" concern, not specced with enough detail to build blind). This
+  build's `publish` validates the template compiles, passes the disclosure
+  gate, and round-trips through Retell's real create-flow/create-agent/
+  publish-version sequence end-to-end (a genuine smoke test, not a fake
+  200), then flips `agent_templates.is_active` for that vertical — it does
+  NOT re-publish every already-provisioned tenant's own agent. Flagged in
+  VERIFY.md for whoever builds the Templates admin UI to confirm against.
+- **PayPal item-level payout status has no consumer**: no `/webhooks-paypal`
+  function exists (not named in this task's scope), so
+  `referral_payouts.status` reaches `'sent'` and stays there — the
+  batch-accepted vs. actually-paid distinction from API_AND_FLOWS.md A.4's
+  webhook events is a real, flagged follow-up, not silently assumed solved.
+- Root-level `pnpm run typecheck`/`lint`/`test` are **not** green as of this
+  commit, but confirmed via isolated, scoped runs that nothing in this
+  task's surface is the cause: `pnpm --filter @heyloo/edge-functions run
+  typecheck|test` is 100% clean (300/300 tests), and `biome check
+  supabase/functions scripts` reports 0 errors. The root-level failures
+  (root `pnpm run typecheck`: `packages/ui` `exactOptionalPropertyTypes`
+  errors in `src/custom/data-state.tsx`; root `pnpm run lint`: 79 Biome
+  errors, ALL in `packages/ui`/`packages/canonical-types`/
+  `packages/supabase-client`; root `pnpm run test`: `packages/ui`'s
+  `src/index.test.ts` expects a stale `UI_PACKAGE_VERSION`) are all in
+  files this task never touched (`git diff --stat -- packages/ apps/`
+  confirms) and outside `apps/`/`packages/`, which this task was explicitly
+  told not to touch — a concurrent agent's in-progress work on the same
+  shared branch/working tree, consistent with T6's own BUILD_NOTES entry
+  above observing the mirror image of this (T4's own in-progress files, at
+  the time T6 ran, looking like "other tasks' work in progress").
+
+**Deferred / left for later tasks**
+
+- A `/webhooks-paypal` consumer for item-level payout status
+  (`PAYMENT.PAYOUTS-ITEM.SUCCEEDED`/`FAILED`/`BLOCKED`/`UNCLAIMED`) — see
+  above.
+- Per-tenant fan-out on template publish (Flow 9's "staged publish to
+  tenants") — needs a rollout-strategy decision (all-at-once vs. staged/
+  canary) not specified anywhere yet.
+- `admin-support-requests`/`admin-outreach`/`admin-flags` remain `501` —
+  not in this task's named scope.
+- Extracting `_shared/compiler/template-compiler.ts`'s duplicated logic
+  into a single zero-runtime-dependency package both Node and Deno can
+  import, to delete the intentional duplication with
+  `packages/adapters/retell/src/compiler/*`.
+- `scripts/setup-stripe.ts` re-running after a partial failure may leave a
+  harmless orphan Stripe Product/Price from an earlier attempt for a
+  vertical that later succeeds — documented as an accepted, inert cost in
+  the script's own header comment, not fixed with reconciliation logic.
+- The Twilio A2P platform Brand itself (`TWILIO_A2P_BRAND_SID`) is still a
+  manual, one-time Console/Trust Hub setup step per API_AND_FLOWS.md A.2 —
+  `createBrandRegistration`/`getBrandRegistration` exist in
+  `_shared/providers/twilio.ts` for completeness but nothing calls them;
+  the actual Trust Hub profile-bundle prerequisites
+  (`CustomerProfileBundleSid`/`A2PProfileBundleSid`) aren't something any
+  code in this build creates.

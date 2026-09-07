@@ -113,9 +113,15 @@ verify_jwt = false
 verify_jwt = false
 [functions.job-alert-evaluation]
 verify_jwt = false
+[functions.job-referral-payouts]
+verify_jwt = false
 [functions.admin]
 verify_jwt = true
 [functions.api-provision]
+verify_jwt = true
+[functions.api-checkout]
+verify_jwt = true
+[functions.api-a2p-register]
 verify_jwt = true
 [functions.forwarding-verify]
 verify_jwt = true

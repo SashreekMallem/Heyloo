@@ -83,21 +83,56 @@ export async function processStripeEvent(
 
     case "invoice.paid": {
       const stripeInvoiceId = typeof obj["id"] === "string" ? obj["id"] : null;
+      const customerId = typeof obj["customer"] === "string" ? obj["customer"] : null;
       if (!stripeInvoiceId) return;
       await sql`
         update public.billing_invoices set status = 'paid' where stripe_invoice_id = ${stripeInvoiceId}
       `;
+      // Dunning reactivation (BACKEND_SPEC §8/§10.2, docs/BUILD_NOTES.md T4
+      // entry): a payment that clears while the tenant was `past_due`
+      // reactivates it here directly, belt-and-suspenders alongside
+      // `customer.subscription.updated`'s own status sync below (Stripe
+      // fires both events on a successful dunning retry, and this webhook
+      // handler processes each idempotently via `webhook_events`, so acting
+      // on both is safe, never a double-transition risk).
+      if (customerId) {
+        await sql`
+          update public.tenants set status = 'active'
+          where stripe_customer_id = ${customerId} and status = 'past_due'
+        `;
+      }
       return;
     }
 
     case "invoice.payment_failed": {
       const stripeInvoiceId = typeof obj["id"] === "string" ? obj["id"] : null;
+      const customerId = typeof obj["customer"] === "string" ? obj["customer"] : null;
       if (!stripeInvoiceId) return;
       await sql`
         update public.billing_invoices set status = 'past_due' where stripe_invoice_id = ${stripeInvoiceId}
       `;
-      // Dunning email fan-out happens via the messages_outbound worker
-      // reading this status change, not inline here.
+      // Dunning flow entry (BACKEND_SPEC §7.4/§10.2 `dunning_payment_failed`
+      // template + "tenant-facing banner + email"): enqueue the email
+      // immediately rather than waiting on the messages_outbound worker to
+      // discover the status change on its own — there IS no such polling
+      // path today (the worker only drains rows it's handed), so this is
+      // the actual enqueue point, not a redundant one.
+      if (customerId) {
+        const tenantRows = await sql<{ id: string }>`
+          select id from public.tenants where stripe_customer_id = ${customerId} limit 1
+        `;
+        const tenantId = tenantRows[0]?.id;
+        if (tenantId) {
+          await sql`
+            insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload)
+            select ${tenantId}, 'email', email, 'dunning_payment_failed', '{}'::jsonb
+            from auth.users u
+            join public.memberships m on m.user_id = u.id
+            where m.tenant_id = ${tenantId} and m.role = 'owner'
+            limit 1
+          `;
+        }
+      }
       return;
     }
 
