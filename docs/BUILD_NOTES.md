@@ -505,3 +505,166 @@ set for that day.
   `packages/adapters/retell` only ("packages/adapters/retell: the
   RetellProvider..."); Twilio's own adapter is left for whichever of T3/T4
   actually needs to call it first, per the README's existing table.
+
+## T3 — Voice hot path, webhooks, admin, workers, jobs (Wave 1)
+
+**What was built** — every edge function named in the task, under
+`supabase/functions/`: `voice-inbound`, `voice-tools` (all 9 tools:
+`check_availability`, `create_booking`, `update_booking`, `cancel_booking`,
+`lookup_customer`, `take_message`, `send_sms_confirmation`, `create_order`
+§3.0, `send_payment_link` §3.2), `voice-events`, `webhooks-stripe`,
+`webhooks-twilio-sms` (§3.3 STOP/HELP/inbound), `webhooks-outreach`,
+`webhooks-pos` (dispatch shell + Square's real `handleWebhook`),
+`api-demo-agent` (two-phase scrape/confirm per MASTER_SPEC's review-first
+patch), `api-provision` (7-step saga + `provisioning_runs`),
+`forwarding-verify`, `admin` (single-function router; Tenants + Alerts
+groups fully implemented, the other seven BACKEND_SPEC §7.7 groups return
+an explicit `501` shell rather than a guessed shape), plus queue workers
+(`worker-messages-outbound`, `worker-recording-fetch`, `worker-adapter-push`)
+and cron jobs (`job-reconciliation`, `job-billing-cycle`,
+`job-reminder-scheduler` §3.6 with quiet hours, `job-review-request` §3.9,
+`job-retell-health-failover` §8/G5, `job-alert-evaluation` §8 — 3 of its 7
+alert rules implemented with real data sources, the other 4 need inputs
+this build doesn't have, see below). `supabase/config.toml` gets a
+`[functions.*]` `verify_jwt` block for every function, cross-checked
+against BACKEND_SPEC §7's table per-function (triple-checked per CLAUDE.md's
+explicit warning that the old repo died on this).
+
+**Deno/Node split (how `pnpm run typecheck/lint/test` exercises Deno code)**
+— `supabase/functions` has its own `package.json`/`tsconfig.json`/`deno.json`
+now (added to `pnpm-workspace.yaml` and the root `vitest.config.ts`
+`projects` array). Every function is split into a portable `handler.ts`
+(pure business logic, dependency-injected `SqlClient`/fetch functions, zero
+Deno globals or `npm:`/`jsr:` specifiers — typechecked by `tsc` and unit
+tested by Vitest under Node exactly as it runs in Deno) and a thin Deno
+`index.ts` entrypoint (`Deno.serve`, `Deno.env.get`, `EdgeRuntime.waitUntil`,
+`npm:postgres`/`npm:zod` specifiers — excluded from
+`supabase/functions/tsconfig.json` and never unit tested, since neither
+`deno` nor `supabase` CLI is installed in this build environment; reviewed
+by hand instead). `_shared/` mirrors this: portable modules at the top
+level, Deno-only glue under `_shared/deno/`. Result: 253 tests across 43
+files, `tsc --noEmit` clean, `biome check` clean (0 errors — some
+`useLiteralKeys` infos deliberately left un-auto-fixed where the "fix"
+would remove the bracket notation `noPropertyAccessFromIndexSignature`
+requires). Documented what ran since `deno check`/`deno test` couldn't
+(commit note; also see the assignment's own allowance for this).
+
+**Provider isolation deviation (documented, not silent)** — CLAUDE.md Rule
+2 confines provider-SDK imports to `packages/adapters/*`, but that's a Node
+package graph; the Deno Edge Function runtime can't import a pnpm workspace
+package without a bundling step this task doesn't add (and T2's concurrent
+`packages/adapters/retell` build confirmed this is genuinely a separate,
+Node-side boundary, not something to route around). Every provider call
+here instead goes through a lean `_shared/providers/<vendor>.ts` module
+(Retell, Twilio, Stripe, PayPal, Anthropic, Resend, Square) built on plain
+`fetch` — no SDK dependency at all, so none of these trip the
+`noRestrictedImports` rule, and they stay off the hot path's dependency
+weight. Webhook signature verification (Retell/Twilio/Stripe/Square) is
+similarly hand-rolled against each vendor's published algorithm rather than
+SDK-based, both for leanness and because it's testable with the standard
+Web Crypto API (`crypto.subtle`, no dependency) under both Deno and Node —
+see `_shared/retell-signature.ts`/`twilio-signature.ts`/
+`stripe-signature.ts`/`providers/square.ts`, each with fixture-vector unit
+tests (RFC 4231/2202 HMAC test vectors for the underlying primitives, plus
+hand-built valid/tampered/stale/wrong-secret cases per scheme).
+
+**Rule 1 (docs-first)** — every vendor doc site was egress-blocked in this
+environment (`WebFetch` returned `EGRESS_BLOCKED` for
+`docs.retellai.com`/`supabase.com`/`docs.stripe.com`/`www.twilio.com`);
+`WebSearch` (server-side, not blocked) was used instead to pull third-party
+summaries for the highest-risk items (Retell/Twilio/Stripe signature
+schemes, Supabase `EdgeRuntime.waitUntil`/pgmq). Every item is logged in
+`docs/VERIFY.md` with its confidence level and what to re-check before
+go-live — most signature schemes landed at "high confidence" (long-stable,
+independently-corroborated public contracts, confirmed against real HMAC
+test vectors in this build's own tests) while Retell's exact concatenation
+order, Square's signature shape, and several REST payload field names stay
+explicitly flagged as unconfirmed guesses.
+
+**Schema cross-check against T1's actual migrations (important — read this
+before trusting BACKEND_SPEC's prose over the real schema)** — T1's
+migrations landed concurrently with this build. Rather than code against
+BACKEND_SPEC/MASTER_SPEC's prose and stop there, every table this build
+touches was re-checked against the real `supabase/migrations/*.sql` files
+once they existed, and several real mismatches were found and fixed (see
+`docs/VERIFY.md`'s "Schema/coordination items" section for the full list):
+`messages_inbound`'s real column names (`from_e164`/`to_e164`/
+`twilio_message_sid`, not the guessed `from_number`/`to_number`/
+`provider_message_id`), `tenants.review_request_enabled` (not
+`review_requests_enabled`), `provisioning_runs.status` enum value
+`succeeded` (not `done`), `customers.consent`/`sms_opt_out` as top-level
+columns (not nested under `metadata`), and `demo_sessions`' real shape
+(`scraped_summary`/`agent_config_snapshot` jsonb columns and no `status`
+enum at all — `api-demo-agent` derives pending-vs-confirmed from whether
+`retell_call_token` is set). `create_order`'s delivery-radius check was
+upgraded from a stub to actually read `customer_addresses.geocode` (a
+native Postgres `point`, confirmed present) for the caller side once that
+table's real shape was visible. `tool_health` (needed by the circuit
+breaker's stat emission and by one of `job-alert-evaluation`'s rules)
+remains a genuine gap — not in T1's migrations and not in MASTER_SPEC §2's
+approved-table list either; both call sites degrade gracefully (silently
+no-op) rather than throwing, but the table still needs to be added by a
+follow-up migration for tool-health telemetry/alerting to actually work.
+
+**MASTER_SPEC §3.7 identity fallback** — implemented in
+`update_booking`/`cancel_booking`: when the live caller's number differs
+from the booking's own customer number, an optional `verify: {full_name,
+appointment_time}` tool argument is checked (case-insensitive name match +
+same-UTC-minute time match) before any write; on match,
+`bookings.identity_verified_by` is set (`phone_match`/`knowledge`); on
+failure, the tool declines without reading back any other customer PII.
+The "two failed attempts → take-message" escalation from MASTER_SPEC §3.7
+is left as a conversation-flow/prompt-layer policy (the tool itself simply
+declines each time; deciding to pivot to `take_message` after N declines is
+the compiled template's job, not server-side attempt-counting state) —
+noted as a deliberate scope boundary, not an oversight.
+
+**Hot-path discipline (SYSTEM_DESIGN §5)** — `voice-tools/index.ts` wraps
+every dispatch in a module-scope `ToolCircuitBreaker` (per-tool rolling
+60s window, opens above a 20% error rate, 30s cooldown/half-open retry) and
+a hard 1.5s `Promise.race` abort; both paths return the same graceful
+`{fallback:true, message}` envelope, never a non-200, matching BACKEND_SPEC
+§7.2 exactly. `voice-inbound` does a single indexed read with zero
+timezone math at request time (`_shared/business-hours.ts` precomputes the
+greeting string from the tenant's IANA timezone + weekly hours +
+exceptions, unit tested against DST-relevant fixtures). Every write is
+idempotent: `create_booking`/`update_booking` rely on the GIST exclusion
+constraint (never check-then-insert) and catch `23P01`/`23505` to return
+the race-winner's row; `create_order` mirrors the same pattern against
+`orders_idempotency_unique`.
+
+**Deferred / left for later tasks / follow-ups**
+- `tool_health` table (see schema section above) — needed for real
+  per-tool latency/error telemetry and for `job-alert-evaluation`'s
+  `tool_failure_spike` rule to ever fire.
+- Seven of `admin`'s nine BACKEND_SPEC §7.7 endpoint groups (margin
+  cockpit, Config Lab, Referral P&L, CAC, Templates, Support, Outreach,
+  Feature flags) return `501 not_implemented` rather than a guessed
+  response shape — Templates in particular needs T2's compiler wired in
+  first (agent publish), and the cockpit views need real drill-down query
+  design, not a placeholder.
+- `worker-adapter-push`'s `ADAPTER_PUSHERS` registry is empty (Wave-3/T7
+  scope per `packages/adapters/README.md`) — every push currently dead-
+  letters after 6 attempts; this is intentional (never silently succeeds)
+  but means no adapter push actually delivers yet.
+- Waitlist "YES" auto-book reply (MASTER_SPEC §3.4) is not wired in
+  `webhooks-twilio-sms` — a bare "YES" is stored as an ordinary inbound
+  message today; matching it to a notified `waitlist_entries` row and
+  auto-booking via `create_booking`'s same idempotent path is a follow-up.
+- `api-provision`'s `compileTemplate`/`resolvePhoneNumberToProvision`
+  dependencies are stand-ins (a direct `agent_templates` row read; an
+  empty string that fails loud) — T2's real Retell compiler and a real
+  Twilio available-numbers search need wiring in once those are reachable
+  from Deno (see the provider-isolation note above).
+- `job-retell-health-failover`'s Twilio-number-restoration-on-recovery step
+  only clears the incident flag today (see its own docstring) — actually
+  re-establishing Retell routing on recovery needs the exact Retell
+  phone-import routing mechanism confirmed first (`docs/VERIFY.md`).
+- Admin impersonation (`POST /admin-tenants/:id/impersonate`) enforces the
+  AAL2 gate and writes the audit-log row, then returns `501` rather than
+  minting a real scoped session — the Supabase Auth Admin API mechanism
+  for that needs confirming before it's wired in.
+- Root `pnpm run lint` currently fails on one pre-existing formatting nit
+  in `scripts/ci/rls-cross-tenant-probe.ts` (T1's file, unrelated to this
+  task) — left untouched per scope discipline; `biome check
+  supabase/functions` (this task's actual surface) is clean.

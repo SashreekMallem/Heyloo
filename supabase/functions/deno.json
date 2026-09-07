@@ -1,0 +1,11 @@
+{
+  "$comment": "Deno import map for supabase/functions (Supabase Edge Functions runtime, NOT read by pnpm/vitest/tsc — see supabase/functions/tsconfig.json which excludes every file this map is for). Versions here are pinned to match supabase/functions/package.json's zod version and the Rule-1-verified postgres.js major so the two runtimes (Deno at deploy time, Node at test time) resolve the same major versions of shared-shape logic. Supabase's current Edge Runtime resolves bare/npm-prefixed specifiers per https://supabase.com/docs/guides/functions/import-maps — verify exact current mechanism (deno.json vs import_map.json vs per-function) before first real deploy; logged in docs/VERIFY.md.",
+  "imports": {
+    "zod": "npm:zod@4.5.4",
+    "postgres": "npm:postgres@3.4.9"
+  },
+  "compilerOptions": {
+    "lib": ["deno.window"],
+    "strict": true
+  }
+}

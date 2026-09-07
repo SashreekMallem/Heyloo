@@ -59,3 +59,63 @@ enabled = false
 [db.seed]
 enabled = true
 sql_paths = ['./seed/*.sql']
+
+# ── Edge Function verify_jwt settings (T3, supabase/functions/) ───────────
+# CLAUDE.md: "triple-check — the OLD repo died by getting this inverted."
+# `verify_jwt = false` means Supabase's platform-level JWT gate is OFF and
+# the function implements its OWN auth (HMAC webhook signature, decoded JWT
+# claims check, shared cron secret) — BACKEND_SPEC §7 table, function by
+# function:
+#   - Retell/Stripe/Twilio/Square/outreach webhooks: false (raw-body HMAC,
+#     verified before any parsing — fail closed on a missing/bad signature).
+#   - api-demo-agent: false (public marketing-site flow, no auth required to
+#     call; abuse mitigated by the marketing site's own rate-limit/CAPTCHA
+#     layer, not this function).
+#   - worker-*/job-*: false (invoked only by pg_cron's pg_net.http_post with
+#     a shared `CRON_INVOKE_SECRET` header this function checks itself —
+#     never meant to be called by an end user).
+#   - admin, api-provision, forwarding-verify: true (Supabase verifies the
+#     bearer JWT itself; the function then explicitly checks the decoded
+#     claims — platform_admin/AAL2 for admin, tenant_id+role for the other
+#     two — per CLAUDE.md Rule 2, RLS/JWT-verification alone is not treated
+#     as sufficient for these).
+[functions.voice-inbound]
+verify_jwt = false
+[functions.voice-tools]
+verify_jwt = false
+[functions.voice-events]
+verify_jwt = false
+[functions.webhooks-stripe]
+verify_jwt = false
+[functions.webhooks-twilio-sms]
+verify_jwt = false
+[functions.webhooks-outreach]
+verify_jwt = false
+[functions.webhooks-pos]
+verify_jwt = false
+[functions.api-demo-agent]
+verify_jwt = false
+[functions.worker-messages-outbound]
+verify_jwt = false
+[functions.worker-recording-fetch]
+verify_jwt = false
+[functions.worker-adapter-push]
+verify_jwt = false
+[functions.job-reconciliation]
+verify_jwt = false
+[functions.job-billing-cycle]
+verify_jwt = false
+[functions.job-reminder-scheduler]
+verify_jwt = false
+[functions.job-review-request]
+verify_jwt = false
+[functions.job-retell-health-failover]
+verify_jwt = false
+[functions.job-alert-evaluation]
+verify_jwt = false
+[functions.admin]
+verify_jwt = true
+[functions.api-provision]
+verify_jwt = true
+[functions.forwarding-verify]
+verify_jwt = true

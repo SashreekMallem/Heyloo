@@ -1,0 +1,20 @@
+{
+  "name": "@heyloo/edge-functions",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Supabase Edge Functions (Deno runtime) for Heyloo's voice hot path, webhooks, admin routing, queue workers, and scheduled jobs. See supabase/functions/BUILD_NOTES.md for the Deno/Node split this package.json exists to support: portable, dependency-injected business logic in _shared/**/*.ts and per-function handler.ts files is typechecked and unit-tested here under Node/Vitest; Deno-only entrypoints (index.ts, anything importing an `npm:`/`jsr:` specifier or touching the `Deno`/`EdgeRuntime` globals) are excluded from this package's tsconfig and are Deno's responsibility at deploy time (supabase/functions/deno.json).",
+  "type": "module",
+  "license": "UNLICENSED",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3",
+    "vitest": "5.0.0"
+  }
+}
