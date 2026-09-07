@@ -1,286 +1,425 @@
-# Heyloo System Design — Production E2E Blueprint
+# Heyloo System Design v2 — Production E2E Build Spec
 
-The build spec for the complete redo. Synthesizes seven research streams
-(Retell API mapping, Supabase production architecture, self-serve lifecycle,
-outreach engine, margin cockpit, provider portability, payment processing)
-plus the audit (`AUDIT_2026-09.md`), master plan (`MASTER_PLAN.md`), and
-vertical research (`VERTICAL_RESEARCH.md`). Owner decisions baked in:
-complete rebuild · Retell behind an abstraction · message-first core primary /
-integrations secondary · no n8n · no Supabase Realtime (polling) · in-house
-referral program · customer side designed from zero.
+Definitive build spec for the complete redo. v2 folds in eleven research
+streams: Retell API mapping, Supabase production architecture, self-serve
+lifecycle, outreach engine, margin cockpit, provider portability, payment
+processing, **per-vertical pricing**, **conversation-layer design**,
+**latency/data-access engineering**, and an **adversarial gap review (41
+findings)**. Owner decisions locked: complete rebuild · Retell behind an
+abstraction · message-first core primary / integrations secondary · no n8n ·
+update-triggered tenant-scoped realtime (no polling, no global fan-out) ·
+in-house referrals · Stripe + ACH push · customer side designed from zero.
+
+Companion docs: `AUDIT_2026-09.md` (why the old code is discarded),
+`MASTER_PLAN.md` (business decisions), `VERTICAL_RESEARCH.md` (market data).
 
 ---
 
-## 1. Product definition
+## 1. Product & pricing
 
-**Primary tier (any business, live in minutes):** AI agent answers the phone →
-converses → booking/order/lead stored in OUR database → delivered to the
-business via SMS, email, Airtable sync, and the dashboard. No integration
-required. **Secondary tier (upsell/retention):** adapters writing bookings
-into the customer's own system (Shopmonkey, ezyVet, Square, Cloudbeds, Clio,
-Follow Up Boss…). Verticals steer marketing only; signup is open to all.
+**Primary tier (any business, live fast):** AI answers the phone → booking/
+order/lead stored in OUR database → delivered via SMS, email, Airtable, and
+a live dashboard. No integration required. **Secondary tier:** adapters
+writing into the customer's own system (Shopmonkey, ezyVet, Square,
+Cloudbeds, Clio, Follow Up Boss, + a generic Google/Outlook Calendar adapter
+— see gap G10). Verticals steer marketing; signup is open to all.
 
-**Pricing:** $299/mo base with an explicit included-minutes bucket (e.g.
-300 min) + $0.40/min overage. Per-vertical price tiers available (research
-supports dental $399–499, legal $499–599 — Smith.ai charges $293 for
-human-hybrid; a missed legal intake call is worth $3.2–6.5k). 10–15%
-annual-prepay discount on the base fee only. ACH strongly encouraged.
+### Per-vertical price card (researched, not guessed)
+
+| Vertical | Base | Incl. min | Overage | Expected usage | Margin | Competitor anchor |
+|---|---|---|---|---|---|---|
+| Auto repair | $299 | 300 | $0.35 | ~300 min/mo | ~88% | AutoLeap AIR $179–409; VoiceController $99 |
+| Veterinary | $349 | 500 | $0.40 | 500–800 | 80–84% | PupPilot $125/doctor; AgentZap $109+ |
+| Legal intake | $399 | 300 | $0.45 | 300–450 | 87–91% | Ruby (human) $250–1,725; Smith.ai human $292–975 |
+| Dental | $349 | 350 | $0.40 | 350–600 | 80–88% | Peerlogic $199; Weave suite $300–800 (their voice AI still waitlisted) |
+| Real estate | $349 | 150 | $0.40 | 80–160 | ~95% | Structurely $499–999; Ylopo $895–2,000 effective |
+| Motels | $299 | 400 | $0.35 | 400–750 | 73–85% | Human answering $250–1,725; Canary = enterprise-only |
+| Restaurants | $249 | 500 | $0.30 | 500–900 | 72–77% | Loman $199–529 (defensive pricing; not a GTM lead) |
+| Generic | $299 | 300 | $0.40 | 250–350 | 87–90% | Rosie $49–299, MyAIFrontDesk $65–99, Smith.ai AI $97.50 |
+
+- **Pricing display:** marketing site says "starting at $299/mo"; the real
+  vertical price card is revealed at signup step 2 (after business-type
+  selection, before Stripe Checkout). Every vertical competitor gates real
+  pricing; a published matrix would be the outlier and a comparison gift.
+- **Generic-tier defense vs the $49–99 floor:** no punitive per-call overage
+  (Smith.ai charges $9.75–11/call over plan), booking-write + SMS standard
+  (Rosie gates booking to $149), real dashboard with recordings/transcripts,
+  and vertical templates nobody at the floor offers.
+- 10–15% annual-prepay discount on base fee only. ACH pushed for all
+  accounts (fee $3.99 vs ~$15/invoice on card). Loss-framing in sales: each
+  vertical's missed-call loss ($135k/yr auto, $100–182k/yr vet,
+  $3.2–6.5k/missed legal call) vs a ~$300–400/mo product.
 
 ## 2. Architecture overview
 
 ```
- Caller ──PSTN──> Twilio number (WE own all numbers in Twilio — never the
-                  voice vendor; makes provider switching a same-day config
-                  change instead of a 10-day port)
-                    │ SIP/import
+ Caller ──PSTN──> Twilio number (WE own ALL numbers in Twilio — never the
+                  voice vendor → provider switch is same-day config, and
+                  tenant port-OUT on cancellation is guaranteed (G7))
+                    │ import/SIP
                     ▼
-              Retell agent (per tenant, compiled from our template)
-                    │  tool calls / webhooks (HMAC verified)
+          Retell agent (per tenant, compiled from our canonical template)
+                    │ tool calls / webhooks (HMAC, raw-body verify)
                     ▼
- ┌─────────────────────── SUPABASE ───────────────────────────┐
- │ Edge functions:                                            │
- │  /voice/inbound     number→tenant→agent+variables resolver │
- │  /voice/tools       booking/availability/customer lookup   │
- │  /voice/events      call_started/ended/analyzed (fast-ack, │
- │                     dedup, queue; pull recording <10 min!) │
- │  /webhooks/stripe   billing sync    /webhooks/pos adapters │
- │  /admin/*           AAL2-gated owner ops                   │
- │ Postgres: RLS everywhere (JWT app_metadata tenant_id via   │
- │  Custom Access Token Hook; CI test queries cross-tenant    │
- │  rows with the public key and asserts zero results)        │
- │ pgmq queue + pg_cron workers (webhook processing, rollups, │
- │  billing, retention sweeps, churn scoring, alerts)         │
- │ Storage: recordings/{tenant}/{call}.mp3, signed URLs       │
- └────────────────────────────────────────────────────────────┘
-        │ REST (publishable key, RLS)          │ server-side
-        ▼                                      ▼
- Tenant dashboard + Admin cockpit      Stripe · Twilio SMS · email ·
- (polling: per-tenant last_activity    Airtable sync · PayPal Payouts
-  check ~10s → refetch; NO websockets) (referrals) · adapters (Layer 2)
+ ┌──────────────────────── SUPABASE (one region, pinned) ────────────────┐
+ │ Edge functions (lean, region-pinned, kept warm):                      │
+ │  /voice/inbound  number→tenant→agent+dynamic-variables resolver       │
+ │  /voice/tools    availability/booking/customer/message (hot path:     │
+ │                  p50<200ms, p95<500ms, abort 1.5s → fallback)         │
+ │  /voice/events   call_started/ended/analyzed → verify → dedup →       │
+ │                  fast-ack → background: recording pull (<10 min!),    │
+ │                  cost ingestion, notification fan-out                 │
+ │  /webhooks/stripe|outreach|pos  · /admin/* (AAL2 + audit log)         │
+ │ Postgres: RLS everywhere (JWT app_metadata tenant_id via Custom       │
+ │  Access Token Hook; CI cross-tenant probe must return 0 rows);        │
+ │  GIST exclusion constraint = double-booking impossible;               │
+ │  precomputed availability_slots (14–30d window, trigger-invalidated)  │
+ │ pgmq + pg_cron: queue workers, nightly get-call reconciliation,       │
+ │  rollups, billing, retention sweeps, churn scoring, alerts,           │
+ │  Retell health check → auto-failover (G5)                             │
+ │ Realtime: DB trigger on tenant writes → broadcast on that tenant's    │
+ │  PRIVATE channel only (RLS on realtime.messages) → frontend refetch.  │
+ │  Fires only on update, delivered only to that tenant.                 │
+ │ Storage: recordings/{tenant}/{call} — signed URLs, per-tenant         │
+ │  retention windows (BIPA-aware defaults, G3)                          │
+ └───────────────────────────────────────────────────────────────────────┘
+        │                                   │
+ Tenant dashboard · Admin cockpit    Stripe · Twilio SMS (A2P) · email ·
+ · Partner portal                    Airtable · PayPal Payouts · adapters
 ```
 
-## 3. Stack decisions (all researched, all final unless owner reopens)
+## 3. Stack decisions
 
-| Concern | Decision | Why |
+| Concern | Decision | Basis |
 |---|---|---|
-| Voice provider | **Retell**, agent-per-tenant, behind `VoiceProvider` interface | Free self-serve HIPAA BAA; itemized per-call cost (`product_costs[]`); ~87% margin at 50 customers |
-| Agent authoring | **Our canonical format** (system prompt + JSON-Schema tools) in our DB, compiled per provider | The one format all 5 providers accept; visual flow builders are mutually untranslatable — only ever compiled artifacts |
-| Telephony | **All numbers purchased/owned in Twilio**, imported into Retell | Uniform anti-lock-in policy across every provider evaluated |
-| Backend | Supabase (new project): Postgres + Auth + edge functions + pgmq + pg_cron + Storage | Infra ~$150–350/mo @50 tenants, ~$1k @500 — noise vs margins |
-| Dashboard updates | **Update-triggered, tenant-scoped Realtime**: DB trigger on tenant writes → minimal broadcast on that tenant's private channel → frontend refetches. No polling; no postgres_changes fan-out | Owner decision: events fire only on update, delivered only to that tenant; RLS on `realtime.messages` scopes channels |
-| Payments | **Stripe** (Checkout + Billing Meters: $299 licensed + metered minutes) + **ACH push** | MoR portals cost 40–70% MORE (5%+50¢); refund-fee loss is only ~$15–60/mo; ACH saves ~$560/mo @50 customers. Keep our own usage ledger as source of truth, report into Stripe — lowers future switching cost |
-| Sales tax | Compliance tool (Numeral/TaxJar) when nexus accumulates; revisit MoR at ~150–200 customers | 25–26 states tax SaaS; MoR premium not worth it yet |
-| Referrals | **In-house**: unique links, flat $X per referral, admin-configurable; PayPal Payouts API ($0.25/payout); 1099-NEC at $2,000/yr threshold; FTC disclosure copy required | Owner decision; no Rewardful/Tolt subscription |
-| Outreach | **No n8n.** Admin panel + edge functions pull leads on demand (Apollo API + Outscraper/Apify Maps + state license rolls), push to Smartlead/Instantly API, reply webhooks → Supabase, Claude classifies intents | Owner decision; simpler, fewer moving parts |
-| AI (internal) | Claude Haiku 4.5 for research/classification (Batch API), Sonnet for personalization writes; ~$0.02/lead | |
-| Voice IDs | Standardize on ElevenLabs voice IDs in canonical config | Portable across Retell/Vapi/Bland as TTS backend |
+| Voice provider | Retell, agent-per-tenant, behind `VoiceProvider` interface with capability flags | Free HIPAA BAA; itemized `product_costs[]` per call; inbound webhook = multi-tenant dispatch |
+| Agent authoring | Canonical schema in OUR DB: system prompt + JSON-Schema tools + **abstract state graph** (states, transitions, global_intents) compiled per provider | Provider flow builders are mutually untranslatable; our graph compiles to Retell conversation-flow, multi-prompt, or a single mega-prompt per target |
+| Telephony | All numbers in Twilio, imported to Retell; **guaranteed port-out on cancellation** | Anti-lock-in for us AND the customer |
+| Backend | Supabase: Postgres + Auth + edge functions + pgmq + pg_cron + Storage, one pinned region | Infra ~$150–350/mo @50 tenants |
+| Realtime | Update-triggered broadcast on private per-tenant channels; frontend refetches on event | Owner decision: fires only on update, only to that tenant |
+| Payments | Stripe (Checkout + Billing Meters: licensed base + metered minutes) + ACH push; own usage ledger as source of truth | MoR portals cost 40–70% more; refund-fee loss only ~$15–60/mo; ledger independence lowers switching cost |
+| Referrals | In-house: links, flat $X/qualified referral (admin-configurable), PayPal Payouts ($0.25), W-9 + 1099-NEC at $2k/yr, FTC disclosure required | Owner decision |
+| Outreach | No n8n. Admin-panel lead fetch (Apollo + Outscraper/Apify + license rolls) → Claude personalization (~$0.02/lead) → Smartlead/Instantly API → reply webhooks → Claude intent classification | Owner decision; ~$355–470/mo all-in at 1,250 sends/wk |
+| Voice IDs | ElevenLabs voice IDs in canonical config | Portable across providers as TTS backend |
 
-## 4. Voice layer
+## 4. Conversation layer (per-vertical design)
 
-- **Inbound flow:** Retell inbound webhook → `/voice/inbound` looks up
-  `phone_numbers.tenant_id` → returns tenant's `agent_id` +
-  `retell_llm_dynamic_variables` (business name, hours, services, greeting —
-  all strings; typed values stringified). Reject unknown numbers.
-- **Agent lifecycle:** vertical `agent_templates` (versioned) + per-tenant
-  `agent_configs` (overrides) → compiler → Retell create/update/publish via
-  API. Zero dashboard clicking. Batch-simulation tests run as a CI gate
-  before any template version rolls to live tenants.
-- **Tools (custom functions → our edge functions, HMAC-verified):**
-  `check_availability`, `create_booking` (idempotency key = call_id+slot),
-  `lookup_customer`, `take_message`, `transfer_call` (warm, with context),
-  `send_sms_confirmation`. No Cal.com — availability/bookings live in our DB.
-- **Events:** `call_started/ended/analyzed` → verify signature → dedup insert
-  (`webhook_events` unique on source+event+call_id) → 200 fast-ack → queue.
-  **Recording URL expires 10 minutes after webhook** → archive to Storage
-  immediately in the background task, never batched. `call_analyzed` fields
-  occasionally missing → nightly `GET /get-call` reconciliation job is source
-  of truth for booking-critical data.
-- **Cost ingestion:** every `product_costs[]` entry → `cost_events` row
-  (component, unit price, amount, raw payload). Margin engine runs on actuals.
-- **Telephony features:** conditional-forwarding default (their phone rings
-  first), voicemail detection per agent, after-hours behavior from business
-  hours config, warm transfer to owner's cell, customer SMS confirmations
-  (A2P 10DLC registration is a real onboarding step — plan the brand/campaign
-  registration flow).
-- **Config knobs for margin:** LLM tier per vertical template
-  (`fast|balanced|best`), voice tier per vertical, dynamic variables instead
-  of per-tenant knowledge bases ($8/mo each after 10 — avoid).
-- **Open items (Retell support ticket, before build):** agent-count ceiling,
-  API rate limits, exact current `call_cost` schema, publish-endpoint
-  reliability, recording storage options.
+### 4.1 Prompt architecture per vertical
 
-## 5. Data model (consolidated)
+| Vertical | Engine (compiled target) | Why |
+|---|---|---|
+| Auto, dental, motel, restaurant | **Conversation Flow** (node graph) | Hard slot-filling; typed Extract-DV nodes; model cannot invent prices/menu items/rates — tool-backed nodes only |
+| Veterinary | Conversation Flow + **global emergency node** | Red-flag escape reachable from any point in the call — structurally guaranteed, not model-discretionary |
+| Legal | **Multi-prompt states** | Hard-gated conflict-check + no-advice guardrail per state, with open empathetic discovery a rigid graph would flatten |
+| Real estate, generic | **Single prompt** | Qualification is conversational; over-structuring reads as interrogation; under the ~1000-word/5-tool threshold |
 
-Core: `tenants` (vertical, plan, branding, business_hours, retention policy,
-stripe_customer_id, referrer_id) · `memberships` (user↔tenant, role) ·
-`platform_admins` · `phone_numbers` (twilio_sid, tenant_id, forwarding
-status/verified_at) · `agent_templates` / `agent_configs` ·
-`offerings` · `resources` · `availability` · `bookings` (start/end, resource,
-status lifecycle, source call) · `orders` (restaurant specialization) ·
-`customers` (per tenant) · `call_logs` (provider, duration, transcript,
-recording_path, disconnection_reason, latency fields, tool-call stats,
-combined_cost) · `messages_outbound` (SMS/email/Airtable delivery log).
+The choice is a **compile target**, not authored per provider: our DB stores
+`states[]` (prompt fragment, allowed tools, validation), `transitions[]`
+(intent/predicate conditions), `global_intents[]` (emergency, human-request,
+solicitor). The compiler lowers this to Retell's format — or any provider's.
 
-Money: `cost_events` · `revenue_events` · `usage_events`/`usage_daily`
-(keyed tenant+day+price_version) · `billing_invoices` (unique
-tenant+period) · `payment_processing_events` (actual Stripe fees) ·
-`commission_events` · `cac_events` · `fixed_cost_allocations` ·
-`webhook_events` (dedup).
+### 4.2 Call taxonomy (12 classes, every call lands in exactly one)
 
-Referrals: `referral_partners` (user, payout_method, w9_status) ·
-`referral_links` (code) · `referrals` (partner, tenant, status,
-qualified_at) · `referral_payouts` (amount, period, paypal_batch_id,
-1099_ytd_total). Payout amount $X read from `platform_settings`
-(admin-editable), snapshotted onto each referral at creation.
+new booking · reschedule · cancel · question/FAQ · status check · sales lead
+(quote, no commit — capture contact, `follow_up_needed`) · **solicitor
+calling the business** (polite deflect, optional message, never transfer) ·
+wrong number · **spam/robocall** (dead-air/looping-audio pattern → hang up
+within 10–15s, stop burning minutes) · **emergency** (vertical red-flags →
+global escalation, booking flow bypassed) · after-hours message · transfer
+request. In-call tools drive routing; **post-call analysis is the
+authoritative final classification**; a call can migrate class mid-call.
 
-Outreach: `leads` (vertical, source, status funnel) · `campaigns` ·
-`send_events` · `replies` (ai_intent) · `suppression_list` ·
-`pipeline_costs`.
+### 4.3 Input collection per vertical (validated against real front-desk protocols)
 
-All tenant-scoped tables: RLS keyed on JWT `app_metadata.tenant_id`,
-`tenant_id` indexed, `(select auth.jwt())` wrapped, `TO authenticated`.
-Numeric money in cents/numeric — never floats. Soft deletes on tenants;
-no cascade destruction of financial history.
+One field at a time → confirm → next. Digit-by-digit read-backs for phones/
+dates, slower cadence on read-back.
 
-## 6. Security posture (fixes every audit failure class)
+- **Auto:** name · phone · vehicle year/make/model (validated) · symptom →
+  service category · drop-off vs wait · time (via `check_availability`).
+- **Vet:** owner+phone · pet name/species/breed/age · new vs existing ·
+  **triage FIRST**: red-flags (bloat, seizure, can't breathe, hit-by-car,
+  toxin ingestion, male cat straining, severe bleeding, blue gums) →
+  immediate ER referral/warm transfer, never diagnosis · else symptom vs
+  routine · time. (Vet is NOT HIPAA — animal records aren't PHI; no BAA
+  gate needed, unlike dental.)
+- **Legal:** name+phone · matter type · open discovery ("walk me through
+  it") · urgency (SOL, custody, court date) · **opposing party full name
+  BEFORE substantive discussion** (conflict check — flagged for human
+  review, never auto-cleared) · referral source. Hard guardrail in every
+  state: no legal advice, no merits opinion, no fee quotes beyond
+  configured consult fee. `legal_advice_given` boolean must always be
+  false — alerts if ever true.
+- **Dental:** patient name · new vs existing · pain triage (pain/swelling/
+  fever/knocked-out tooth → urgency tiers, same-day check) · time.
+  **DOB/insurance deferred to a secure post-call form link** — PHI stays
+  out of transcripts where possible.
+- **Real estate:** buyer/seller · property or area · pre-approved? ·
+  timeline · budget · showing time — covered in ~2 minutes, conversational.
+- **Motel:** dates · guests · room type · **rate only from the
+  owner-configured rate table via tool call** · payment/cancel policy ·
+  no-availability → offer nearest alternative.
+- **Restaurant:** order vs reservation branch early · items from tool-backed
+  catalog only · pickup/delivery or party size · allergies asked explicitly
+  · full read-back before close.
+- **Generic:** name · phone · reason · message · callback window.
 
-JWT claims via Custom Access Token Hook (server-writable `app_metadata`) ·
-RLS on every table verified by CI cross-tenant probe · new
-publishable/secret API keys (legacy keys die late 2026) · secret-key edge
-functions still explicitly tenant-scope every query · every webhook:
-signature first, raw-body verify, dedup insert, replay window · hashed API
-tokens · revocable sessions · MFA (AAL2) for admin routes · recordings via
-short-lived signed URLs after tenant check · Sentry on edge functions ·
-suppression/opt-out honored same-day · fail-closed everywhere (the old code
-failed open in five places).
+### 4.4 Data saved per call
 
-## 7. Customer lifecycle (the self-running machine)
+Two sources, deliberately separate: **in-call tool args are authoritative**
+for booking-critical fields (written synchronously by `/voice/tools`);
+post-call analysis (`call_analyzed` + nightly `get-call` reconciliation) is
+enrichment: `classification` (12-enum), `outcome`, `sentiment`,
+`call_successful`, `call_summary`, `follow_up_needed`, `urgency_flag`
+(set IN-call on red-flags, never waiting for post-call), `message_text`,
+`structured_booking_payload` (vertical schema), `extracted_entities`,
+`disconnection_reason`, latency fields, tool-call stats. Vertical custom
+post-call fields map to Retell's typed Bool/Text/Number/Enum extraction.
 
-1. **Land & try:** enter business name + website → scrape hours/services →
-   personalized demo agent in <60s → web-call widget AND a real number to
-   call from their own phone. (No competitor does the full URL→personalized
-   live agent flow — differentiation.)
-2. **Pay:** card-required Stripe Checkout (converts 31–44% vs ~9% for
-   no-card trials) + 14–30 day money-back guarantee instead of a trial.
-3. **Provision (saga, idempotent, no humans):** tenant → agent compiled from
-   vertical template (pre-seeded from the scrape) → Twilio number bought →
-   imported to Retell → billing attached. Retries with backoff; never
-   half-provisioned; dead-letter alert only after N automated retries fail.
-4. **Forward the phone (the churn minefield):** guided per-carrier wizard
-   (Verizon `*71`/`*90-93`, AT&T/T-Mobile `##61#`/`##67#`, VoIP panels,
-   Google Voice special-cased), tap-to-dial codes, **automated verification
-   test call** with live pass/fail. Default: conditional forwarding
-   (safety-net mode) for the first weeks. Alternative: "use our number
-   everywhere" or managed port-in.
-5. **Aha:** first real handled call → instant push/SMS with transcript
-   ("Your AI just booked Sarah for Thursday 2pm").
-6. **Retention automation:** weekly value email (calls answered, booked,
-   ~$ saved) → monthly after stabilization; nightly churn-risk scoring
-   (volume drop vs own baseline, forwarding silently disabled, dashboard
-   inactivity) → automated win-back; Stripe Smart Retries + dunning +
-   auto-pause/reactivate; self-serve agent editing (hours/services/FAQ,
-   instant redeploy) so "the AI said something wrong" is a 1-minute
-   self-fix; failed/escalated calls auto-flag with review-&-fix prompt.
-7. **Support without humans:** docs-trained chatbot (40–65% tier-1
-   deflection once tuned), automated status page wired to monitoring.
-   Founder hours: ~3–6/wk @50 customers, ~8–15/wk @200.
-8. **Instrument from day one:** days-from-signup-to-first-verified-call and
-   forwarding-verification history vs churn.
+### 4.5 Conversation quality & disclosure rules
 
-## 8. Referral program (in-house)
+- **Mandatory, non-removable opening disclosure in every greeting, every
+  state:** AI status + recording notice ("Thanks for calling {{business}},
+  this is their AI assistant — this call may be recorded"). Covers
+  two-party-consent recording states AND AI-disclosure laws (CA AB 2905
+  et al.) in one line. Wording per vertical is an owner decision (clumsy
+  disclosure can raise hang-ups); presence is not.
+- Silence: nudge ~2s, again ~5–7s, message-mode ~10–12s. Barge-in tuned
+  (VAD + confidence + word count; backchannels ≠ interruptions).
+- Give-up ladder: 2 failed clarifications on one field → yes/no
+  simplification; 3 total misunderstandings → transfer/message. Escalation
+  triggers: explicit human request, anger/sentiment, compliance-sensitive
+  asks (legal advice, diagnosis), emergencies, language mismatch.
+- Warm transfers always carry a context summary — caller never repeats.
+- Low-confidence booking-critical fields are never silently accepted —
+  offer a texted link for self-entry instead.
 
-- Anyone signs up as a partner → unique link/code → referred signups
-  attributed (code at checkout + cookie fallback).
-- **Flat $X per qualified referral** (default suggestion: $100 after the
-  referred customer's 2nd paid month — anti-fraud gate), X editable in admin
-  settings; optional two-sided (referred customer gets a free month) for
-  customer-referrers.
-- Monthly payout run: PayPal Payouts API batch ($0.25 each), ledgered in
-  `referral_payouts`; W-9 collected at partner signup; auto-1099-NEC when a
-  partner crosses $2,000/yr; FTC disclosure copy provided and required.
-- Partner portal page: their link, clicks, signups, qualified referrals,
-  pending/paid amounts. RLS: partners see only aggregate data about their
-  own referrals — never tenant call/booking data.
-- Later: reseller/white-label tier (precedent: MyAIFrontDesk wholesales
-  ~$55/agent + $0.12/min; partners retail $250–500) — build on same rails.
+## 5. Latency & data-access engineering (hot path)
 
-## 9. Admin panel
+**Budget:** Retell's own loop is ~680–920ms; caller tolerance ~1.5–2s/turn.
+Our tool endpoints: **p50 <200ms, p95 <500ms, hard abort 1.5s** → graceful
+"I'll take your details and have someone confirm" fallback. Filler speech on
+every tool call. Never let Retell's 10s timeout/retry be the failure path.
 
-**Margin cockpit** (9 pages): waterfall (revenue → provider cost → gross →
-commissions/processing/fixed/CAC → net) · per-customer margin table with
-negative-margin flags + auto-diagnosis · per-call cost breakdown vs billed ·
-cost-per-minute trend with provider-repricing markers · Config Lab (what
-would switching model/voice save) · referral P&L · CAC per channel ·
-bottleneck view (silence, failed tool calls, error hangups = wasted minutes)
-· alert rules. Alerts via pg_cron: price-drift >8%, negative-margin
-customer, usage spike 2.5×, concurrency ≥80% of pool, tool-failure spike,
-commission>margin, payment failures.
+- **Availability = precomputed.** `availability_slots` (tenant, resource,
+  slot range, is_available) materialized 14–30 days ahead, partial index on
+  open slots, GIST range index, trigger-invalidated by booking writes and
+  schedule changes, rolled forward nightly. Hot query = one indexed read,
+  <10ms. Timezone math baked in at materialization (tenant IANA tz), never
+  in the hot path.
+- **Booking = one INSERT, race-proof.** GIST **exclusion constraint** on
+  (resource_id, tstzrange) where status='confirmed' — two concurrent
+  callers physically cannot double-book. Unique `idempotency_key`
+  (call_id+slot): Retell retries return the existing booking, never a
+  duplicate. Slot flip + booking in one transaction — no consistency window.
+- **Customer lookup** = E.164-normalized unique index (tenant, phone).
+- **Static context (hours, services, greeting, short FAQ) rides in dynamic
+  variables at call start — zero tool calls.** Above a few KB (big menus)
+  it moves to a targeted lookup tool; oversized injected context taxes
+  every turn's tokens and latency.
+- **Infra rules:** edge functions region-pinned with the DB (confirm
+  Retell's webhook egress region via support); keep-warm ping every 3–5
+  min; lean handlers (no ORM on `/voice/tools`); module-scope DB client;
+  session-mode/dedicated pooler so prepared statements actually reuse.
+- **Circuit breaker:** rolling per-tool error/timeout rate; above threshold
+  (~20%/min) new calls short-circuit to message-taking mode until reset.
+  Per-tool p50/p95/p99 + error rate feed the cockpit bottleneck view +
+  alerts.
+- **Load reality:** 100 concurrent calls ≈ 5–6 tool calls/sec — trivial for
+  Postgres. The first wall is Retell's 20-concurrent-call default ($8/line
+  beyond). Risk is tail latency, not throughput.
 
-**Margin levers, ranked ($/mo @ 50 customers):** LLM tier per vertical
-($375–1,925) · commission structure ($500–1,900) · ACH routing (~$560) ·
-voice-tier segmentation ($300–625) · wasted-minute elimination ($150–450) ·
-BYO-Twilio SIP ($100–160, later) · Retell volume tier (at ~200+ customers).
+## 6. Data model (consolidated)
 
-**Outreach (no n8n):** campaign CRUD per vertical · "fetch leads" button →
-edge function pulls Apollo (Organization plan, ~$150–180/mo) + Outscraper
-Maps batches, dedupes against suppression list → Claude personalizes
-(~$0.02/lead) → push to Smartlead/Instantly campaign via API → their
-webhooks land in `/webhooks/outreach` → funnel view (sourced→sent→replied→
-demo→customer), reply feed with Claude-classified intent and one-click
-actions, CAC per vertical. **Compliance hard rules:** CAN-SPAM (address,
-one-click unsub, same-day suppression), <0.3% complaint rate auto-pause,
-4–6 week domain warm-up before first send (start day 1), **never AI-voice
-cold calls** (TCPA: $500–1,500/call), no LinkedIn automation. Optional Lob
-postcards for non-responders.
+Core: `tenants` (vertical, plan, price_version, branding, business_hours +
+**exceptions/holidays**, timezone, retention_days, stripe_customer_id,
+referrer_id, language config) · `memberships` · `platform_admins` ·
+`admin_actions` (audit log incl. impersonation, G15) · `phone_numbers`
+(twilio_sid, forwarding_verified_at, spam-label status) · `agent_templates`
+(canonical prompt + tools + state graph, versioned) · `agent_configs` ·
+`offerings` · `resources` · `availability_slots` · `bookings` (exclusion
+constraint, idempotency, source_call_id) · `orders` · `customers` (E.164) ·
+`call_logs` (full spec §4.4) · `messages_outbound` · `webhook_events`
+(unique source+event_id).
 
-## 10. Dashboard (customer side, designed from zero)
+Money: `cost_events` (per `product_costs[]` entry, provider column) ·
+`revenue_events` · `usage_events`/`usage_daily` (tenant+day+price_version) ·
+`billing_invoices` (unique tenant+period) · `payment_processing_events`
+(actual Stripe fees) · `commission_events` · `cac_events` ·
+`fixed_cost_allocations`.
 
-Pages: Live activity (calls + bookings feed via polling, transcripts +
-recordings inline) · Bookings (confirm/reschedule/cancel → customer SMS) ·
-Customers · Agent settings (hours, services, greeting, FAQ, transfer number,
-voicemail message — instant redeploy) · Phone setup (forwarding wizard +
-verification status) · Delivery preferences (SMS/email/Airtable) · Billing
-(usage this month, invoices) · Refer & earn. Tenant branding config
-(logo/color). Role-guarded routes, error states everywhere, no tokens in
-localStorage without mitigation, clean component library, lint + typecheck +
-CI from commit one.
+Referrals: `referral_partners` (payout method, W-9 status, 1099 YTD) ·
+`referral_links` · `referrals` (status, qualified_at — default rule: after
+referred customer's 2nd paid month) · `referral_payouts`. $X read from
+`platform_settings`, snapshotted per referral.
 
-## 11. Build order
+Outreach: `leads` · `campaigns` · `send_events` · `replies` (ai_intent) ·
+`suppression_list` · `pipeline_costs`.
 
-- **Week 0:** old-system triage (rotate Square token, kill
-  `get_user_for_login`, force auth on `restaurants`/`pos`, remove fail-open
-  branches) · new repo scaffold + CI + RLS test harness · **start email
-  domain warm-up** · file Retell support questions · Stripe + Twilio + Apollo
-  accounts.
+Discipline: RLS on every table (CI-verified), tenant_id indexed, money in
+cents, soft-delete tenants, no cascade destruction of financial history,
+timestamped reproducible migrations, seed/demo data per vertical for QA.
+
+## 7. Security & compliance
+
+Everything from v1 (JWT claims hook, fail-closed webhooks, hashed tokens,
+revocable sessions, MFA admin, Sentry) **plus the gap-review mandates**:
+
+- **In-audio compliance (blockers G1/G2):** AI + recording disclosure in
+  every greeting — compiler-enforced constant, not tenant-editable.
+- **BIPA (G3):** counsel review of voice processing; short default recording
+  retention (30–90 days, tenant-extendable with consent flow); no
+  caller-voice-recognition features; published retention/destruction policy.
+- **Prompt-injection defense (G6):** tool-level authorization —
+  `lookup_customer` scoped to the caller's own number by default;
+  `transfer_call` destinations tenant-config-only, never caller-influenced;
+  adversarial red-team prompts in the CI simulation gate; scraped demo-site
+  content sanitized of instruction-like patterns before injection (G21).
+- **A2P 10DLC (G4):** platform registers as reseller brand via Twilio;
+  campaign vetting designed into onboarding with an explicit "SMS pending
+  verification" state (1–5 business days) and email fallback — never
+  silently failing confirmations.
+- **PCI/PHI in audio (G20):** real-time card-number redaction before any
+  restaurant/motel tenant takes phone payments; documented PHI handling for
+  dental (tenant-facing BAA at dental onboarding, G22) independent of the
+  Retell BAA.
+- **Inbound spam (G8):** Twilio spam-score/STIR-SHAKEN gate before
+  connecting to Retell + pre-agent silence detection — junk calls never
+  burn paid minutes.
+- **Outbound reputation (G9):** CNAM registration, caller-ID reputation
+  registries, per-number spam-label monitoring.
+- Legal pages: ToS, privacy policy, DPA (we process the SMB's customer
+  PII), recording/AI disclosure documentation.
+
+## 8. Reliability & failover
+
+- **Retell outage failover (blocker G5):** active health check (synthetic
+  test call/API probe every few minutes); on failure, auto-flip Twilio
+  routing to forward-to-owner-cell → voicemail, SMS the tenant ("AI briefly
+  down, calls ring your phone"), auto-restore on recovery. Phase 1, not
+  later — Retell had multiple 1-hour+ outages in 2026.
+- Automated status page wired to monitoring (<5 min time-to-comms).
+- Graceful deploys: versioned edge functions, in-flight tool calls drain.
+- Webhook ordering tolerance (call_ended before call_started), clock-skew
+  window on HMAC, nightly reconciliation.
+- Quarterly backup **restore drill** into a scratch project. PITR on.
+- Solo-founder continuity: break-glass credentials with a trusted contact,
+  documented runbook (G18). Published support SLA for critical outages
+  (G19).
+- Staging Retell account for CI/template QA — never test against prod
+  agents (G16). Feature flags/staged rollout for template + code changes
+  (G35).
+
+## 9. Customer lifecycle
+
+As v1 (URL→personalized demo agent <60s → card-required checkout +
+money-back guarantee → provisioning saga → per-carrier forwarding wizard
+with automated verification call → first-call celebration → weekly value
+emails → churn scoring → self-serve editing → docs chatbot), **plus gap
+fixes:** owner test-calls detected (registered cell) and excluded from
+billable usage (G13) · customer-facing usage alerts at 80%/100% of included
+minutes + optional hard cap (G14) · seasonal pause plan for motels/
+restaurants (G24) · offboarding = guaranteed number port-out SLA, data
+export, retention wind-down (G7) · refund/guarantee mechanics with
+signup-cycle abuse guardrails (G33) · during-hours transfer-no-answer
+fallback (voicemail + SMS + dashboard flag, G29) · caller-callback
+continuity via phone-number-keyed recent-context lookup (G28) · Spanish/
+bilingual as per-tenant language config in the template compiler (G12) ·
+TTY/relay call handling reviewed for ADA (G25) · multi-location and
+multi-staff-calendar modeling before any multi-location tenant onboards
+(G26) · per-tenant concurrency behavior defined (second simultaneous call
+→ second agent instance; Retell pool monitored) (G27).
+
+## 10. Referral program (in-house)
+
+Unique links/codes → attribution at checkout (+cookie fallback) → flat $X
+per qualified referral (admin-configurable; suggested $100 after 2nd paid
+month) → monthly PayPal Payouts batch ($0.25 each) → W-9 at signup,
+auto-1099-NEC at $2k/yr, FTC disclosure copy required. Anti-fraud (G34):
+self-referral detection (matching payment fingerprint/domain/device),
+qualification delay, clawback on refund/chargeback of the referred account.
+Partner portal: link, clicks, signups, qualified, pending/paid. Later:
+reseller/white-label tier (~$55/agent + wholesale minutes precedent).
+
+## 11. Admin panel
+
+**Margin cockpit** (9 pages + alerts) as specified: waterfall, per-customer
+margin with negative-margin auto-diagnosis, per-call cost vs billed,
+provider-repricing drift markers, Config Lab, referral P&L, CAC per channel,
+bottleneck view (now including per-tool latency percentiles), alert rules
+(price drift >8%, negative margin, usage spike 2.5×, concurrency 80%,
+tool-failure spike, commission>margin, payment failures). Margin levers
+ranked: LLM tier per vertical ($375–1,925/mo @50) · commission caps ·
+ACH (~$560) · voice tiers ($300–625) · wasted minutes ($150–450) ·
+BYO-Twilio later · Retell volume tier at ~200+ customers.
+
+**Outreach (no n8n):** fetch-leads → dedupe → Claude personalize → push to
+sender API → reply webhooks → intent-classified feed → funnel + CAC.
+Hard rules: CAN-SPAM, <0.3% complaints auto-pause, 4–6 wk domain warm-up
+started day 1, never AI-voice cold calls (TCPA), no LinkedIn automation;
+Lob postcards optional.
+
+**Adapters:** interface now includes **two-way sync** (webhook-or-polling
+pull-back of staff-made cancellations/reschedules — G11) and the generic
+**Google/Outlook Calendar adapter promoted into early build** (G10 — the
+most universal scheduling surface for solo operators). Airtable sync gets
+conflict handling (one-way push + change detection warnings, G30).
+
+## 12. Gap register
+
+41 findings from the adversarial review, tracked as `docs/` backlog:
+**Blockers (in Phase 1):** G1 recording-consent disclosure · G2 AI
+disclosure · G3 BIPA posture · G4 A2P 10DLC flow · G5 Retell failover ·
+G6 prompt-injection/tool authorization · G7 customer number port-out.
+**High (before scaling past pilots):** G8 inbound spam gate · G9 number
+reputation · G10 calendar adapter · G11 two-way sync · G12 bilingual ·
+G13 owner test-call carve-out · G14 overage alerts · G15 admin audit/
+impersonation · G16 Retell staging · G17 restore drills · G18 continuity
+plan · G19 support SLA · G20 PCI/PHI redaction · G21 scrape sanitization ·
+G22 tenant BAA. **Medium:** G23–G36 (holiday hours, seasonal pause, TTY,
+multi-location, per-tenant concurrency, callback continuity, transfer
+no-answer, Airtable conflicts, deploy draining, webhook ordering, refund
+abuse, referral fraud, feature flags, tax-nexus tracking). **Low:** G37–41.
+
+## 13. Build order (updated)
+
+- **Week 0:** old-system security triage · new repo + CI + RLS cross-tenant
+  test harness · **start domain warm-up** · Retell support tickets (agent
+  ceiling, rate limits, cost schema, webhook egress region, publish
+  reliability) · Stripe/Twilio/Apollo accounts · **A2P reseller-brand
+  registration started** (lead time!) · counsel questions (BIPA, recording
+  consent) filed.
 - **Weeks 1–4 (Layer 1):** schema + auth/RLS · VoiceProvider + Retell
-  adapter + template compiler · booking core (availability, bookings,
-  idempotency) · message delivery (SMS/email/Airtable) · call event
-  pipeline + recording archival + cost ingestion · basic tenant dashboard
-  (polling) · demo-agent generator. Milestone: a stranger books a real
-  appointment by phone and the business gets the SMS.
-- **Weeks 4–7 (money + Wave 1):** Checkout→provision saga · forwarding
-  wizard + verification calls · usage ledger → Stripe Meters · margin
-  cockpit v1 (waterfall, per-customer, per-call) · referral program v1 ·
-  `adapters/autorepair` (Shopmonkey; verify Tekmetric writes) +
-  `adapters/vet` (ezyVet) · migrate the existing restaurant client; retire
-  old system. First cold sends (domains now warm).
-- **Weeks 7–10:** outreach admin full funnel · retention automation (value
-  emails, churn scoring, dunning) · support chatbot · Wave 2 adapter (FUB
-  teams-angle or Clio after discovery calls) · alerts live.
-- **Weeks 10–14:** Wave 3 (NexHealth + Retell BAA, Square Bookings wedge,
-  Cloudbeds) · load tests · per-vertical pricing experiments · scale push
-  toward 50 customers.
+  adapter + template compiler (states graph → conversation-flow) with
+  compiler-enforced disclosure line · booking core (slots table, exclusion
+  constraint, idempotency) · hot-path tool endpoints built to the latency
+  budget · message delivery (SMS with pending-verification state, email,
+  Airtable) · call event pipeline + recording archival + cost ingestion ·
+  **Retell health-check failover** · tool-level authorization + red-team CI
+  gate · tenant dashboard (tenant-scoped realtime) · demo-agent generator
+  with scrape sanitization. Milestone: a stranger books a real appointment
+  by phone; the business gets the SMS; margin row lands in the cockpit.
+- **Weeks 4–7 (money + Wave 1):** Checkout (vertical price card at step 2)
+  → provisioning saga · forwarding wizard + verification call · usage
+  ledger → Stripe Meters + customer usage alerts + owner-test carve-out ·
+  margin cockpit v1 · referral program v1 · `adapters/autorepair`
+  (Shopmonkey) + `adapters/vet` (ezyVet) + **generic calendar adapter** ·
+  migrate the restaurant client; retire old system · first cold sends.
+- **Weeks 7–10:** outreach admin full funnel · retention automation ·
+  support chatbot · bilingual support · Wave 2 adapter (FUB teams-angle or
+  Clio post-discovery-calls) · two-way sync for live adapters · admin
+  audit/impersonation · staging environment hardening.
+- **Weeks 10–14:** Wave 3 (NexHealth + tenant BAA flow, Square Bookings
+  wedge, Cloudbeds) · PCI redaction before phone-payment tenants · load
+  tests at purchased concurrency · per-vertical pricing experiments ·
+  scale toward 50 customers.
 
-## 12. Open decisions for the owner
+## 14. Owner decisions (open)
 
-1. Flat $X referral amount and qualification rule (suggested: $100 after
-   2nd paid month) + whether referred customers get a free month.
-2. Per-vertical pricing now vs. flat $299 launch (research says legal/dental
-   bear $499/$399).
-3. Included-minutes bucket size (300 min suggested).
-4. Demo agent: auto-scraped info goes live unreviewed vs. one confirmation
-   step (wrong scraped hours in a demo call burns trust).
-5. Default forwarding mode: conditional (safe) vs. full (faster aha).
-6. 2am escalation fallback when the owner doesn't pick up: voicemail+SMS
-   (default) vs. paid human-backup layer.
-7. Brand/domain for sending infrastructure (needed day 1 for warm-up).
+1. Referral $X + qualification rule (+ referred-customer free month?).
+2. Approve the per-vertical price card (§1) or launch flat $299.
+3. Greeting/disclosure wording per vertical (warmth vs legal-safety).
+4. Demo agent: scraped info live unreviewed vs one confirmation step.
+5. Default forwarding mode: conditional (safe) vs full (faster aha).
+6. 2am escalation fallback: voicemail+SMS (default) vs paid human backup.
+7. Sending domain/brand for outreach (needed day 1).
+8. Recording retention default (30 vs 90 days) pending BIPA counsel input.
