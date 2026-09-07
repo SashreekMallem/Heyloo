@@ -54,24 +54,32 @@ function env(name: string, ...fallbacks: string[]): string {
     const v = process.env[key];
     if (v) return v;
   }
-  console.error(`Missing required env var ${name} (also checked fallbacks: ${fallbacks.join(', ')})`);
+  console.error(
+    `Missing required env var ${name} (also checked fallbacks: ${fallbacks.join(", ")})`,
+  );
   process.exit(1);
 }
 
-const SUPABASE_URL = env('SUPABASE_URL').replace(/\/$/, '');
-const SERVICE_KEY = env('SUPABASE_SECRET_KEY', 'SUPABASE_SERVICE_ROLE_KEY');
-const PUBLISHABLE_KEY = env('SUPABASE_PUBLISHABLE_KEY', 'SUPABASE_ANON_KEY');
+const SUPABASE_URL = env("SUPABASE_URL").replace(/\/$/, "");
+const SERVICE_KEY = env("SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY");
+const PUBLISHABLE_KEY = env("SUPABASE_PUBLISHABLE_KEY", "SUPABASE_ANON_KEY");
 
 async function restRequest(
   path: string,
-  opts: { method?: string; apikey: string; bearer: string; body?: unknown; extraHeaders?: Record<string, string> },
+  opts: {
+    method?: string;
+    apikey: string;
+    bearer: string;
+    body?: unknown;
+    extraHeaders?: Record<string, string>;
+  },
 ): Promise<{ status: number; json: unknown }> {
   const res = await fetch(`${SUPABASE_URL}${path}`, {
-    method: opts.method ?? 'GET',
+    method: opts.method ?? "GET",
     headers: {
       apikey: opts.apikey,
       Authorization: `Bearer ${opts.bearer}`,
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
       ...(opts.extraHeaders ?? {}),
     },
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
@@ -90,11 +98,11 @@ async function restRequest(
 
 async function serviceInsert(table: string, row: Record<string, unknown>): Promise<void> {
   const { status, json } = await restRequest(`/rest/v1/${table}`, {
-    method: 'POST',
+    method: "POST",
     apikey: SERVICE_KEY,
     bearer: SERVICE_KEY,
     body: row,
-    extraHeaders: { Prefer: 'return=minimal,resolution=merge-duplicates' },
+    extraHeaders: { Prefer: "return=minimal,resolution=merge-duplicates" },
   });
   if (status >= 300) {
     throw new Error(`Seed insert into ${table} failed (${status}): ${JSON.stringify(json)}`);
@@ -106,15 +114,15 @@ async function createTenantFixture(vertical: string, slug: string): Promise<Tena
     name: `RLS probe tenant ${slug}`,
     slug,
     vertical,
-    timezone: 'America/New_York',
+    timezone: "America/New_York",
     business_hours: {},
   };
-  const { status, json } = await restRequest('/rest/v1/tenants', {
-    method: 'POST',
+  const { status, json } = await restRequest("/rest/v1/tenants", {
+    method: "POST",
     apikey: SERVICE_KEY,
     bearer: SERVICE_KEY,
     body: tenantRow,
-    extraHeaders: { Prefer: 'return=representation' },
+    extraHeaders: { Prefer: "return=representation" },
   });
   if (status >= 300 || !Array.isArray(json) || json.length === 0) {
     throw new Error(`Failed to create tenant fixture ${slug} (${status}): ${JSON.stringify(json)}`);
@@ -124,35 +132,43 @@ async function createTenantFixture(vertical: string, slug: string): Promise<Tena
   const email = `rls-probe-${slug}-${Date.now()}@heyloo-ci.local`;
   const password = cryptoRandomPassword();
 
-  const created = await restRequest('/auth/v1/admin/users', {
-    method: 'POST',
+  const created = await restRequest("/auth/v1/admin/users", {
+    method: "POST",
     apikey: SERVICE_KEY,
     bearer: SERVICE_KEY,
     body: { email, password, email_confirm: true },
   });
   if (created.status >= 300) {
-    throw new Error(`Failed to create auth user for ${slug} (${created.status}): ${JSON.stringify(created.json)}`);
+    throw new Error(
+      `Failed to create auth user for ${slug} (${created.status}): ${JSON.stringify(created.json)}`,
+    );
   }
   const createdBody = created.json as { id?: string; user?: { id?: string } };
   const userId = createdBody.id ?? createdBody.user?.id;
   if (!userId) {
-    throw new Error(`Auth admin create-user response for ${slug} had no id: ${JSON.stringify(created.json)}`);
+    throw new Error(
+      `Auth admin create-user response for ${slug} had no id: ${JSON.stringify(created.json)}`,
+    );
   }
 
-  await serviceInsert('memberships', { tenant_id: tenantId, user_id: userId, role: 'owner' });
+  await serviceInsert("memberships", { tenant_id: tenantId, user_id: userId, role: "owner" });
 
-  const signIn = await restRequest('/auth/v1/token?grant_type=password', {
-    method: 'POST',
+  const signIn = await restRequest("/auth/v1/token?grant_type=password", {
+    method: "POST",
     apikey: PUBLISHABLE_KEY,
     bearer: PUBLISHABLE_KEY,
     body: { email, password },
   });
   if (signIn.status >= 300) {
-    throw new Error(`Password sign-in failed for ${slug} (${signIn.status}): ${JSON.stringify(signIn.json)}`);
+    throw new Error(
+      `Password sign-in failed for ${slug} (${signIn.status}): ${JSON.stringify(signIn.json)}`,
+    );
   }
   const accessToken = (signIn.json as { access_token?: string }).access_token;
   if (!accessToken) {
-    throw new Error(`Sign-in response for ${slug} had no access_token: ${JSON.stringify(signIn.json)}`);
+    throw new Error(
+      `Sign-in response for ${slug} had no access_token: ${JSON.stringify(signIn.json)}`,
+    );
   }
 
   return { tenantId, userId, email, accessToken };
@@ -161,7 +177,7 @@ async function createTenantFixture(vertical: string, slug: string): Promise<Tena
 function cryptoRandomPassword(): string {
   const bytes = new Uint8Array(24);
   globalThis.crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('') + 'Aa1!';
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("") + "Aa1!";
 }
 
 // Every table whose SELECT policy scopes on tenant_id = fn_jwt_tenant_id()
@@ -177,67 +193,105 @@ function cryptoRandomPassword(): string {
 function tenantScopedTables(): TenantScopedTable[] {
   return [
     {
-      table: 'phone_numbers', tenantColumn: 'tenant_id',
+      table: "phone_numbers",
+      tenantColumn: "tenant_id",
       row: (t, u) => ({ tenant_id: t, e164: `+1555${u}`, twilio_sid: `PN${u}` }),
     },
     {
-      table: 'offerings', tenantColumn: 'tenant_id',
-      row: (t) => ({ tenant_id: t, name: 'Probe offering' }),
+      table: "offerings",
+      tenantColumn: "tenant_id",
+      row: (t) => ({ tenant_id: t, name: "Probe offering" }),
     },
     {
-      table: 'resources', tenantColumn: 'tenant_id',
-      row: (t) => ({ tenant_id: t, type: 'staff', name: 'Probe resource' }),
+      table: "resources",
+      tenantColumn: "tenant_id",
+      row: (t) => ({ tenant_id: t, type: "staff", name: "Probe resource" }),
     },
     {
-      table: 'customers', tenantColumn: 'tenant_id',
+      table: "customers",
+      tenantColumn: "tenant_id",
       row: (t, u) => ({ tenant_id: t, phone_e164: `+1555${u}` }),
     },
     {
-      table: 'call_logs', tenantColumn: 'tenant_id',
+      table: "call_logs",
+      tenantColumn: "tenant_id",
       row: (t, u) => ({ tenant_id: t, retell_call_id: `probe-${u}` }),
     },
     {
-      table: 'messages_outbound', tenantColumn: 'tenant_id',
-      row: (t) => ({ tenant_id: t, channel: 'sms', recipient: '+15555550000', template_key: 'probe' }),
-    },
-    {
-      table: 'messages_inbound', tenantColumn: 'tenant_id',
-      row: (t) => ({ tenant_id: t, from_e164: '+15555550001', to_e164: '+15555550002', body: 'probe' }),
-    },
-    {
-      table: 'payment_links', tenantColumn: 'tenant_id',
-      row: (t) => ({ tenant_id: t, amount_cents: 100, purpose: 'order' }),
-    },
-    {
-      table: 'usage_events', tenantColumn: 'tenant_id',
-      row: (t) => ({ tenant_id: t, minutes: 1, occurred_at: new Date().toISOString() }),
-    },
-    {
-      table: 'usage_daily', tenantColumn: 'tenant_id',
-      row: (t) => ({ tenant_id: t, date: new Date().toISOString().slice(0, 10), price_version: 'v1' }),
-    },
-    {
-      table: 'billing_invoices', tenantColumn: 'tenant_id',
+      table: "messages_outbound",
+      tenantColumn: "tenant_id",
       row: (t) => ({
-        tenant_id: t, period_start: '2026-01-01', period_end: '2026-01-31',
-        base_fee_cents: 29900, included_minutes: 300, total_cents: 29900,
+        tenant_id: t,
+        channel: "sms",
+        recipient: "+15555550000",
+        template_key: "probe",
       }),
     },
     {
-      table: 'support_requests', tenantColumn: 'tenant_id',
-      row: (t) => ({ tenant_id: t, subject: 'Probe', body: 'Probe' }),
+      table: "messages_inbound",
+      tenantColumn: "tenant_id",
+      row: (t) => ({
+        tenant_id: t,
+        from_e164: "+15555550001",
+        to_e164: "+15555550002",
+        body: "probe",
+      }),
     },
     {
-      table: 'api_tokens', tenantColumn: 'tenant_id',
-      row: (t, u) => ({ tenant_id: t, name: 'probe', token_hash: `hash-${u}`, token_prefix: u.slice(0, 8) }),
+      table: "payment_links",
+      tenantColumn: "tenant_id",
+      row: (t) => ({ tenant_id: t, amount_cents: 100, purpose: "order" }),
     },
     {
-      table: 'provisioning_runs', tenantColumn: 'tenant_id',
-      row: (t) => ({ tenant_id: t, step: 'tenant_finalize', status: 'pending' }),
+      table: "usage_events",
+      tenantColumn: "tenant_id",
+      row: (t) => ({ tenant_id: t, minutes: 1, occurred_at: new Date().toISOString() }),
     },
     {
-      table: 'airtable_sync_state', tenantColumn: 'tenant_id',
-      row: (t, u) => ({ tenant_id: t, entity_type: 'booking', entity_id: u }),
+      table: "usage_daily",
+      tenantColumn: "tenant_id",
+      row: (t) => ({
+        tenant_id: t,
+        date: new Date().toISOString().slice(0, 10),
+        price_version: "v1",
+      }),
+    },
+    {
+      table: "billing_invoices",
+      tenantColumn: "tenant_id",
+      row: (t) => ({
+        tenant_id: t,
+        period_start: "2026-01-01",
+        period_end: "2026-01-31",
+        base_fee_cents: 29900,
+        included_minutes: 300,
+        total_cents: 29900,
+      }),
+    },
+    {
+      table: "support_requests",
+      tenantColumn: "tenant_id",
+      row: (t) => ({ tenant_id: t, subject: "Probe", body: "Probe" }),
+    },
+    {
+      table: "api_tokens",
+      tenantColumn: "tenant_id",
+      row: (t, u) => ({
+        tenant_id: t,
+        name: "probe",
+        token_hash: `hash-${u}`,
+        token_prefix: u.slice(0, 8),
+      }),
+    },
+    {
+      table: "provisioning_runs",
+      tenantColumn: "tenant_id",
+      row: (t) => ({ tenant_id: t, step: "tenant_finalize", status: "pending" }),
+    },
+    {
+      table: "airtable_sync_state",
+      tenantColumn: "tenant_id",
+      row: (t, u) => ({ tenant_id: t, entity_type: "booking", entity_id: u }),
     },
   ];
 }
@@ -246,7 +300,7 @@ async function seedTenant(tenant: TenantFixture): Promise<void> {
   for (const spec of tenantScopedTables()) {
     // A short random suffix keeps unique columns (e164, retell_call_id, ...)
     // collision-free across the two fixtures and across repeated CI runs.
-    const unique = tenant.tenantId.replace(/-/g, '').slice(0, 12);
+    const unique = tenant.tenantId.replace(/-/g, "").slice(0, 12);
     await serviceInsert(spec.table, spec.row(tenant.tenantId, unique));
   }
 
@@ -258,10 +312,15 @@ async function seedTenant(tenant: TenantFixture): Promise<void> {
   );
   const customerId = Array.isArray(json) && json.length > 0 ? (json[0] as { id: string }).id : null;
   if (customerId) {
-    await serviceInsert('customer_addresses', { tenant_id: tenant.tenantId, customer_id: customerId, street: '1 Probe St' });
-    await serviceInsert('waitlist_entries', {
-      tenant_id: tenant.tenantId, customer_id: customerId,
-      window: '[2026-01-01T10:00:00Z,2026-01-01T11:00:00Z)',
+    await serviceInsert("customer_addresses", {
+      tenant_id: tenant.tenantId,
+      customer_id: customerId,
+      street: "1 Probe St",
+    });
+    await serviceInsert("waitlist_entries", {
+      tenant_id: tenant.tenantId,
+      customer_id: customerId,
+      window: "[2026-01-01T10:00:00Z,2026-01-01T11:00:00Z)",
     });
   }
 
@@ -270,21 +329,33 @@ async function seedTenant(tenant: TenantFixture): Promise<void> {
     `/rest/v1/resources?tenant_id=eq.${tenant.tenantId}&select=id&limit=1`,
     { apikey: SERVICE_KEY, bearer: SERVICE_KEY },
   );
-  const resourceId = Array.isArray(resResp.json) && resResp.json.length > 0 ? (resResp.json[0] as { id: string }).id : null;
+  const resourceId =
+    Array.isArray(resResp.json) && resResp.json.length > 0
+      ? (resResp.json[0] as { id: string }).id
+      : null;
   if (resourceId) {
-    await serviceInsert('bookings', {
-      tenant_id: tenant.tenantId, resource_id: resourceId,
-      start_at: '2026-01-01T10:00:00Z', end_at: '2026-01-01T11:00:00Z',
+    await serviceInsert("bookings", {
+      tenant_id: tenant.tenantId,
+      resource_id: resourceId,
+      start_at: "2026-01-01T10:00:00Z",
+      end_at: "2026-01-01T11:00:00Z",
     });
-    await serviceInsert('orders', {
-      tenant_id: tenant.tenantId, items: [{ name: 'probe', qty: 1 }],
-      fulfillment_type: 'pickup', subtotal_cents: 100, total_cents: 100,
+    await serviceInsert("orders", {
+      tenant_id: tenant.tenantId,
+      items: [{ name: "probe", qty: 1 }],
+      fulfillment_type: "pickup",
+      subtotal_cents: 100,
+      total_cents: 100,
       idempotency_key: `probe-${tenant.tenantId}`,
     });
   }
 }
 
-async function probeAsUser(user: TenantFixture, victim: TenantFixture, table: TenantScopedTable): Promise<string | null> {
+async function probeAsUser(
+  user: TenantFixture,
+  victim: TenantFixture,
+  table: TenantScopedTable,
+): Promise<string | null> {
   const { status, json } = await restRequest(
     `/rest/v1/${table.table}?${table.tenantColumn}=eq.${victim.tenantId}&select=*`,
     { apikey: PUBLISHABLE_KEY, bearer: user.accessToken },
@@ -304,14 +375,14 @@ async function main(): Promise<void> {
   console.log(`RLS cross-tenant probe against ${SUPABASE_URL}`);
 
   const [tenantA, tenantB] = await Promise.all([
-    createTenantFixture('generic', `rls-probe-a-${Date.now()}`),
-    createTenantFixture('generic', `rls-probe-b-${Date.now()}`),
+    createTenantFixture("generic", `rls-probe-a-${Date.now()}`),
+    createTenantFixture("generic", `rls-probe-b-${Date.now()}`),
   ]);
   console.log(`Created fixtures: tenant A=${tenantA.tenantId}, tenant B=${tenantB.tenantId}`);
 
   await seedTenant(tenantA);
   await seedTenant(tenantB);
-  console.log('Seeded one row per tenant-scoped table for both tenants.');
+  console.log("Seeded one row per tenant-scoped table for both tenants.");
 
   const failures: string[] = [];
   const tables = tenantScopedTables();
@@ -324,7 +395,10 @@ async function main(): Promise<void> {
     if (bReadsA) failures.push(bReadsA);
   }
 
-  const tenantsTableCheck = async (reader: TenantFixture, victim: TenantFixture): Promise<string | null> => {
+  const tenantsTableCheck = async (
+    reader: TenantFixture,
+    victim: TenantFixture,
+  ): Promise<string | null> => {
     const { status, json } = await restRequest(
       `/rest/v1/tenants?id=eq.${victim.tenantId}&select=*`,
       { apikey: PUBLISHABLE_KEY, bearer: reader.accessToken },
@@ -346,10 +420,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`\nRLS cross-tenant probe PASSED — ${tables.length + 1} tables checked both directions, 0 rows leaked.`);
+  console.log(
+    `\nRLS cross-tenant probe PASSED — ${tables.length + 1} tables checked both directions, 0 rows leaked.`,
+  );
 }
 
 main().catch((err) => {
-  console.error('RLS cross-tenant probe crashed:', err);
+  console.error("RLS cross-tenant probe crashed:", err);
   process.exit(1);
 });
