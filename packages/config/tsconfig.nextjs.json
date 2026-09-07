@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "ES2023"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    // Next.js's actual bundler (webpack/Turbopack) resolves relative
+    // imports by real file semantics — it does NOT do the NodeNext-only
+    // ".js specifier maps to a .ts/.tsx source file" trick the rest of this
+    // monorepo relies on (tsconfig.base.json's `module`/`moduleResolution:
+    // NodeNext`). So relative/`@/`-aliased imports in this app must NOT
+    // carry a `.js` suffix — every workspace package import (`@heyloo/ui`
+    // etc.) is unaffected, those resolve through node_modules/package.json
+    // `exports` either way.
+    "jsx": "preserve",
+    "allowJs": false,
+    "noEmit": true,
+    "incremental": true,
+    "composite": false,
+    "isolatedModules": true,
+    // Relaxed from the repo base for the same reason as packages/ui's
+    // tsconfig (docs/BUILD_NOTES.md T5 entry) — apps/web is almost entirely
+    // component props and Route Handler payloads threaded from optional
+    // query params/JSON bodies.
+    "exactOptionalPropertyTypes": false,
+    "declaration": false,
+    "declarationMap": false,
+    "plugins": [{ "name": "next" }]
+  }
+}

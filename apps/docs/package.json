@@ -1,0 +1,14 @@
+{
+  "name": "@heyloo/docs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Support/self-serve knowledge base (Mintlify) — deliberately separate from apps/web's /dashboard/support ticket surface (FRONTEND_SPEC.md §10). Auto-generates llms.txt + an MCP server the support chatbot referenced in MASTER_PLAN.md consumes directly, no custom RAG build.",
+  "scripts": {
+    "dev": "mintlify dev",
+    "build": "echo 'Mintlify has no build step — mintlify dev serves mint.json + the .mdx pages directly; deployment is via the Mintlify GitHub app/dashboard, not a build artifact.'",
+    "clean": "echo 'nothing to clean'"
+  },
+  "devDependencies": {
+    "mintlify": "4.2.876"
+  }
+}

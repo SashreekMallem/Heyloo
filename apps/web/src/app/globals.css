@@ -1,0 +1,15 @@
+@import "tailwindcss";
+@import "@heyloo/ui/styles.css";
+
+/*
+ * Tailwind v4's automatic content detection scans from this file's project
+ * root — `packages/ui`'s component source lives outside that scan, so its
+ * class-name strings would otherwise never generate real utility CSS. This
+ * explicit `@source` fixes that; see packages/ui/src/theme/globals.css for
+ * why the import order is this way around.
+ */
+@source "../../../../packages/ui/src";
+
+body {
+  min-height: 100svh;
+}

@@ -2,7 +2,16 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    // Relaxed from the repo base (docs/BUILD_NOTES.md T5 entry): a
+    // component-prop-heavy UI package fights `exactOptionalPropertyTypes`
+    // constantly (every optional prop threaded from a `T | undefined`
+    // source needs a redundant explicit `| undefined`) for no bug-catching
+    // benefit proportional to the friction — the data/schema packages
+    // (canonical-types, supabase-client) keep the strict repo default.
+    "exactOptionalPropertyTypes": false
   },
   "include": ["src"],
   "references": [{ "path": "../canonical-types" }]

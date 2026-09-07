@@ -1,0 +1,14 @@
+{
+  "Nav": {
+    "pricing": "Pricing",
+    "demo": "Try a live demo",
+    "login": "Log in",
+    "signup": "Get started"
+  },
+  "Footer": {
+    "terms": "Terms",
+    "privacy": "Privacy",
+    "dpa": "Data Processing Addendum",
+    "rights": "All rights reserved."
+  }
+}

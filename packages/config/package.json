@@ -1,0 +1,23 @@
+{
+  "name": "@heyloo/config",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared build-tool presets: ESLint flat config for apps/web (MASTER_SPEC.md §2 Biome-root + ESLint-in-apps/web hybrid) and a Next.js tsconfig base.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    "./eslint": "./eslint-web.mjs",
+    "./tsconfig.nextjs.json": "./tsconfig.nextjs.json"
+  },
+  "scripts": {
+    "typecheck": "echo 'no typecheck — config-only package'",
+    "test": "echo 'no tests — config-only package'",
+    "clean": "echo 'nothing to clean'"
+  },
+  "devDependencies": {
+    "eslint-config-next": "16.3.4",
+    "eslint-plugin-security": "4.0.1",
+    "eslint-plugin-testing-library": "7.16.2",
+    "typescript": "5.9.3"
+  }
+}

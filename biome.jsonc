@@ -23,6 +23,8 @@
     "includes": [
       "**",
       "!**/dist",
+      "!**/.next",
+      "!**/out",
       "!**/.turbo",
       "!**/coverage",
       "!**/node_modules",
@@ -38,10 +40,26 @@
     "indentWidth": 2,
     "lineWidth": 100
   },
+  "css": {
+    "parser": {
+      "cssModules": true,
+      "tailwindDirectives": true
+    }
+  },
   "linter": {
     "enabled": true,
     "rules": {
       "preset": "recommended",
+      "complexity": {
+        // tsconfig.base.json sets `noPropertyAccessFromIndexSignature: true`
+        // (intentional strictness), which REQUIRES bracket notation on any
+        // `Record<string, T>`-typed access — the exact opposite of what this
+        // rule suggests. The two are fundamentally incompatible repo-wide
+        // (webhook payload parsing, JWT claims, process.env, etc. are all
+        // index-signature-typed), so this rule is off rather than fought
+        // file-by-file. See docs/BUILD_NOTES.md T5 entry.
+        "useLiteralKeys": "off"
+      },
       "style": {
         "noRestrictedImports": {
           "level": "error",

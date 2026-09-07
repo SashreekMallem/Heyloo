@@ -1054,3 +1054,286 @@ redesigned)**
   the actual Trust Hub profile-bundle prerequisites
   (`CustomerProfileBundleSid`/`A2PProfileBundleSid`) aren't something any
   code in this build creates.
+
+## T5 — Frontend: apps/web, packages/ui, packages/supabase-client,
+## packages/config (Wave 2)
+
+**What was built**
+
+- `apps/web` — Next.js 16 App Router, route groups `(marketing)/(tenant)/
+  (admin)/(partner)`, `[locale]` scaffold (next-intl, `en`-only,
+  `localePrefix: "as-needed"`), every surface named in FRONTEND_SPEC.md §3-9
+  + MASTER_SPEC.md §3.10: 8 `/[vertical]` landing pages + `/pricing` (RSC,
+  data-driven from `content/marketing/verticals.ts`), `/demo` (scrape →
+  confirm → live in-browser call via `retell-client-js-sdk`, call token
+  minted server-side, Retell secret never reaches the browser), 6-step
+  signup (business-type → plan (real price card, service-role Route
+  Handler) → account (Supabase Auth `signUp`) → Stripe Checkout redirect →
+  provisioning poll → phone-setup wizard), tenant dashboard (calls,
+  bookings, customers, agent settings incl. the MASTER_SPEC §3.10 additions
+  — vertical-details tab, reminder/review toggles, payment status + link
+  resend, message threads, waitlist section), admin cockpit (margin
+  dashboards, outreach, templates, tenants, config-lab, settings), partner
+  portal (disclosure gate, payouts, W-9, settings). Every data view goes
+  through `<DataState>` (loading/empty/error, retry) — no bare
+  `data.map()`.
+- `packages/ui` — hand-authored shadcn-style component set on Radix
+  primitives (primitives/forms/charts/custom/layout/theme), CVA variants,
+  per-tenant branding via CSS custom properties (`BrandingProvider`) with a
+  WCAG contrast fallback when a tenant's chosen color fails against white
+  text.
+- `packages/supabase-client` — `browser-client`/`server-client`/
+  `service-role-client` factories (`@supabase/ssr` cookie adapters),
+  `claims.ts` (JWT `app_metadata` → typed `AppMetadataClaims`, both
+  middleware and every route-group layout's guard #2 read through this one
+  function), hand-maintained `database.types.ts` for the ~35 tables T5
+  needed (T1's schema is the source of truth; this is a manually-curated
+  projection of it for the columns actually queried, not a full generated
+  mirror — see gaps below).
+- `packages/config` — `eslint-web.mjs` (flat config: `eslint-config-next` +
+  `eslint-plugin-security` + `eslint-plugin-testing-library`, scoped to
+  `apps/web` only per MASTER_SPEC §2's Biome-root/ESLint-in-apps/web
+  hybrid), `tsconfig.nextjs.json` (bundler resolution, relaxed
+  `exactOptionalPropertyTypes` — see below).
+- Realtime: one `TenantRealtimeProvider` (private `tenant-{id}` channel,
+  broadcast `{table, op, id}` → TanStack Query `invalidateQueries`,
+  exponential backoff 1s/2s/4s/8s → `offline` state surfaced in the UI, not
+  just logged) wraps the whole `(tenant)` layout. Admin/partner surfaces
+  poll instead (FRONTEND_SPEC's own instruction — no realtime channel for
+  those roles).
+- Tests: Vitest + Testing Library for `Wizard`, `DataState`, `claims.ts`,
+  and `TenantRealtimeProvider` (mocked channel, asserts the
+  connecting→connected/reconnecting transitions and that a broadcast
+  invalidates the exact `['tenant', id, table]` query key — not just "a
+  query somewhere"). Playwright smoke specs in `apps/web/tests/e2e/`:
+  role-guard redirects (unauthenticated → `/login` for `/dashboard`,
+  `/cockpit`, `/portal`, each preserving `?next=`) and the signup account
+  step reaching a mocked Stripe Checkout redirect (see "Playwright
+  execution" below for why the mocking boundary is where it is).
+- `apps/docs` — minimal Mintlify skeleton (`mint.json` + 8 starter `.mdx`
+  guides), deliberately kept small per this task's instructions.
+- **One touch outside this task's exclusive paths, additive only**:
+  `packages/canonical-types/src/schemas/` (new, 34 files — every
+  react-hook-form zod schema named in FRONTEND_SPEC.md §2, one file per
+  schema) plus a 5-line `export * from "./schemas/index.js"` addition to
+  T2's existing `packages/canonical-types/src/index.ts`. `canonical-types`
+  is T2's package; this only ADDS a new subdirectory and one re-export
+  line, touching none of T2's existing exports — FRONTEND_SPEC.md itself
+  places these schemas in `packages/canonical-types` (the one package both
+  frontend and backend import from), so this wasn't optional to route
+  elsewhere.
+
+**Cross-task schema/contract mismatches found and reconciled (Rule 4)**
+
+- **`tenants.status` enum**: FRONTEND_SPEC.md's redirect-matrix prose uses
+  illustrative values (`pending_payment`/`provisioning`/`suspended`) that
+  don't exist in T1's actual migration — the real enum is `trialing|
+  active|past_due|paused|canceled`. `(tenant)/layout.tsx`'s guard #2 was
+  written against the real enum: `trialing` → redirect to `/signup/plan`
+  (resume the paid-plan step, not a dead end), `paused`/`canceled` → an
+  inline static notice rendered IN PLACE (never a redirect to a
+  `/dashboard/suspended` sub-route — that sub-route would sit inside this
+  same guarded layout and loop), `past_due` → a banner only, the dashboard
+  stays otherwise functional.
+- **Vertical spelling**: T1's DB enum spells verticals differently from
+  the canonical `Vertical` type T2 defined (e.g. `auto_repair` vs. `auto`,
+  `veterinary` vs. `vet`). `packages/supabase-client/src/vertical-mapping.ts`
+  adds the explicit `VERTICAL_TO_DB_VALUE`/`DB_VALUE_TO_VERTICAL` maps
+  rather than silently coercing one spelling to the other at every call
+  site.
+- **JWT claims shape**: FRONTEND_SPEC assumes `app_metadata.tenant_id`/
+  `role`/`platform_admin`/`referral_partner_id` are already the Custom
+  Access Token Hook's output. T1's hook migration was cross-checked and
+  does write exactly that shape, so `claims.ts` reads it directly — no
+  additional mapping layer was needed here, but this was verified rather
+  than assumed (Rule 1).
+- **Demo agent contract**: FRONTEND_SPEC describes `/api/demo/generate` as
+  if the scrape+summary were synchronous; T3's `api-demo-agent` edge
+  function is actually a two-call flow (`generate` kicks off the scrape,
+  `confirm` applies edits and mints the call token). `DemoFlow`'s state
+  machine (`form → loading → confirm → active`) was built against the real
+  two-call contract.
+- **`leads.source` enum / `referral_partners` FTC columns**: BACKEND_SPEC
+  §7's admin outreach/referral endpoints reference a couple of columns
+  T5's read of T1's actual migrations didn't find (a `source` value used
+  by the admin leads filter UI, and partner FTC-disclosure columns
+  referenced by `/api/partner/disclosure`). Built against the columns that
+  DO exist; the UI degrades to the closest available field rather than
+  inventing a new migration (out of this task's exclusive paths).
+  Flagged in VERIFY.md for whoever owns `supabase/migrations` next.
+- **`customer_notes`/phone port-in**: no dedicated tables exist for these;
+  `/api/tenant/customers/:id/notes` and `/api/phone/port-in` are built
+  against the closest existing table each maps to reasonably cleanly
+  (documented inline in each Route Handler), not a new migration.
+- **Assumed BACKEND_SPEC §7 edge function names** (not yet built by any
+  task at the time T5 ran): `api-checkout-session`, `api-billing-portal`.
+  `apps/web`'s `/api/checkout/session` and `/api/billing/portal` Route
+  Handlers call these two names via `callEdgeFunction()` — if the actual
+  function names differ when built, this is a one-line fix in those two
+  Route Handlers, not a client-shape problem (the request/response JSON
+  contracts were built directly against BACKEND_SPEC §7's documented
+  shapes).
+
+**A real, build-blocking bug found and fixed (not a spec mismatch)**
+
+- **Middleware rewrote every `/api/*` request to `/en/api/*` in a
+  production build, 404ing every Route Handler in the app.** Root cause:
+  `middleware.ts`'s matcher (needed broadly, to run next-intl's locale
+  resolution over every marketing/tenant/admin/partner page) also caught
+  `/api/*`, and next-intl's own middleware — even in `localePrefix:
+  "as-needed"` mode — internally rewrites an unprefixed request to include
+  the default locale segment for its own routing purposes. Since API
+  routes live outside `[locale]`, that rewrite pointed at a path that
+  doesn't exist. This did NOT reproduce under `next dev` (on-demand
+  compilation papers over it) — only found by actually building and
+  running `next start` and curling `/api/signup/draft`, which is exactly
+  why this got caught before commit rather than shipped invisibly. Fixed
+  by skipping `intlMiddleware()` entirely for any `request.nextUrl.pathname`
+  starting with `/api/` (`middleware.ts`). Confirmed fixed against a real
+  `next build --webpack && next start`: `/api/signup/draft` now `200`s,
+  and `/dashboard`, `/cockpit`, `/portal` still correctly `307` redirect
+  unauthenticated visitors to `/login?next=...`.
+
+**Toolchain fixes required to get `pnpm run typecheck/lint/test/build`
+green (Rule 4 — these are monorepo-infrastructure bugs this task hit and
+fixed, not apps/web-specific application bugs)**
+
+- **`interface` vs `type` for `Record<string, X>` structural
+  compatibility**: `packages/supabase-client/src/database.types.ts`
+  originally declared every table row as `export interface XRow {...}`.
+  TypeScript interfaces don't get an implicit index signature, which
+  silently broke postgrest-js's `Record<string, GenericTable>` structural
+  check on the `Database` type and made every Supabase query resolve to
+  `never`. Converted every row/table declaration to a `type` alias instead
+  (plus added `Relationships: []`/`Functions: Record<string, never>`,
+  which `GenericSchema` also requires).
+- **Biome's `lint/complexity/useLiteralKeys` directly conflicts with
+  `tsconfig.base.json`'s `noPropertyAccessFromIndexSignature: true`.** The
+  compiler option REQUIRES bracket notation on any `Record<string, T>`-
+  typed access (webhook payload parsing, JWT claims, `process.env`, MDX
+  frontmatter, etc. — all index-signature-typed); Biome's rule suggests
+  the opposite. This isn't specific to apps/web — every task's code that
+  touches an index-signature type hits it. Turned the rule off repo-wide
+  in `biome.jsonc` (`linter.rules.complexity.useLiteralKeys: "off"`) rather
+  than fighting it file-by-file; `packages/supabase-client/src/claims.ts`
+  carries an inline comment explaining why its bracket notation is
+  required, not stylistic.
+- **ESLint 10.10.0 (this repo's original pin) cannot run
+  `eslint-config-next`**: `eslint-config-next@16.3.4`'s own peer range
+  claims `eslint: ">=9.0.0"` and its transitive `typescript-eslint@8.70.0`
+  claims `^10.0.0` support too, but in practice `apps/web`'s flat config
+  (Next's config + `languageOptions.globals`) throws
+  `TypeError: scopeManager.addGlobals is not a function` under ESLint 10 —
+  a real runtime incompatibility the peer ranges don't reflect yet (ESLint
+  10 is very recent as of this build). Downgraded `apps/web`'s `eslint`
+  devDependency to `9.39.5` (npm's `maintenance` dist-tag, not a canary) —
+  the whole `eslint-config-next`/`typescript-eslint`/`eslint-plugin-jsx-
+  a11y` stack is proven against ESLint 9, not yet 10. Also:
+  `eslint-config-next`'s default export IS the flat-config array directly
+  in this version (no `/flat` subpath export any more — that existed only
+  during the ESLint 8→9 transition period); `packages/config/
+  eslint-web.mjs` imports the bare package, not `eslint-config-next/flat`.
+  `eslint-config-next`, `eslint-plugin-security`, `eslint-plugin-testing-
+  library` were also missing as actual dependencies anywhere in the
+  workspace (the import existed, the packages didn't) — added to
+  `packages/config/package.json`.
+- **`eslint-plugin-testing-library`'s `prefer-screen-queries` rule false-
+  positives on Playwright specs.** The rule's file glob originally matched
+  both `**/*.test.{ts,tsx}` (real `@testing-library/react` unit tests) and
+  `**/*.spec.{ts,tsx}` (this repo's Playwright convention) — Playwright's
+  own `page.getByRole`/`page.getByText` Locator API structurally resembles
+  a discouraged `render()`-result destructure to the rule's heuristic.
+  Scoped the testing-library block to `**/*.test.{ts,tsx}` only and
+  excluded `tests/e2e/**` (`packages/config/eslint-web.mjs`).
+- **Root `pnpm run lint` was in an unconditional recursion loop**:
+  `turbo.json` registered a `//#lint` root task AND the root
+  `package.json`'s own `lint` script was `biome check . && turbo run lint`
+  — turbo's recursion guard correctly refused to run (the root task's own
+  script invokes `turbo run lint`, which would invoke the root task,
+  forever). Removed the redundant `//#lint` task registration from
+  `turbo.json`; the root Biome pass already runs directly (not through
+  turbo) before `turbo run lint` fans out to each package's own `lint`
+  script, so nothing was lost.
+- **Turbopack + `transpilePackages` + `"use client"` + the `react-server`
+  conditional export**: `next build` (Turbopack, the Next 16 default)
+  crashed during "Collecting page data" with `createContext is not a
+  function`, root-caused to Turbopack not correctly splitting `"use
+  client"` module graphs from the `react-server` condition before that
+  phase runs, combined with `transpilePackages` re-processing
+  `@heyloo/ui`/`@heyloo/canonical-types`/`@heyloo/supabase-client` through
+  that same broken path. `next build --webpack` (an explicit opt-out
+  flag Next 16 still supports) does not hit this bug — confirmed by
+  isolating a minimal repro before switching. `apps/web/package.json`'s
+  `build` script is `next build --webpack`; this is the single most
+  significant toolchain finding of this task and should be revisited when
+  Turbopack's react-server condition handling matures.
+- **`@tanstack/react-table` v9 is API-incompatible with this codebase's
+  usage** (built against v8's `ColumnDef`/`flexRender` API) — pinned to
+  `8.21.3` everywhere rather than porting to v9's changed API mid-build.
+- **`exactOptionalPropertyTypes` relaxed to `false`** in `packages/ui`,
+  `packages/analytics`, and `packages/config/tsconfig.nextjs.json` (kept
+  `true` in `packages/canonical-types`/`packages/supabase-client`) — a
+  scope decision, not a bug: `apps/web`/`packages/ui` are almost entirely
+  component props and Route Handler payloads threaded from optional query
+  params/JSON bodies, where the stricter setting produced friction with no
+  corresponding safety benefit; the schema/client-boundary packages kept
+  the strict setting since that's where it earns its keep.
+
+**Playwright execution (environment limitation, not a spec/build gap)**
+
+- This build environment cannot reach `cdn.playwright.dev` (outbound
+  egress is allowlisted per-host), so `playwright install` cannot download
+  a Chromium binary here — the two smoke specs in `apps/web/tests/e2e/`
+  were validated by hand (typecheck, lint, and manually driving the
+  underlying routes/redirects with `curl` against a real
+  `next build --webpack && next start`) rather than an actual
+  `playwright test` run in this session. `signup-checkout.spec.ts`
+  deliberately starts at step 3 ("Account") rather than driving the whole
+  wizard from step 1: step 2 ("Plan") does a SERVER-side (not
+  browser-side) fetch of `platform_settings` through a service-role
+  Supabase client, which Playwright's `page.route()` cannot intercept (it
+  only mocks requests the *browser* makes) — and no live Supabase project
+  is reachable from this environment either (`https://placeholder.
+  supabase.co` in `.env.local` hangs rather than failing fast). Everything
+  from step 3 onward (Supabase Auth `signUp`, `/api/signup/create-tenant`,
+  `/api/checkout/session`, and the mocked checkout destination itself) IS
+  browser-originated and is mocked via `page.route()`, exactly as the task
+  asked for ("signup flow to checkout redirect mock").
+
+**Scope trims (documented, not silent)**
+
+- Template diff/version-history view and the admin call-detail drill-down
+  UI mentioned in FRONTEND_SPEC's fuller surface list were trimmed for
+  time; `TemplateDiffViewer` exists as a component but isn't wired into a
+  route yet.
+- Not every leaf route has a bespoke loading/error skeleton — shared
+  `<DataState>` covers the data-fetching case everywhere; a few
+  navigation-only routes rely on Next's default route-level
+  `loading.tsx`/`error.tsx` rather than a custom-designed empty state.
+  `dashboard/support`/`agent/greeting` etc. do have bespoke ones.
+  `apps/docs` is intentionally minimal per this task's own instruction.
+- PostHog analytics wiring (`packages/analytics`) is real and tested
+  (`trackEvent`/`identifyUser`/`initAnalytics`, single call-site pattern)
+  but only a subset of FRONTEND_SPEC §0.8's named events are actually
+  fired from UI call sites yet — the wrapper and its call-site convention
+  exist; completing full event coverage across every surface was not
+  finished.
+- `packages/supabase-client/src/database.types.ts` is hand-maintained
+  against the ~35 tables this task's surfaces actually query, not a full
+  `supabase gen types` mirror of every T1 table — a genuine drift risk if
+  a later migration changes a queried column without this file being
+  updated too; there's no CI check tying the two together yet.
+
+**Deferred / left for later tasks**
+
+- Full Playwright execution in an environment with `cdn.playwright.dev`
+  reachable (see above) — the specs are written and typecheck/lint clean,
+  but this session never watched them actually pass.
+- Completing FRONTEND_SPEC §0.8's full analytics event-name coverage.
+- Reconciling `packages/supabase-client/src/database.types.ts` against
+  whatever `supabase gen types typescript` would produce once a live
+  project exists, and wiring that generation into CI so schema drift
+  fails loudly instead of silently.
+- The `leads.source` enum value and `referral_partners` FTC-disclosure
+  columns T5 couldn't find in T1's migrations (see above) — needs a
+  migration from whoever owns `supabase/migrations` next.

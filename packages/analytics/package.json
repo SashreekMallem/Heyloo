@@ -1,0 +1,31 @@
+{
+  "name": "@heyloo/analytics",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Single trackEvent(name, props?) wrapper (FRONTEND_SPEC.md §0.8) — client components only, never RSC (server-side conversion events are emitted from the edge function that fires them, to avoid double-counting/ad-blocker loss). Wraps posthog.capture behind one function so swapping analytics providers later is a one-file change.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "typecheck": "tsc -b --pretty",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "posthog-js": "*"
+  },
+  "devDependencies": {
+    "jsdom": "30.0.1",
+    "posthog-js": "1.428.3",
+    "typescript": "5.9.3",
+    "vitest": "5.0.0"
+  }
+}

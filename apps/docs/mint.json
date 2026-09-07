@@ -1,0 +1,36 @@
+{
+  "$schema": "https://mintlify.com/schema.json",
+  "name": "Heyloo Docs",
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg"
+  },
+  "favicon": "/favicon.svg",
+  "colors": {
+    "primary": "#4F46E5",
+    "light": "#818CF8",
+    "dark": "#4338CA"
+  },
+  "topbarLinks": [{ "name": "Dashboard", "url": "https://app.heyloo.com/dashboard" }],
+  "topbarCtaButton": {
+    "name": "Get started",
+    "url": "https://app.heyloo.com/signup"
+  },
+  "navigation": [
+    {
+      "group": "Getting Started",
+      "pages": ["introduction", "quickstart", "phone-setup"]
+    },
+    {
+      "group": "Your AI Receptionist",
+      "pages": ["agent-settings", "manual-mode", "bookings-and-orders"]
+    },
+    {
+      "group": "Account",
+      "pages": ["billing", "referrals"]
+    }
+  ],
+  "footerSocials": {
+    "twitter": "https://twitter.com/heyloo"
+  }
+}

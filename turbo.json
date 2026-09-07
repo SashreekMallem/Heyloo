@@ -7,7 +7,7 @@
       "outputs": ["dist/**", ".turbo/**"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md"]
     },
-    "//#lint": {
+    "lint": {
       "outputs": []
     },
     "typecheck": {

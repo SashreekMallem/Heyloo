@@ -1,0 +1,141 @@
+/*
+ * Heyloo design tokens — Tailwind v4 CSS-first config (no tailwind.config.js;
+ * v4's `@theme` directive maps CSS custom properties straight onto utility
+ * classes, per tailwindcss.com/docs/theme). Base palette on :root; dark
+ * overrides both by system preference (prefers-color-scheme, guarded so an
+ * explicit light choice wins) and by an explicit [data-theme="dark"], per
+ * shadcn's standard token-swap convention. Per-tenant branding
+ * (`BrandingProvider`, FRONTEND_SPEC.md §9.3) overwrites --primary/--accent
+ * at the (tenant) root layout only — marketing/admin/partner never see it.
+ *
+ * Deliberately does NOT `@import "tailwindcss"` itself — the consuming app
+ * (apps/web) does that in its own entry stylesheet, ahead of this import,
+ * so Tailwind's v4 automatic content detection uses the app's directory as
+ * its scan root (plus an explicit `@source` there for this package's own
+ * .tsx source) rather than this package's own directory.
+ */
+@theme {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --radius-lg: 0.75rem;
+  --radius-md: 0.5rem;
+  --radius-sm: 0.375rem;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.18 0.01 260);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.18 0.01 260);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.18 0.01 260);
+  --primary: oklch(0.5 0.16 264);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.96 0.005 260);
+  --secondary-foreground: oklch(0.22 0.01 260);
+  --muted: oklch(0.96 0.005 260);
+  --muted-foreground: oklch(0.48 0.01 260);
+  --accent: oklch(0.94 0.03 200);
+  --accent-foreground: oklch(0.2 0.02 200);
+  --destructive: oklch(0.55 0.22 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --success: oklch(0.55 0.14 155);
+  --success-foreground: oklch(0.98 0 0);
+  --warning: oklch(0.72 0.16 75);
+  --warning-foreground: oklch(0.2 0.02 75);
+  --border: oklch(0.9 0.005 260);
+  --input: oklch(0.9 0.005 260);
+  --ring: oklch(0.5 0.16 264);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: oklch(0.16 0.01 260);
+    --foreground: oklch(0.95 0.005 260);
+    --card: oklch(0.2 0.012 260);
+    --card-foreground: oklch(0.95 0.005 260);
+    --popover: oklch(0.2 0.012 260);
+    --popover-foreground: oklch(0.95 0.005 260);
+    --primary: oklch(0.72 0.14 264);
+    --primary-foreground: oklch(0.15 0.01 260);
+    --secondary: oklch(0.26 0.012 260);
+    --secondary-foreground: oklch(0.95 0.005 260);
+    --muted: oklch(0.26 0.012 260);
+    --muted-foreground: oklch(0.68 0.01 260);
+    --accent: oklch(0.3 0.03 200);
+    --accent-foreground: oklch(0.95 0.01 200);
+    --destructive: oklch(0.6 0.2 25);
+    --destructive-foreground: oklch(0.98 0 0);
+    --success: oklch(0.62 0.14 155);
+    --success-foreground: oklch(0.1 0 0);
+    --warning: oklch(0.75 0.15 75);
+    --warning-foreground: oklch(0.15 0.02 75);
+    --border: oklch(0.32 0.012 260);
+    --input: oklch(0.32 0.012 260);
+    --ring: oklch(0.72 0.14 264);
+  }
+}
+
+:root[data-theme="dark"] {
+  --background: oklch(0.16 0.01 260);
+  --foreground: oklch(0.95 0.005 260);
+  --card: oklch(0.2 0.012 260);
+  --card-foreground: oklch(0.95 0.005 260);
+  --popover: oklch(0.2 0.012 260);
+  --popover-foreground: oklch(0.95 0.005 260);
+  --primary: oklch(0.72 0.14 264);
+  --primary-foreground: oklch(0.15 0.01 260);
+  --secondary: oklch(0.26 0.012 260);
+  --secondary-foreground: oklch(0.95 0.005 260);
+  --muted: oklch(0.26 0.012 260);
+  --muted-foreground: oklch(0.68 0.01 260);
+  --accent: oklch(0.3 0.03 200);
+  --accent-foreground: oklch(0.95 0.01 200);
+  --destructive: oklch(0.6 0.2 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --success: oklch(0.62 0.14 155);
+  --success-foreground: oklch(0.1 0 0);
+  --warning: oklch(0.75 0.15 75);
+  --warning-foreground: oklch(0.15 0.02 75);
+  --border: oklch(0.32 0.012 260);
+  --input: oklch(0.32 0.012 260);
+  --ring: oklch(0.72 0.14 264);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+/* Tenant branding scope (FRONTEND_SPEC.md §9.3): BrandingProvider emits
+   `--tenant-primary`/`--tenant-accent` on this class only, inside the
+   (tenant) root layout — marketing/admin/partner never wrap it. */
+.heyloo-tenant-branded {
+  --primary: var(--tenant-primary, var(--primary));
+  --accent: var(--tenant-accent, var(--accent));
+}

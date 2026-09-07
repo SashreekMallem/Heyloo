@@ -19,6 +19,11 @@ export * from "./agent-template.js";
 export * from "./call-taxonomy.js";
 export * from "./errors.js";
 export * from "./primitives.js";
+// `packages/canonical-types/src/schemas/*` (T5, FRONTEND_SPEC.md §2/§0.9)
+// — every react-hook-form schema, one file per schema, named exactly as in
+// that table. Not part of the voice/backend contract above; re-exported
+// here so apps/web imports everything from the single package entry point.
+export * from "./schemas/index.js";
 export * from "./tools.js";
 export * from "./vertical.js";
 export * from "./voice-provider.js";

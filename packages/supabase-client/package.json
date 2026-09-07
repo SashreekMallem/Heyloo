@@ -1,0 +1,31 @@
+{
+  "name": "@heyloo/supabase-client",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Typed Supabase client factories shared by apps/web (T5): browser client (@supabase/ssr createBrowserClient), server client (createServerClient over a framework-supplied cookie adapter — Next's src/lib/supabase/server.ts wraps this with next/headers cookies()), and a service-role client for the narrow Route Handler cases that must read/write across RLS (e.g. platform_settings price cards, per FRONTEND_SPEC.md §4.2 — service-role, never client-direct). Also carries the hand-maintained Database row types + JWT app_metadata claim shape read identically by frontend guards and the backend Custom Access Token Hook (CLAUDE.md Rule 2).",
+  "type": "module",
+  "license": "UNLICENSED",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "typecheck": "tsc -b --pretty",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@heyloo/canonical-types": "workspace:*",
+    "@supabase/ssr": "0.12.6",
+    "@supabase/supabase-js": "2.116.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "5.0.0"
+  }
+}
