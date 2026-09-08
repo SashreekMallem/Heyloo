@@ -1,6 +1,7 @@
 import type { RetellFetch } from "../_shared/providers/retell.js";
 import {
   createAgent,
+  getAgent,
   importPhoneNumber,
   publishAgentVersion,
 } from "../_shared/providers/retell.js";
@@ -43,6 +44,19 @@ export type ProvisioningStep = (typeof STEPS)[number];
 export interface ProvisionDeps {
   retellFetch: RetellFetch;
   retellApiKey: string;
+  /**
+   * Twilio Elastic SIP Trunk termination URI (e.g.
+   * `<trunk>.pstn.twilio.com`) — REQUIRED on every `/import-phone-number`
+   * call (RETELL-VERIFY, VERIFY-7 resolved: confirmed via
+   * retell-typescript-sdk's `PhoneNumberImportParams.termination_uri`, no
+   * `?`). This build's SIP trunk provisioning itself is out of this saga's
+   * scope (platform Week-0 setup); this is the resulting constant.
+   */
+  retellSipTerminationUri: string;
+  /** `/voice-inbound` — wired onto the imported PHONE NUMBER, not the
+   * agent (RETELL-VERIFY, VERIFY-6 resolved: `inbound_webhook_url` doesn't
+   * exist on the Agent resource at all). */
+  retellInboundWebhookUrl: string;
   twilioFetch: TwilioFetch;
   twilioAccountSid: string;
   twilioAuthToken: string;
@@ -179,7 +193,12 @@ export async function runProvisioningSaga(
     }
     await recordStep(sql, tenantId, "twilio_number_provision", "succeeded");
 
-    // 4. Retell number import.
+    // 4. Retell number import. RETELL-VERIFY (VERIFY-7, resolved): the
+    // request needs `termination_uri` (REQUIRED) and `inbound_agents` as an
+    // array of `{agent_id, weight}` (`weight` REQUIRED, not a bare
+    // `agent_id` string) — confirmed via retell-typescript-sdk. The
+    // response's unique identifier is the `phone_number` field itself
+    // (E.164) — there is no separate `phone_number_id`.
     await recordStep(sql, tenantId, "retell_number_import", "in_progress");
     const numberRow = await sql<{ retell_number_id: string | null }>`
       select retell_number_id from public.phone_numbers where id = ${phoneNumber.id}
@@ -187,7 +206,9 @@ export async function runProvisioningSaga(
     if (!numberRow[0]?.retell_number_id) {
       const imported = await importPhoneNumber(deps.retellFetch, deps.retellApiKey, {
         phone_number: phoneNumber.e164,
-        agent_id: retellAgentId,
+        termination_uri: deps.retellSipTerminationUri,
+        inbound_agents: [{ agent_id: retellAgentId, weight: 1 }],
+        inbound_webhook_url: deps.retellInboundWebhookUrl,
       });
       if (!imported.ok) {
         // Per spec: retry with backoff, then flag for manual admin
@@ -210,8 +231,8 @@ export async function runProvisioningSaga(
           error: "retell_import_failed",
         };
       }
-      const importedBody = imported.body as { phone_number_id?: string };
-      await sql`update public.phone_numbers set retell_number_id = ${importedBody.phone_number_id ?? null} where id = ${phoneNumber.id}`;
+      const importedBody = imported.body as { phone_number?: string };
+      await sql`update public.phone_numbers set retell_number_id = ${importedBody.phone_number ?? null} where id = ${phoneNumber.id}`;
     }
     await recordStep(sql, tenantId, "retell_number_import", "succeeded");
 
@@ -220,9 +241,30 @@ export async function runProvisioningSaga(
     await recordStep(sql, tenantId, "billing_wiring", "in_progress");
     await recordStep(sql, tenantId, "billing_wiring", "succeeded");
 
-    // 6. Publish agent.
+    // 6. Publish agent. RETELL-VERIFY (VERIFY-6, resolved): publish REQUIRES
+    // a `{version}` body — fetch the agent's current version first (this
+    // saga may be resuming with an already-existing `retellAgentId` from an
+    // earlier run, so a version captured at create time isn't always
+    // available; a fresh `getAgent` is correct either way).
     await recordStep(sql, tenantId, "publish_agent", "in_progress");
-    const published = await publishAgentVersion(deps.retellFetch, deps.retellApiKey, retellAgentId);
+    const agentForPublish = await getAgent(deps.retellFetch, deps.retellApiKey, retellAgentId);
+    const agentForPublishBody = agentForPublish.body as { version?: number };
+    if (!agentForPublish.ok || agentForPublishBody.version === undefined) {
+      await recordStep(
+        sql,
+        tenantId,
+        "publish_agent",
+        "failed",
+        `retell_get_agent_status_${agentForPublish.status}`,
+      );
+      return { status: "failed", failedStep: "publish_agent", error: "get_agent_failed" };
+    }
+    const published = await publishAgentVersion(
+      deps.retellFetch,
+      deps.retellApiKey,
+      retellAgentId,
+      agentForPublishBody.version,
+    );
     if (!published.ok) {
       await recordStep(
         sql,

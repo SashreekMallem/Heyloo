@@ -4,22 +4,17 @@ import { hmacSha256Hex, timingSafeEqual } from "./crypto.js";
  * Retell webhook signature verification (`/voice-inbound`, `/voice-tools`,
  * `/voice-events` — BACKEND_SPEC §7.1-7.3, CLAUDE.md Rule 2 "fail closed").
  *
- * VERIFY (docs/VERIFY.md): Retell's official docs
- * (https://docs.retellai.com/features/secure-webhook) were unreachable from
- * this environment (egress-blocked); the shape below is reconstructed from
- * third-party summaries (Hookdeck's Retell webhook guide, Retell community
- * forum) rather than Retell's own reference, per CLAUDE.md Rule 1 fallback:
- *   - Header `X-Retell-Signature: v=<unix_ms_timestamp>,d=<hex HMAC-SHA256 digest>`.
- *   - Digest = HMAC-SHA256(secret = the Retell API key that has the webhook
- *     badge, message = raw request body concatenated with the timestamp).
- *   - Only the API-key-as-secret scheme is confirmed; the EXACT
- *     concatenation (body+timestamp directly vs. a separator such as `.`)
- *     is not — this implementation assumes direct concatenation
- *     (`rawBody + timestampString`), matching Retell's own SDK verify
- *     helper description ("always verify against the raw body ... never a
- *     re-serialized JSON string"). Confirm against Retell's live docs or the
- *     `retell-sdk` verify() source before the first production webhook, and
- *     update this file + its fixture test if the concatenation differs.
+ * RETELL-VERIFY (docs/VERIFY.md VERIFY-1, RESOLVED): confirmed byte-for-byte
+ * against the OFFICIAL `retell-typescript-sdk`'s own signing/verification
+ * source (`src/lib/webhook_auth.ts`, exported as `verify`/`sign` from the
+ * package root) — not a third-party summary:
+ *   - Header `v=<timestamp>,d=<hex HMAC-SHA256 digest>` — confirmed exact.
+ *   - Digest = HMAC-SHA256(secret = the Retell API key itself, message =
+ *     `rawBody + String(timestamp)`, direct concatenation, no separator) —
+ *     confirmed exact; this file's implementation already matched.
+ *   - Default replay-window tolerance 5 minutes (`FIVE_MINUTES = 5*60*1000`
+ *     in the SDK source) — confirmed exact.
+ * Nothing needed fixing here; this file was correct as originally built.
  *
  * Fails closed: a missing secret, missing header, malformed header, or a
  * timestamp outside the replay-tolerance window all reject.

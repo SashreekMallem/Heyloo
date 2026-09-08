@@ -5,11 +5,15 @@
  * REST APIs directly with `fetch` instead of going through
  * `packages/adapters/retell` — that package is Node-only and Deno can't
  * import a pnpm workspace package without a bundling step this task doesn't
- * add). VERIFY (docs/VERIFY.md): endpoint paths/fields below are the
- * training-knowledge-confident Retell v2 REST shapes (`api.retellai.com`,
- * bearer auth) — confirm against Retell's live API reference before the
- * first real provisioning/reconciliation call (egress-blocked in this
- * build).
+ * add).
+ *
+ * RETELL-VERIFY: endpoint paths/fields below were re-verified against the
+ * OFFICIAL `retell-typescript-sdk` (v5.64.0, reachable via
+ * raw.githubusercontent.com even though docs.retellai.com itself is
+ * egress-blocked here) — see docs/VERIFY.md's Retell entries for what was
+ * confirmed correct as-built vs. fixed. `api.retellai.com`, bearer auth, and
+ * every path below are confirmed exactly against the SDK's own
+ * `src/resources/*.ts` request builders.
  */
 
 const RETELL_BASE_URL = "https://api.retellai.com";
@@ -40,6 +44,14 @@ export async function getCall(fetchImpl: RetellFetch, apiKey: string, callId: st
   });
 }
 
+/**
+ * POST /create-agent. RETELL-VERIFY (VERIFY-6, resolved): confirmed via
+ * retell-typescript-sdk that `inbound_webhook_url` does NOT exist on this
+ * resource at all — it's phone-number-scoped (`importPhoneNumber` below).
+ * Never add it to this payload. The response includes a REQUIRED `version`
+ * field — callers that need to publish must read it from here (or from
+ * `getAgent`) and pass it to `publishAgentVersion`.
+ */
 export async function createAgent(
   fetchImpl: RetellFetch,
   apiKey: string,
@@ -94,21 +106,63 @@ export async function createRetellLLM(
   });
 }
 
+/** GET /get-agent/{id} — confirmed via retell-typescript-sdk
+ * (`Agent.retrieve`, `src/resources/agent.ts`). Used to fetch an agent's
+ * CURRENT `version` before publishing when the caller didn't just
+ * create/update it in the same request (RETELL-VERIFY, VERIFY-6). */
+export async function getAgent(fetchImpl: RetellFetch, apiKey: string, agentId: string) {
+  return retellRequest(fetchImpl, apiKey, `/get-agent/${encodeURIComponent(agentId)}`, {
+    method: "GET",
+  });
+}
+
 /** POST /publish-agent-version/{id} — makes a version immutable
  * (BACKEND_SPEC §1.3). Endpoint name corrected from an earlier
  * `/publish-agent/{id}` guess to match the confirmed shape T2's
  * `packages/adapters/retell/src/agents.ts` uses (`publishRetellAgentVersion`)
- * — see docs/BUILD_NOTES.md T4 entry. */
-export async function publishAgentVersion(fetchImpl: RetellFetch, apiKey: string, agentId: string) {
+ * — see docs/BUILD_NOTES.md T4 entry.
+ *
+ * RETELL-VERIFY (VERIFY-6, resolved): confirmed via retell-typescript-sdk's
+ * `AgentPublishParams`/`Agent.publish` that this endpoint (a) REQUIRES a
+ * `{version: number, ...}` request body — there is no "publish whatever's
+ * latest draft" shorthand, and (b) returns `void` (no response body). The
+ * caller MUST supply the version to publish (from the agent's own
+ * create/update response, or a fresh `getAgent` call). */
+export async function publishAgentVersion(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  agentId: string,
+  version: number,
+) {
   return retellRequest(fetchImpl, apiKey, `/publish-agent-version/${encodeURIComponent(agentId)}`, {
     method: "POST",
+    body: JSON.stringify({ version }),
   });
 }
 
+/**
+ * RETELL-VERIFY (VERIFY-7, resolved): confirmed field-for-field against
+ * retell-typescript-sdk's `PhoneNumberImportParams` —
+ * `inbound_agents`/`outbound_agents` are both ARRAYS of
+ * `{agent_id, weight, agent_version?}` (`weight` REQUIRED, must sum to 1
+ * across each array — a single agent still needs `weight: 1`), NOT a bare
+ * `agent_id` string as this file previously modeled. `inbound_webhook_url`
+ * is confirmed to live HERE (phone-number-scoped), not on the agent — see
+ * VERIFY-6 above and `createAgent`'s docstring.
+ */
 export async function importPhoneNumber(
   fetchImpl: RetellFetch,
   apiKey: string,
-  payload: { phone_number: string; termination_uri?: string; agent_id?: string; nickname?: string },
+  payload: {
+    phone_number: string;
+    termination_uri: string;
+    inbound_agents: Array<{ agent_id: string; weight: number; agent_version?: string | number }>;
+    outbound_agents?: Array<{ agent_id: string; weight: number; agent_version?: string | number }>;
+    inbound_webhook_url?: string;
+    sip_trunk_auth_username?: string;
+    sip_trunk_auth_password?: string;
+    nickname?: string;
+  },
 ) {
   return retellRequest(fetchImpl, apiKey, "/import-phone-number", {
     method: "POST",

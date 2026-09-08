@@ -666,7 +666,16 @@ async function handleTemplates(
       return { status: 422, body: { error: "disclosure_gate_failed" } };
     }
 
-    const flowPayload = { ...compiled.flow.body, model: row["model"] };
+    // VERIFY-8 (resolved, RETELL-VERIFY): conversation-flow's model field is
+    // a REQUIRED nested `model_choice: {model, type:"cascading"}` object, not
+    // a flat `model` string — confirmed via retell-typescript-sdk. Retell
+    // LLM (multi_prompt/single_prompt) keeps `model` flat. The two are not
+    // wire-compatible; branch accordingly (mirrors packages/adapters/retell's
+    // agents.ts).
+    const flowPayload =
+      compiled.flow.kind === "conversation_flow"
+        ? { ...compiled.flow.body, model_choice: { model: row["model"], type: "cascading" } }
+        : { ...compiled.flow.body, model: row["model"] };
     const flowResult =
       compiled.flow.kind === "conversation_flow"
         ? await createConversationFlow(deps.retell.fetchImpl, deps.retell.apiKey, flowPayload)
@@ -686,8 +695,11 @@ async function handleTemplates(
       voice_id: row["voice_id"],
       response_engine: responseEngine,
     });
-    const agentBody = agentResult.body as { agent_id?: string };
-    if (!agentResult.ok || !agentBody.agent_id) {
+    // `version` is REQUIRED on `AgentResponse` (RETELL-VERIFY, VERIFY-6
+    // resolved) — publish-agent-version has no "latest" shorthand, so this
+    // is not optional information to thread through.
+    const agentBody = agentResult.body as { agent_id?: string; version?: number };
+    if (!agentResult.ok || !agentBody.agent_id || agentBody.version === undefined) {
       return { status: 502, body: { error: "retell_agent_create_failed" } };
     }
 
@@ -695,6 +707,7 @@ async function handleTemplates(
       deps.retell.fetchImpl,
       deps.retell.apiKey,
       agentBody.agent_id,
+      agentBody.version,
     );
     if (!publishResult.ok) {
       return { status: 502, body: { error: "retell_publish_failed" } };

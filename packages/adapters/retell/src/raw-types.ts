@@ -86,23 +86,25 @@ export const zRetellToolCallResponse = z.object({ result: z.unknown() });
 export type RetellToolCallResponse = z.infer<typeof zRetellToolCallResponse>;
 
 // ---------------------------------------------------------------------------
-// VERIFY-4: call cost breakdown. Confirmed structure via API_AND_FLOWS.md's
-// own Rule-1 research (community/indexed sources, `get-call` response):
-// `call_cost.product_costs[]`, each `{product, cost, unit_price,
-// is_transfer_leg_cost}`, plus `total_duration_seconds`,
-// `total_duration_unit_price`, `combined_cost`. The exact `product` enum
-// values per LLM/TTS/telephony vendor were an explicit open Week-0 ticket in
-// SYSTEM_DESIGN §13 — never assume a closed enum here; `product` is
-// deliberately `z.string()`, and normalizeProductCosts (call-events.ts)
-// passes through any value it doesn't recognize as `"other"` rather than
-// rejecting the whole payload. VERIFY-4 tracks confirming the full `product`
-// enum against a live sandbox account before the margin cockpit's
-// repricing-drift alert depends on it.
+// VERIFY-4 (RESOLVED, RETELL-VERIFY): `call_cost.product_costs[]`, each
+// `{product, cost, unit_price?, is_transfer_leg_cost?}`, plus
+// `total_duration_seconds`, `total_duration_unit_price`, `combined_cost` —
+// confirmed verbatim, field-for-field, against `retell-typescript-sdk`'s
+// `src/resources/call.ts` (`PhoneCallResponse.CallCost`/`CallCost.ProductCost`
+// doc comments: "Cost for the product in **cents** for the duration of the
+// call" / "Combined cost of all individual costs in **cents**"). The
+// long-open "cents vs. fractional dollars" question is settled: CENTS,
+// exactly as this codebase's money invariant (CLAUDE.md Rule 2) already
+// assumed — no unit-conversion bug. `product` stays deliberately `z.string()`
+// (open, never a closed enum) — the SDK itself only types it as `string` too,
+// confirming there's no fixed enum to encode; normalizeProductCosts
+// (call-events.ts) passes through any value it doesn't recognize as
+// `"other"` rather than rejecting the whole payload.
 // ---------------------------------------------------------------------------
 
 export const zRetellProductCost = z.object({
   product: z.string().min(1),
-  cost: z.number(), // Retell's convention: cost is in CENTS per community sources — see VERIFY-4.
+  cost: z.number(), // Cents — confirmed via retell-typescript-sdk (VERIFY-4, resolved).
   unit_price: z.number().optional(),
   is_transfer_leg_cost: z.boolean().optional().default(false),
 });
@@ -117,15 +119,20 @@ export const zRetellCallCost = z.object({
 export type RetellCallCost = z.infer<typeof zRetellCallCost>;
 
 // ---------------------------------------------------------------------------
-// VERIFY-5: call lifecycle webhooks (`call_started`/`call_ended`/
-// `call_analyzed`), each `{event, call: RetellCallObject}` (BACKEND_SPEC
-// §7.3, API_AND_FLOWS.md "Call events webhook"). `RetellCallObject` fields
-// used by cost/disconnection normalization below are confirmed via search
-// (sample payload fields: event, call_type, from_number, to_number,
-// direction, call_id, agent_id, call_status, start_timestamp,
-// end_timestamp, disconnection_reason). `.looseObject` so unused/unknown
-// fields never fail validation — we only assert the subset this adapter
-// actually reads.
+// VERIFY-5 (RESOLVED, RETELL-VERIFY): call lifecycle webhooks
+// (`call_started`/`call_ended`/`call_analyzed`), each
+// `{event, call: RetellCallObject}` — the event-name set and the default
+// subscription (an agent with no explicit `webhook_events` gets exactly
+// these three) are both confirmed verbatim against
+// `retell-typescript-sdk`'s `src/resources/agent.ts`
+// (`AgentCreateParams.webhook_events` doc comment: "If not set, defaults to
+// call_started, call_ended, call_analyzed"). `RetellCallObject` fields used
+// by cost/disconnection normalization below (`call_id`, `agent_id`,
+// `from_number`, `to_number`, `start_timestamp`, `end_timestamp`,
+// `disconnection_reason`, `call_cost`) are each confirmed present, with the
+// same names, on the SDK's `PhoneCallResponse`. `.looseObject` so
+// unused/unknown fields (the SDK's `PhoneCallResponse` has dozens more we
+// don't read) never fail validation.
 // ---------------------------------------------------------------------------
 
 export const RETELL_EVENT_TYPES = ["call_started", "call_ended", "call_analyzed"] as const;
@@ -149,38 +156,78 @@ export const zRetellCallLifecycleWebhook = z.object({
 });
 export type RetellCallLifecycleWebhook = z.infer<typeof zRetellCallLifecycleWebhook>;
 
-/** Retell's documented `disconnection_reason` values we know of, mapped in call-events.ts; unknowns fall back to "unknown". */
+/**
+ * `disconnection_reason` — confirmed verbatim (RETELL-VERIFY, VERIFY-5
+ * resolved) against `retell-typescript-sdk`'s `src/resources/call.ts`
+ * (`PhoneCallResponse.disconnection_reason`), NOT the partial/guessed list
+ * this file previously carried. Kept in sync with canonical-types'
+ * `DISCONNECTION_REASONS`; unrecognized values still normalize to
+ * canonical `"unknown"` (call-events.ts) rather than rejecting the event.
+ */
 export const RETELL_DISCONNECTION_REASONS = [
   "user_hangup",
   "agent_hangup",
   "call_transfer",
   "voicemail_reached",
-  "no_answer",
-  "dial_failed",
-  "error",
-  "concurrency_limit_reached",
+  "ivr_reached",
+  "inactivity",
   "max_duration_reached",
+  "concurrency_limit_reached",
+  "no_concurrency_fallback",
+  "no_valid_payment",
+  "scam_detected",
+  "dial_busy",
+  "dial_failed",
+  "dial_no_answer",
+  "invalid_destination",
+  "telephony_provider_permission_denied",
+  "telephony_provider_unavailable",
+  "sip_routing_error",
+  "marked_as_spam",
+  "user_declined",
+  "error_llm_websocket_open",
+  "error_llm_websocket_lost_connection",
+  "error_llm_websocket_runtime",
+  "error_llm_websocket_corrupt_payload",
+  "error_no_audio_received",
+  "error_asr",
+  "error_retell",
+  "error_unknown",
+  "error_user_not_joined",
+  "registered_call_timeout",
+  "transfer_bridged",
+  "transfer_cancelled",
+  "manual_stopped",
+  "call_take_over",
 ] as const;
 
 // ---------------------------------------------------------------------------
-// VERIFY-6: agent lifecycle REST responses (create/update/publish-agent).
-// Field names per API_AND_FLOWS.md A.1 ("Agent lifecycle") + general Retell
-// API conventions (`agent_id`, `response_engine.{type,conversation_flow_id|
-// llm_id}`). Kept loose — we only assert the ids this adapter returns to
-// callers; VERIFY-6 tracks confirming the full request/response shape
-// (including exact `response_engine` discriminator values for
-// conversation-flow vs retell-llm) against a live sandbox before Wave 1
-// goes live, per API_AND_FLOWS.md's own flagged "publish reliability" and
-// "agent ceiling, rate limits" Week-0 tickets.
+// VERIFY-6 (RESOLVED, RETELL-VERIFY): agent lifecycle REST shapes, confirmed
+// against retell-typescript-sdk's src/resources/{agent,llm,
+// conversation-flow}.ts:
+//   - `response_engine: {type: "conversation-flow"|"retell-llm", ...}` — the
+//     two discriminator string literals this codebase already used are both
+//     confirmed verbatim (`AgentCreateParams.ResponseEngineConversationFlow`/
+//     `ResponseEngineRetellLm`).
+//   - `agent_id`/`version` on `AgentResponse` (create AND update) — both
+//     confirmed required fields.
+//   - `inbound_webhook_url` does NOT exist on the Agent resource at all
+//     (confirmed absent from every Agent create/update/response interface) —
+//     it is exclusively a PHONE-NUMBER field
+//     (`PhoneNumber{Create,Update,Import}Params`/`PhoneNumberResponse`,
+//     src/resources/phone-number.ts). This codebase's own VERIFY-6 open
+//     question ("is it agent- or number-scoped?") is answered: NUMBER-scoped.
+//     Moved to `ImportPhoneNumberInput`/numbers.ts accordingly; no longer
+//     sent on the agent create/update body (agents.ts).
 // ---------------------------------------------------------------------------
 
 /**
  * Response from creating/updating the underlying conversation-flow or
- * retell-llm resource that an agent's `response_engine` then references
- * (API_AND_FLOWS.md A.1 "Conversation flow / LLM: create + publish
- * version"). Exactly one of the two id fields is expected, depending on
- * which endpoint was called; VERIFY-6 tracks confirming the exact field
- * name against a live sandbox.
+ * retell-llm resource that an agent's `response_engine` then references.
+ * Exactly one of the two id fields is expected, depending on which endpoint
+ * was called — confirmed via `retell-typescript-sdk`'s
+ * `src/resources/{llm,conversation-flow}.ts` (`LlmResponse.llm_id`,
+ * `ConversationFlowResponse.conversation_flow_id`).
  */
 export const zRetellFlowResourceResponse = z.looseObject({
   conversation_flow_id: z.string().min(1).optional(),
@@ -190,6 +237,11 @@ export type RetellFlowResourceResponse = z.infer<typeof zRetellFlowResourceRespo
 
 export const zRetellCreateOrUpdateAgentResponse = z.looseObject({
   agent_id: z.string().min(1),
+  // Confirmed REQUIRED on `AgentResponse` (retell-typescript-sdk
+  // src/resources/agent.ts) — RETELL-VERIFY, VERIFY-6 resolved. This is the
+  // agent's draft version; `publishAgentVersion` needs it (the publish
+  // endpoint has no "latest" shorthand).
+  version: z.number().int(),
   response_engine: z
     .looseObject({
       llm_id: z.string().min(1).optional(),
@@ -199,24 +251,36 @@ export const zRetellCreateOrUpdateAgentResponse = z.looseObject({
 });
 export type RetellCreateOrUpdateAgentResponse = z.infer<typeof zRetellCreateOrUpdateAgentResponse>;
 
-export const zRetellPublishAgentVersionResponse = z.looseObject({
-  agent_id: z.string().min(1),
-  version: z.number().int(),
-});
-export type RetellPublishAgentVersionResponse = z.infer<typeof zRetellPublishAgentVersionResponse>;
+// ---------------------------------------------------------------------------
+// VERIFY-6 (resolved, RETELL-VERIFY): confirmed via retell-typescript-sdk's
+// `AgentPublishParams`/`Agent.publish` that `POST /publish-agent-version/{id}`
+// (a) REQUIRES a `{version: number, ...}` request body — there is no
+// "publish whatever's latest draft" shorthand — and (b) returns `void` (no
+// response body at all), NOT `{agent_id, version}` as this file previously
+// assumed. `publishRetellAgentVersion` (agents.ts) no longer parses a
+// response body for this call; the returned `version` is just an echo of
+// the input the caller already supplied.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// VERIFY-7: `POST /import-phone-number`. Confirmed via search
-// (docs.retellai.com/api-references/import-phone-number, indexed snippet):
-// request body carries `termination_uri` and an `inbound_agents` ARRAY of
-// `{agent_id, weight?, agent_version?}` objects (load-balancing across
-// multiple agents) — NOT the singular `inbound_agent_id` BACKEND_SPEC §7's
-// prose paraphrase assumed. This adapter's canonical
-// `ImportPhoneNumberInput.inboundAgentId` (single agent — this product
-// never load-balances a number across multiple agents) is lowered to a
-// one-element `inbound_agents` array below. VERIFY-7 tracks confirming the
-// exact response shape and outbound-agent field name against a live sandbox
-// before go-live.
+// VERIFY-7 (RESOLVED, RETELL-VERIFY): `POST /import-phone-number`, confirmed
+// field-for-field against retell-typescript-sdk's
+// `src/resources/phone-number.ts` (`PhoneNumberImportParams`):
+//   - `inbound_agents` IS an array of `{agent_id, weight, agent_version?}` —
+//     confirmed. BUT `weight` is a REQUIRED field on each entry ("total
+//     weights must add up to 1"), not optional as this file previously
+//     assumed — a single-agent number must still send `weight: 1`.
+//     numbers.ts fixed accordingly.
+//   - `outbound_agent_id` (singular) does NOT exist — confirmed the
+//     equivalent field is `outbound_agents` (an ARRAY, same shape as
+//     `inbound_agents`), not a bare id string. numbers.ts fixed.
+//   - `sip_trunk_auth_username`/`sip_trunk_auth_password` confirmed exact.
+//   - `inbound_webhook_url` confirmed present here (see VERIFY-6 above —
+//     this is where it actually belongs, not on the Agent).
+//   - Response (`PhoneNumberResponse`): `phone_number` (E.164, "used as the
+//     unique identifier for phone number APIs") and `phone_number_pretty?`
+//     both confirmed present; kept `.looseObject` since the real response
+//     carries many more fields this adapter doesn't read.
 // ---------------------------------------------------------------------------
 
 export const zRetellImportPhoneNumberResponse = z.looseObject({

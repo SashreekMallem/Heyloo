@@ -80,7 +80,13 @@ function toolsFor(template: CompilerAgentTemplate, toolWebhookUrl: string): Func
     name: tool.name,
     description: tool.description,
     url: toolWebhookUrl,
-    parameters: tool.parameters,
+    // `properties` is REQUIRED per retell-typescript-sdk's `CustomTool.
+    // Parameters`, confirmed RETELL-VERIFY — default an omitted one to `{}`
+    // (mirrors packages/adapters/retell/src/compiler/*.ts's identical fix).
+    parameters:
+      tool.parameters && typeof tool.parameters === "object"
+        ? { properties: {}, ...tool.parameters }
+        : { type: "object", properties: {} },
   }));
 }
 
@@ -98,12 +104,24 @@ interface ConversationNode {
     destination_node_id: string;
     transition_condition: { type: "prompt"; prompt: string };
   }>;
-  tool_ids: string[];
-  global_node?: boolean;
+  // RETELL-VERIFY (docs/VERIFY.md VERIFY-8, resolved): `tool_ids` is NOT a
+  // real field on a plain conversation node (confirmed against
+  // retell-typescript-sdk's ConversationFlowCreateParams — it only exists
+  // on SubagentNode, a node type this compiler doesn't emit); removed.
+  // `global_node_setting: {condition}` replaces the previously-assumed bare
+  // `global_node: true` boolean — confirmed an object with a REQUIRED
+  // `condition` string. See packages/adapters/retell/src/compiler/types.ts
+  // for the full resolved-shape writeup (this file is a deliberate
+  // duplicate of that package's compiler, kept in sync — BUILD_NOTES T4/T3).
+  global_node_setting?: { condition: string };
 }
 
 export interface ConversationFlowBody {
   start_node_id: string;
+  // REQUIRED on ConversationFlowCreateParams (RETELL-VERIFY, confirmed via
+  // retell-typescript-sdk) — always "agent": every template opens with the
+  // agent's own greeting/disclosure line, never a user-speaks-first flow.
+  start_speaker: "agent";
   nodes: ConversationNode[];
   tools: FunctionTool[];
   global_prompt?: string;
@@ -114,7 +132,6 @@ function compileConversationFlow(
   toolWebhookUrl: string,
 ): ConversationFlowBody {
   const tools = toolsFor(template, toolWebhookUrl);
-  const knownToolNames = new Set(tools.map((t) => t.name));
 
   const nodesById = new Map<string, ConversationNode>();
   for (const state of template.states) {
@@ -124,7 +141,6 @@ function compileConversationFlow(
       name: state.name,
       instruction: { type: "prompt", text: state.prompt_fragment },
       edges: [],
-      tool_ids: (state.allowed_tools ?? []).filter((t) => knownToolNames.has(t)),
     });
   }
 
@@ -145,7 +161,7 @@ function compileConversationFlow(
     const targetNode = nodesById.get(globalIntent.target_state);
     if (!targetNode) continue;
     if (globalIntent.reachable_from === "any") {
-      targetNode.global_node = true;
+      targetNode.global_node_setting = { condition: globalIntent.description };
       continue;
     }
     for (const fromStateId of globalIntent.reachable_from) {
@@ -170,6 +186,7 @@ function compileConversationFlow(
 
   const body: ConversationFlowBody = {
     start_node_id: startNodeId,
+    start_speaker: "agent",
     nodes: [...nodesById.values()],
     tools,
   };

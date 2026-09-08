@@ -133,16 +133,49 @@ export type ToolCallResult<T = unknown> = { result: T | ToolFallbackResult };
 // Call-ended webhook (BACKEND_SPEC §7.3 `/voice/events`)
 // ---------------------------------------------------------------------------
 
+/**
+ * Confirmed verbatim against the official `retell-typescript-sdk`
+ * (`src/resources/call.ts`, `PhoneCallResponse.disconnection_reason` —
+ * RETELL-VERIFY, docs/VERIFY.md VERIFY-5, resolved) — the full enum Retell
+ * itself defines, not a guessed/partial subset. `"unknown"` is this
+ * codebase's own catch-all for a future value Retell adds that isn't in
+ * this list yet (never a rejection).
+ */
 export const DISCONNECTION_REASONS = [
   "user_hangup",
   "agent_hangup",
   "call_transfer",
   "voicemail_reached",
-  "no_answer",
-  "dial_failed",
-  "error",
-  "concurrency_limit_reached",
+  "ivr_reached",
+  "inactivity",
   "max_duration_reached",
+  "concurrency_limit_reached",
+  "no_concurrency_fallback",
+  "no_valid_payment",
+  "scam_detected",
+  "dial_busy",
+  "dial_failed",
+  "dial_no_answer",
+  "invalid_destination",
+  "telephony_provider_permission_denied",
+  "telephony_provider_unavailable",
+  "sip_routing_error",
+  "marked_as_spam",
+  "user_declined",
+  "error_llm_websocket_open",
+  "error_llm_websocket_lost_connection",
+  "error_llm_websocket_runtime",
+  "error_llm_websocket_corrupt_payload",
+  "error_no_audio_received",
+  "error_asr",
+  "error_retell",
+  "error_unknown",
+  "error_user_not_joined",
+  "registered_call_timeout",
+  "transfer_bridged",
+  "transfer_cancelled",
+  "manual_stopped",
+  "call_take_over",
   "unknown",
 ] as const;
 export type DisconnectionReason = (typeof DISCONNECTION_REASONS)[number];
@@ -170,17 +203,31 @@ export interface CreateOrUpdateAgentInput {
   voiceId: string;
   model: string;
   toolWebhookUrl: string;
-  inboundWebhookUrl: string;
   eventsWebhookUrl: string;
 }
 
 export interface CreateOrUpdateAgentResult {
   providerAgentId: string;
   providerLlmId?: string;
+  /**
+   * The agent's draft version after this create/update (Retell's
+   * `AgentResponse.version` — RETELL-VERIFY, confirmed via
+   * `retell-typescript-sdk`'s `src/resources/agent.ts`). Required input to
+   * `publishAgentVersion` (the publish endpoint has no "latest" shorthand —
+   * it must be told exactly which version to promote).
+   */
+  version: number;
 }
 
 export interface PublishAgentVersionInput {
   providerAgentId: string;
+  /**
+   * The draft version to promote (from `CreateOrUpdateAgentResult.version`).
+   * REQUIRED by Retell's `POST /publish-agent-version/{agent_id}` — the
+   * endpoint has no "publish whatever's latest" shorthand (RETELL-VERIFY,
+   * confirmed via `retell-typescript-sdk`'s `AgentPublishParams`).
+   */
+  version: number;
 }
 
 export interface PublishAgentVersionResult {
@@ -197,6 +244,15 @@ export interface ImportPhoneNumberInput {
   outboundAgentId?: string;
   sipTrunkAuthUsername?: string;
   sipTrunkAuthPassword?: string;
+  /**
+   * The inbound-call resolver webhook (`/voice-inbound`). RETELL-VERIFY
+   * (docs/VERIFY.md VERIFY-6, resolved): confirmed via the official SDK's
+   * `src/resources/phone-number.ts` that `inbound_webhook_url` is a
+   * PHONE-NUMBER-scoped field (`PhoneNumberImportParams`/`*CreateParams`/
+   * `*UpdateParams`) — it does NOT exist on the Agent resource at all. Moved
+   * here from `CreateOrUpdateAgentInput` accordingly.
+   */
+  inboundWebhookUrl?: string;
 }
 
 export interface ImportPhoneNumberResult {

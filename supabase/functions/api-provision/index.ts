@@ -15,6 +15,14 @@ import { runProvisioningSaga } from "./handler.js";
 
 const logger = createLogger({ fn: "api-provision" });
 const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
+// RETELL-VERIFY (VERIFY-7, resolved): `termination_uri` is a REQUIRED field
+// on `/import-phone-number` (confirmed via retell-typescript-sdk) — this
+// saga previously omitted it entirely, which would 4xx against the real
+// API. One platform-level SIP trunk, same pattern as TWILIO_A2P_BRAND_SID.
+const RETELL_SIP_TRUNK_TERMINATION_URI = requireEnv("RETELL_SIP_TRUNK_TERMINATION_URI");
+// The `/voice-inbound` webhook is phone-number-scoped, not agent-scoped
+// (RETELL-VERIFY, VERIFY-6 resolved) — wired onto the imported number here.
+const RETELL_INBOUND_WEBHOOK_URL = requireEnv("RETELL_INBOUND_WEBHOOK_URL");
 const TWILIO_ACCOUNT_SID = requireEnv("TWILIO_ACCOUNT_SID");
 const TWILIO_AUTH_TOKEN = requireEnv("TWILIO_AUTH_TOKEN");
 const SERVICE_ROLE_INTERNAL_SECRET = requireEnv("PROVISION_INTERNAL_SECRET");
@@ -74,6 +82,8 @@ Deno.serve(async (req: Request) => {
   const deps = {
     retellFetch: fetch,
     retellApiKey: RETELL_API_KEY,
+    retellSipTerminationUri: RETELL_SIP_TRUNK_TERMINATION_URI,
+    retellInboundWebhookUrl: RETELL_INBOUND_WEBHOOK_URL,
     twilioFetch: fetch,
     twilioAccountSid: TWILIO_ACCOUNT_SID,
     twilioAuthToken: TWILIO_AUTH_TOKEN,

@@ -36,12 +36,18 @@ export const RetellCallAnalysisSchema = z
   })
   .passthrough();
 
+// RETELL-VERIFY: confirmed via retell-typescript-sdk's
+// `PhoneCallResponse.TranscriptObject` (src/resources/call.ts) — the real
+// field is `content` (REQUIRED), not `text` (which doesn't exist on this
+// object at all; this schema previously guessed both). `role` is confirmed
+// a closed 3-value enum, not an open string. `words` is REQUIRED (can be an
+// empty array) but this codebase doesn't read its contents, so it stays
+// loosely typed.
 export const RetellTranscriptTurnSchema = z
   .object({
-    role: z.string(),
-    content: z.string().optional(),
-    text: z.string().optional(),
-    words: z.array(z.unknown()).optional(),
+    role: z.enum(["agent", "user", "transfer_target"]),
+    content: z.string(),
+    words: z.array(z.unknown()),
   })
   .passthrough();
 

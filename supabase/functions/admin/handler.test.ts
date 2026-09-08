@@ -370,7 +370,7 @@ describe("routeAdminRequest — templates group", () => {
         return new Response(JSON.stringify({ conversation_flow_id: "flow_1" }), { status: 201 });
       }
       if (url.includes("create-agent")) {
-        return new Response(JSON.stringify({ agent_id: "agent_1" }), { status: 201 });
+        return new Response(JSON.stringify({ agent_id: "agent_1", version: 1 }), { status: 201 });
       }
       if (url.includes("publish-agent-version")) {
         return new Response(JSON.stringify({ agent_id: "agent_1", version: 1 }), { status: 200 });

@@ -36,21 +36,23 @@ describe("compileConversationFlow", () => {
     }
   });
 
-  it("marks the emergency global_intent's target node as global_node (reachable_from: any)", () => {
+  it("marks the emergency global_intent's target node with global_node_setting.condition (reachable_from: any)", () => {
     const flow = compileConversationFlow(AUTO_CONVERSATION_FLOW_TEMPLATE, TOOL_WEBHOOK_URL);
     const triageNode = flow.nodes.find((n) => n.id === "triage_emergency");
     expect(triageNode?.type).toBe("conversation");
     if (triageNode?.type === "conversation") {
-      expect(triageNode.global_node).toBe(true);
+      expect(triageNode.global_node_setting).toEqual({
+        condition: AUTO_CONVERSATION_FLOW_TEMPLATE.global_intents.find(
+          (gi) => gi.target_state === "triage_emergency",
+        )?.description,
+      });
     }
   });
 
-  it("only attaches tool_ids for tools actually declared in template.tools", () => {
+  it("never emits a tool_ids field on a conversation node (not a real field — RETELL-VERIFY)", () => {
     const flow = compileConversationFlow(AUTO_CONVERSATION_FLOW_TEMPLATE, TOOL_WEBHOOK_URL);
-    const checkTimeNode = flow.nodes.find((n) => n.id === "check_time");
-    expect(checkTimeNode?.type).toBe("conversation");
-    if (checkTimeNode?.type === "conversation") {
-      expect(checkTimeNode.tool_ids).toEqual(["check_availability"]);
+    for (const node of flow.nodes) {
+      expect(node).not.toHaveProperty("tool_ids");
     }
   });
 

@@ -2211,3 +2211,199 @@ testing — nothing was discarded). This task's own explicit instruction is
 voice-* functions," so those failures are left exactly as found, matching
 the established precedent T4/T6/T7 each already logged for the identical
 concurrent-WIP situation.
+
+## RETELL-VERIFY — verify/fix the Retell integration against the official
+## `retell-typescript-sdk` (packages/adapters/retell,
+## supabase/functions/_shared/providers/retell.ts, voice-{inbound,tools,
+## events})
+
+Technique: `docs.retellai.com` stayed egress-blocked (same experience every
+prior task logged), but the official npm package `retell-sdk` (published
+from `RetellAI/retell-typescript-sdk`, v5.64.0) installs cleanly and
+`raw.githubusercontent.com/RetellAI/retell-typescript-sdk/main/**` is fully
+reachable — so every finding below traces to the SDK's own generated
+`src/resources/*.ts` request/response types (Stainless-generated from
+Retell's real OpenAPI spec) or its own hand-written
+`src/lib/webhook_auth.ts` signing helper, never to indexed search snippets
+or memory. This ran concurrently with `PROVIDERS-VERIFY` (see that section
+above) in the same shared working directory — its own exclusive paths (own
+task instruction) skip `packages/adapters/retell`/`_shared/providers/
+retell.ts`/`voice-*`, so there is no overlap; both tasks' `git status`
+diffs were cross-checked against each other's file lists to confirm this
+before either committed.
+
+**Confirmed CORRECT as originally built (no code change, docs/VERIFY.md
+marked RESOLVED)**:
+- **VERIFY-1, webhook signature scheme** — confirmed BYTE-FOR-BYTE against
+  the SDK's own `src/lib/webhook_auth.ts` (`symmetric.verify`/`sign`,
+  exported as `verify`/`sign` from the package root): header
+  `v=<timestamp>,d=<hex HMAC-SHA256>`, digest over `rawBody + timestamp`
+  (direct concatenation, no separator), secret = the API key itself,
+  5-minute default tolerance (`FIVE_MINUTES` in the SDK source). Both
+  `packages/adapters/retell/src/signature.ts` and
+  `supabase/functions/_shared/retell-signature.ts` already matched exactly.
+- **VERIFY-4, cost breakdown unit** — confirmed `call_cost`/`product_costs[]`
+  costs are in CENTS (`src/resources/call.ts`'s own doc comments: "Cost for
+  the product in cents..."/"Combined cost of all individual costs in
+  cents"), resolving the long-open cents-vs-dollars question this
+  codebase's own money invariant had assumed correctly.
+- Multi-prompt/single-prompt (Retell LLM) compiler output — `general_prompt`,
+  `starting_state`, `states[].{name,state_prompt,edges:[{destination_state_
+  name,description}],tools}`, flat optional `model`, and the `custom`
+  function-tool shape (`{name,type:"custom",url,description?,parameters?}`)
+  all confirmed exactly against `src/resources/llm.ts`.
+- `/publish-agent-version/{id}` endpoint NAME, `/import-phone-number`'s
+  `inbound_agents` being an ARRAY (not singular `inbound_agent_id`), and the
+  `response_engine.type` discriminators (`"conversation-flow"`/
+  `"retell-llm"`) — all confirmed correct as previously built.
+
+**FIXED (confirmed wrong, corrected across
+`packages/adapters/retell/src/**`, `supabase/functions/_shared/providers/
+retell.ts`, `supabase/functions/_shared/compiler/template-compiler.ts`,
+`supabase/functions/admin/handler.ts`, `supabase/functions/api-provision/
+{handler,index}.ts`, `supabase/functions/job-retell-health-failover/
+handler.ts`, plus every affected test/fixture/snapshot):**
+
+1. **`inbound_webhook_url` is NOT an Agent field at all** (VERIFY-6) —
+   confirmed absent from every Agent create/update/response interface in
+   `src/resources/agent.ts`; it exists exclusively on the PhoneNumber
+   resource (`PhoneNumber{Create,Update,Import}Params`/`PhoneNumberResponse`
+   in `src/resources/phone-number.ts`). Removed from
+   `CreateOrUpdateAgentInput`/`agents.ts`'s agent-create body; added to
+   `ImportPhoneNumberInput`/`numbers.ts`'s import-phone-number body and to
+   the Deno `importPhoneNumber` payload type. `api-provision/handler.ts`
+   now passes it there instead; two new required env vars
+   (`RETELL_SIP_TRUNK_TERMINATION_URI`, `RETELL_INBOUND_WEBHOOK_URL`)
+   document this in `.env.example`.
+2. **`/publish-agent-version/{id}` REQUIRES a `{version: number, ...}` body
+   and returns `void`** (VERIFY-6) — confirmed via `AgentPublishParams`/
+   `Agent.publish`'s own return type. This codebase previously sent no
+   body at all and expected `{agent_id, version}` back — every real call
+   would have both 4xx'd (missing required field) AND thrown on response
+   parsing even if it hadn't. Fixed: `PublishAgentVersionInput` gained a
+   required `version`; `CreateOrUpdateAgentResult`/the Deno create-agent
+   response type gained the (confirmed-required) `version` field so
+   callers have it to publish with; `api-provision/handler.ts` now calls a
+   new `getAgent` (`GET /get-agent/{id}`) helper right before publishing
+   (robust whether the agent was just created or already existed from an
+   earlier saga run); `admin/handler.ts`'s template-publish flow reads
+   `version` off its own create-agent response instead.
+3. **Conversation Flow's model field is a REQUIRED nested `model_choice:
+   {model, type:"cascading", high_priority?}` object, NOT a flat `model`
+   string** (VERIFY-8) — confirmed via `ConversationFlowCreateParams`
+   (Retell LLM keeps `model` flat and optional — the two are NOT
+   wire-compatible). `agents.ts` and `admin/handler.ts` now branch on
+   `compile_target` when attaching the model.
+4. **`start_speaker: "user"|"agent"` is REQUIRED on
+   `ConversationFlowCreateParams`** (VERIFY-8) — a gap the new type-level
+   SDK contract test caught directly (see below); Retell LLM leaves it
+   optional. The compiler now always emits `start_speaker: "agent"` (every
+   template opens with the agent's own greeting/disclosure line).
+5. **`global_node: true` (a boolean) is not a real field —
+   `global_node_setting: {condition: string, ...}` (an object, `condition`
+   REQUIRED) is** (VERIFY-8) — confirmed via
+   `ConversationFlowCreateParams.ConversationNode.GlobalNodeSetting`.
+   Fixed in both the Node compiler and its Deno duplicate; `condition` is
+   populated from the same `global_intent.description` text already used
+   for the scoped-edge case.
+6. **`tool_ids` is NOT a field on a plain `ConversationNode` at all** —
+   confirmed absent from every property Retell documents on it (it exists
+   only on `SubagentNode`, a node type this compiler doesn't emit).
+   Removed from both compiler implementations. This surfaces a genuine
+   SYSTEM_DESIGN §4.1-conflicting gap (that section wants hard "tool-backed
+   nodes only... model cannot invent" per-state restriction) — flagged
+   here rather than redesigned (CLAUDE.md Rule 4): every node in a compiled
+   conversation-flow effectively has access to every tool the flow
+   declares; per-state steering is soft/prompt-only. A real hard
+   restriction would need adopting `SubagentNode`, a materially different
+   graph shape — left as a follow-up, not attempted in this pass.
+7. **Custom function tool `parameters.properties` is REQUIRED** whenever
+   `parameters` is present at all (confirmed via
+   `LlmCreateParams.CustomTool.Parameters`), even though this codebase's
+   broader canonical `JsonSchemaObject` (used for template-authoring)
+   allows omitting it. Both compiler implementations now default an
+   omitted `properties` to `{}` when lowering a canonical tool to a wire
+   tool, so a zero-argument tool still produces a valid request.
+8. **`/import-phone-number`'s `inbound_agents[].weight` is REQUIRED** (not
+   optional) and **`outbound_agent_id` (a bare string) does not exist —
+   the real field is `outbound_agents` (an array, same shape as
+   `inbound_agents`)** — confirmed via `PhoneNumberImportParams`. Fixed in
+   `numbers.ts` (always sends `weight: 1` for this product's single-agent
+   case) and in `api-provision/handler.ts`.
+9. **`/import-phone-number`'s response has no `phone_number_id` field —
+   the number's own `phone_number` (E.164) IS its unique identifier**
+   (confirmed via `PhoneNumberResponse`'s own doc comment). Fixed
+   `api-provision/handler.ts`'s `retell_number_id` write (previously always
+   wrote `null`, since the field it read never existed).
+10. **The `job-retell-health-failover` probe called the wrong endpoint
+    entirely** — `GET /list-agents` (no such route) instead of
+    `POST /v2/list-agents?limit=1` (confirmed via `Agent.list`) — every
+    real health check would 404/405 and register Retell as perpetually
+    down, silently making the failover threshold fire spuriously. Fixed.
+11. **`disconnection_reason`'s enum was a partial/wrong guess** (VERIFY-5)
+    — confirmed the FULL real enum via `PhoneCallResponse.
+    disconnection_reason` (34 values: `dial_no_answer` not `no_answer`,
+    a family of `error_*` variants instead of one generic `error`,
+    `transfer_bridged`/`transfer_cancelled`/`manual_stopped`/
+    `call_take_over`/etc.). Updated both
+    `RETELL_DISCONNECTION_REASONS` (raw-types.ts) and canonical
+    `DISCONNECTION_REASONS` (voice-provider.ts) to the confirmed full
+    list — previously, most real disconnection reasons besides the exact
+    9 originally guessed were silently collapsing to `"unknown"`, losing
+    real operational signal (e.g. `dial_no_answer` never matched the
+    guessed `no_answer`).
+12. **The transcript-turn schema guessed a nonexistent `text` field** —
+    confirmed via `PhoneCallResponse.TranscriptObject` that the real,
+    REQUIRED field is `content` (not `text`, which doesn't exist), `role`
+    is a closed 3-value enum (`agent`/`user`/`transfer_target`), and
+    `words` is required (possibly empty). Fixed
+    `_shared/schemas/voice-events.ts`'s `RetellTranscriptTurnSchema`.
+
+**Partially confirmed / still genuinely open (docs/VERIFY.md updated, not
+resolved)**: VERIFY-2 (inbound-call webhook envelope) and VERIFY-3
+(tool-call webhook envelope) are webhook PAYLOAD shapes, which — as this
+task's own instructions anticipated — aren't part of either SDK's typed
+REST surface at all (webhooks are server→client pushes, never a
+client-invoked resource). The SDK's `CustomTool.args_at_root` doc comment
+("If set to true, the parameters will be passed as root level JSON object
+instead of nested under 'args'") DOES corroborate that the default
+(unset) envelope nests params under `args`, matching this codebase's
+existing assumption, and `CallCreatePhoneCallParams.override_agent_id`
+independently corroborates `override_agent_id` as Retell's real naming
+convention for "override which agent handles this call" (used in our
+assumed `call_inbound` response envelope) — both noted in VERIFY.md as
+partial corroboration. The exact envelope nesting (whether `call_id` is
+present at the top level, whether the tool-call `call` object's
+`from_number` field is named that) remains unconfirmable without a live
+sandbox call, exactly as originally flagged.
+
+**Type-level contract test added**: `retell-sdk` (v5.64.0) is now a
+devDependency of `packages/adapters/retell` ONLY (never a runtime
+dependency, never referenced outside this package — CLAUDE.md Rule 2).
+`packages/adapters/retell/src/sdk-contract.test.ts` imports the SDK's own
+request/response types and statically asserts (via `tsc`, not a runtime
+assertion) that this package's compiler/request-builder output is
+assignable to them — covering the conversation-flow/multi-prompt/
+single-prompt bodies, the custom-function tool shape, the `response_engine`
+discriminated union, the publish-agent-version body, and the
+import-phone-number body. This is what caught finding #4 above
+(`start_speaker`) directly, and will keep catching a future SDK field
+rename/removal at `tsc` time rather than silently drifting.
+
+**Root gates**: `pnpm --filter @heyloo/adapter-retell {typecheck,test}` and
+`pnpm --filter @heyloo/edge-functions {typecheck,test}` all green (101 and
+416 tests respectively, including the new contract test and every updated
+fixture/snapshot). Full monorepo `pnpm run {typecheck,lint,test,build}` all
+green (18/18, 18/18, 18/18, 12/12 tasks respectively) — `lint` was
+re-verified with a scoped `biome check --write` limited to this task's own
+two new/changed test files only (never a blanket `--write` across the
+shared working directory, given `PROVIDERS-VERIFY`'s concurrent WIP noted
+above).
+
+**Not committed**: `pnpm-lock.yaml` — it currently mixes this task's own
+`retell-sdk` addition with `PROVIDERS-VERIFY`'s concurrent `square`/
+`googleapis` additions (same shared working directory), and a lockfile
+isn't meaningfully committable as a partial diff. `packages/adapters/
+retell/package.json`'s new devDependency is committed; regenerating a
+clean lockfile is a fast follow-up once both concurrent tasks are done
+touching this checkout.

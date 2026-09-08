@@ -1,16 +1,21 @@
 /**
  * Retell webhook signature verification.
  *
- * Scheme (CLAUDE.md Rule 1 — verified against reachable documentation; the
- * canonical docs host `docs.retellai.com` returns EGRESS_BLOCKED from this
- * environment, so this was confirmed via indexed search snippets of
- * https://docs.retellai.com/features/secure-webhook, not a first-party
- * fetch — logged as VERIFY-1 in docs/VERIFY.md):
+ * RETELL-VERIFY (docs/VERIFY.md VERIFY-1, RESOLVED): confirmed byte-for-byte
+ * against the OFFICIAL `retell-typescript-sdk`'s own signing/verification
+ * source (`src/lib/webhook_auth.ts`) — reachable via raw.githubusercontent.com
+ * even though `docs.retellai.com` itself is egress-blocked here:
  *
  *   Header: `X-Retell-Signature: v={unix_ms_timestamp},d={hex_digest}`
  *   Digest:  HMAC-SHA256(raw_body + timestamp, api_key), hex-encoded, where
  *            `+` is plain string concatenation (raw body bytes, then the
  *            ASCII digits of the timestamp — NOT a separator character).
+ *
+ * Every part of this — header format, concatenation order/absence of a
+ * separator, the API key itself as the HMAC secret, and the 5-minute
+ * default replay tolerance — is confirmed exactly against the SDK's own
+ * `symmetric.verify`/`FIVE_MINUTES` implementation. Nothing needed fixing
+ * here; this file was correct as originally built.
  *
  * Verification steps (BACKEND_SPEC §7, API_AND_FLOWS.md A.1 "Inbound
  * webhook"): parse header -> reject stale timestamps (replay window) ->

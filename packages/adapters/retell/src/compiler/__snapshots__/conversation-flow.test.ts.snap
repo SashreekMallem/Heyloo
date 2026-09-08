@@ -23,7 +23,6 @@ Greet the caller and ask how you can help today.",
         "type": "prompt",
       },
       "name": "Greeting",
-      "tool_ids": [],
       "type": "conversation",
     },
     {
@@ -43,7 +42,6 @@ Greet the caller and ask how you can help today.",
         "type": "prompt",
       },
       "name": "Collect vehicle info",
-      "tool_ids": [],
       "type": "conversation",
     },
     {
@@ -63,9 +61,6 @@ Greet the caller and ask how you can help today.",
         "type": "prompt",
       },
       "name": "Check availability",
-      "tool_ids": [
-        "check_availability",
-      ],
       "type": "conversation",
     },
     {
@@ -76,27 +71,24 @@ Greet the caller and ask how you can help today.",
         "type": "prompt",
       },
       "name": "Confirm booking",
-      "tool_ids": [
-        "create_booking",
-      ],
       "type": "conversation",
     },
     {
       "edges": [],
-      "global_node": true,
+      "global_node_setting": {
+        "condition": "Caller mentions brakes failing, smoke, or another immediate safety issue.",
+      },
       "id": "triage_emergency",
       "instruction": {
         "text": "The caller has an urgent safety issue — offer a tow partner referral.",
         "type": "prompt",
       },
       "name": "Emergency triage",
-      "tool_ids": [
-        "take_message",
-      ],
       "type": "conversation",
     },
   ],
   "start_node_id": "greeting",
+  "start_speaker": "agent",
   "tools": [
     {
       "description": "Check open service bay slots.",

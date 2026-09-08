@@ -9,6 +9,7 @@ function conversationFlowFixture(startText: string): RetellFlowRequest {
     kind: "conversation_flow",
     body: {
       start_node_id: "n1",
+      start_speaker: "agent",
       nodes: [
         {
           id: "n1",
@@ -16,7 +17,6 @@ function conversationFlowFixture(startText: string): RetellFlowRequest {
           name: "Start",
           instruction: { type: "prompt", text: startText },
           edges: [],
-          tool_ids: [],
         },
       ],
       tools: [],

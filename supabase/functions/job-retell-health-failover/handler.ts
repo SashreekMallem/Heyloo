@@ -9,10 +9,15 @@ import type { Logger, SqlClient } from "../_shared/types.js";
  * from Retell-import to forward-to-owner-cell + voicemail, SMS the tenant,
  * mark a platform-wide incident; on recovery, auto-restore.
  *
- * VERIFY.md: (1) the health probe below hits Retell's `/list-agents`
- * endpoint with `limit=1` as a lightweight reachability check — Retell's
- * docs weren't reachable in this build to confirm a dedicated health/status
- * endpoint exists; swap to one if it does. (2) The failover action assumes
+ * RETELL-VERIFY: the health probe below hits `POST /v2/list-agents?limit=1`
+ * as a lightweight reachability check — confirmed via retell-typescript-sdk
+ * (`Agent.list`, `src/resources/agent.ts`) that "list agents" is a POST to
+ * `/v2/list-agents` (with `limit`/`pagination_key`/`sort_order` as QUERY
+ * params despite the POST method, and any filter in the JSON body) — NOT a
+ * GET to a bare `/list-agents` as this file previously called, which would
+ * 405 against the real API and make every health check register as an
+ * outage. No dedicated health/status endpoint is documented in the SDK;
+ * this remains the lightest real call available. (2) The failover action assumes
  * flipping a Twilio number's `VoiceUrl` is sufficient to route away from
  * Retell — if Retell-imported numbers are actually routed via a SIP trunk/
  * domain rather than a plain voice webhook, this needs a different Twilio
@@ -40,8 +45,13 @@ export async function probeRetellHealth(
   deps: Pick<FailoverDeps, "retellFetch" | "retellApiKey">,
 ): Promise<boolean> {
   try {
-    const res = await deps.retellFetch("https://api.retellai.com/list-agents?limit=1", {
-      headers: { authorization: `Bearer ${deps.retellApiKey}` },
+    const res = await deps.retellFetch("https://api.retellai.com/v2/list-agents?limit=1", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${deps.retellApiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
     });
     return res.ok;
   } catch {

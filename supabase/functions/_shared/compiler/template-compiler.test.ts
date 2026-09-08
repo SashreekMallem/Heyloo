@@ -49,14 +49,16 @@ describe("compileTemplate — conversation_flow", () => {
     expect(startNode?.instruction.text.startsWith(DISCLOSURE)).toBe(true);
   });
 
-  it("marks the global-intent target node reachable from any state", () => {
+  it("marks the global-intent target node with global_node_setting.condition (reachable_from: any)", () => {
     const compiled = compileTemplate(baseTemplate(), "https://example.com/voice-tools");
     if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
     const bookingNode = compiled.flow.body.nodes.find((n) => n.id === "booking");
-    expect(bookingNode?.global_node).toBe(true);
+    expect(bookingNode?.global_node_setting).toEqual({
+      condition: "the caller mentions an emergency",
+    });
   });
 
-  it("drops allowed_tools entries that don't resolve to a declared tool (defense-in-depth)", () => {
+  it("never emits a tool_ids field on a conversation node (not a real field — RETELL-VERIFY)", () => {
     const template = baseTemplate({
       states: [
         {
@@ -69,7 +71,7 @@ describe("compileTemplate — conversation_flow", () => {
     });
     const compiled = compileTemplate(template, "https://example.com/voice-tools");
     if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
-    expect(compiled.flow.body.nodes[0]?.tool_ids).toEqual(["create_booking"]);
+    expect(compiled.flow.body.nodes[0]).not.toHaveProperty("tool_ids");
   });
 
   it("fails the disclosure gate when disclosure_line is empty", () => {
@@ -85,6 +87,7 @@ describe("compileTemplate — conversation_flow", () => {
       kind: "conversation_flow" as const,
       body: {
         start_node_id: "a",
+        start_speaker: "agent" as const,
         nodes: [
           {
             id: "a",
@@ -92,7 +95,6 @@ describe("compileTemplate — conversation_flow", () => {
             name: "a",
             instruction: { type: "prompt" as const, text: "no disclosure here" },
             edges: [],
-            tool_ids: [],
           },
         ],
         tools: [],

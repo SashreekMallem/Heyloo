@@ -24,11 +24,18 @@ function makeSql(fixtures: Record<string, unknown[]> = {}): {
 
 function makeDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDeps {
   return {
+    // `version` included on every Retell response — `getAgent` (called
+    // before publish, RETELL-VERIFY VERIFY-6 resolved) requires it just as
+    // much as `createAgent`'s own response does.
     retellFetch: (() =>
       Promise.resolve(
-        new Response(JSON.stringify({ agent_id: "agent_1", llm_id: "llm_1" }), { status: 200 }),
+        new Response(JSON.stringify({ agent_id: "agent_1", llm_id: "llm_1", version: 1 }), {
+          status: 200,
+        }),
       )) as never,
     retellApiKey: "key",
+    retellSipTerminationUri: "heyloo-trunk.pstn.twilio.com",
+    retellInboundWebhookUrl: "https://example.supabase.co/functions/v1/voice-inbound",
     twilioFetch: (() =>
       Promise.resolve(
         new Response(JSON.stringify({ sid: "PN1", phone_number: "+15551230000" }), { status: 201 }),
@@ -53,6 +60,40 @@ describe("runProvisioningSaga", () => {
     });
     const result = await runProvisioningSaga(sql, "tenant_1", makeDeps());
     expect(result).toEqual({ status: "complete" });
+  });
+
+  it("sends termination_uri + weighted inbound_agents on import, and {version} on publish (RETELL-VERIFY)", async () => {
+    const { sql } = makeSql({
+      "from public.agent_configs": [],
+      "from public.phone_numbers": [],
+      "returning id, e164, twilio_sid": [{ id: "pn_1", e164: "+15551230000", twilio_sid: "PN1" }],
+      "select retell_number_id": [{ retell_number_id: null }],
+      "insert into public.messages_outbound": [{ id: "msg_1" }],
+    });
+    const requests: { url: string; body: unknown }[] = [];
+    const deps = makeDeps({
+      retellFetch: ((url: string, init?: RequestInit) => {
+        requests.push({ url, body: init?.body ? JSON.parse(init.body as string) : undefined });
+        return Promise.resolve(
+          new Response(JSON.stringify({ agent_id: "agent_1", llm_id: "llm_1", version: 1 }), {
+            status: 200,
+          }),
+        );
+      }) as never,
+    });
+    const result = await runProvisioningSaga(sql, "tenant_1", deps);
+    expect(result).toEqual({ status: "complete" });
+
+    const importCall = requests.find((r) => r.url.includes("import-phone-number"));
+    expect(importCall?.body).toEqual({
+      phone_number: "+15551230000",
+      termination_uri: "heyloo-trunk.pstn.twilio.com",
+      inbound_agents: [{ agent_id: "agent_1", weight: 1 }],
+      inbound_webhook_url: "https://example.supabase.co/functions/v1/voice-inbound",
+    });
+
+    const publishCall = requests.find((r) => r.url.includes("publish-agent-version"));
+    expect(publishCall?.body).toEqual({ version: 1 });
   });
 
   it("resumes past an already-compiled agent (idempotent step 2)", async () => {

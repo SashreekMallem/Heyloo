@@ -119,7 +119,7 @@ describe("RetellProvider", () => {
         return new Response(JSON.stringify({ conversation_flow_id: "flow_1" }), { status: 200 });
       }
       if (path === "/create-agent") {
-        return new Response(JSON.stringify({ agent_id: "agent_1" }), { status: 200 });
+        return new Response(JSON.stringify({ agent_id: "agent_1", version: 1 }), { status: 200 });
       }
       throw new Error(`unexpected path ${path}`);
     });
@@ -135,10 +135,9 @@ describe("RetellProvider", () => {
         voiceId: "11labs-Adrian",
         model: "gpt-4o-mini",
         toolWebhookUrl: TOOL_WEBHOOK_URL,
-        inboundWebhookUrl: "https://example.supabase.co/functions/v1/voice-inbound",
         eventsWebhookUrl: "https://example.supabase.co/functions/v1/voice-events",
       });
-      expect(result).toEqual({ providerAgentId: "agent_1", providerLlmId: "flow_1" });
+      expect(result).toEqual({ providerAgentId: "agent_1", providerLlmId: "flow_1", version: 1 });
     } finally {
       globalThis.fetch = originalFetch;
     }

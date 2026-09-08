@@ -26,7 +26,6 @@ function baseInput(overrides: Partial<CreateOrUpdateAgentInput> = {}): CreateOrU
     voiceId: "11labs-Adrian",
     model: "gpt-4o-mini",
     toolWebhookUrl: "https://example.supabase.co/functions/v1/voice-tools",
-    inboundWebhookUrl: "https://example.supabase.co/functions/v1/voice-inbound",
     eventsWebhookUrl: "https://example.supabase.co/functions/v1/voice-events",
     ...overrides,
   };
@@ -61,7 +60,7 @@ describe("createOrUpdateRetellAgent", () => {
         return jsonResponse(200, { conversation_flow_id: "flow_1" });
       }
       if (path === "/create-agent") {
-        return jsonResponse(200, { agent_id: "agent_1" });
+        return jsonResponse(200, { agent_id: "agent_1", version: 1 });
       }
       throw new Error(`unexpected path ${path}`);
     });
@@ -79,7 +78,7 @@ describe("createOrUpdateRetellAgent", () => {
     const result = await createOrUpdateRetellAgent(client, input, compiled);
 
     expect(calls).toEqual(["/create-conversation-flow", "/create-agent"]);
-    expect(result).toEqual({ providerAgentId: "agent_1", providerLlmId: "flow_1" });
+    expect(result).toEqual({ providerAgentId: "agent_1", providerLlmId: "flow_1", version: 1 });
   });
 
   it("routes multi_prompt/single_prompt templates to /create-retell-llm", async () => {
@@ -88,7 +87,7 @@ describe("createOrUpdateRetellAgent", () => {
       const path = new URL(url).pathname;
       calls.push(path);
       if (path === "/create-retell-llm") return jsonResponse(200, { llm_id: "llm_1" });
-      if (path === "/create-agent") return jsonResponse(200, { agent_id: "agent_2" });
+      if (path === "/create-agent") return jsonResponse(200, { agent_id: "agent_2", version: 1 });
       throw new Error(`unexpected path ${path}`);
     });
     const client = new RetellClient({
@@ -101,7 +100,7 @@ describe("createOrUpdateRetellAgent", () => {
     const result = await createOrUpdateRetellAgent(client, input, compiled);
 
     expect(calls).toEqual(["/create-retell-llm", "/create-agent"]);
-    expect(result).toEqual({ providerAgentId: "agent_2", providerLlmId: "llm_1" });
+    expect(result).toEqual({ providerAgentId: "agent_2", providerLlmId: "llm_1", version: 1 });
   });
 
   it("PATCHes /update-agent/{id} instead of POSTing /create-agent when existingProviderAgentId is set", async () => {
@@ -111,7 +110,7 @@ describe("createOrUpdateRetellAgent", () => {
       calls.push({ method: init?.method ?? "GET", path });
       if (path === "/create-conversation-flow")
         return jsonResponse(200, { conversation_flow_id: "flow_1" });
-      return jsonResponse(200, { agent_id: "agent_1" });
+      return jsonResponse(200, { agent_id: "agent_1", version: 2 });
     });
     const client = new RetellClient({
       apiKey: "k",
@@ -151,26 +150,36 @@ describe("createOrUpdateRetellAgent", () => {
 });
 
 describe("publishRetellAgentVersion", () => {
-  it("returns the published version on success", async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse(200, { agent_id: "agent_1", version: 3 }));
+  it("POSTs {version} in the body and returns it, even though Retell's response body is empty (VERIFY-6, resolved)", async () => {
+    let capturedBody: unknown;
+    const fetchImpl = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      capturedBody = init?.body ? JSON.parse(init.body as string) : undefined;
+      // Confirmed via retell-typescript-sdk: `Agent.publish` returns void —
+      // Retell sends no response body at all.
+      return new Response(null, { status: 204 });
+    });
     const client = new RetellClient({
       apiKey: "k",
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    const result = await publishRetellAgentVersion(client, { providerAgentId: "agent_1" });
+    const result = await publishRetellAgentVersion(client, {
+      providerAgentId: "agent_1",
+      version: 3,
+    });
+    expect(capturedBody).toEqual({ version: 3 });
     expect(result.providerAgentId).toBe("agent_1");
     expect(result.version).toBe(3);
     expect(typeof result.publishedAt).toBe("string");
   });
 
-  it("throws a typed error on an unexpected response shape", async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse(200, { nope: true }));
+  it("throws a typed error when the publish request itself fails (non-2xx)", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(422, { error: "invalid_version" }));
     const client = new RetellClient({
       apiKey: "k",
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    await expect(publishRetellAgentVersion(client, { providerAgentId: "agent_1" })).rejects.toThrow(
-      VoiceProviderError,
-    );
+    await expect(
+      publishRetellAgentVersion(client, { providerAgentId: "agent_1", version: 3 }),
+    ).rejects.toThrow(VoiceProviderError);
   });
 });

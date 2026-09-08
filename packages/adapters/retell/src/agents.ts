@@ -20,11 +20,7 @@ import {
 } from "@heyloo/canonical-types";
 import type { RetellClient } from "./client.js";
 import type { CompiledAgentPayload } from "./compiler/index.js";
-import {
-  zRetellCreateOrUpdateAgentResponse,
-  zRetellFlowResourceResponse,
-  zRetellPublishAgentVersionResponse,
-} from "./raw-types.js";
+import { zRetellCreateOrUpdateAgentResponse, zRetellFlowResourceResponse } from "./raw-types.js";
 
 const FLOW_RESOURCE_ENDPOINT: Record<CompiledAgentPayload["flowRequest"]["kind"], string> = {
   conversation_flow: "/create-conversation-flow",
@@ -50,7 +46,17 @@ export async function createOrUpdateRetellAgent(
 
   // Step 1: create/update the underlying conversation-flow or retell-llm resource.
   const flowEndpoint = FLOW_RESOURCE_ENDPOINT[compiled.flowRequest.kind];
-  const flowBody = { ...compiled.flowRequest.body, model: input.model };
+  // VERIFY-8 (resolved, RETELL-VERIFY): confirmed via
+  // retell-typescript-sdk's src/resources/conversation-flow.ts that
+  // `ConversationFlowCreateParams` takes a REQUIRED nested
+  // `model_choice: {model, type: "cascading", high_priority?}` object, NOT a
+  // flat `model` string — unlike `LlmCreateParams` (multi_prompt/
+  // single_prompt), which DOES keep `model` flat and optional. The two flow
+  // kinds are not wire-compatible here; branch accordingly.
+  const flowBody =
+    compiled.flowRequest.kind === "conversation_flow"
+      ? { ...compiled.flowRequest.body, model_choice: { model: input.model, type: "cascading" } }
+      : { ...compiled.flowRequest.body, model: input.model };
   const flowRaw = await client.request("POST", flowEndpoint, flowBody);
 
   const flowParsed = zRetellFlowResourceResponse.safeParse(flowRaw);
@@ -80,11 +86,11 @@ export async function createOrUpdateRetellAgent(
     agent_name: `heyloo-${input.tenantId}`,
     voice_id: input.voiceId,
     response_engine: responseEngine,
+    // The inbound-call resolver webhook is NOT an agent field at all —
+    // VERIFY-6 (resolved, RETELL-VERIFY): confirmed via retell-typescript-sdk
+    // that `inbound_webhook_url` only exists on the PhoneNumber resource.
+    // It's wired in `importTwilioNumberIntoRetell` (numbers.ts) instead.
     webhook_url: input.eventsWebhookUrl,
-    // VERIFY-6 (raw-types.ts): confirm whether the inbound-call resolver
-    // webhook is configured per-agent or per-phone-number in the current
-    // API — wiring it here optimistically as a per-agent field.
-    inbound_webhook_url: input.inboundWebhookUrl,
   };
 
   const agentRaw = input.existingProviderAgentId
@@ -101,32 +107,34 @@ export async function createOrUpdateRetellAgent(
     });
   }
 
-  return { providerAgentId: agentParsed.data.agent_id, providerLlmId: flowId };
+  return {
+    providerAgentId: agentParsed.data.agent_id,
+    providerLlmId: flowId,
+    version: agentParsed.data.version,
+  };
 }
 
+/**
+ * VERIFY-6 (resolved, RETELL-VERIFY): `POST /publish-agent-version/{id}`
+ * REQUIRES a `{version: number, ...}` body (confirmed via
+ * `retell-typescript-sdk`'s `AgentPublishParams` — there is no "publish
+ * whatever's latest draft" shorthand) and returns `void` (confirmed via
+ * `Agent.publish`'s own return type) — no response body to parse. The
+ * caller must supply `input.version` (from `CreateOrUpdateAgentResult`, or a
+ * fresh `GET /get-agent/{id}` for an agent this process didn't just
+ * create/update).
+ */
 export async function publishRetellAgentVersion(
   client: RetellClient,
   input: PublishAgentVersionInput,
 ): Promise<PublishAgentVersionResult> {
-  const raw = await client.request(
-    "POST",
-    `/publish-agent-version/${input.providerAgentId}`,
-    undefined,
-  );
-
-  const parsed = zRetellPublishAgentVersionResponse.safeParse(raw);
-  if (!parsed.success) {
-    throw new VoiceProviderError("retell publish-agent-version returned an unexpected shape", {
-      code: "validation",
-      provider: "retell",
-      retryable: false,
-      cause: parsed.error,
-    });
-  }
+  await client.request("POST", `/publish-agent-version/${input.providerAgentId}`, {
+    version: input.version,
+  });
 
   return {
-    providerAgentId: parsed.data.agent_id,
-    version: parsed.data.version,
+    providerAgentId: input.providerAgentId,
+    version: input.version,
     publishedAt: new Date().toISOString(),
   };
 }

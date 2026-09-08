@@ -27,7 +27,13 @@ export function compileSinglePrompt(
     name: tool.name,
     description: tool.description,
     url: toolWebhookUrl,
-    parameters: tool.parameters,
+    // `properties` is REQUIRED per retell-typescript-sdk's `CustomTool.
+    // Parameters` — default an omitted one to `{}` (RETELL-VERIFY).
+    parameters: {
+      type: "object",
+      properties: tool.parameters.properties ?? {},
+      ...(tool.parameters.required !== undefined ? { required: tool.parameters.required } : {}),
+    },
   }));
 
   const sections: string[] = [template.disclosure_line];

@@ -5,23 +5,33 @@
  * nodes; model cannot invent prices/menu items/rates — tool-backed nodes
  * only").
  *
- * Conventions this compiler owns (VERIFY-8, compiler/types.ts):
+ * Conventions this compiler owns (VERIFY-8, compiler/types.ts — RESOLVED,
+ * RETELL-VERIFY):
  * - The FIRST declared state (`template.states[0]`) is the entry node — its
  *   `id` becomes `start_node_id`, and `disclosure_line` is prepended
  *   verbatim to its instruction text (G1/G2 — "injected verbatim into every
  *   compiled greeting").
  * - Each `AgentState` becomes one `RetellConversationNode`; each
  *   `Transition` becomes one edge on its `from` node.
- * - `global_intents` with `reachable_from: "any"` mark their TARGET node
- *   `global_node: true` (Retell's global-node interrupt mechanism); a
- *   scoped `reachable_from` list instead adds an explicit edge from each
- *   listed state, so the escape is structurally present either way — never
+ * - `global_intents` with `reachable_from: "any"` set their TARGET node's
+ *   `global_node_setting: {condition}` (Retell's global-node interrupt
+ *   mechanism — confirmed an OBJECT with a required `condition` string, not
+ *   the previously-assumed bare `global_node: true` boolean); a scoped
+ *   `reachable_from` list instead adds an explicit edge from each listed
+ *   state, so the escape is structurally present either way — never
  *   model-discretionary (SYSTEM_DESIGN §4.1).
- * - A state's `allowed_tools` entries that don't match a declared
- *   `CanonicalTool` name are silently dropped from `tool_ids` (the
- *   template-structure Zod schema in canonical-types already rejects this
- *   case before compilation is ever reached, so this is defense-in-depth,
- *   not the primary guard).
+ * - A state's `allowed_tools` is NOT lowered to any per-node field anymore.
+ *   Confirmed (RETELL-VERIFY) that a plain `ConversationNode` has no
+ *   `tool_ids`/tool-scoping field at all — every node has access to every
+ *   tool declared in the flow's top-level `tools[]`; there is no hard
+ *   per-node restriction mechanism (`SubagentNode` has one, but this
+ *   compiler doesn't emit that node type). This is a genuine gap against
+ *   SYSTEM_DESIGN §4.1's "tool-backed nodes only... model cannot invent"
+ *   goal — logged in docs/BUILD_NOTES.md (RETELL-VERIFY) rather than
+ *   silently redesigned (CLAUDE.md Rule 4); `allowed_tools` still exists on
+ *   the canonical `AgentState` type for other compile targets (multi_prompt
+ *   DOES support real per-state tool scoping) and for future use if this
+ *   flow is ever restructured around `SubagentNode`.
  */
 
 import type { AgentTemplate } from "@heyloo/canonical-types";
@@ -40,9 +50,15 @@ export function compileConversationFlow(
     name: tool.name,
     description: tool.description,
     url: toolWebhookUrl,
-    parameters: tool.parameters,
+    // `properties` is REQUIRED per retell-typescript-sdk's `CustomTool.
+    // Parameters` even though the canonical `JsonSchemaObject` allows
+    // omitting it for template-authoring convenience — default to `{}`.
+    parameters: {
+      type: "object",
+      properties: tool.parameters.properties ?? {},
+      ...(tool.parameters.required !== undefined ? { required: tool.parameters.required } : {}),
+    },
   }));
-  const knownToolNames = new Set(tools.map((t) => t.name));
 
   const nodesById = new Map<string, RetellConversationNode>();
   for (const state of template.states) {
@@ -52,7 +68,6 @@ export function compileConversationFlow(
       name: state.name,
       instruction: { type: "prompt", text: state.prompt_fragment },
       edges: [],
-      tool_ids: state.allowed_tools.filter((t) => knownToolNames.has(t)),
     });
   }
 
@@ -82,6 +97,7 @@ export function compileConversationFlow(
 
   const flow: RetellConversationFlowRequest = {
     start_node_id: startNodeId,
+    start_speaker: "agent",
     nodes: [...nodesById.values()],
     tools,
   };
@@ -100,7 +116,7 @@ function applyGlobalIntents(
     if (!targetNode) continue; // guarded upstream by zAgentTemplate's structural validation
 
     if (globalIntent.reachable_from === "any") {
-      targetNode.global_node = true;
+      targetNode.global_node_setting = { condition: globalIntent.description };
       continue;
     }
 
