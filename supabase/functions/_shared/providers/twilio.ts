@@ -99,23 +99,41 @@ export async function updateIncomingPhoneNumberVoiceUrl(
 
 const TWILIO_MESSAGING_BASE_URL = "https://messaging.twilio.com/v1";
 
+/**
+ * VERIFY-confirmed (docs/VERIFY.md, `twilio` npm SDK v6.1.0's own
+ * `lib/base/RequestClient.js`): Twilio's form-encoded REST API serializes
+ * array-valued params as the SAME key repeated once per value
+ * (`qs.stringify(data, {arrayFormat: "repeat"})`), e.g.
+ * `MessageSamples=a&MessageSamples=b`, NOT an indexed-suffix convention
+ * (`SampleMessage1`, `SampleMessage2`, ...) — that indexed form was this
+ * build's original (wrong) guess, fixed here. `URLSearchParams` supports
+ * this natively via repeated `.append()` calls for the same key.
+ */
 async function twilioMessagingRequest(
   fetchImpl: TwilioFetch,
   accountSid: string,
   authToken: string,
   path: string,
-  params: Record<string, string>,
+  params: Record<string, string | string[]>,
 ): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const body = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (Array.isArray(value)) {
+      for (const v of value) body.append(key, v);
+    } else {
+      body.append(key, value);
+    }
+  }
   const res = await fetchImpl(`${TWILIO_MESSAGING_BASE_URL}${path}`, {
     method: "POST",
     headers: {
       authorization: basicAuthHeader(accountSid, authToken),
       "content-type": "application/x-www-form-urlencoded",
     },
-    body: new URLSearchParams(params).toString(),
+    body: body.toString(),
   });
-  const body = await res.json().catch(() => undefined);
-  return { ok: res.ok, status: res.status, body };
+  const responseBody = await res.json().catch(() => undefined);
+  return { ok: res.ok, status: res.status, body: responseBody };
 }
 
 /** POST /v1/Services — a Messaging Service is the unit A2P campaigns
@@ -194,7 +212,13 @@ export async function getBrandRegistration(
  * `a2p_status='pending_verification'` until TCR vets it (1-5 business
  * days). `PrivacyPolicyUrl`/`TermsAndConditionsUrl` are required as of the
  * documented 2026-06-30 Twilio campaign-registration change (both must
- * resolve to the platform's own hosted policy pages, not the tenant's). */
+ * resolve to the platform's own hosted policy pages, not the tenant's).
+ * `MessageSamples` (VERIFY-confirmed field name, see `twilioMessagingRequest`
+ * docstring) is a REQUIRED param per the official SDK's own generated
+ * client (`params["messageSamples"]` throws if missing) — this build's
+ * earlier `SampleMessage1`/`SampleMessage2` guess sent no field Twilio
+ * actually recognizes at all, meaning `sampleMessages` was silently dropped
+ * on every real call; fixed to the confirmed name. */
 export async function createA2pCampaign(
   fetchImpl: TwilioFetch,
   accountSid: string,
@@ -212,7 +236,7 @@ export async function createA2pCampaign(
     sampleMessages: string[];
   },
 ) {
-  const body: Record<string, string> = {
+  const body: Record<string, string | string[]> = {
     BrandRegistrationSid: params.brandRegistrationSid,
     Description: params.description,
     MessageFlow: params.messageFlow,
@@ -221,10 +245,8 @@ export async function createA2pCampaign(
     HasEmbeddedPhone: String(params.hasEmbeddedPhone),
     PrivacyPolicyUrl: params.privacyPolicyUrl,
     TermsAndConditionsUrl: params.termsAndConditionsUrl,
+    MessageSamples: params.sampleMessages,
   };
-  for (const [i, sample] of params.sampleMessages.entries()) {
-    body[`SampleMessage${i + 1}`] = sample;
-  }
   return twilioMessagingRequest(
     fetchImpl,
     accountSid,

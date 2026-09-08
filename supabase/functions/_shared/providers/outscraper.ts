@@ -4,16 +4,22 @@
  * Apollo is weak (restaurants, motels — VERTICAL_RESEARCH.md's finding that
  * these owners aren't well represented on Apollo/LinkedIn).
  *
- * VERIFY (docs/VERIFY.md): `docs.outscraper.com` was not reachable to
- * WebFetch in this build; endpoint path, auth header, and the async
- * request/poll shape below come from WebSearch-indexed summaries of
- * Outscraper's own current docs (Rule 1 item 2's documented fallback).
- * Confirmed high-confidence: `X-API-KEY` header auth, async-by-default with
- * a `results_location` poll URL, ~4-hour result availability window. Lower
- * confidence: the exact query-string parameter names below (`query`,
- * `limit`, `async`) — re-verify against a live account before relying on
- * this for real spend (~$3/1,000 records past a free tier per
- * API_AND_FLOWS.md A.5).
+ * VERIFY (docs/VERIFY.md): RESOLVED against the official `outscraper` npm
+ * SDK (v2.2.2, `github.com/outscraper/outscraper-node`) — its own
+ * `googleMapsSearchV3` confirms `GET /maps/search-v3`, `X-API-KEY` header
+ * auth, `query`/`async` param names, and the `results_location` async-poll
+ * pattern. Two of this build's original guesses were WRONG and are fixed
+ * here: (1) the limit param is `organizationsPerQueryLimit`, not `limit`
+ * (this build's original name matched nothing Outscraper's API recognizes,
+ * so the parameter was silently ignored); (2) the poll's terminal-success
+ * status string is `"Completed"` (confirmed by the SDK's own
+ * "Async Google Maps Reviews.md" usage example: `status.status ===
+ * 'Completed'`, with `"Running"`/`"Failed"` as the other documented
+ * values), not `"Success"`/`"Finished"` as this build originally guessed —
+ * meaning the poller would never have detected a finished job in
+ * production. `"Failed"` is now treated as a terminal (non-retryable,
+ * empty-result) outcome too, rather than being retried until the poll
+ * attempt budget silently runs out.
  */
 
 const OUTSCRAPER_BASE_URL = "https://api.app.outscraper.com";
@@ -52,7 +58,7 @@ export async function startGoogleMapsSearch(
   query: string,
   limit = 50,
 ): Promise<OutscraperStartResult> {
-  const url = `${OUTSCRAPER_BASE_URL}/maps/search-v3?query=${encodeURIComponent(query)}&limit=${limit}&async=true`;
+  const url = `${OUTSCRAPER_BASE_URL}/maps/search-v3?query=${encodeURIComponent(query)}&organizationsPerQueryLimit=${limit}&async=true`;
   const res = await fetchImpl(url, { method: "GET", headers: { "X-API-KEY": apiKey } });
   if (!res.ok) return { ok: false, status: res.status };
   const body = (await res.json().catch(() => undefined)) as
@@ -91,11 +97,15 @@ export async function pollGoogleMapsResults(
   const body = (await res.json().catch(() => undefined)) as
     | { status?: string; data?: OutscraperPlace[][] }
     | undefined;
-  const finished = body?.status === "Success" || body?.status === "Finished";
+  // Confirmed terminal values (official SDK's own doc example): "Completed"
+  // (success, data present) and "Failed" (terminal, no data) — anything
+  // else ("Running", or an absent status) means keep polling.
+  const succeeded = body?.status === "Completed";
+  const failed = body?.status === "Failed";
   return {
     ok: true,
     status: res.status,
-    finished,
-    places: finished ? (body?.data?.flat() ?? []) : [],
+    finished: succeeded || failed,
+    places: succeeded ? (body?.data?.flat() ?? []) : [],
   };
 }

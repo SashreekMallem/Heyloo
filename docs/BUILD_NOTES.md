@@ -2080,3 +2080,134 @@ constraints T1-T4 already logged)**
   practice base-URL pattern against a live sandbox account — the single
   highest-risk pair of VERIFY items this task leaves open (see
   `docs/VERIFY.md`'s T7 section for the full list).
+
+## PROVIDERS-VERIFY — verify/fix every non-Retell provider integration
+## against official SDK source (packages/adapters/{square,google-calendar},
+## supabase/functions/_shared/providers/*)
+
+Technique: `docs.*` vendor sites stayed egress-blocked (same experience
+every prior task logged), but `registry.npmjs.org` and
+`raw.githubusercontent.com` were BOTH fully reachable — so every finding
+below traces to real, downloaded official-package SOURCE CODE (npm
+tarballs; one GitHub repo fetched file-by-file via raw.githubusercontent
+for Apollo, since `apolloio/n8n-nodes-apollo`'s own integrations team wrote
+it), not WebSearch summaries or memory. Full per-provider detail
+(confidence, exact source file/line, what was tried when nothing
+authoritative existed) is in `docs/VERIFY.md`'s new "PROVIDERS-VERIFY pass
+(2026-09-08)" section — this entry lists only what actually changed.
+
+**Fixes applied (real bugs, not just confidence-raising)**:
+
+1. **Square catalog sync** (`packages/adapters/square/src/catalog.ts`):
+   `syncCatalog`'s `enabled_location_ids` request param on `POST /v2/
+   catalog/search` matched no field that endpoint actually has (confirmed
+   against the official `square` SDK's own `SearchCatalogObjectsRequest`
+   type — that param belongs only to the different `search-catalog-items`
+   endpoint) — `locationIds` filtering was silently a no-op in production.
+   Fixed by post-filtering on `present_at_all_locations`/
+   `present_at_location_ids`/`absent_at_location_ids` instead (real fields
+   every catalog object carries). New tests in `catalog.test.ts`.
+2. **Square API version pin** (`packages/adapters/square/src/client.ts` +
+   `supabase/functions/_shared/providers/square.ts`): bumped
+   `SQUARE_API_VERSION` from the placeholder `2026-01-22` to `2026-08-19`
+   — the official SDK's own current generated-client default.
+3. **PayPal base URL** (`supabase/functions/_shared/providers/paypal.ts`):
+   changed `api-m.(sandbox.)paypal.com` -> `api.(sandbox.)paypal.com` (no
+   `-m`) to match the official `@paypal/payouts-sdk`'s
+   `paypal_environment.js` exactly. Flagged in VERIFY.md as
+   lower-certainty than every other fix here (that SDK hasn't been
+   republished since 2021) — worth one live sandbox OAuth call to be sure
+   before the first real payout batch. Test fixture in
+   `job-referral-payouts/handler.test.ts` updated to match.
+4. **Twilio A2P campaign sample messages**
+   (`supabase/functions/_shared/providers/twilio.ts`): the real Twilio
+   field is `MessageSamples` (required, array serialized as a REPEATED
+   form key), confirmed against the official `twilio` npm SDK's own
+   generated client and its `qs.stringify({arrayFormat: "repeat"})`
+   request-building source — this build's original `SampleMessage1`/
+   `SampleMessage2`/... indexed-suffix guess matched no field Twilio
+   recognizes at all, so every real A2P campaign registration up to now
+   would have silently registered with ZERO sample messages.
+   `twilioMessagingRequest` reworked to accept `Record<string,
+   string|string[]>` and append repeated keys for arrays.
+5. **Apollo** (`supabase/functions/_shared/providers/apollo.ts`) — three
+   fixes against Apollo's OWN `apolloio/n8n-nodes-apollo` connector source:
+   people search endpoint `/mixed_people/search` (not `/mixed_people/
+   api_search` as this build had guessed from a WebSearch summary), the
+   people-search domain filter field `organization_domains` (not
+   `q_organization_domains_list`), and the organization bulk-enrich body
+   `{domains: [...]}` (not `{details: [{domain}]}`).
+6. **Outscraper** (`supabase/functions/_shared/providers/outscraper.ts`)
+   — two fixes against the official `outscraper` npm SDK's own request-
+   building source and bundled usage example: the result-count limit
+   param is `organizationsPerQueryLimit` (this build's `limit` matched
+   nothing and was silently ignored); the poll's terminal-success status
+   string is `"Completed"` (this build's `"Success"`/`"Finished"` guess
+   matched neither of the SDK's own documented values `"Running"`/
+   `"Completed"`/`"Failed"`, meaning the poller would NEVER have detected
+   a finished job in production — every real lead-fetch would exhaust its
+   retry budget and return zero leads). Test fixture in
+   `api-outreach-fetch-leads/handler.test.ts` updated to match.
+7. **Smartlead campaign-status HTTP verb**
+   (`supabase/functions/_shared/providers/smartlead.ts`): `PATCH` -> `POST`
+   — every mutating call in the (unofficial but real-`axios`-client-based)
+   `smartlead-mcp-server` npm package's own Smartlead API client uses
+   POST, none uses PATCH/PUT anywhere. Test fixture in
+   `webhooks-outreach/handler.test.ts` updated to match. Two OTHER
+   Smartlead endpoints this same source disagreed with (leads-add,
+   webhook-create) were deliberately left UNCHANGED and flagged as open
+   conflicts in VERIFY.md instead of blind-switched — both sources here
+   are unofficial/community-maintained with no way to adjudicate from this
+   environment, so trading one unverified guess for another isn't a fix.
+
+**Confirmed correct, no code change** (raises confidence in docs/VERIFY.md,
+full detail there): Square webhook signature scheme + Bookings/Orders/
+Availability wire shapes + OAuth2 refresh (cross-checked against the real
+`square` SDK, including a genuine runtime cross-check of this adapter's
+signature verifier against the SDK's own `WebhooksHelper.verifySignature`
+in the new contract test); Google Calendar freeBusy/events/push-channel
+shapes end to end (zero mismatches found against the official `googleapis`
+SDK); Twilio's webhook signature algorithm and every non-A2P-sample-message
+REST shape; Anthropic's `claude-haiku-4-5`/`claude-sonnet-5` model ids and
+the Message Batches contract (reconfirmed against this session's own
+`claude-api` skill, cached more recently than this build's original pass).
+
+**Still flagged, no authoritative source found (tried, documented in
+VERIFY.md)**: Shopmonkey (only npm hit is an empty Pipedream scaffold
+stub; several GitHub org/repo guesses all 404; the API host itself is
+blocked by the same egress policy as the docs site) and ezyVet (zero npm
+hits at all; several GitHub repo guesses all 404). Every existing VERIFY
+item for both stands exactly as previously documented — this task did not
+invent a shape for either.
+
+**Devdependencies added** (packages/adapters/* ONLY, never runtime, never
+outside adapters, per this task's own instructions): `square@45.1.0` in
+`packages/adapters/square/package.json`, `googleapis@178.0.0` in
+`packages/adapters/google-calendar/package.json` — each paired with a new
+compile-time (+ where practical, runtime) contract test,
+`packages/adapters/{square,google-calendar}/src/contract.test.ts`. No SDK
+dependency was added to any `_shared/providers/*.ts` Deno file (verified by
+diff only, per this task's own instructions) and no adapter for a provider
+without its own `packages/adapters/*` package (Twilio/PayPal/Apollo/
+Outscraper/Smartlead/Anthropic) got a new package — those remain
+Deno-`fetch`-only, matching every prior task's established pattern.
+
+**Root gates**: `pnpm typecheck`, `pnpm --filter @heyloo/adapter-square
+test`, and `pnpm --filter @heyloo/adapter-google-calendar test` all green;
+every test in every file this task touched passes (confirmed by running
+`_shared/providers`, `webhooks-outreach`, `api-outreach-fetch-leads`,
+`job-referral-payouts`, `api-a2p-register`, and both adapter packages'
+suites explicitly). `pnpm typecheck`/`pnpm test` run at the FULL monorepo
+root surfaced pre-existing failures confined entirely to
+`packages/adapters/retell/**`, `supabase/functions/_shared/compiler/
+template-compiler.*`, `supabase/functions/admin/handler.ts`, and related
+Retell-adjacent files — all from a PARALLEL Retell-verification agent's
+own concurrent, in-progress work in this same shared working directory
+(confirmed via `git status`/`git diff` showing those exact files already
+modified before this task touched anything, and via a `git stash`/`git
+stash pop` round-trip used only to isolate this task's own changes for
+testing — nothing was discarded). This task's own explicit instruction is
+"do NOT touch packages/adapters/retell or _shared/providers/retell.ts or
+voice-* functions," so those failures are left exactly as found, matching
+the established precedent T4/T6/T7 each already logged for the identical
+concurrent-WIP situation.

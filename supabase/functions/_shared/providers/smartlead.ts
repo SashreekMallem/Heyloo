@@ -142,10 +142,26 @@ export async function createWebhook(
 
 export type SmartleadCampaignStatus = "START" | "PAUSED" | "STOPPED";
 
-/** `PATCH /campaigns/{id}/status` — used by the auto-pause rule
+/** `POST /campaigns/{id}/status` — used by the auto-pause rule
  * (BACKEND_SPEC §1.8, >0.3% complaint rate, CAN-SPAM hard rule) so a local
  * `campaigns.status = 'paused'` write is backed by an actual stop-sending
- * call at the provider, never just a local-DB-only flag. */
+ * call at the provider, never just a local-DB-only flag.
+ *
+ * VERIFY (docs/VERIFY.md): fixed from this build's original `PATCH` guess
+ * to `POST`. Cross-checked against the `smartlead-mcp-server` npm package
+ * (a community MCP server wrapping the real Smartlead API with a plain
+ * axios client) — every one of its mutating Smartlead calls (campaign
+ * create, schedule/settings/status update, leads add, webhook upsert) uses
+ * `apiClient.post(...)`; none uses PATCH or PUT anywhere in that codebase.
+ * That's a real API client's consistent, cross-endpoint verb choice, not a
+ * single-endpoint guess, so it's treated as stronger evidence than this
+ * build's original page-title-level assumption for the verb specifically.
+ * (That same source disagrees with this file's `addLeadsToCampaign`/
+ * `createWebhook` on their exact path and body shape — those are left
+ * unchanged, flagged as a still-open conflict in docs/VERIFY.md, since two
+ * unofficial sources disagreeing on a body shape is weaker grounds for a
+ * blind switch than a consistent verb pattern across one whole client.)
+ */
 export async function updateCampaignStatus(
   fetchImpl: SmartleadFetch,
   apiKey: string,
@@ -153,7 +169,7 @@ export async function updateCampaignStatus(
   status: SmartleadCampaignStatus,
 ): Promise<{ ok: boolean; status: number }> {
   const res = await fetchImpl(withKey(`/campaigns/${externalCampaignId}/status`, apiKey), {
-    method: "PATCH",
+    method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ status }),
   });

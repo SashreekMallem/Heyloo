@@ -1,16 +1,30 @@
 /**
  * Minimal PayPal REST client via plain `fetch` (referral payout batches —
- * BACKEND_SPEC §8 "Referral qualification + payout batch"). VERIFY
- * (docs/VERIFY.md): OAuth + Payouts endpoint shapes are the long-stable
- * PayPal REST v1 API (egress-blocked in this build); confirm sandbox vs
- * live base URL selection and current Payouts API field names before the
- * first real batch.
+ * BACKEND_SPEC §8 "Referral qualification + payout batch").
+ *
+ * VERIFY (docs/VERIFY.md): OAuth2 client-credentials grant (Basic auth of
+ * client_id:client_secret + `grant_type=client_credentials` form body) and
+ * the Payouts request/response field names below (`sender_batch_header`,
+ * `sender_batch_id`, `email_subject`, `items[].{recipient_type, amount:
+ * {value, currency}, receiver, note, sender_item_id}`) are CONFIRMED
+ * against the official `@paypal/payouts-sdk` npm package's own source
+ * (`paypal/Payouts-NodeJS-SDK` on GitHub — real request-builder code and
+ * README example, not docs prose; `developer.paypal.com` itself was
+ * egress-blocked here). Base URL fixed from this build's original
+ * `api-m.(sandbox.)paypal.com` guess to `api.(sandbox.)paypal.com` (no
+ * `-m`) to match that SDK's `paypal_environment.js` exactly — flagged as
+ * lower-certainty than the other confirmations here since that SDK package
+ * hasn't been republished since 2021 and PayPal is independently known to
+ * have introduced an `api-m.paypal.com` host for some newer REST surfaces;
+ * a live sandbox OAuth token call against this host is still worth doing
+ * before the first real payout batch, in case PayPal has since retired the
+ * older bare `api.paypal.com` host for this v1 endpoint specifically.
  */
 
 export type PayPalFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 export function paypalBaseUrl(env: "sandbox" | "live"): string {
-  return env === "live" ? "https://api-m.paypal.com" : "https://api-m.sandbox.paypal.com";
+  return env === "live" ? "https://api.paypal.com" : "https://api.sandbox.paypal.com";
 }
 
 export async function getAccessToken(

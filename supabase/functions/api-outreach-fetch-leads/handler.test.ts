@@ -162,7 +162,7 @@ describe("handleFetchLeads (outscraper)", () => {
         ok: true,
         status: 200,
         json: async () => ({
-          status: "Success",
+          status: "Completed",
           data: [[{ name: "Motel 6", phone: "+15551112222" }]],
         }),
       } as unknown as Response;

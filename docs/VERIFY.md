@@ -497,3 +497,316 @@ traces to memory. This extends (does not replace) the existing
   consumer (a CLI tool, a non-Deno service, or a future admin-cockpit
   "sync catalog now" action's test suite); the `_shared/providers/*.ts`
   versions are what actually runs in production today.
+
+## PROVIDERS-VERIFY pass (2026-09-08) — resolution log
+
+Per CLAUDE.md Rule 1 + this task's own instruction: `docs.*` sites remained
+egress-blocked (`developer.squareup.com`, `developers.google.com`,
+`developer.paypal.com`, `www.twilio.com`, `docs.apollo.io`,
+`docs.outscraper.com`, `docs.smartlead.ai`, `shopmonkey.dev`,
+`developers.ezyvet.com` all returned `connect_rejected`/`EGRESS_BLOCKED`),
+but `registry.npmjs.org` and `raw.githubusercontent.com` were BOTH fully
+reachable — every item below traces to actual official-package source code
+(downloaded npm tarballs, or files fetched directly from an `apolloio`-org
+GitHub repo via `raw.githubusercontent.com`), not memory or WebSearch
+summaries. This section is the audit trail; inline VERIFY items above are
+left as-is (not rewritten in place) except where a fix is noted here.
+Retell items (VERIFY-1 through VERIFY-8, and every `## Retell` table row)
+are explicitly OUT OF SCOPE — a parallel agent owns those.
+
+### Square — RESOLVED, high confidence
+
+Source: official `square` npm SDK, v45.1.0 (`square-nodejs-sdk`, Fern-
+generated from Square's own API definition) — downloaded tarball, read
+`api/types/*.d.ts` + `serialization/types/*.js` (wire field names) +
+`wrapper/WebhooksHelper.js` (real signature-verification source, not just
+types) directly.
+
+- **Webhook signature scheme**: CONFIRMED byte-for-byte —
+  `HMAC-SHA256(notificationUrl + rawBody)`, base64, header
+  `x-square-hmacsha256-signature`. A new contract test
+  (`packages/adapters/square/src/contract.test.ts`) round-trips this
+  adapter's `verifySquareWebhookSignature` against the SDK's OWN
+  `WebhooksHelper.verifySignature` at runtime — both agree. No code change;
+  confidence raised from "Low — carried forward from legacy Clover notes"
+  to "Confirmed against official SDK source."
+- **Webhook envelope** (`{merchant_id, type, event_id, data: {type, id,
+  object}}`): CONFIRMED — matches `BookingCreatedEvent`/`OrderCreatedEvent`/
+  `OauthAuthorizationRevokedEvent` exactly. One nuance found: the inner
+  `data.object` nests differently per event family (`{booking: {...}}` for
+  bookings, `{order_created: {...}}`/`{order_updated: {...}}` — a LEAN
+  summary object, not the full Order — for orders); harmless here since
+  this adapter stores `data.object` opaquely as `changes` rather than
+  destructuring specific fields.
+- **Bookings** (`POST /v2/bookings` body/response) and **Orders**
+  (`POST /v2/orders` body/response): CONFIRMED exact field-for-field —
+  `location_id`, `start_at`, `customer_note`, `appointment_segments[].
+  team_member_id/service_variation_id/service_variation_version`,
+  `line_items[].base_price_money`, `fulfillments[].{PICKUP,DELIVERY}`,
+  top-level `idempotency_key`, response `{booking:{id,status}}`/
+  `{order:{id}}`.
+- **Availability search** (`POST /v2/bookings/availability/search`):
+  CONFIRMED exact — `query.filter.{start_at_range,location_id,
+  segment_filters[].service_variation_id}`, response
+  `{availabilities:[{start_at,location_id,appointment_segments}]}`.
+- **OAuth2 token refresh** (`POST /oauth2/token`): CONFIRMED exact —
+  `client_id`/`client_secret`/`grant_type`/`refresh_token` request,
+  `access_token`/`refresh_token`/`expires_at`/`merchant_id` response,
+  including the specific claim "the SAME refresh token is returned on a
+  refresh_token grant" (verbatim in the SDK's own doc comment).
+- **FIXED — Catalog search location filter (`syncCatalog`)**: this build's
+  `enabled_location_ids` request param on `POST /v2/catalog/search` was
+  WRONG — that endpoint has no location-filter field at all (confirmed
+  absent from the SDK's `SearchCatalogObjectsRequest` type);
+  `enabled_location_ids` belongs only to the different `POST /v2/catalog/
+  search-catalog-items` endpoint this adapter doesn't call. Fixed by
+  removing the bogus param and post-filtering matched items via
+  `present_at_all_locations`/`present_at_location_ids`/
+  `absent_at_location_ids` (fields every `CatalogObjectBase` genuinely
+  carries, per the SDK's own type) — `packages/adapters/square/src/
+  catalog.ts`, new tests in `catalog.test.ts`.
+- **FIXED — `Square-Version` header**: bumped from this build's placeholder
+  `2026-01-22` to `2026-08-19` — the exact default the SDK's own generated
+  client sends today. Re-bump whenever `square` is next updated in
+  `package.json`. Fixed in both `packages/adapters/square/src/client.ts`
+  and `supabase/functions/_shared/providers/square.ts`.
+- **Devdependency added**: `square@45.1.0` in `packages/adapters/square/
+  package.json` devDependencies ONLY (no runtime import anywhere under
+  `src/index.ts`'s import graph) + a compile-time/runtime contract test,
+  `packages/adapters/square/src/contract.test.ts`.
+
+### Google Calendar — RESOLVED, high confidence, NO code changes needed
+
+Source: official `googleapis` npm SDK, v178.0.0 — `build/src/apis/
+calendar/v3.d.ts` (the generated `calendar_v3` namespace).
+
+Every shape this adapter relies on was independently confirmed exact, with
+zero mismatches found: `freeBusy` (`timeMin`/`timeMax`/`items[].id` request,
+`calendars[id].busy[].{start,end}` response — `Schema$TimePeriod`'s own doc
+comment: "end (exclusive)"/"start (inclusive)"), `events.insert`
+(`start.dateTime`/`end.dateTime`, and the event-id charset+length rule this
+adapter's `toGoogleEventId` targets — `Schema$Event.id`'s doc comment
+states the EXACT regex this build had flagged as unconfirmed: "lowercase
+letters a-v and digits 0-9... length... between 5 and 1024 characters"),
+and the push-notification `Channel` resource (`id`/`type: "web_hook"`/
+`address`/`token`/`params`, `expiration` — confirmed "Unix timestamp, in
+milliseconds", matching this adapter's own docstring claim exactly).
+Devdependency added: `googleapis@178.0.0` in `packages/adapters/
+google-calendar/package.json` devDependencies ONLY, plus a compile-time
+contract test, `packages/adapters/google-calendar/src/contract.test.ts`.
+
+### PayPal — PARTIALLY RESOLVED
+
+Source: official `@paypal/payouts-sdk` npm package, v1.1.1
+(`paypal/Payouts-NodeJS-SDK`) — last published 2021, but still the
+authoritative source this task's own instructions name.
+
+- **OAuth2 client-credentials grant + Payouts body shape**: CONFIRMED exact
+  — `POST /v1/oauth2/token` with HTTP Basic auth (`clientId:clientSecret`
+  base64) + `grant_type=client_credentials` form body (this build's
+  existing implementation already matched, unchanged); Payouts body
+  `{sender_batch_header: {sender_batch_id, email_subject, recipient_type,
+  ...}, items: [{note, amount:{currency,value}, receiver, sender_item_id}]}`
+  — this build's existing `createPayoutBatch` already matched exactly
+  (per-item `recipient_type` this build sets is ALSO independently
+  supported per Payouts' own item schema, not a conflict with the
+  batch-header-level field the SDK's README example shows).
+- **FIXED (lower-certainty) — base URL**: changed from `api-m.(sandbox.)
+  paypal.com` to `api.(sandbox.)paypal.com` (no `-m`) to match the SDK's
+  `paypal_environment.js` exactly. Flagged explicitly: this SDK package
+  hasn't been republished since 2021, and PayPal is independently known to
+  have introduced an `api-m.paypal.com` host for some newer REST surfaces
+  — a live sandbox OAuth token call against `api.sandbox.paypal.com` is
+  still worth doing before the first real payout batch to rule out the
+  older host having been retired for this specific v1 endpoint.
+  `supabase/functions/_shared/providers/paypal.ts` + the one test fixture
+  referencing this URL (`job-referral-payouts/handler.test.ts`).
+
+### Twilio — RESOLVED, high confidence
+
+Source: official `twilio` npm SDK, v6.1.0 (`twilio-node`).
+
+- **`X-Twilio-Signature` algorithm**: CONFIRMED byte-for-byte against the
+  SDK's own `lib/webhooks/webhooks.js` (`getExpectedTwilioSignature`) —
+  full URL + params sorted by key, each `key+value` concatenated directly
+  (no separator) onto the URL, HMAC-SHA1(authToken), base64. Matches
+  `supabase/functions/_shared/twilio-signature.ts` exactly — no code
+  change, confidence raised from High (WebSearch-based) to Confirmed
+  (source-code-based).
+- **REST paths** (`/Accounts/{Sid}/Messages.json` with `To`/`From`/`Body`;
+  `/Accounts/{Sid}/IncomingPhoneNumbers.json` with `PhoneNumber`/
+  `VoiceUrl`/`FriendlyName`): CONFIRMED exact.
+- **A2P Brand/Campaign** (`messaging.twilio.com/v1/a2p/BrandRegistrations`
+  with `CustomerProfileBundleSid`/`A2PProfileBundleSid`/`BrandType`;
+  `/v1/Services/{Sid}/Compliance/Usa2p` with `BrandRegistrationSid`/
+  `Description`/`MessageFlow`/`UsAppToPersonUsecase`/`HasEmbeddedLinks`/
+  `HasEmbeddedPhone`/`PrivacyPolicyUrl`/`TermsAndConditionsUrl`): CONFIRMED
+  exact.
+- **FIXED — A2P campaign sample messages**: this build's original
+  `SampleMessage1`/`SampleMessage2`/... indexed-suffix guess matched NO
+  field Twilio's real API recognizes. The confirmed field is
+  `MessageSamples` (REQUIRED — the SDK throws if omitted), an array
+  serialized as the SAME key repeated once per value
+  (`qs.stringify({arrayFormat: "repeat"})`, confirmed in the SDK's own
+  `lib/base/RequestClient.js`) — e.g. `MessageSamples=a&MessageSamples=b`,
+  not indexed suffixes. This means every real `createA2pCampaign` call in
+  this build up to now would have silently sent NO sample messages at all.
+  Fixed in `supabase/functions/_shared/providers/twilio.ts`
+  (`twilioMessagingRequest` now accepts `Record<string, string|string[]>`
+  and appends repeated keys for array values).
+- **FIXED — campaign-status HTTP verb** (a different, Smartlead-adjacent
+  finding logged under Smartlead below, N/A here — Twilio was already POST
+  everywhere it needed to be).
+
+### Apollo — RESOLVED (2 shape fixes), one endpoint corrected
+
+Source: `apolloio/n8n-nodes-apollo` — Apollo's OWN integrations team's
+GitHub repo (fetched directly via `raw.githubusercontent.com`,
+`nodes/Apollo/Apollo.node.ts` + `credentials/ApolloApi.credentials.ts`).
+First-party Apollo source, not a community/third-party connector.
+
+- **FIXED — People Search endpoint**: this build's original
+  `POST /mixed_people/api_search` guess (justified at the time by a
+  WebSearch summary claiming the plain `/search` path "403s on
+  non-enterprise plans") is NOT what Apollo's own connector calls — it
+  uses `POST /mixed_people/search` and never touches an `api_search`
+  variant anywhere in its source. Fixed to `/mixed_people/search`,
+  superseding the earlier indexed-summary-based claim.
+- **FIXED — People Search filter field**: `organization_domains`, not
+  `q_organization_domains_list` as this build originally guessed.
+- **FIXED — Organization bulk-enrich body**: a flat `{domains: [...]}`
+  array of domain strings, not `{details: [{domain}, ...]}` as this build
+  originally guessed.
+- **CONFIRMED unchanged**: `X-Api-Key` header (this connector's own
+  `credentials/ApolloApi.credentials.ts`), base URL
+  `api.apollo.io/api/v1`, Organization Search endpoint/fields
+  (`POST /mixed_companies/search`, `organization_locations`).
+- **Still NOT confirmed**: response-body field names (`people`/
+  `organizations`/`pagination.total_entries`) — this connector passes the
+  raw Apollo response straight through unparsed, so it corroborates
+  nothing about response shape. Still worth a live-sandbox confirm before
+  relying on this for real spend.
+- Fixed in `supabase/functions/_shared/providers/apollo.ts`.
+
+### Outscraper — RESOLVED (2 bugs fixed)
+
+Source: official `outscraper` npm SDK, v2.2.2 (`outscraper/outscraper-node`)
+— `index.js` (real request-building source) + its own bundled
+`examples/Async Google Maps Reviews.md`.
+
+- **FIXED — result-count limit param name**: this build's `limit` query
+  param on `GET /maps/search-v3` matches NOTHING the real API expects —
+  the SDK's own `googleMapsSearchV3` sends `organizationsPerQueryLimit`
+  instead. This build's `limit` param was being silently ignored by
+  Outscraper on every real call. Fixed.
+- **FIXED — poll terminal-status value**: this build's poller checked for
+  `status === "Success"` or `"Finished"` — NEITHER value appears anywhere
+  in the SDK's own documented status vocabulary. The SDK's own bundled
+  usage example states the real values explicitly: `"Running"` (poll
+  again), `"Completed"` (success, data present), `"Failed"` (terminal
+  failure). This build's poller would NEVER have detected a finished job
+  in production — every real lead-fetch would have exhausted its retry
+  budget and returned zero leads. Fixed to check for `"Completed"`
+  (success) and `"Failed"` (now also treated as terminal, rather than
+  retried until the attempt budget silently ran out).
+- **CONFIRMED unchanged**: base URL `api.app.outscraper.com`, `X-API-KEY`
+  header, `query`/`async` param names, the async `results_location` poll
+  pattern.
+- Fixed in `supabase/functions/_shared/providers/outscraper.ts` + the one
+  test fixture asserting the old `"Success"` status
+  (`api-outreach-fetch-leads/handler.test.ts`).
+
+### Smartlead — ONE FIX, TWO NEW OPEN CONFLICTS FLAGGED (no blind guess made)
+
+Source: `smartlead-mcp-server` npm package, v1.2.1 — an UNOFFICIAL,
+community-built MCP server, but one with a real, executable `axios`-based
+API client (not just docs prose) — cross-referenced against
+`n8n-nodes-smartlead` v1.2.0 (also unofficial, more minimal) where it
+overlaps.
+
+- **FIXED — campaign-status HTTP verb**: this build's `PATCH
+  /campaigns/{id}/status` guess is very likely wrong. The MCP server's
+  entire Smartlead client — campaign create, schedule/settings/status
+  update, leads add, webhook upsert, EVERY mutating call — uses
+  `apiClient.post(...)`; none uses PATCH or PUT anywhere in that codebase.
+  That's a real API client's consistent cross-endpoint verb convention,
+  stronger evidence than this build's original page-title-level guess.
+  Fixed `PATCH` -> `POST` in `updateCampaignStatus`
+  (`supabase/functions/_shared/providers/smartlead.ts`) and the one test
+  asserting the old verb (`webhooks-outreach/handler.test.ts`).
+- **NOT changed, flagged as a genuine open conflict — leads-add endpoint**:
+  this build's `POST /campaigns/{id}/leads` + `{lead_list: [...]}` (this
+  build's own prior "Medium-high confidence... independently confirmed via
+  indexed API-reference PAGE TITLES" claim) conflicts with this MCP
+  server's `POST /campaigns/{id}/leads/bulk` + `{leads: [...]}`. Both
+  sources are unofficial/community-maintained with no way to adjudicate
+  from this environment — left UNCHANGED rather than trading one unverified
+  guess for another. Confirm against a real sandbox call before relying on
+  either.
+- **NOT changed, flagged as a genuine open conflict — webhook creation**:
+  this build's global `POST /webhook/create` (`association_type:
+  "campaign"`, `event_type_map` as a boolean map) conflicts with this MCP
+  server's per-campaign `POST /campaigns/{id}/webhooks` (`event_types` as
+  an ARRAY, not a map). Same reasoning as above — left unchanged, flagged.
+- **Corroborated (raises confidence, no code change)**: the MCP server's
+  own `WebhookEventType` enum lists exactly `EMAIL_SENT`/`EMAIL_OPEN`/
+  `EMAIL_LINK_CLICK`/`EMAIL_REPLY`/`LEAD_UNSUBSCRIBED`/
+  `LEAD_CATEGORY_UPDATED` — no distinct spam/complaint event, and no
+  `EMAIL_BOUNCE` either — independently corroborating this build's existing
+  "Smartlead spam-complaint event does not appear to exist" VERIFY note
+  (raises that from Low-medium toward Medium confidence; `EMAIL_BOUNCE`'s
+  absence here is noted but not acted on — omission from one third-party
+  enum isn't strong enough evidence to remove a harmless-if-unrecognized
+  key from this build's own event-type-map type).
+
+### Anthropic — RECONFIRMED, no code changes needed
+
+Source: this session's own `claude-api` skill (loaded fresh this pass,
+cached 2026-06-24 — more recent than this build's original T3/T8 pass).
+
+- **Model ids**: `claude-haiku-4-5` and `claude-sonnet-5` (both used by
+  this build's outreach call sites) are confirmed CURRENT, correctly-priced
+  model ids in the skill's own "Current Models" table — no drift found,
+  no change needed.
+- **Message Batches contract** (`POST /v1/messages/batches` ->
+  poll `processing_status` until `"ended"` -> stream JSONL results keyed by
+  `custom_id`, `result.type` in `succeeded`/`errored`/`canceled`/
+  `expired`): reconfirmed exactly matching this build's existing
+  `_shared/providers/anthropic.ts` implementation — no change.
+- `anthropic-version: 2023-06-01` and the Messages API envelope itself
+  were not independently re-verified this pass beyond the skill's own
+  implicit corroboration (it documents no header change) — left as
+  "presumed stable," same posture as before.
+
+### Shopmonkey — STILL FLAGGED, no authoritative source found (tried, documented)
+
+Tried, in order: (1) npm registry search for `shopmonkey`/`@shopmonkey/*`
+packages — only `@pipedream/shopmonkey` exists, and its `shopmonkey.app.mjs`
+is an empty Pipedream scaffold stub with ZERO real API calls (no endpoint
+paths, no auth wiring beyond a placeholder) — not informative. (2) Several
+GitHub org/repo name guesses (`Shopmonkey/api-docs`, `shopmonkeyus/*`,
+`ShopmonkeyUS/*`) via `raw.githubusercontent.com` — all 404, no public repo
+found under any guessed name. (3) The actual API host
+(`api.shopmonkey.cloud`) directly — blocked by the same egress policy as
+the docs site (`connect_rejected`, not merely a docs-site-specific block).
+Genuinely no authoritative source reachable from this environment — every
+existing Shopmonkey VERIFY item (auth model, base URL, endpoint shapes,
+webhook signature scheme) stands exactly as previously documented, UNCHANGED.
+
+### ezyVet — STILL FLAGGED, no authoritative source found (tried, documented)
+
+Tried: npm registry search for `ezyvet`/`ezyvet-*`/`@ezyvet/*` — zero
+packages found (search itself returned an empty result set, not just 404s
+on guessed names). Several GitHub org/repo name guesses
+(`ezyVet/api`, `ezyvet/api-client`, `ezyVet/openapi`, `ezyvet-com/api-docs`)
+via `raw.githubusercontent.com` — all 404. No authoritative source
+reachable; matches this build's own prior acknowledgment ("ezyVet:
+unlikely to have an SDK"). Every existing ezyVet VERIFY item stands exactly
+as previously documented, UNCHANGED.
+
+**Code:** fixes above live in `packages/adapters/{square,google-calendar}/
+src/*.ts` (+ new `contract.test.ts` in each), `supabase/functions/_shared/
+providers/{square,paypal,twilio,apollo,outscraper,smartlead}.ts`, and the
+handful of test files these changes required updating (listed inline
+above). `docs/BUILD_NOTES.md`'s PROVIDERS-VERIFY entry lists every file
+touched.

@@ -155,7 +155,7 @@ describe("processOutreachEvent", () => {
 
     expect(smartleadFetch).toHaveBeenCalledWith(
       expect.stringContaining("/campaigns/ext_1/status"),
-      expect.objectContaining({ method: "PATCH" }),
+      expect.objectContaining({ method: "POST" }),
     );
   });
 });

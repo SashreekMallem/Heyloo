@@ -12,7 +12,10 @@ import { timingSafeEqual } from "../crypto.js";
  * Node package — `developer.squareup.com` was egress-blocked in this build.
  */
 export const SQUARE_BASE_URL = "https://connect.squareup.com";
-const SQUARE_API_VERSION = "2026-01-22";
+// VERIFY-confirmed (docs/VERIFY.md): matches packages/adapters/square/src/
+// client.ts's SQUARE_API_VERSION — see that file's comment for the source
+// (the official `square` npm SDK v45.1.0's own generated-client default).
+const SQUARE_API_VERSION = "2026-08-19";
 
 export type SquareFetch = (input: string, init?: RequestInit) => Promise<Response>;
 

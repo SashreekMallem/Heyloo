@@ -17,8 +17,13 @@ import { VoiceProviderError } from "@heyloo/canonical-types";
 export const SQUARE_PRODUCTION_BASE_URL = "https://connect.squareup.com";
 export const SQUARE_SANDBOX_BASE_URL = "https://connect.squareupsandbox.com";
 /** Square requires a `Square-Version` header pinning the API release the
- * caller was built against (date-versioned). VERIFY: bump before go-live. */
-export const SQUARE_API_VERSION = "2026-01-22";
+ * caller was built against (date-versioned). VERIFY-confirmed
+ * (docs/VERIFY.md): the official `square` npm SDK (v45.1.0)'s own generated
+ * client defaults this header to `2026-08-19` — bumped here from this
+ * build's earlier placeholder (`2026-01-22`). Re-bump whenever the `square`
+ * package is next updated (its own default tracks Square's latest release
+ * at publish time). */
+export const SQUARE_API_VERSION = "2026-08-19";
 
 export interface SquareClientOptions {
   baseUrl?: string;

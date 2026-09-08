@@ -8,7 +8,7 @@ const logger = createLogger();
 function makeDeps(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>) {
   return {
     paypalFetch: fetchImpl as never,
-    paypalBaseUrl: "https://api-m.sandbox.paypal.com",
+    paypalBaseUrl: "https://api.sandbox.paypal.com",
     paypalClientId: "cid",
     paypalClientSecret: "secret",
     logger,
