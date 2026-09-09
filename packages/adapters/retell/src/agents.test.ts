@@ -130,6 +130,65 @@ describe("createOrUpdateRetellAgent", () => {
     );
   });
 
+  it("defaults webhook_timeout_ms to 10000 alongside webhook_url (LIVE-MINE-FIXES)", async () => {
+    let agentBody: Record<string, unknown> | undefined;
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/create-conversation-flow") {
+        return jsonResponse(200, { conversation_flow_id: "flow_1" });
+      }
+      if (path === "/create-agent") {
+        agentBody = init?.body ? JSON.parse(init.body as string) : undefined;
+        return jsonResponse(200, { agent_id: "agent_1", version: 1 });
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    const client = new RetellClient({
+      apiKey: "k",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const input = baseInput();
+    const compiled = compileRetellTemplate(
+      input.template,
+      "conversation_flow",
+      input.toolWebhookUrl,
+    );
+
+    await createOrUpdateRetellAgent(client, input, compiled);
+
+    expect(agentBody?.["webhook_url"]).toBe(input.eventsWebhookUrl);
+    expect(agentBody?.["webhook_timeout_ms"]).toBe(10000);
+  });
+
+  it("honors an explicit webhookTimeoutMs override", async () => {
+    let agentBody: Record<string, unknown> | undefined;
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/create-conversation-flow") {
+        return jsonResponse(200, { conversation_flow_id: "flow_1" });
+      }
+      if (path === "/create-agent") {
+        agentBody = init?.body ? JSON.parse(init.body as string) : undefined;
+        return jsonResponse(200, { agent_id: "agent_1", version: 1 });
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    const client = new RetellClient({
+      apiKey: "k",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const input = baseInput({ webhookTimeoutMs: 20000 });
+    const compiled = compileRetellTemplate(
+      input.template,
+      "conversation_flow",
+      input.toolWebhookUrl,
+    );
+
+    await createOrUpdateRetellAgent(client, input, compiled);
+
+    expect(agentBody?.["webhook_timeout_ms"]).toBe(20000);
+  });
+
   it("throws a typed error when the flow-resource response has neither id field", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(200, { unexpected: true }));
     const client = new RetellClient({

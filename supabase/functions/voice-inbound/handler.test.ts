@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { createLogger } from "../_shared/logger.js";
+import { VoiceInboundRequestSchema } from "../_shared/schemas/voice-inbound.js";
 import type { SqlClient } from "../_shared/types.js";
 import { handleVoiceInbound } from "./handler.js";
+
+// Nested shape confirmed live (LIVE-MINE-FIXES, docs/VERIFY.md VERIFY-2):
+// Retell's real `call_inbound` webhook body wraps from_number/to_number
+// under `call_inbound`, with no call_id anywhere.
+function inboundRequest(from_number: string, to_number: string) {
+  return { event: "call_inbound", call_inbound: { from_number, to_number } };
+}
 
 const NOW = new Date("2026-01-12T14:00:00.000Z"); // Monday 09:00 EST
 
@@ -37,7 +45,7 @@ describe("handleVoiceInbound", () => {
     const sql = makeSql([]);
     const result = await handleVoiceInbound({
       sql,
-      request: { call_id: "call_1", from_number: "+15551234567", to_number: "bad-number" },
+      request: inboundRequest("+15551234567", "bad-number"),
       logger,
       now: NOW,
     });
@@ -48,7 +56,7 @@ describe("handleVoiceInbound", () => {
     const sql = makeSql([[]]);
     const result = await handleVoiceInbound({
       sql,
-      request: { call_id: "call_1", from_number: "+15551234567", to_number: "+15559998888" },
+      request: inboundRequest("+15551234567", "+15559998888"),
       logger,
       now: NOW,
     });
@@ -60,7 +68,7 @@ describe("handleVoiceInbound", () => {
     const sql = makeSql([[BASE_ROW], []]);
     const result = await handleVoiceInbound({
       sql,
-      request: { call_id: "call_1", from_number: "+15551234567", to_number: "+15559998888" },
+      request: inboundRequest("+15551234567", "+15559998888"),
       logger,
       now: NOW,
     });
@@ -86,7 +94,7 @@ describe("handleVoiceInbound", () => {
     ]);
     const result = await handleVoiceInbound({
       sql,
-      request: { call_id: "call_1", from_number: "+15551234567", to_number: "+15559998888" },
+      request: inboundRequest("+15551234567", "+15559998888"),
       logger,
       now: NOW,
     });
@@ -106,7 +114,7 @@ describe("handleVoiceInbound", () => {
     const sql = makeSql([[row], []]);
     const result = await handleVoiceInbound({
       sql,
-      request: { call_id: "call_1", from_number: "+15551234567", to_number: "+15559998888" },
+      request: inboundRequest("+15551234567", "+15559998888"),
       logger,
       now: NOW,
     });
@@ -130,7 +138,7 @@ describe("handleVoiceInbound", () => {
     const sql = makeSql([[row], []]);
     const result = await handleVoiceInbound({
       sql,
-      request: { call_id: "call_1", from_number: "+15551234567", to_number: "+15559998888" },
+      request: inboundRequest("+15551234567", "+15559998888"),
       logger,
       now: NOW,
     });
@@ -142,5 +150,35 @@ describe("handleVoiceInbound", () => {
       accessibility_notes: "Ramp at the side entrance.",
       accepted_payment_types: ["cash", "card"],
     });
+  });
+});
+
+describe("VoiceInboundRequestSchema (VERIFY-2, LIVE-MINE-FIXES regression)", () => {
+  it("accepts Retell's real nested call_inbound envelope, with no call_id at all", () => {
+    const parsed = VoiceInboundRequestSchema.safeParse({
+      event: "call_inbound",
+      call_inbound: { from_number: "+15551234567", to_number: "+15559998888" },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("no longer requires the flat legacy-assumed shape (call_id/from_number/to_number at the top level)", () => {
+    // This is exactly the body the OLD schema required — it must now be
+    // REJECTED (no call_inbound wrapper), proving the flat shape isn't what
+    // gates a valid request anymore.
+    const flatLegacyShape = {
+      call_id: "call_1",
+      from_number: "+15551234567",
+      to_number: "+15559998888",
+    };
+    expect(VoiceInboundRequestSchema.safeParse(flatLegacyShape).success).toBe(false);
+  });
+
+  it("rejects a call_inbound wrapper missing from_number/to_number", () => {
+    const parsed = VoiceInboundRequestSchema.safeParse({
+      event: "call_inbound",
+      call_inbound: { from_number: "+15551234567" },
+    });
+    expect(parsed.success).toBe(false);
   });
 });

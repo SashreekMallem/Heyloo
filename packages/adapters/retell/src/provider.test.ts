@@ -41,10 +41,16 @@ describe("RetellProvider", () => {
 
   it("resolveInboundCall + buildInboundResponse round-trip through the provider", () => {
     const provider = makeProvider();
+    // Nested call_inbound envelope, confirmed live (VERIFY-2, LIVE-MINE-FIXES) —
+    // no call_id anywhere in this webhook.
     const context = provider.resolveInboundCall(
-      JSON.stringify({ call_id: "call_1", from_number: "+15551234567", to_number: "+15559876543" }),
+      JSON.stringify({
+        event: "call_inbound",
+        call_inbound: { from_number: "+15551234567", to_number: "+15559876543" },
+      }),
     );
-    expect(context.providerCallId).toBe("call_1");
+    expect(context.fromNumberE164).toBe("+15551234567");
+    expect(context.providerCallId).toBeUndefined();
 
     const response = provider.buildInboundResponse({
       dynamicVariables: {

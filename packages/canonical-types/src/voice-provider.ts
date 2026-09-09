@@ -77,9 +77,16 @@ export type CanonicalCostBreakdown = z.infer<typeof zCanonicalCostBreakdown>;
 // Inbound call resolution (BACKEND_SPEC §7.1 `/voice/inbound`)
 // ---------------------------------------------------------------------------
 
-/** The canonical, already-verified inbound-call context an adapter hands to the resolver. */
+/**
+ * The canonical, already-verified inbound-call context an adapter hands to
+ * the resolver. `providerCallId` is optional — LIVE-MINE-FIXES
+ * (docs/BUILD_NOTES.md LIVE-MINE-EDGE item 1, docs/VERIFY.md VERIFY-2):
+ * live legacy production evidence shows Retell's real `call_inbound`
+ * webhook carries no call id at all (it hasn't created/attached one yet at
+ * this point in the call), so this can never be assumed present here.
+ */
 export interface InboundCallContext {
-  providerCallId: string;
+  providerCallId?: string;
   fromNumberE164: string;
   toNumberE164: string;
   /** Provider-side agent id, if the provider had already resolved one before asking us. */
@@ -204,6 +211,14 @@ export interface CreateOrUpdateAgentInput {
   model: string;
   toolWebhookUrl: string;
   eventsWebhookUrl: string;
+  /**
+   * Max time (ms) Retell waits on `eventsWebhookUrl` before giving up.
+   * LIVE-MINE-FIXES (docs/BUILD_NOTES.md LIVE-MINE-EDGE item 2): legacy's
+   * live `create_agent` always set `webhook_timeout_ms: 10000` alongside
+   * `webhook_url` rather than relying on Retell's undocumented default.
+   * Defaults to 10000 in `createOrUpdateRetellAgent` when omitted.
+   */
+  webhookTimeoutMs?: number;
 }
 
 export interface CreateOrUpdateAgentResult {

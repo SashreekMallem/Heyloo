@@ -51,7 +51,7 @@ exactly.
 **Code:** `packages/adapters/retell/src/signature.ts`,
 `supabase/functions/_shared/retell-signature.ts`.
 
-### VERIFY-2 — inbound call webhook (`call_inbound`) request shape — **still open (webhook payload, not in the SDK's typed surface)**
+### VERIFY-2 — inbound call webhook (`call_inbound`) request shape — **code fix applied (LIVE-MINE-FIXES); one live test call still the final confirmation**
 
 **Assumed:** flat body `{call_id, from_number, to_number, agent_id?}`, per
 `docs/spec/BACKEND_SPEC.md` §7.1. **RETELL-VERIFY checked the official
@@ -96,6 +96,28 @@ writeup and exact contradicting file:line
 (`supabase/functions/_shared/schemas/voice-inbound.ts:11-17`,
 `packages/adapters/retell/src/raw-types.ts:31-36`); a fix recommendation
 is logged in `docs/BUILD_NOTES.md` (LIVE-MINE-EDGE).
+
+**LIVE-MINE-FIXES update — code fix applied.** `VoiceInboundRequestSchema`
+(`supabase/functions/_shared/schemas/voice-inbound.ts`) and
+`zRetellInboundCallWebhook` (`packages/adapters/retell/src/raw-types.ts`)
+now both validate the nested `{event, call_inbound: {from_number,
+to_number, agent_id?}}` shape (no `call_id` field — confirmed absent from
+the live evidence above), with `.passthrough()`/`.loose()` kept at both
+levels. `supabase/functions/voice-inbound/handler.ts`,
+`packages/adapters/retell/src/inbound.ts`, and canonical
+`InboundCallContext.providerCallId` (now optional,
+`packages/canonical-types/src/voice-provider.ts`) were updated to match —
+every place that previously logged or read `call_id` off this webhook now
+either omits it or logs the raw `to`/`from` number instead. All affected
+unit tests/fixtures were updated to the nested shape, plus a regression
+test (`supabase/functions/voice-inbound/handler.test.ts`,
+`packages/adapters/retell/src/inbound.test.ts`) asserting the OLD flat
+legacy-assumed shape is now correctly REJECTED. The RESPONSE envelope
+(`{call_inbound: {override_agent_id?, dynamic_variables}}`) was
+unchanged, per the standing recommendation. **Status stays
+"code fix applied, not fully RESOLVED"** — per VERIFY-2's own standing
+recommendation, one real inbound test call against a staging Retell agent
+remains the cheapest way to remove all doubt before this goes live.
 
 ### VERIFY-3 — tool-call ("custom function") webhook envelope — **still open (webhook payload), one assumption corroborated**
 

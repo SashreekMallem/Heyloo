@@ -52,11 +52,13 @@ export async function handleVoiceInbound(params: {
 }): Promise<VoiceInboundResult> {
   const { sql, request, logger, now = new Date() } = params;
 
-  const toNumber = normalizeE164(request.to_number);
-  const fromNumber = normalizeE164(request.from_number);
+  const toNumber = normalizeE164(request.call_inbound.to_number);
+  const fromNumber = normalizeE164(request.call_inbound.from_number);
 
   if (!toNumber) {
-    logger.warn("voice_inbound_bad_to_number", { call_id: request.call_id });
+    // No call_id in this webhook (VERIFY-2, LIVE-MINE-FIXES) — log the raw
+    // to_number that failed to normalize instead.
+    logger.warn("voice_inbound_bad_to_number", { to: request.call_inbound.to_number });
     return { status: 404, body: { error: "number_not_found" } };
   }
 
@@ -84,7 +86,7 @@ export async function handleVoiceInbound(params: {
 
   const row = rows[0];
   if (!row) {
-    logger.warn("voice_inbound_number_not_provisioned", { call_id: request.call_id, to: toNumber });
+    logger.warn("voice_inbound_number_not_provisioned", { to: toNumber });
     return { status: 404, body: { error: "number_not_found" } };
   }
 

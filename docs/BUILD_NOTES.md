@@ -2561,3 +2561,81 @@ next). Follow-ups recommended:
    goal than the current all-tools-everywhere `conversation` node shape).
    Not actionable within this task's scope; logged for whoever next
    revisits the conversation-flow compiler.
+
+## LIVE-MINE-FIXES — Fix pack applied from the live-legacy mining findings
+
+Applied the fix pack recommended by LIVE-MINE-DB and LIVE-MINE-EDGE above
+(`docs/LEGACY_LIVE_FINDINGS.md`). One new additive migration
+(`supabase/migrations/20260909120000_live_mining_hardening.sql`); no
+existing migration edited.
+
+**LIVE-MINE-EDGE item 1 (voice-inbound nested envelope) — APPLIED.**
+`supabase/functions/_shared/schemas/voice-inbound.ts`
+(`VoiceInboundRequestSchema`) and `packages/adapters/retell/src/raw-types.ts`
+(`zRetellInboundCallWebhook`) now validate Retell's real nested
+`{event, call_inbound: {from_number, to_number, agent_id?}}` body instead
+of the flat legacy-assumed shape — confirmed there is no `call_id` field
+in this webhook at all, so `supabase/functions/voice-inbound/handler.ts`,
+`packages/adapters/retell/src/inbound.ts`, and canonical
+`InboundCallContext.providerCallId`
+(`packages/canonical-types/src/voice-provider.ts`, now optional) were
+updated to match — every previous `call_id` log/read is now either
+dropped or replaced with the raw to/from number. The RESPONSE envelope is
+unchanged (already confirmed correct). All affected fixtures/tests updated
+plus a new regression test in both
+`supabase/functions/voice-inbound/handler.test.ts` and
+`packages/adapters/retell/src/inbound.test.ts` asserting the old flat
+shape is now rejected. `docs/VERIFY.md` VERIFY-2 updated to
+"code fix applied" (one live test call still recommended before go-live).
+
+**LIVE-MINE-EDGE item 2 (`webhook_timeout_ms`) — APPLIED.**
+`CreateOrUpdateAgentInput.webhookTimeoutMs?`
+(`packages/canonical-types/src/voice-provider.ts`) and
+`packages/adapters/retell/src/agents.ts` now set an explicit
+`webhook_timeout_ms` (default 10000, configurable via the input) alongside
+`webhook_url` on every agent create/update. Covered by two new tests in
+`packages/adapters/retell/src/agents.test.ts` (default value, explicit
+override).
+
+**LIVE-MINE-EDGE item 3 (`square.ts` comment) — APPLIED.**
+`supabase/functions/_shared/providers/square.ts`'s HMAC-scheme comment now
+cites the live legacy `square-webhook` confirmation instead of framing the
+scheme as an unconfirmed hypothesis. No logic change.
+
+**LIVE-MINE-DB items 1-3 — APPLIED**, all three in the new migration:
+(a) `resources.buffer_minutes int not null default 0` (a real column, not
+`resources.metadata`, per this task's explicit instruction) plus a
+`create or replace` of `fn_regenerate_availability_slots` that now checks
+each generated slot against the resource's existing confirmed bookings,
+buffer-padded on both sides — same check legacy's live
+`get_available_slots()` did at request time, baked in here at precompute
+time instead (zero runtime arithmetic on the hot path, unchanged). (b)
+`CHECK (col ~ '^\+[1-9]\d{1,14}$')` added via plain `ALTER TABLE` (tables
+are pre-launch/empty, so no `NOT VALID`/`VALIDATE CONSTRAINT` two-step
+needed) on `phone_numbers.e164`, `customers.phone_e164`,
+`messages_inbound.from_e164`, `messages_inbound.to_e164` — verified
+`supabase/seed/seed.sql` inserts no row into any of these four columns, so
+no seed fix was needed. (c) `COMMENT ON CONSTRAINT
+bookings_resource_id_during_excl ON public.bookings` (the real,
+Postgres-assigned name for the unnamed `exclude` clause in
+`20260907130600_booking_core.sql`) now carries the tripwire text — no
+predicate change, per Finding 3's own recommendation ("not a change yet").
+
+**Verification performed** (same no-Docker/`supabase start` constraint as
+T1 — CLAUDE.md Rule 1 disclosure): built a throwaway local-Postgres
+harness (stub `auth`/`realtime`/`storage` schemas, extensions trimmed of
+`pg_cron`/`pgmq`/`pg_net`, matching T1's documented approach) and applied
+all 20 real migration files verbatim, in order, from an empty database,
+followed by `supabase/seed/seed.sql` — both succeeded with zero errors
+(confirms "reproducible from zero" end to end, not just the new file in
+isolation). Directly exercised the new `fn_regenerate_availability_slots`:
+set `buffer_minutes = 15` on the seeded auto-demo tenant's Bay 1, inserted
+a confirmed 30-minute booking into one of its precomputed slots, called
+the function again, and confirmed both the booked slot AND the
+immediately-following slot (within the 15-minute buffer) came back
+`is_available = false`, while the slot after that (outside the buffer)
+stayed `true`. Directly exercised all four new CHECK constraints (each
+rejects a malformed number, accepts a valid E.164 one). Confirmed the
+exclusion constraint's real name (`bookings_resource_id_during_excl`) and
+that the `COMMENT ON CONSTRAINT` attaches correctly. Harness and scratch
+SQL files were session-only, never committed.

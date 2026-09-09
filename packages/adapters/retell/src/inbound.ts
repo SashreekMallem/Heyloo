@@ -32,23 +32,25 @@ export function resolveRetellInboundCall(rawBody: string): InboundCallContext {
     throw new PayloadValidationError("retell", "inbound call webhook", parsed.error);
   }
 
-  const from = zE164.safeParse(parsed.data.from_number);
-  const to = zE164.safeParse(parsed.data.to_number);
+  const { call_inbound } = parsed.data;
+  const from = zE164.safeParse(call_inbound.from_number);
+  const to = zE164.safeParse(call_inbound.to_number);
   if (!from.success || !to.success) {
     throw new PayloadValidationError(
       "retell",
       "inbound call webhook: from_number/to_number must be E.164",
-      { from: parsed.data.from_number, to: parsed.data.to_number },
+      { from: call_inbound.from_number, to: call_inbound.to_number },
     );
   }
 
+  // No call_id in this webhook (VERIFY-2, LIVE-MINE-FIXES) — Retell has not
+  // created/attached one yet at this point in the call.
   const context: InboundCallContext = {
-    providerCallId: parsed.data.call_id,
     fromNumberE164: from.data,
     toNumberE164: to.data,
   };
-  if (parsed.data.agent_id !== undefined) {
-    context.providerAgentId = parsed.data.agent_id;
+  if (call_inbound.agent_id !== undefined) {
+    context.providerAgentId = call_inbound.agent_id;
   }
   return context;
 }

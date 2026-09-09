@@ -18,21 +18,28 @@
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
-// VERIFY-2: inbound call webhook ("call_inbound"). BACKEND_SPEC §7.1 documents
-// this as a flat `{call_id, from_number, to_number, agent_id?}` body; some
-// community sources describe Retell wrapping call-lifecycle webhooks as
-// `{event, call_inbound: {...}}` like it does for call_started/call_ended.
-// We validate the flat shape (matching the spec we're building against) but
-// keep the schema `.loose()` so an unexpected wrapper key doesn't itself
-// cause a hard parse failure elsewhere — VERIFY-2 in docs/VERIFY.md tracks
-// confirming this against a live sandbox call before go-live.
+// VERIFY-2 (LIVE-MINE-FIXES — CONTRADICTED, fixed): BACKEND_SPEC §7.1
+// originally documented this as a flat `{call_id, from_number, to_number,
+// agent_id?}` body. Live legacy production evidence (76 redeploys of the
+// legacy `retell-assistant` edge function, read-only via the Supabase
+// Management API — docs/BUILD_NOTES.md LIVE-MINE-EDGE item 1,
+// docs/LEGACY_LIVE_FINDINGS.md § Edge Functions "VERIFY-2") shows Retell's
+// real `call_inbound` webhook body is NESTED —
+// `{event: "call_inbound", call_inbound: {from_number, to_number, agent_id?}}`
+// — with NO `call_id` anywhere (Retell has not yet created/attached a call
+// id at the point it asks who should handle an inbound call). Kept
+// `.loose()` at both levels so an unexpected extra key doesn't itself cause
+// a hard parse failure. One live sandbox call remains the final
+// confirmation per VERIFY-2's standing recommendation.
 // ---------------------------------------------------------------------------
 
 export const zRetellInboundCallWebhook = z.looseObject({
-  call_id: z.string().min(1),
-  from_number: z.string().min(1),
-  to_number: z.string().min(1),
-  agent_id: z.string().min(1).optional(),
+  event: z.string().optional(),
+  call_inbound: z.looseObject({
+    from_number: z.string().min(1),
+    to_number: z.string().min(1),
+    agent_id: z.string().min(1).optional(),
+  }),
 });
 export type RetellInboundCallWebhook = z.infer<typeof zRetellInboundCallWebhook>;
 

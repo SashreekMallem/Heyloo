@@ -190,17 +190,24 @@ export async function refreshSquareToken(
  * (`/webhooks-pos/square` — BACKEND_SPEC §7.6, T3's assigned "wire Square
  * salvage-shape as the first handleWebhook"). Scheme carried forward from
  * the legacy repo's `CLOVER_CRUD_DOCUMENTATION.md` salvage note
- * (HMAC-SHA256(notificationUrl + rawBody), base64) — BACKEND_SPEC flags this
- * explicitly as "re-verify against Square's current docs before coding,
- * only the shape is carried forward as a starting hypothesis"; egress to
- * Square's docs was blocked in this build, so it stands as a Rule-1 VERIFY
- * item (docs/VERIFY.md) rather than a confirmed implementation. Square's
- * webhook body carries only the changed object's id/type per BACKEND_SPEC
- * (matching the Clover pattern) — the adapter fetches the full object
- * separately (left as a Wave-3 TODO here since `syncCatalog`/`pushOrder`
- * etc. are T7 scope per packages/adapters/README.md; this file implements
- * ONLY `handleWebhook`'s verify+normalize step, per this task's explicit
- * scope).
+ * (HMAC-SHA256(notificationUrl + rawBody), base64) — originally flagged as
+ * an unconfirmed "starting hypothesis" pending Square's current docs
+ * (egress to which was blocked during that build). **Confirmed by
+ * LIVE-MINE-FIXES** (docs/BUILD_NOTES.md LIVE-MINE-EDGE item 3,
+ * docs/LEGACY_LIVE_FINDINGS.md § Edge Functions): the live legacy
+ * `square-webhook` edge function (15 production redeploys, read-only via
+ * the Supabase Management API) implements the identical algorithm, message
+ * construction, and header name against real production traffic — no
+ * further re-verification needed before relying on this. This
+ * implementation is already stronger than legacy's: it uses
+ * `timingSafeEqual` and fails closed on a missing secret, whereas legacy's
+ * caller silently allowed traffic through when the secret env var was
+ * unset. Square's webhook body carries only the changed object's id/type
+ * per BACKEND_SPEC (matching the Clover pattern) — the adapter fetches the
+ * full object separately (left as a Wave-3 TODO here since
+ * `syncCatalog`/`pushOrder` etc. are T7 scope per
+ * packages/adapters/README.md; this file implements ONLY `handleWebhook`'s
+ * verify+normalize step, per this task's explicit scope).
  */
 
 export interface SquareVerifyParams {

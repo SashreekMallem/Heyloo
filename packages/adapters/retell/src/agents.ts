@@ -91,6 +91,11 @@ export async function createOrUpdateRetellAgent(
     // that `inbound_webhook_url` only exists on the PhoneNumber resource.
     // It's wired in `importTwilioNumberIntoRetell` (numbers.ts) instead.
     webhook_url: input.eventsWebhookUrl,
+    // LIVE-MINE-FIXES (docs/BUILD_NOTES.md LIVE-MINE-EDGE item 2): legacy's
+    // live create_agent always paired webhook_url with an explicit
+    // webhook_timeout_ms rather than relying on Retell's undocumented
+    // default — cheap, free knob, kept configurable via the input type.
+    webhook_timeout_ms: input.webhookTimeoutMs ?? 10000,
   };
 
   const agentRaw = input.existingProviderAgentId

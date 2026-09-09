@@ -1,18 +1,32 @@
 import { z } from "zod";
 
 /**
- * `/voice-inbound` request body (BACKEND_SPEC §7.1). VERIFY (docs/VERIFY.md):
- * canonical shape per BACKEND_SPEC, not yet confirmed against Retell's live
- * inbound-call webhook reference (egress-blocked in this environment) —
- * `.passthrough()` so an extra field Retell adds doesn't hard-fail parsing,
- * while the fields we depend on are still strictly validated.
+ * `/voice-inbound` request body (BACKEND_SPEC §7.1). VERIFY-2
+ * (docs/VERIFY.md): the flat `{call_id, from_number, to_number, agent_id?}`
+ * body BACKEND_SPEC originally documented was CONTRADICTED by live legacy
+ * production evidence (LIVE-MINE-FIXES, docs/BUILD_NOTES.md LIVE-MINE-EDGE
+ * item 1 / docs/LEGACY_LIVE_FINDINGS.md § Edge Functions "VERIFY-2") — 76
+ * production redeploys of the legacy `retell-assistant` edge function show
+ * Retell's real `call_inbound` webhook body is nested:
+ * `{event: "call_inbound", call_inbound: {from_number, to_number, agent_id?}}`.
+ * There is NO top-level (or nested) `call_id` in this webhook at all —
+ * Retell has not yet created/attached a call id at the point it asks us who
+ * should handle the call. `.passthrough()` at both levels so an extra field
+ * Retell adds doesn't hard-fail parsing, while the fields we depend on are
+ * still strictly validated. The RESPONSE envelope below (`call_inbound:
+ * {override_agent_id?, dynamic_variables}`) is unaffected — already
+ * confirmed correct by the same live evidence.
  */
 export const VoiceInboundRequestSchema = z
   .object({
-    call_id: z.string().min(1),
-    from_number: z.string().min(1),
-    to_number: z.string().min(1),
-    agent_id: z.string().optional(),
+    event: z.string().optional(),
+    call_inbound: z
+      .object({
+        from_number: z.string().min(1),
+        to_number: z.string().min(1),
+        agent_id: z.string().optional(),
+      })
+      .passthrough(),
   })
   .passthrough();
 
