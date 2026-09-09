@@ -1,5 +1,37 @@
 # Launch Status
 
+## Deployed to live project (2026-09-09)
+
+Live Supabase project: `qulcubtwqsqgqpfgvorn` ("Heyloo", us-east-2, PG 17).
+Deployed this session (full record: BUILD_NOTES.md DEPLOY-1):
+
+- 22 migrations applied + recorded (schema wiped by owner first; legacy
+  empty schema/users/history removed). 52 tables, **RLS enabled on all**.
+- Seed applied (12 platform_settings rows incl. price cards, templates).
+- All 27 edge functions deployed ACTIVE (deploy command:
+  `npx supabase functions deploy --use-api --import-map
+  supabase/functions/deno.json`).
+- Auth Custom Access Token hook enabled -> public.custom_access_token_hook.
+- 8 function secrets set: CRON_INVOKE_SECRET, PROVISION_INTERNAL_SECRET,
+  ADAPTER_CONNECT_STATE_SECRET, OUTREACH_WEBHOOK_SECRET (generated) +
+  VOICE_TOOLS_WEBHOOK_URL, RETELL_INBOUND_WEBHOOK_URL,
+  WEBHOOKS_TWILIO_SMS_URL, WEBHOOKS_POS_SQUARE_URL (derived).
+
+Owner still to do on the project:
+1. Dashboard -> Settings -> API keys: copy the `sb_secret_...` key and add
+   it as edge-function secret **SB_SECRET_KEY** (Edge Functions ->
+   Secrets). Copy `sb_publishable_...` for the frontend env later.
+2. Delete the 14 legacy edge functions (retell-assistant, retell-events,
+   retell-tools, retell-manage, retell-numbers, pos-sync, pos-oauth,
+   pos-oauth-callback, pos-push, pos-push-square, pos-push-clover,
+   square-webhook, clover-webhook, parse-menu) and the 3 legacy storage
+   buckets (menus, voice-samples, call-recordings) — deletion is blocked
+   from the build environment.
+3. Provider accounts + secrets per docs/DEPLOY.md (Retell, Stripe, Twilio,
+   Resend, Anthropic, PayPal, Smartlead, Apollo/Outscraper...).
+4. Rotate the management access token used for this deployment, and the
+   old database password shared during setup.
+
 Snapshot as of this build's last commit (T9, Wave 4 — ops hardening, deploy
 guide, E2E pass; see `docs/BUILD_NOTES.md`'s T9 entry for the full account).
 Three sections: what's built, what the owner still has to do, and an honest
