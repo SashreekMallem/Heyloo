@@ -1,4 +1,4 @@
-import type { SqlClient } from "../_shared/types.js";
+import type { SqlClient } from "../_shared/types.ts";
 
 /**
  * Alert-evaluation job (BACKEND_SPEC §8, every 5 minutes): evaluates the

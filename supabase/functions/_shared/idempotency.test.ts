@@ -4,7 +4,7 @@ import {
   fnv1aHex,
   orderIdempotencyKey,
   stableStringify,
-} from "./idempotency.js";
+} from "./idempotency.ts";
 
 describe("bookingIdempotencyKey", () => {
   it("joins call_id and start ISO with a colon", () => {

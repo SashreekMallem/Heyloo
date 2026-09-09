@@ -1,8 +1,8 @@
-import type { AnthropicFetch } from "../_shared/providers/anthropic.js";
-import { classifyReplyIntent } from "../_shared/providers/anthropic.js";
-import type { SmartleadFetch } from "../_shared/providers/smartlead.js";
-import { updateCampaignStatus } from "../_shared/providers/smartlead.js";
-import type { SqlClient } from "../_shared/types.js";
+import type { AnthropicFetch } from "../_shared/providers/anthropic.ts";
+import { classifyReplyIntent } from "../_shared/providers/anthropic.ts";
+import type { SmartleadFetch } from "../_shared/providers/smartlead.ts";
+import { updateCampaignStatus } from "../_shared/providers/smartlead.ts";
+import type { SqlClient } from "../_shared/types.ts";
 
 /**
  * `/webhooks-outreach` background processing (BACKEND_SPEC §7.5). Provider

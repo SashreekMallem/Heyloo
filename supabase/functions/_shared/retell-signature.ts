@@ -1,4 +1,4 @@
-import { hmacSha256Hex, timingSafeEqual } from "./crypto.js";
+import { hmacSha256Hex, timingSafeEqual } from "./crypto.ts";
 
 /**
  * Retell webhook signature verification (`/voice-inbound`, `/voice-tools`,

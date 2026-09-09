@@ -1,4 +1,4 @@
-import { hmacSha1Base64, timingSafeEqual } from "./crypto.js";
+import { hmacSha1Base64, timingSafeEqual } from "./crypto.ts";
 
 /**
  * Twilio webhook signature verification (`/webhooks-twilio-sms` —

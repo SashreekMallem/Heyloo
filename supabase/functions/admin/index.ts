@@ -4,13 +4,13 @@
 // (platform_admin + AAL2) is the CLAUDE.md Rule 2 "check explicitly in
 // code, not just implied by RLS" requirement (BACKEND_SPEC §7.7).
 
-import type { AdminJwtClaims } from "../_shared/admin-auth.js";
-import { getSql } from "../_shared/deno/db.js";
-import { optionalEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import { jsonResponse } from "../_shared/responses.js";
-import type { AdminDeps } from "./handler.js";
-import { routeAdminRequest } from "./handler.js";
+import type { AdminJwtClaims } from "../_shared/admin-auth.ts";
+import { getSql } from "../_shared/deno/db.ts";
+import { optionalEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import { jsonResponse } from "../_shared/responses.ts";
+import type { AdminDeps } from "./handler.ts";
+import { routeAdminRequest } from "./handler.ts";
 
 const logger = createLogger({ fn: "admin" });
 
@@ -22,7 +22,7 @@ const logger = createLogger({ fn: "admin" });
 const RETELL_API_KEY = optionalEnv("RETELL_API_KEY");
 const VOICE_TOOLS_WEBHOOK_URL = optionalEnv("VOICE_TOOLS_WEBHOOK_URL");
 const SUPABASE_URL = optionalEnv("SUPABASE_URL");
-const SUPABASE_SECRET_KEY = optionalEnv("SUPABASE_SECRET_KEY");
+const SB_SECRET_KEY = optionalEnv("SB_SECRET_KEY");
 const SMARTLEAD_API_KEY = optionalEnv("SMARTLEAD_API_KEY");
 const OUTREACH_CAN_SPAM_FOOTER = optionalEnv("OUTREACH_CAN_SPAM_FOOTER");
 const RESEND_API_KEY = optionalEnv("RESEND_API_KEY");
@@ -38,9 +38,9 @@ const adminDeps: AdminDeps = {
         },
       }
     : {}),
-  ...(SUPABASE_URL && SUPABASE_SECRET_KEY
+  ...(SUPABASE_URL && SB_SECRET_KEY
     ? {
-        supabaseAdmin: { fetchImpl: fetch, url: SUPABASE_URL, serviceRoleKey: SUPABASE_SECRET_KEY },
+        supabaseAdmin: { fetchImpl: fetch, url: SUPABASE_URL, serviceRoleKey: SB_SECRET_KEY },
       }
     : {}),
   ...(SMARTLEAD_API_KEY && OUTREACH_CAN_SPAM_FOOTER

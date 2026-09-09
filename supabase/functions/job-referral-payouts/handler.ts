@@ -1,6 +1,6 @@
-import type { PayoutItem, PayPalFetch } from "../_shared/providers/paypal.js";
-import { createPayoutBatch, getAccessToken } from "../_shared/providers/paypal.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+import type { PayoutItem, PayPalFetch } from "../_shared/providers/paypal.ts";
+import { createPayoutBatch, getAccessToken } from "../_shared/providers/paypal.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * Monthly referral-partner payout batch (BACKEND_SPEC §8 "Referral

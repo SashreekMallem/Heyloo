@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createLogger } from "../../_shared/logger.js";
-import type { SqlClient } from "../../_shared/types.js";
-import type { CallContext } from "../context.js";
-import { lookupCustomer } from "./lookup_customer.js";
+import { createLogger } from "../../_shared/logger.ts";
+import type { SqlClient } from "../../_shared/types.ts";
+import type { CallContext } from "../context.ts";
+import { lookupCustomer } from "./lookup_customer.ts";
 
 const logger = createLogger();
 const CALLER_NUMBER = "+15551234567";

@@ -2639,3 +2639,39 @@ rejects a malformed number, accepts a valid E.164 one). Confirmed the
 exclusion constraint's real name (`bookings_resource_id_during_excl`) and
 that the `COMMENT ON CONSTRAINT` attaches correctly. Harness and scratch
 SQL files were session-only, never committed.
+
+## DEPLOY-1 — First live deployment (2026-09-09, session_012xvcAnjqsMbPqitErDJQbR)
+
+Deployed to live Supabase project `qulcubtwqsqgqpfgvorn` over the
+Management API (HTTPS only; direct Postgres TCP unreachable from the build
+environment). Findings that produced code changes:
+
+1. **`tool_health` was created without RLS** (20260907140000) — the one
+   table violating Rule 2. Fixed by new migration
+   `20260909130000_tool_health_rls.sql` (enable RLS, zero policies =
+   default-deny; service_role bypasses). Live DB now reports zero
+   `rowsecurity=false` tables.
+2. **Deno bundler rejects NodeNext `.js`-extension relative imports.**
+   Local Vitest/tsc (NodeNext) resolved `./x.js` → `x.ts`, but the Edge
+   Functions bundler resolves literal paths, so every function 400'd at
+   deploy. Rewrote all relative imports under `supabase/functions/` to
+   real `.ts` extensions and set `allowImportingTsExtensions` in the
+   functions tsconfig (already `noEmit`). 419/419 tests still green.
+3. **`deno.json` import map is NOT auto-read by `functions deploy
+   --use-api`** (resolves the deno.json `$comment`'s open question):
+   bare `postgres`/`zod` specifiers 400'd until the map was passed
+   explicitly. Canonical deploy command is now
+   `npx supabase functions deploy --use-api --import-map
+   supabase/functions/deno.json` (docs/DEPLOY.md should use exactly this).
+4. **Edge-function secrets cannot start with `SUPABASE_`** (platform
+   restriction), so the functions' service-key env var was renamed
+   `SUPABASE_SECRET_KEY` → `SB_SECRET_KEY` (6 occurrences;
+   `.env.example` documents the pairing). `SUPABASE_URL`/`SUPABASE_DB_URL`
+   remain platform-injected names and are unaffected.
+
+Deployed state: 22 migrations applied + recorded in
+`supabase_migrations.schema_migrations`; seed applied (12
+platform_settings rows); 52 tables, RLS on all; auth Custom Access Token
+hook enabled → `public.custom_access_token_hook`; all 27 edge functions
+ACTIVE; 8 function secrets set (4 generated internal secrets + 4 derived
+webhook/function URLs). Owner-side remainder tracked in LAUNCH_STATUS.

@@ -1,6 +1,6 @@
-import type { StripeFetch } from "../_shared/providers/stripe.js";
-import { createBillingMeterEvent } from "../_shared/providers/stripe.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+import type { StripeFetch } from "../_shared/providers/stripe.ts";
+import { createBillingMeterEvent } from "../_shared/providers/stripe.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * Billing-cycle job (BACKEND_SPEC §8): for tenants whose billing period

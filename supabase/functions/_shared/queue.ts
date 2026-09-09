@@ -1,4 +1,4 @@
-import type { SqlClient } from "./types.js";
+import type { SqlClient } from "./types.ts";
 
 /**
  * pgmq queue helpers (BACKEND_SPEC §9). Portable (depends only on

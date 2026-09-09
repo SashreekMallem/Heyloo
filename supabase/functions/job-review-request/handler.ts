@@ -1,5 +1,5 @@
-import { enqueue, QUEUE_NAMES } from "../_shared/queue.js";
-import type { SqlClient } from "../_shared/types.js";
+import { enqueue, QUEUE_NAMES } from "../_shared/queue.ts";
+import type { SqlClient } from "../_shared/types.ts";
 
 /**
  * `review_request` job (MASTER_SPEC §3.9, optional/default-off per tenant):

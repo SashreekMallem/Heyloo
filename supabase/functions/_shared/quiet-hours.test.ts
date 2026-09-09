@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isQuietHours, localHour } from "./quiet-hours.js";
+import { isQuietHours, localHour } from "./quiet-hours.ts";
 
 const TZ = "America/New_York"; // EST = UTC-5 in January (no DST)
 

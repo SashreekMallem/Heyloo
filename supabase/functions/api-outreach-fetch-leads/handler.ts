@@ -1,11 +1,11 @@
-import { findExistingLead, isSuppressed } from "../_shared/lead-dedup.js";
-import { recordCacEvent, recordPipelineCost } from "../_shared/outreach-cost.js";
-import type { ApolloFetch, ApolloPersonRecord } from "../_shared/providers/apollo.js";
-import { bulkEnrichOrganizations, searchPeople } from "../_shared/providers/apollo.js";
-import type { OutscraperFetch, OutscraperPlace } from "../_shared/providers/outscraper.js";
-import { pollGoogleMapsResults, startGoogleMapsSearch } from "../_shared/providers/outscraper.js";
-import type { FetchLeadsRequest } from "../_shared/schemas/outreach-fetch-leads.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+import { findExistingLead, isSuppressed } from "../_shared/lead-dedup.ts";
+import { recordCacEvent, recordPipelineCost } from "../_shared/outreach-cost.ts";
+import type { ApolloFetch, ApolloPersonRecord } from "../_shared/providers/apollo.ts";
+import { bulkEnrichOrganizations, searchPeople } from "../_shared/providers/apollo.ts";
+import type { OutscraperFetch, OutscraperPlace } from "../_shared/providers/outscraper.ts";
+import { pollGoogleMapsResults, startGoogleMapsSearch } from "../_shared/providers/outscraper.ts";
+import type { FetchLeadsRequest } from "../_shared/schemas/outreach-fetch-leads.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `/api-outreach-fetch-leads` (BACKEND_SPEC §1.8, T8 build step 1 / Flow 5

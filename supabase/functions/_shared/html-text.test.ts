@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { htmlToPlainText } from "./html-text.js";
+import { htmlToPlainText } from "./html-text.ts";
 
 describe("htmlToPlainText", () => {
   it("strips tags, scripts, and styles", () => {

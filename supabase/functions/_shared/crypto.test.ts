@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hmacSha1Base64, hmacSha256Hex, timingSafeEqual, toHex } from "./crypto.js";
+import { hmacSha1Base64, hmacSha256Hex, timingSafeEqual, toHex } from "./crypto.ts";
 
 describe("hmacSha256Hex", () => {
   it("matches the well-known HMAC-SHA256 test vector (RFC 4231 #2)", async () => {

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createLogger } from "../_shared/logger.js";
-import type { SqlClient } from "../_shared/types.js";
-import type { DemoAgentDeps } from "./handler.js";
-import { handleConfirmDemo, handleCreateDemo } from "./handler.js";
+import { createLogger } from "../_shared/logger.ts";
+import type { SqlClient } from "../_shared/types.ts";
+import type { DemoAgentDeps } from "./handler.ts";
+import { handleConfirmDemo, handleCreateDemo } from "./handler.ts";
 
 const logger = createLogger();
 

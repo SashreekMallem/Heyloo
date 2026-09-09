@@ -1,9 +1,9 @@
-import type { ResendFetch } from "../_shared/providers/resend.js";
-import { sendEmail } from "../_shared/providers/resend.js";
-import type { TwilioFetch } from "../_shared/providers/twilio.js";
-import { sendSms } from "../_shared/providers/twilio.js";
-import { renderTemplate } from "../_shared/templates.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+import type { ResendFetch } from "../_shared/providers/resend.ts";
+import { sendEmail } from "../_shared/providers/resend.ts";
+import type { TwilioFetch } from "../_shared/providers/twilio.ts";
+import { sendSms } from "../_shared/providers/twilio.ts";
+import { renderTemplate } from "../_shared/templates.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `messages_outbound_queue` worker (BACKEND_SPEC §9/§10.1/§10.2, MASTER_SPEC

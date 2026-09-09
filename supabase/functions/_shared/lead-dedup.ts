@@ -1,5 +1,5 @@
-import { normalizeE164 } from "./phone.js";
-import type { SqlClient } from "./types.js";
+import { normalizeE164 } from "./phone.ts";
+import type { SqlClient } from "./types.ts";
 
 /**
  * Shared dedup checks the outreach engine runs before EVERY lead add

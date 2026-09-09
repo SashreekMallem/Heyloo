@@ -13,8 +13,8 @@
 // access paths. No ORM (Rule 2) — every query below is a tagged-template
 // literal SQL string, postgres.js's native (and only) query style.
 import postgres from "postgres";
-import type { SqlClient } from "../types.js";
-import { requireEnv } from "./env.js";
+import type { SqlClient } from "../types.ts";
+import { requireEnv } from "./env.ts";
 
 let client: ReturnType<typeof postgres> | undefined;
 

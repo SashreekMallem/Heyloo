@@ -17,7 +17,7 @@
  * scheme) is a documented, testable hypothesis, not a first-party fetch.
  */
 
-import { hmacSha256Hex, timingSafeEqual } from "../crypto.js";
+import { hmacSha256Hex, timingSafeEqual } from "../crypto.ts";
 
 export const SHOPMONKEY_BASE_URL = "https://api.shopmonkey.cloud/v3";
 

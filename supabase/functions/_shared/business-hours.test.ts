@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeGreetingHoursContext } from "./business-hours.js";
+import { computeGreetingHoursContext } from "./business-hours.ts";
 
 const TZ = "America/New_York"; // EST = UTC-5 in January
 const HOURS = {

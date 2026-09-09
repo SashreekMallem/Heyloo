@@ -6,7 +6,7 @@ import {
   registerWatchChannel,
   toGoogleEventId,
   verifyGoogleCalendarNotification,
-} from "./google-calendar.js";
+} from "./google-calendar.ts";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

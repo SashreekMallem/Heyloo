@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SqlClient } from "../_shared/types.js";
-import { scheduleOneReminder } from "./handler.js";
+import type { SqlClient } from "../_shared/types.ts";
+import { scheduleOneReminder } from "./handler.ts";
 
 const BASE_ROW = {
   booking_id: "b1",

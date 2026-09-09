@@ -1,6 +1,6 @@
-import { enqueue, QUEUE_NAMES } from "../_shared/queue.js";
-import { isQuietHours } from "../_shared/quiet-hours.js";
-import type { SqlClient } from "../_shared/types.js";
+import { enqueue, QUEUE_NAMES } from "../_shared/queue.ts";
+import { isQuietHours } from "../_shared/quiet-hours.ts";
+import type { SqlClient } from "../_shared/types.ts";
 
 /**
  * Hourly reminder-scheduler job (MASTER_SPEC §3.6): bookings T-24h (per-

@@ -1,11 +1,11 @@
 // Deno entrypoint (excluded from ../tsconfig.json). Invoked every 2 minutes
 // by pg_cron (BACKEND_SPEC §8, G5) via pg_net.http_post.
-import { timingSafeEqual } from "../_shared/crypto.js";
-import { getSql } from "../_shared/deno/db.js";
-import { requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import { jsonResponse } from "../_shared/responses.js";
-import { runHealthCheckCycle } from "./handler.js";
+import { timingSafeEqual } from "../_shared/crypto.ts";
+import { getSql } from "../_shared/deno/db.ts";
+import { requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import { jsonResponse } from "../_shared/responses.ts";
+import { runHealthCheckCycle } from "./handler.ts";
 
 const logger = createLogger({ fn: "job-retell-health-failover" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");

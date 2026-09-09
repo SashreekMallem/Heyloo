@@ -1,14 +1,14 @@
-import type { RetellFetch } from "../_shared/providers/retell.js";
+import type { RetellFetch } from "../_shared/providers/retell.ts";
 import {
   createAgent,
   getAgent,
   importPhoneNumber,
   publishAgentVersion,
-} from "../_shared/providers/retell.js";
-import type { TwilioFetch } from "../_shared/providers/twilio.js";
-import { purchasePhoneNumber } from "../_shared/providers/twilio.js";
-import { enqueue, QUEUE_NAMES } from "../_shared/queue.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+} from "../_shared/providers/retell.ts";
+import type { TwilioFetch } from "../_shared/providers/twilio.ts";
+import { purchasePhoneNumber } from "../_shared/providers/twilio.ts";
+import { enqueue, QUEUE_NAMES } from "../_shared/queue.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `/api-provision` saga (BACKEND_SPEC §7.9): tenant row -> compiled agent ->

@@ -27,7 +27,7 @@ export function optionalEnv(name: string): string | undefined {
 export const ENV_VAR_NAMES = {
   supabaseDbUrl: "SUPABASE_DB_URL",
   supabaseUrl: "SUPABASE_URL",
-  supabaseServiceRoleKey: "SUPABASE_SECRET_KEY",
+  supabaseServiceRoleKey: "SB_SECRET_KEY",
   retellApiKey: "RETELL_API_KEY",
   retellWebhookSecret: "RETELL_WEBHOOK_SIGNING_SECRET",
   twilioAccountSid: "TWILIO_ACCOUNT_SID",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeScrapedContent } from "./sanitize.js";
+import { sanitizeScrapedContent } from "./sanitize.ts";
 
 describe("sanitizeScrapedContent", () => {
   it("redacts an 'ignore previous instructions' injection attempt", () => {

@@ -1,5 +1,5 @@
-import { sendToSentry } from "./sentry.js";
-import type { LogFields, Logger } from "./types.js";
+import { sendToSentry } from "./sentry.ts";
+import type { LogFields, Logger } from "./types.ts";
 
 /** Reads an env var portably under both Deno (edge functions) and Node
  * (Vitest) with no `Deno`-global type dependency — an inline `globalThis`

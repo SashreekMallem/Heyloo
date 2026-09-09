@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { haversineMeters, isWithinRadius } from "./geo.js";
+import { haversineMeters, isWithinRadius } from "./geo.ts";
 
 describe("haversineMeters", () => {
   it("returns 0 for identical points", () => {

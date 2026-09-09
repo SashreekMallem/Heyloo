@@ -4,14 +4,14 @@
 // (this function is never meant to be internet-facing-useful; the secret
 // just keeps it from being invoked by anything other than the cron job).
 
-import { timingSafeEqual } from "../_shared/crypto.js";
-import { getSql } from "../_shared/deno/db.js";
-import { requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import type { MessagesOutboundQueueMsg } from "../_shared/queue.js";
-import { deleteMessage, moveToDeadLetter, QUEUE_NAMES, readBatch } from "../_shared/queue.js";
-import { jsonResponse } from "../_shared/responses.js";
-import { processOutboundMessage } from "./handler.js";
+import { timingSafeEqual } from "../_shared/crypto.ts";
+import { getSql } from "../_shared/deno/db.ts";
+import { requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import type { MessagesOutboundQueueMsg } from "../_shared/queue.ts";
+import { deleteMessage, moveToDeadLetter, QUEUE_NAMES, readBatch } from "../_shared/queue.ts";
+import { jsonResponse } from "../_shared/responses.ts";
+import { processOutboundMessage } from "./handler.ts";
 
 const logger = createLogger({ fn: "worker-messages-outbound" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");

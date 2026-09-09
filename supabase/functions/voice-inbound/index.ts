@@ -5,13 +5,13 @@
 // this directly and auth is the HMAC signature checked below, never
 // Supabase JWT (BACKEND_SPEC §7.1).
 
-import { getSql } from "../_shared/deno/db.js";
-import { requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import { jsonResponse } from "../_shared/responses.js";
-import { verifyRetellSignature } from "../_shared/retell-signature.js";
-import { VoiceInboundRequestSchema } from "../_shared/schemas/voice-inbound.js";
-import { handleVoiceInbound } from "./handler.js";
+import { getSql } from "../_shared/deno/db.ts";
+import { requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import { jsonResponse } from "../_shared/responses.ts";
+import { verifyRetellSignature } from "../_shared/retell-signature.ts";
+import { VoiceInboundRequestSchema } from "../_shared/schemas/voice-inbound.ts";
+import { handleVoiceInbound } from "./handler.ts";
 
 const logger = createLogger({ fn: "voice-inbound" });
 const RETELL_WEBHOOK_SIGNING_SECRET = requireEnv("RETELL_WEBHOOK_SIGNING_SECRET");

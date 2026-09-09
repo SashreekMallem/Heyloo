@@ -1,11 +1,11 @@
-import { htmlToPlainText } from "../_shared/html-text.js";
-import type { AnthropicFetch } from "../_shared/providers/anthropic.js";
-import { createMessage } from "../_shared/providers/anthropic.js";
-import type { RetellFetch } from "../_shared/providers/retell.js";
-import { createWebCall } from "../_shared/providers/retell.js";
-import { sanitizeScrapedContent } from "../_shared/sanitize.js";
-import type { ConfirmDemoRequest, CreateDemoRequest } from "../_shared/schemas/demo-agent.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+import { htmlToPlainText } from "../_shared/html-text.ts";
+import type { AnthropicFetch } from "../_shared/providers/anthropic.ts";
+import { createMessage } from "../_shared/providers/anthropic.ts";
+import type { RetellFetch } from "../_shared/providers/retell.ts";
+import { createWebCall } from "../_shared/providers/retell.ts";
+import { sanitizeScrapedContent } from "../_shared/sanitize.ts";
+import type { ConfirmDemoRequest, CreateDemoRequest } from "../_shared/schemas/demo-agent.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `/api-demo-agent` (BACKEND_SPEC §7.8, MASTER_SPEC §2 binding "review-

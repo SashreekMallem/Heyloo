@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { SqlClient } from "../../_shared/types.js";
-import type { CallContext } from "../context.js";
-import { createBooking } from "./create_booking.js";
+import type { SqlClient } from "../../_shared/types.ts";
+import type { CallContext } from "../context.ts";
+import { createBooking } from "./create_booking.ts";
 
 const ctx: CallContext = {
   tenantId: "tenant_1",

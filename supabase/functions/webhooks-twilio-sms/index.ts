@@ -1,13 +1,13 @@
 // Deno entrypoint (excluded from ../tsconfig.json). verify_jwt false in
 // supabase/config.toml — Twilio calls this directly with its own
 // X-Twilio-Signature scheme (BACKEND_SPEC Rule 2 fail-closed).
-import { getSql } from "../_shared/deno/db.js";
-import { requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import { formParamsToObject, TwilioInboundSmsSchema } from "../_shared/schemas/twilio-sms.js";
-import { verifyTwilioSignature } from "../_shared/twilio-signature.js";
-import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/webhook-dedup.js";
-import { processInboundSms } from "./handler.js";
+import { getSql } from "../_shared/deno/db.ts";
+import { requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import { formParamsToObject, TwilioInboundSmsSchema } from "../_shared/schemas/twilio-sms.ts";
+import { verifyTwilioSignature } from "../_shared/twilio-signature.ts";
+import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/webhook-dedup.ts";
+import { processInboundSms } from "./handler.ts";
 
 const logger = createLogger({ fn: "webhooks-twilio-sms" });
 const TWILIO_AUTH_TOKEN = requireEnv("TWILIO_AUTH_TOKEN");

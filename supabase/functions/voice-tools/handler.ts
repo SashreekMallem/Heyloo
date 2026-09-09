@@ -1,5 +1,5 @@
-import type { StripeFetch } from "../_shared/providers/stripe.js";
-import { fallbackEnvelope, toolEnvelope } from "../_shared/responses.js";
+import type { StripeFetch } from "../_shared/providers/stripe.ts";
+import { fallbackEnvelope, toolEnvelope } from "../_shared/responses.ts";
 import {
   CancelBookingArgsSchema,
   CheckAvailabilityArgsSchema,
@@ -11,18 +11,18 @@ import {
   TakeMessageArgsSchema,
   ToolDispatchEnvelopeSchema,
   UpdateBookingArgsSchema,
-} from "../_shared/schemas/voice-tools.js";
-import type { Logger, SqlClient, ToolResultEnvelope } from "../_shared/types.js";
-import { resolveCallContext } from "./context.js";
-import { cancelBooking } from "./tools/cancel_booking.js";
-import { checkAvailability } from "./tools/check_availability.js";
-import { createBooking } from "./tools/create_booking.js";
-import { createOrder } from "./tools/create_order.js";
-import { lookupCustomer } from "./tools/lookup_customer.js";
-import { sendPaymentLink } from "./tools/send_payment_link.js";
-import { sendSmsConfirmation } from "./tools/send_sms_confirmation.js";
-import { takeMessage } from "./tools/take_message.js";
-import { updateBooking } from "./tools/update_booking.js";
+} from "../_shared/schemas/voice-tools.ts";
+import type { Logger, SqlClient, ToolResultEnvelope } from "../_shared/types.ts";
+import { resolveCallContext } from "./context.ts";
+import { cancelBooking } from "./tools/cancel_booking.ts";
+import { checkAvailability } from "./tools/check_availability.ts";
+import { createBooking } from "./tools/create_booking.ts";
+import { createOrder } from "./tools/create_order.ts";
+import { lookupCustomer } from "./tools/lookup_customer.ts";
+import { sendPaymentLink } from "./tools/send_payment_link.ts";
+import { sendSmsConfirmation } from "./tools/send_sms_confirmation.ts";
+import { takeMessage } from "./tools/take_message.ts";
+import { updateBooking } from "./tools/update_booking.ts";
 
 /**
  * `/voice-tools` dispatcher (BACKEND_SPEC §7.2). This is the part of the hot

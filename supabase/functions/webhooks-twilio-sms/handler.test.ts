@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SqlClient } from "../_shared/types.js";
-import { processInboundSms } from "./handler.js";
+import type { SqlClient } from "../_shared/types.ts";
+import { processInboundSms } from "./handler.ts";
 
 function makeSql(fixtures: Record<string, unknown[]> = {}): { sql: SqlClient; calls: string[] } {
   const calls: string[] = [];

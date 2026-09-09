@@ -1,4 +1,4 @@
-import type { SqlClient } from "./types.js";
+import type { SqlClient } from "./types.ts";
 
 /** Append-only `admin_actions` audit log writer (BACKEND_SPEC §1.1/§7.7,
  * G15) — every mutating admin endpoint writes one row with before/after

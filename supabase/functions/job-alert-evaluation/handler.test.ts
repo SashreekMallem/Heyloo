@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { SqlClient } from "../_shared/types.js";
+import type { SqlClient } from "../_shared/types.ts";
 import {
   evaluateNegativeMargin,
   evaluateToolFailureSpike,
   evaluateUsageSpike,
   upsertAlert,
-} from "./handler.js";
+} from "./handler.ts";
 
 function makeSql(fixtures: Record<string, unknown[]> = {}): {
   sql: SqlClient;

@@ -6,8 +6,8 @@ import {
   moveToDeadLetter,
   QUEUE_NAMES,
   readBatch,
-} from "./queue.js";
-import type { SqlClient } from "./types.js";
+} from "./queue.ts";
+import type { SqlClient } from "./types.ts";
 
 function makeFakeSql(rows: unknown[] = []): { sql: SqlClient; calls: unknown[][] } {
   const calls: unknown[][] = [];

@@ -1,7 +1,7 @@
-import type { RetellFetch } from "../_shared/providers/retell.js";
-import type { TwilioFetch } from "../_shared/providers/twilio.js";
-import { updateIncomingPhoneNumberVoiceUrl } from "../_shared/providers/twilio.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+import type { RetellFetch } from "../_shared/providers/retell.ts";
+import type { TwilioFetch } from "../_shared/providers/twilio.ts";
+import { updateIncomingPhoneNumberVoiceUrl } from "../_shared/providers/twilio.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * Retell health-check / failover job (BACKEND_SPEC §8, blocker G5): every 2

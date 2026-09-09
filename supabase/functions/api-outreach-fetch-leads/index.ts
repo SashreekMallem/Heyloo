@@ -4,13 +4,13 @@
 // verification alone is not treated as sufficient), same pattern as
 // `admin/index.ts`.
 
-import { isPlatformAdmin } from "../_shared/admin-auth.js";
-import { getSql } from "../_shared/deno/db.js";
-import { requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import { jsonResponse } from "../_shared/responses.js";
-import { FetchLeadsRequestSchema } from "../_shared/schemas/outreach-fetch-leads.js";
-import { handleFetchLeads } from "./handler.js";
+import { isPlatformAdmin } from "../_shared/admin-auth.ts";
+import { getSql } from "../_shared/deno/db.ts";
+import { requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import { jsonResponse } from "../_shared/responses.ts";
+import { FetchLeadsRequestSchema } from "../_shared/schemas/outreach-fetch-leads.ts";
+import { handleFetchLeads } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-outreach-fetch-leads" });
 const APOLLO_API_KEY = requireEnv("APOLLO_API_KEY");

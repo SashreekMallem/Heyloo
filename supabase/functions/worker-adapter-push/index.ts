@@ -1,20 +1,20 @@
 // Deno entrypoint (excluded from ../tsconfig.json). Invoked by the pg_cron
 // "Queue worker poll" job (BACKEND_SPEC §8, every minute).
-import { timingSafeEqual } from "../_shared/crypto.js";
-import { getSql } from "../_shared/deno/db.js";
-import { optionalEnv, requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import type { AdapterPushQueueMsg } from "../_shared/queue.js";
+import { timingSafeEqual } from "../_shared/crypto.ts";
+import { getSql } from "../_shared/deno/db.ts";
+import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import type { AdapterPushQueueMsg } from "../_shared/queue.ts";
 import {
   deleteMessage,
   enqueue,
   moveToDeadLetter,
   QUEUE_NAMES,
   readBatch,
-} from "../_shared/queue.js";
-import { jsonResponse } from "../_shared/responses.js";
-import type { AdapterPushDeps } from "./handler.js";
-import { pushToAdapter } from "./handler.js";
+} from "../_shared/queue.ts";
+import { jsonResponse } from "../_shared/responses.ts";
+import type { AdapterPushDeps } from "./handler.ts";
+import { pushToAdapter } from "./handler.ts";
 
 const logger = createLogger({ fn: "worker-adapter-push" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");

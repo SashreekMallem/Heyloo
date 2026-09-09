@@ -1,6 +1,6 @@
-import type { RetellFetch } from "../_shared/providers/retell.js";
-import { getCall } from "../_shared/providers/retell.js";
-import type { SqlClient } from "../_shared/types.js";
+import type { RetellFetch } from "../_shared/providers/retell.ts";
+import { getCall } from "../_shared/providers/retell.ts";
+import type { SqlClient } from "../_shared/types.ts";
 
 /**
  * `recording_fetch_queue` worker (BACKEND_SPEC §9/§7.3). Recordings must be

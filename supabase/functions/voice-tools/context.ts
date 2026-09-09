@@ -1,4 +1,4 @@
-import type { SqlClient } from "../_shared/types.js";
+import type { SqlClient } from "../_shared/types.ts";
 
 /**
  * Resolves the live call's tenant + real caller number from `call_logs` by

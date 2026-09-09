@@ -1,8 +1,8 @@
-import type { RetellFetch } from "../_shared/providers/retell.js";
-import { getCall } from "../_shared/providers/retell.js";
-import { RetellCallObjectSchema } from "../_shared/schemas/voice-events.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
-import { handleCallAnalyzed } from "../voice-events/handler.js";
+import type { RetellFetch } from "../_shared/providers/retell.ts";
+import { getCall } from "../_shared/providers/retell.ts";
+import { RetellCallObjectSchema } from "../_shared/schemas/voice-events.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
+import { handleCallAnalyzed } from "../voice-events/handler.ts";
 
 /**
  * Nightly `get-call` reconciliation job (BACKEND_SPEC §8): for every

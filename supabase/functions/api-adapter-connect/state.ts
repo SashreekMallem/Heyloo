@@ -1,4 +1,4 @@
-import { hmacSha256Hex, timingSafeEqual } from "../_shared/crypto.js";
+import { hmacSha256Hex, timingSafeEqual } from "../_shared/crypto.ts";
 
 /**
  * OAuth `state` parameter: signed, tamper-evident, and tenant-bound so the

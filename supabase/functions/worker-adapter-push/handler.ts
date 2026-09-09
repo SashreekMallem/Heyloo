@@ -5,7 +5,7 @@ import {
   listEzyVetAppointmentChanges,
   refreshEzyVetToken,
   shouldRefreshEzyVetAuth,
-} from "../_shared/providers/ezyvet.js";
+} from "../_shared/providers/ezyvet.ts";
 import {
   freeBusyQuery as googleFreeBusyQuery,
   getCalendarEvent as googleGetCalendarEvent,
@@ -13,21 +13,21 @@ import {
   listCalendarEvents as googleListCalendarEvents,
   refreshGoogleToken,
   toGoogleEventId,
-} from "../_shared/providers/google-calendar.js";
+} from "../_shared/providers/google-calendar.ts";
 import {
   createShopmonkeyAppointment,
   createShopmonkeyCustomer,
   findShopmonkeyCustomerByPhone,
   listShopmonkeyAppointmentChanges,
-} from "../_shared/providers/shopmonkey.js";
+} from "../_shared/providers/shopmonkey.ts";
 import {
   searchSquareCatalog as _searchSquareCatalog,
   createSquareBooking,
   createSquareOrder,
   refreshSquareToken,
-} from "../_shared/providers/square.js";
-import type { AdapterPushQueueMsg } from "../_shared/queue.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+} from "../_shared/providers/square.ts";
+import type { AdapterPushQueueMsg } from "../_shared/queue.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `adapter_push_queue` worker (BACKEND_SPEC §9/§7.6) — real per-adapter

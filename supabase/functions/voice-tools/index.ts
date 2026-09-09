@@ -3,15 +3,15 @@
 // at 1.5s -> graceful fallback, never silence and never a non-200 for a
 // business-logic failure. verify_jwt is false in supabase/config.toml —
 // auth is the Retell HMAC signature verified below.
-import { ToolCircuitBreaker } from "../_shared/circuit-breaker.js";
-import { runInBackground } from "../_shared/deno/background.js";
-import { getSql } from "../_shared/deno/db.js";
-import { optionalEnv, requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import { fallbackEnvelope, jsonResponse } from "../_shared/responses.js";
-import { verifyRetellSignature } from "../_shared/retell-signature.js";
-import { recordToolStat } from "../_shared/tool-stats.js";
-import { dispatchTool, isKnownTool, validateEnvelope } from "./handler.js";
+import { ToolCircuitBreaker } from "../_shared/circuit-breaker.ts";
+import { runInBackground } from "../_shared/deno/background.ts";
+import { getSql } from "../_shared/deno/db.ts";
+import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import { fallbackEnvelope, jsonResponse } from "../_shared/responses.ts";
+import { verifyRetellSignature } from "../_shared/retell-signature.ts";
+import { recordToolStat } from "../_shared/tool-stats.ts";
+import { dispatchTool, isKnownTool, validateEnvelope } from "./handler.ts";
 
 const logger = createLogger({ fn: "voice-tools" });
 const RETELL_WEBHOOK_SIGNING_SECRET = requireEnv("RETELL_WEBHOOK_SIGNING_SECRET");

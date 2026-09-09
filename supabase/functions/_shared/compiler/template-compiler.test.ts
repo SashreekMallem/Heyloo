@@ -3,7 +3,7 @@ import {
   type CompilerAgentTemplate,
   compileTemplate,
   verifyDisclosureGate,
-} from "./template-compiler.js";
+} from "./template-compiler.ts";
 
 const DISCLOSURE = "This call may be recorded and you are speaking with an AI assistant.";
 

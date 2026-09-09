@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { SqlClient } from "../_shared/types.js";
-import { processOutreachEvent } from "./handler.js";
+import type { SqlClient } from "../_shared/types.ts";
+import { processOutreachEvent } from "./handler.ts";
 
 function jsonRes(body: unknown, ok = true, status = 200): Response {
   return {

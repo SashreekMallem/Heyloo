@@ -1,14 +1,14 @@
 // Deno entrypoint (excluded from ../tsconfig.json). verify_jwt false in
 // supabase/config.toml — Stripe signature verified below (fail closed).
-import { runInBackground } from "../_shared/deno/background.js";
-import { getSql } from "../_shared/deno/db.js";
-import { requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import { jsonResponse } from "../_shared/responses.js";
-import { StripeEventSchema } from "../_shared/schemas/stripe-event.js";
-import { verifyStripeSignature } from "../_shared/stripe-signature.js";
-import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/webhook-dedup.js";
-import { processStripeEvent } from "./handler.js";
+import { runInBackground } from "../_shared/deno/background.ts";
+import { getSql } from "../_shared/deno/db.ts";
+import { requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import { jsonResponse } from "../_shared/responses.ts";
+import { StripeEventSchema } from "../_shared/schemas/stripe-event.ts";
+import { verifyStripeSignature } from "../_shared/stripe-signature.ts";
+import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/webhook-dedup.ts";
+import { processStripeEvent } from "./handler.ts";
 
 const logger = createLogger({ fn: "webhooks-stripe" });
 const STRIPE_WEBHOOK_SIGNING_SECRET = requireEnv("STRIPE_WEBHOOK_SIGNING_SECRET");

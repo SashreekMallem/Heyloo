@@ -1,7 +1,7 @@
-import { normalizeE164 } from "../_shared/phone.js";
-import { enqueue, QUEUE_NAMES } from "../_shared/queue.js";
-import type { RetellCallObject, VoiceEventRequest } from "../_shared/schemas/voice-events.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+import { normalizeE164 } from "../_shared/phone.ts";
+import { enqueue, QUEUE_NAMES } from "../_shared/queue.ts";
+import type { RetellCallObject, VoiceEventRequest } from "../_shared/schemas/voice-events.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `/voice-events` background processing (BACKEND_SPEC §7.3). Every branch is

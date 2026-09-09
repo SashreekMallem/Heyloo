@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { hmacSha1Base64 } from "./crypto.js";
-import { verifyTwilioSignature } from "./twilio-signature.js";
+import { hmacSha1Base64 } from "./crypto.ts";
+import { verifyTwilioSignature } from "./twilio-signature.ts";
 
 const AUTH_TOKEN = "test-twilio-auth-token";
 const URL = "https://heyloo.example.com/functions/v1/webhooks-twilio-sms";

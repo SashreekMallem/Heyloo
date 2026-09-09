@@ -1,7 +1,7 @@
-import type { StripeFetch } from "../_shared/providers/stripe.js";
-import { createSubscriptionCheckoutSession } from "../_shared/providers/stripe.js";
-import { CheckoutRequestSchema } from "../_shared/schemas/checkout.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+import type { StripeFetch } from "../_shared/providers/stripe.ts";
+import { createSubscriptionCheckoutSession } from "../_shared/providers/stripe.ts";
+import { CheckoutRequestSchema } from "../_shared/schemas/checkout.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `/api-checkout` (API_AND_FLOWS.md A.3 "Checkout Session (subscription

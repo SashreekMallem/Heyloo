@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeE164, samePhone } from "./phone.js";
+import { normalizeE164, samePhone } from "./phone.ts";
 
 describe("normalizeE164", () => {
   it("passes through an already-E.164 number", () => {

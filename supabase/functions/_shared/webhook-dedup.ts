@@ -1,4 +1,4 @@
-import type { SqlClient } from "./types.js";
+import type { SqlClient } from "./types.ts";
 
 /**
  * The idempotent-insert gate every webhook handler must write to before any

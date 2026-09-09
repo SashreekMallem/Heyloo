@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createLogger } from "../_shared/logger.js";
-import type { StripeEvent } from "../_shared/schemas/stripe-event.js";
-import type { SqlClient } from "../_shared/types.js";
-import { processStripeEvent } from "./handler.js";
+import { createLogger } from "../_shared/logger.ts";
+import type { StripeEvent } from "../_shared/schemas/stripe-event.ts";
+import type { SqlClient } from "../_shared/types.ts";
+import { processStripeEvent } from "./handler.ts";
 
 const logger = createLogger();
 

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createLogger } from "../_shared/logger.js";
-import { VoiceInboundRequestSchema } from "../_shared/schemas/voice-inbound.js";
-import type { SqlClient } from "../_shared/types.js";
-import { handleVoiceInbound } from "./handler.js";
+import { createLogger } from "../_shared/logger.ts";
+import { VoiceInboundRequestSchema } from "../_shared/schemas/voice-inbound.ts";
+import type { SqlClient } from "../_shared/types.ts";
+import { handleVoiceInbound } from "./handler.ts";
 
 // Nested shape confirmed live (LIVE-MINE-FIXES, docs/VERIFY.md VERIFY-2):
 // Retell's real `call_inbound` webhook body wraps from_number/to_number

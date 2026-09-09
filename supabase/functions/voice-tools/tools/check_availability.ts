@@ -1,7 +1,7 @@
 import type { z } from "zod";
-import type { CheckAvailabilityArgsSchema } from "../../_shared/schemas/voice-tools.js";
-import type { SqlClient } from "../../_shared/types.js";
-import type { CallContext } from "../context.js";
+import type { CheckAvailabilityArgsSchema } from "../../_shared/schemas/voice-tools.ts";
+import type { SqlClient } from "../../_shared/types.ts";
+import type { CallContext } from "../context.ts";
 
 type Args = z.infer<typeof CheckAvailabilityArgsSchema>;
 

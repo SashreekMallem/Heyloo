@@ -1,4 +1,4 @@
-import type { SqlClient } from "./types.js";
+import type { SqlClient } from "./types.ts";
 
 /**
  * Shared cost-ledger writers for the outreach pipeline (BACKEND_SPEC §1.8/

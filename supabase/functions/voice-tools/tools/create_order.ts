@@ -1,12 +1,12 @@
 import type { z } from "zod";
-import { isWithinRadius } from "../../_shared/geo.js";
-import { orderIdempotencyKey } from "../../_shared/idempotency.js";
-import { normalizeE164 } from "../../_shared/phone.js";
-import type { AdapterPushQueueMsg } from "../../_shared/queue.js";
-import { enqueue, QUEUE_NAMES } from "../../_shared/queue.js";
-import type { CreateOrderArgsSchema } from "../../_shared/schemas/voice-tools.js";
-import type { Logger, SqlClient } from "../../_shared/types.js";
-import type { CallContext } from "../context.js";
+import { isWithinRadius } from "../../_shared/geo.ts";
+import { orderIdempotencyKey } from "../../_shared/idempotency.ts";
+import { normalizeE164 } from "../../_shared/phone.ts";
+import type { AdapterPushQueueMsg } from "../../_shared/queue.ts";
+import { enqueue, QUEUE_NAMES } from "../../_shared/queue.ts";
+import type { CreateOrderArgsSchema } from "../../_shared/schemas/voice-tools.ts";
+import type { Logger, SqlClient } from "../../_shared/types.ts";
+import type { CallContext } from "../context.ts";
 
 type Args = z.infer<typeof CreateOrderArgsSchema>;
 

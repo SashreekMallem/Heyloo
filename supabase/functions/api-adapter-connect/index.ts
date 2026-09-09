@@ -2,12 +2,12 @@
 // Supabase verifies the bearer JWT before this code runs; the authenticated
 // user's id (`sub`) is what this function trusts, never a body-supplied
 // user id (same convention as api-checkout/index.ts).
-import { getSql } from "../_shared/deno/db.js";
-import { requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import { jsonResponse } from "../_shared/responses.js";
-import type { AdapterConnectDeps } from "./handler.js";
-import { handleAdapterConnect } from "./handler.js";
+import { getSql } from "../_shared/deno/db.ts";
+import { requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import { jsonResponse } from "../_shared/responses.ts";
+import type { AdapterConnectDeps } from "./handler.ts";
+import { handleAdapterConnect } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-adapter-connect" });
 

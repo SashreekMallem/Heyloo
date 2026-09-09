@@ -1,9 +1,9 @@
 import type { z } from "zod";
-import { bookingIdempotencyKey } from "../../_shared/idempotency.js";
-import { normalizeE164 } from "../../_shared/phone.js";
-import type { CreateBookingArgsSchema } from "../../_shared/schemas/voice-tools.js";
-import type { SqlClient } from "../../_shared/types.js";
-import type { CallContext } from "../context.js";
+import { bookingIdempotencyKey } from "../../_shared/idempotency.ts";
+import { normalizeE164 } from "../../_shared/phone.ts";
+import type { CreateBookingArgsSchema } from "../../_shared/schemas/voice-tools.ts";
+import type { SqlClient } from "../../_shared/types.ts";
+import type { CallContext } from "../context.ts";
 
 type Args = z.infer<typeof CreateBookingArgsSchema>;
 

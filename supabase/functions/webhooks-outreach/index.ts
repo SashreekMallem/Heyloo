@@ -5,15 +5,15 @@
 // the fail-closed default until the provider is picked and a real HMAC
 // scheme is verified (docs/VERIFY.md).
 
-import { timingSafeEqual } from "../_shared/crypto.js";
-import { runInBackground } from "../_shared/deno/background.js";
-import { getSql } from "../_shared/deno/db.js";
-import { optionalEnv, requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import { jsonResponse } from "../_shared/responses.js";
-import { NormalizedOutreachEventSchema } from "../_shared/schemas/outreach-event.js";
-import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/webhook-dedup.js";
-import { processOutreachEvent } from "./handler.js";
+import { timingSafeEqual } from "../_shared/crypto.ts";
+import { runInBackground } from "../_shared/deno/background.ts";
+import { getSql } from "../_shared/deno/db.ts";
+import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import { jsonResponse } from "../_shared/responses.ts";
+import { NormalizedOutreachEventSchema } from "../_shared/schemas/outreach-event.ts";
+import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/webhook-dedup.ts";
+import { processOutreachEvent } from "./handler.ts";
 
 const logger = createLogger({ fn: "webhooks-outreach" });
 const OUTREACH_WEBHOOK_SECRET = requireEnv("OUTREACH_WEBHOOK_SECRET");

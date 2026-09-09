@@ -1,4 +1,4 @@
-import type { SqlClient } from "./types.js";
+import type { SqlClient } from "./types.ts";
 
 /**
  * Per-tool latency/error stat emission for the cockpit bottleneck view +

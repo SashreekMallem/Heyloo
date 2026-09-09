@@ -1,4 +1,4 @@
-import { samePhone } from "./phone.js";
+import { samePhone } from "./phone.ts";
 
 /**
  * MASTER_SPEC §3.7 identity fallback: reschedule/cancel when the live

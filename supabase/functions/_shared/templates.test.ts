@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderTemplate } from "./templates.js";
+import { renderTemplate } from "./templates.ts";
 
 describe("renderTemplate", () => {
   it("renders order_confirmation with a formatted dollar amount", () => {

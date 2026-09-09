@@ -1,11 +1,11 @@
-import type { TwilioFetch } from "../_shared/providers/twilio.js";
+import type { TwilioFetch } from "../_shared/providers/twilio.ts";
 import {
   addPhoneNumberToMessagingService,
   createA2pCampaign,
   createMessagingService,
   getA2pCampaign,
-} from "../_shared/providers/twilio.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+} from "../_shared/providers/twilio.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `/api-a2p-register` (API_AND_FLOWS.md A.2 "A2P 10DLC brand + campaign

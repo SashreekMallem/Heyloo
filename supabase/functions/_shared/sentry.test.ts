@@ -5,7 +5,7 @@ import {
   parseDsn,
   randomEventId,
   sendToSentry,
-} from "./sentry.js";
+} from "./sentry.ts";
 
 describe("parseDsn", () => {
   it("parses a standard SaaS DSN", () => {

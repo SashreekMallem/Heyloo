@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SqlClient } from "./types.js";
-import { insertWebhookEventIfNew, markWebhookEventProcessed } from "./webhook-dedup.js";
+import type { SqlClient } from "./types.ts";
+import { insertWebhookEventIfNew, markWebhookEventProcessed } from "./webhook-dedup.ts";
 
 function makeFakeSql(rows: unknown[]): { sql: SqlClient; calls: unknown[][] } {
   const calls: unknown[][] = [];

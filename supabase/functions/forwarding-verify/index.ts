@@ -1,9 +1,9 @@
 // Deno entrypoint (excluded from ../tsconfig.json). verify_jwt true —
 // authenticated tenant owner/admin (BACKEND_SPEC §7.10).
-import { getSql } from "../_shared/deno/db.js";
-import { createLogger } from "../_shared/logger.js";
-import { jsonResponse } from "../_shared/responses.js";
-import { verifyForwarding } from "./handler.js";
+import { getSql } from "../_shared/deno/db.ts";
+import { createLogger } from "../_shared/logger.ts";
+import { jsonResponse } from "../_shared/responses.ts";
+import { verifyForwarding } from "./handler.ts";
 
 const logger = createLogger({ fn: "forwarding-verify" });
 

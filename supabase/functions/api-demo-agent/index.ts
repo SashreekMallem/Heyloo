@@ -1,15 +1,15 @@
 // Deno entrypoint (excluded from ../tsconfig.json). verify_jwt false —
 // public marketing-site flow (BACKEND_SPEC §7.8); rate-limiting/CAPTCHA is
 // the marketing-site layer's job per spec, not this function's.
-import { getSql } from "../_shared/deno/db.js";
-import { optionalEnv, requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import { jsonResponse } from "../_shared/responses.js";
+import { getSql } from "../_shared/deno/db.ts";
+import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import { jsonResponse } from "../_shared/responses.ts";
 import {
   ConfirmDemoRequestSchema,
   CreateDemoRequestSchema,
-} from "../_shared/schemas/demo-agent.js";
-import { handleConfirmDemo, handleCreateDemo } from "./handler.js";
+} from "../_shared/schemas/demo-agent.ts";
+import { handleConfirmDemo, handleCreateDemo } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-demo-agent" });
 const ANTHROPIC_API_KEY = requireEnv("ANTHROPIC_API_KEY");

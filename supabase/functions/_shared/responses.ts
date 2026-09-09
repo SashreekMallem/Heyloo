@@ -1,4 +1,4 @@
-import type { ToolResultEnvelope } from "./types.js";
+import type { ToolResultEnvelope } from "./types.ts";
 
 export const FALLBACK_MESSAGE = "I'll take your details and have someone confirm.";
 

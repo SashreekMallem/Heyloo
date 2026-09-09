@@ -1,8 +1,8 @@
-import { htmlToPlainText } from "../_shared/html-text.js";
-import type { AnthropicBatchRequestItem, AnthropicFetch } from "../_shared/providers/anthropic.js";
-import { createMessageBatch } from "../_shared/providers/anthropic.js";
-import { sanitizeScrapedContent } from "../_shared/sanitize.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+import { htmlToPlainText } from "../_shared/html-text.ts";
+import type { AnthropicBatchRequestItem, AnthropicFetch } from "../_shared/providers/anthropic.ts";
+import { createMessageBatch } from "../_shared/providers/anthropic.ts";
+import { sanitizeScrapedContent } from "../_shared/sanitize.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `job-outreach-personalize` — SUBMIT phase (BACKEND_SPEC §1.8, T8 build

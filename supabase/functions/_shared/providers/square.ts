@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "../crypto.js";
+import { timingSafeEqual } from "../crypto.ts";
 
 /**
  * T7 addition: catalog/booking/order/availability/auth REST calls (this

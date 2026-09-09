@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyInboundSms } from "./sms-compliance.js";
+import { classifyInboundSms } from "./sms-compliance.ts";
 
 describe("classifyInboundSms", () => {
   it.each(["STOP", "stop", "  Stop  ", "STOPALL", "UNSUBSCRIBE", "Cancel", "End", "Quit"])(

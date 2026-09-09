@@ -1,29 +1,29 @@
-import { writeAdminAction } from "../_shared/admin-actions.js";
-import type { AdminJwtClaims } from "../_shared/admin-auth.js";
-import { isAal2, isPlatformAdmin } from "../_shared/admin-auth.js";
+import { writeAdminAction } from "../_shared/admin-actions.ts";
+import type { AdminJwtClaims } from "../_shared/admin-auth.ts";
+import { isAal2, isPlatformAdmin } from "../_shared/admin-auth.ts";
 import {
   type CompilerAgentTemplate,
   compileTemplate,
-} from "../_shared/compiler/template-compiler.js";
-import { isSuppressed } from "../_shared/lead-dedup.js";
-import type { ResendFetch } from "../_shared/providers/resend.js";
-import { sendEmail } from "../_shared/providers/resend.js";
-import type { RetellFetch } from "../_shared/providers/retell.js";
+} from "../_shared/compiler/template-compiler.ts";
+import { isSuppressed } from "../_shared/lead-dedup.ts";
+import type { ResendFetch } from "../_shared/providers/resend.ts";
+import { sendEmail } from "../_shared/providers/resend.ts";
+import type { RetellFetch } from "../_shared/providers/retell.ts";
 import {
   createAgent,
   createConversationFlow,
   createRetellLLM,
   publishAgentVersion,
-} from "../_shared/providers/retell.js";
-import type { SmartleadFetch } from "../_shared/providers/smartlead.js";
+} from "../_shared/providers/retell.ts";
+import type { SmartleadFetch } from "../_shared/providers/smartlead.ts";
 import {
   createCampaign as createSmartleadCampaign,
   updateCampaignStatus as updateSmartleadCampaignStatus,
-} from "../_shared/providers/smartlead.js";
-import type { SupabaseAdminFetch } from "../_shared/providers/supabase-admin.js";
-import { generateMagicLink, getUserEmailById } from "../_shared/providers/supabase-admin.js";
-import { renderTemplate } from "../_shared/templates.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+} from "../_shared/providers/smartlead.ts";
+import type { SupabaseAdminFetch } from "../_shared/providers/supabase-admin.ts";
+import { generateMagicLink, getUserEmailById } from "../_shared/providers/supabase-admin.ts";
+import { renderTemplate } from "../_shared/templates.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `/admin-*` single-function internal router (BACKEND_SPEC §7.7 —

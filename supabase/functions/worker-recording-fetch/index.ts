@@ -1,25 +1,25 @@
 // Deno entrypoint (excluded from ../tsconfig.json). Invoked by the pg_cron
 // "Queue worker poll" job (BACKEND_SPEC §8, every minute).
-import { timingSafeEqual } from "../_shared/crypto.js";
-import { getSql } from "../_shared/deno/db.js";
-import { requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import type { RecordingFetchQueueMsg } from "../_shared/queue.js";
+import { timingSafeEqual } from "../_shared/crypto.ts";
+import { getSql } from "../_shared/deno/db.ts";
+import { requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import type { RecordingFetchQueueMsg } from "../_shared/queue.ts";
 import {
   deleteMessage,
   enqueue,
   moveToDeadLetter,
   QUEUE_NAMES,
   readBatch,
-} from "../_shared/queue.js";
-import { jsonResponse } from "../_shared/responses.js";
-import { fetchAndStoreRecording } from "./handler.js";
+} from "../_shared/queue.ts";
+import { jsonResponse } from "../_shared/responses.ts";
+import { fetchAndStoreRecording } from "./handler.ts";
 
 const logger = createLogger({ fn: "worker-recording-fetch" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
 const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
 const SUPABASE_URL = requireEnv("SUPABASE_URL");
-const SUPABASE_SECRET_KEY = requireEnv("SUPABASE_SECRET_KEY");
+const SB_SECRET_KEY = requireEnv("SB_SECRET_KEY");
 
 const VISIBILITY_TIMEOUT_SECONDS = 60;
 const BATCH_SIZE = 20;
@@ -36,7 +36,7 @@ async function uploadToStorage(
     {
       method: "POST",
       headers: {
-        authorization: `Bearer ${SUPABASE_SECRET_KEY}`,
+        authorization: `Bearer ${SB_SECRET_KEY}`,
         "content-type": contentType,
         "x-upsert": "true",
       },

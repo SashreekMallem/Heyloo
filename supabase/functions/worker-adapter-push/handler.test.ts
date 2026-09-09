@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createLogger } from "../_shared/logger.js";
-import type { SqlClient } from "../_shared/types.js";
-import type { AdapterPushDeps } from "./handler.js";
-import { ADAPTER_PUSHERS, pollAdapterChanges, pushToAdapter } from "./handler.js";
+import { createLogger } from "../_shared/logger.ts";
+import type { SqlClient } from "../_shared/types.ts";
+import type { AdapterPushDeps } from "./handler.ts";
+import { ADAPTER_PUSHERS, pollAdapterChanges, pushToAdapter } from "./handler.ts";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

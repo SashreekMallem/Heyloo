@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { hmacSha256Hex } from "./crypto.js";
-import { verifyStripeSignature } from "./stripe-signature.js";
+import { hmacSha256Hex } from "./crypto.ts";
+import { verifyStripeSignature } from "./stripe-signature.ts";
 
 const SECRET = "whsec_test_secret";
 const BODY = JSON.stringify({ id: "evt_123", type: "checkout.session.completed" });

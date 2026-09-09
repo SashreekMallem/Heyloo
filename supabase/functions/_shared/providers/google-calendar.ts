@@ -11,7 +11,7 @@
  * confirming before relying on the renewal cadence in production.
  */
 
-import { timingSafeEqual } from "../crypto.js";
+import { timingSafeEqual } from "../crypto.ts";
 
 export const GOOGLE_CALENDAR_BASE_URL = "https://www.googleapis.com/calendar/v3";
 export const GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";

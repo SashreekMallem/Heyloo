@@ -1,11 +1,11 @@
 // Deno entrypoint (excluded from ../tsconfig.json). verify_jwt true —
 // authenticated tenant owner, OR triggered internally by the provisioning
 // saga (service_role) — same auth convention as api-provision/index.ts.
-import { getSql } from "../_shared/deno/db.js";
-import { requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import { jsonResponse } from "../_shared/responses.js";
-import { registerA2p } from "./handler.js";
+import { getSql } from "../_shared/deno/db.ts";
+import { requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import { jsonResponse } from "../_shared/responses.ts";
+import { registerA2p } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-a2p-register" });
 const TWILIO_ACCOUNT_SID = requireEnv("TWILIO_ACCOUNT_SID");

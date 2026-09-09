@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ToolCircuitBreaker } from "./circuit-breaker.js";
+import { ToolCircuitBreaker } from "./circuit-breaker.ts";
 
 function makeBreaker(
   startMs: number,

@@ -1,9 +1,9 @@
 import type { z } from "zod";
-import { normalizeE164 } from "../../_shared/phone.js";
-import { enqueue, QUEUE_NAMES } from "../../_shared/queue.js";
-import type { SendSmsConfirmationArgsSchema } from "../../_shared/schemas/voice-tools.js";
-import type { SqlClient } from "../../_shared/types.js";
-import type { CallContext } from "../context.js";
+import { normalizeE164 } from "../../_shared/phone.ts";
+import { enqueue, QUEUE_NAMES } from "../../_shared/queue.ts";
+import type { SendSmsConfirmationArgsSchema } from "../../_shared/schemas/voice-tools.ts";
+import type { SqlClient } from "../../_shared/types.ts";
+import type { CallContext } from "../context.ts";
 
 type Args = z.infer<typeof SendSmsConfirmationArgsSchema>;
 

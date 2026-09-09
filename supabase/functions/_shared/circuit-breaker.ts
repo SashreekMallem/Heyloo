@@ -1,5 +1,5 @@
-import type { Clock } from "./types.js";
-import { systemClock } from "./types.js";
+import type { Clock } from "./types.ts";
+import { systemClock } from "./types.ts";
 
 /**
  * Per-tool rolling-window circuit breaker for `/voice-tools`

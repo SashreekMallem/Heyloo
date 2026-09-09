@@ -1,10 +1,10 @@
-import { computeGreetingHoursContext } from "../_shared/business-hours.js";
-import { normalizeE164 } from "../_shared/phone.js";
+import { computeGreetingHoursContext } from "../_shared/business-hours.ts";
+import { normalizeE164 } from "../_shared/phone.ts";
 import type {
   VoiceInboundRequest,
   VoiceInboundResponse,
-} from "../_shared/schemas/voice-inbound.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+} from "../_shared/schemas/voice-inbound.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `/voice-inbound` core logic (BACKEND_SPEC §7.1) — number -> tenant ->

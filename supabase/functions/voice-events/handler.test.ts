@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createLogger } from "../_shared/logger.js";
-import type { RetellCallObject } from "../_shared/schemas/voice-events.js";
-import type { SqlClient } from "../_shared/types.js";
-import { handleCallAnalyzed, handleCallEnded, handleCallStarted } from "./handler.js";
+import { createLogger } from "../_shared/logger.ts";
+import type { RetellCallObject } from "../_shared/schemas/voice-events.ts";
+import type { SqlClient } from "../_shared/types.ts";
+import { handleCallAnalyzed, handleCallEnded, handleCallStarted } from "./handler.ts";
 
 const logger = createLogger();
 

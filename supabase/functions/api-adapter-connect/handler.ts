@@ -1,9 +1,9 @@
-import { refreshEzyVetToken } from "../_shared/providers/ezyvet.js";
-import { validateShopmonkeyApiKey } from "../_shared/providers/shopmonkey.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
-import type { AdapterConnectRequest } from "./schema.js";
-import { AdapterConnectRequestSchema } from "./schema.js";
-import { signOAuthState, verifyOAuthState } from "./state.js";
+import { refreshEzyVetToken } from "../_shared/providers/ezyvet.ts";
+import { validateShopmonkeyApiKey } from "../_shared/providers/shopmonkey.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
+import type { AdapterConnectRequest } from "./schema.ts";
+import { AdapterConnectRequestSchema } from "./schema.ts";
+import { signOAuthState, verifyOAuthState } from "./state.ts";
 
 /**
  * `/api-adapter-connect` (BACKEND_SPEC §7.6, task item 3): tenant-facing

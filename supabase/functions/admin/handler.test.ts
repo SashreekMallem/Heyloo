@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { createLogger } from "../_shared/logger.js";
-import type { SqlClient } from "../_shared/types.js";
-import type { AdminRequestContext } from "./handler.js";
-import { routeAdminRequest } from "./handler.js";
+import { createLogger } from "../_shared/logger.ts";
+import type { SqlClient } from "../_shared/types.ts";
+import type { AdminRequestContext } from "./handler.ts";
+import { routeAdminRequest } from "./handler.ts";
 
 const logger = createLogger();
 

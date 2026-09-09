@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { signOAuthState, verifyOAuthState } from "./state.js";
+import { signOAuthState, verifyOAuthState } from "./state.ts";
 
 const SECRET = "state-secret";
 

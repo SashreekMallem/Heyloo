@@ -1,11 +1,11 @@
 import type { z } from "zod";
-import { normalizeE164 } from "../../_shared/phone.js";
-import type { StripeFetch } from "../../_shared/providers/stripe.js";
-import { createCheckoutSession } from "../../_shared/providers/stripe.js";
-import { enqueue, QUEUE_NAMES } from "../../_shared/queue.js";
-import type { SendPaymentLinkArgsSchema } from "../../_shared/schemas/voice-tools.js";
-import type { Logger, SqlClient } from "../../_shared/types.js";
-import type { CallContext } from "../context.js";
+import { normalizeE164 } from "../../_shared/phone.ts";
+import type { StripeFetch } from "../../_shared/providers/stripe.ts";
+import { createCheckoutSession } from "../../_shared/providers/stripe.ts";
+import { enqueue, QUEUE_NAMES } from "../../_shared/queue.ts";
+import type { SendPaymentLinkArgsSchema } from "../../_shared/schemas/voice-tools.ts";
+import type { Logger, SqlClient } from "../../_shared/types.ts";
+import type { CallContext } from "../context.ts";
 
 type Args = z.infer<typeof SendPaymentLinkArgsSchema>;
 

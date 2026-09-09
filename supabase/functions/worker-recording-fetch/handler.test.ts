@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { SqlClient } from "../_shared/types.js";
-import type { RecordingFetchDeps } from "./handler.js";
-import { fetchAndStoreRecording } from "./handler.js";
+import type { SqlClient } from "../_shared/types.ts";
+import type { RecordingFetchDeps } from "./handler.ts";
+import { fetchAndStoreRecording } from "./handler.ts";
 
 function makeSql(): { sql: SqlClient; calls: { text: string; values: unknown[] }[] } {
   const calls: { text: string; values: unknown[] }[] = [];

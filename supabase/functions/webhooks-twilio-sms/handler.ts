@@ -1,7 +1,7 @@
-import { normalizeE164 } from "../_shared/phone.js";
-import type { TwilioInboundSms } from "../_shared/schemas/twilio-sms.js";
-import { classifyInboundSms, SMS_STATIC_REPLIES } from "../_shared/sms-compliance.js";
-import type { SqlClient } from "../_shared/types.js";
+import { normalizeE164 } from "../_shared/phone.ts";
+import type { TwilioInboundSms } from "../_shared/schemas/twilio-sms.ts";
+import { classifyInboundSms, SMS_STATIC_REPLIES } from "../_shared/sms-compliance.ts";
+import type { SqlClient } from "../_shared/types.ts";
 
 const EXCLUSION_VIOLATION = "23P01";
 const UNIQUE_VIOLATION = "23505";

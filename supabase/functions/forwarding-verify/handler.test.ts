@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SqlClient } from "../_shared/types.js";
-import { verifyForwarding } from "./handler.js";
+import type { SqlClient } from "../_shared/types.ts";
+import { verifyForwarding } from "./handler.ts";
 
 describe("verifyForwarding", () => {
   it("returns 404 when the tenant has no active number", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { verifyBookingIdentity } from "./identity-verification.js";
+import { verifyBookingIdentity } from "./identity-verification.ts";
 
 const BASE = {
   callerNumber: "+15551234567",

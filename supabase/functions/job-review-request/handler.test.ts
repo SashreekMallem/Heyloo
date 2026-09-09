@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SqlClient } from "../_shared/types.js";
-import { sendOneReviewRequest } from "./handler.js";
+import type { SqlClient } from "../_shared/types.ts";
+import { sendOneReviewRequest } from "./handler.ts";
 
 describe("sendOneReviewRequest", () => {
   it("inserts a review_request message and enqueues it", async () => {

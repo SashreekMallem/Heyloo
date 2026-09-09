@@ -1,4 +1,4 @@
-import type { Logger, SqlClient } from "../_shared/types.js";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `/webhooks-pos/{provider}` adapter-dispatch shell + shared side effects

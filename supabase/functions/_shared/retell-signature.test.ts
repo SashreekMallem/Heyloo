@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { hmacSha256Hex } from "./crypto.js";
-import { verifyRetellSignature } from "./retell-signature.js";
+import { hmacSha256Hex } from "./crypto.ts";
+import { verifyRetellSignature } from "./retell-signature.ts";
 
 const SECRET = "test-retell-api-key";
 const BODY = JSON.stringify({ event: "call_started", call: { call_id: "call_123" } });

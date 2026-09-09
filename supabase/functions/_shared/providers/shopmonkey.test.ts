@@ -5,7 +5,7 @@ import {
   listShopmonkeyLaborRates,
   normalizeShopmonkeyWebhook,
   verifyShopmonkeyWebhookSignature,
-} from "./shopmonkey.js";
+} from "./shopmonkey.ts";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

@@ -1,8 +1,8 @@
 import type { z } from "zod";
-import { samePhone } from "../../_shared/phone.js";
-import type { LookupCustomerArgsSchema } from "../../_shared/schemas/voice-tools.js";
-import type { Logger, SqlClient } from "../../_shared/types.js";
-import type { CallContext } from "../context.js";
+import { samePhone } from "../../_shared/phone.ts";
+import type { LookupCustomerArgsSchema } from "../../_shared/schemas/voice-tools.ts";
+import type { Logger, SqlClient } from "../../_shared/types.ts";
+import type { CallContext } from "../context.ts";
 
 type Args = z.infer<typeof LookupCustomerArgsSchema>;
 

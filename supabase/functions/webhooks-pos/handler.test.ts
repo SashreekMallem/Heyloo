@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { createLogger } from "../_shared/logger.js";
-import type { SqlClient } from "../_shared/types.js";
-import { processPosWebhook } from "./handler.js";
+import { createLogger } from "../_shared/logger.ts";
+import type { SqlClient } from "../_shared/types.ts";
+import { processPosWebhook } from "./handler.ts";
 
 function makeSql(responses: Record<string, unknown[]>): SqlClient {
   return (async (strings: TemplateStringsArray) => {

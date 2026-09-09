@@ -9,22 +9,22 @@
 // `X-Goog-Channel-ID` on the request), and `ezyvet` (still `501` — no
 // confirmed webhook coverage exists for appointment changes; two-way sync
 // for that adapter is poll-only, see worker-adapter-push).
-import { getSql } from "../_shared/deno/db.js";
-import { requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
+import { getSql } from "../_shared/deno/db.ts";
+import { requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
 import {
   normalizeGoogleCalendarNotification,
   verifyGoogleCalendarNotification,
-} from "../_shared/providers/google-calendar.js";
+} from "../_shared/providers/google-calendar.ts";
 import {
   normalizeShopmonkeyWebhook,
   verifyShopmonkeyWebhookSignature,
-} from "../_shared/providers/shopmonkey.js";
-import { normalizeSquareWebhook, verifySquareSignature } from "../_shared/providers/square.js";
-import { jsonResponse } from "../_shared/responses.js";
-import type { SqlClient } from "../_shared/types.js";
-import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/webhook-dedup.js";
-import { processPosWebhook } from "./handler.js";
+} from "../_shared/providers/shopmonkey.ts";
+import { normalizeSquareWebhook, verifySquareSignature } from "../_shared/providers/square.ts";
+import { jsonResponse } from "../_shared/responses.ts";
+import type { SqlClient } from "../_shared/types.ts";
+import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/webhook-dedup.ts";
+import { processPosWebhook } from "./handler.ts";
 
 const logger = createLogger({ fn: "webhooks-pos" });
 const SQUARE_WEBHOOK_SIGNATURE_KEY = requireEnv("SQUARE_WEBHOOK_SIGNATURE_KEY");

@@ -1,4 +1,4 @@
-import type { SqlClient } from "../_shared/types.js";
+import type { SqlClient } from "../_shared/types.ts";
 
 /**
  * `/forwarding-verify` (BACKEND_SPEC §7.10): drives the per-carrier

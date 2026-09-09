@@ -7,11 +7,11 @@
 // tenant + role, per CLAUDE.md Rule 2 ("every secret-key edge function
 // still explicitly filters by a verified tenant_id" — service_role callers
 // bypass RLS but not this check).
-import { getSql } from "../_shared/deno/db.js";
-import { requireEnv } from "../_shared/deno/env.js";
-import { createLogger } from "../_shared/logger.js";
-import { jsonResponse } from "../_shared/responses.js";
-import { runProvisioningSaga } from "./handler.js";
+import { getSql } from "../_shared/deno/db.ts";
+import { requireEnv } from "../_shared/deno/env.ts";
+import { createLogger } from "../_shared/logger.ts";
+import { jsonResponse } from "../_shared/responses.ts";
+import { runProvisioningSaga } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-provision" });
 const RETELL_API_KEY = requireEnv("RETELL_API_KEY");

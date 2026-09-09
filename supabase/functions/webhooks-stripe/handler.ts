@@ -1,5 +1,5 @@
-import type { StripeEvent } from "../_shared/schemas/stripe-event.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+import type { StripeEvent } from "../_shared/schemas/stripe-event.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `/webhooks-stripe` background processing (BACKEND_SPEC §7.4). The Deno

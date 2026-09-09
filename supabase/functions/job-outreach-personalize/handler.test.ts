@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Logger, SqlClient } from "../_shared/types.js";
-import { findLeadsNeedingResearch, submitResearchBatch } from "./handler.js";
+import type { Logger, SqlClient } from "../_shared/types.ts";
+import { findLeadsNeedingResearch, submitResearchBatch } from "./handler.ts";
 
 function makeSql(fixtures: Record<string, unknown[]> = {}): {
   sql: SqlClient;

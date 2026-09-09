@@ -1,14 +1,14 @@
-import { recordCacEvent, recordPipelineCost } from "../_shared/outreach-cost.js";
-import type { AnthropicFetch } from "../_shared/providers/anthropic.js";
+import { recordCacEvent, recordPipelineCost } from "../_shared/outreach-cost.ts";
+import type { AnthropicFetch } from "../_shared/providers/anthropic.ts";
 import {
   batchResultText,
   createMessage,
   getMessageBatch,
   getMessageBatchResults,
-} from "../_shared/providers/anthropic.js";
-import type { SmartleadFetch } from "../_shared/providers/smartlead.js";
-import { addLeadsToCampaign } from "../_shared/providers/smartlead.js";
-import type { Logger, SqlClient } from "../_shared/types.js";
+} from "../_shared/providers/anthropic.ts";
+import type { SmartleadFetch } from "../_shared/providers/smartlead.ts";
+import { addLeadsToCampaign } from "../_shared/providers/smartlead.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `job-outreach-personalize-collect` — COLLECT phase (BACKEND_SPEC §1.8,
