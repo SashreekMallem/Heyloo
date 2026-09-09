@@ -2407,3 +2407,66 @@ isn't meaningfully committable as a partial diff. `packages/adapters/
 retell/package.json`'s new devDependency is committed; regenerating a
 clean lockfile is a fast follow-up once both concurrent tasks are done
 touching this checkout.
+
+## LIVE-MINE-DB — Mine the live legacy Supabase DB for production learnings
+
+Read-only SQL mining of the live legacy project (`qulcubtwqsqgqpfgvorn`)
+against `legacy/` repo source and the new schema/spec. Full writeup with
+all 10 findings: `docs/LEGACY_LIVE_FINDINGS.md` § Database. This entry
+covers only the findings that recommend a concrete change to the new
+migrations/specs; the rest are ALREADY COVERED, deferred, or
+informational-only (see that doc for the full picture, including
+confirmation that the new schema's per-tenant timezone handling and
+incremental customer-stats trigger already fix two real bugs the legacy
+production DB was hand-patched for).
+
+**No migration changes made by this task** (out of scope per CLAUDE.md
+Rule 4/task scope — DB mining only). Three follow-ups recommended for
+whichever task next touches these areas:
+
+1. **Booking buffer/turnaround time.** Legacy's live
+   `get_available_slots(...)` padded every candidate slot by a
+   `p_buffer_minutes` (default 15) gap against existing appointments —
+   real vertical need (chair/room/bay cleanup and turnaround time), which
+   the new schema has no equivalent for.
+   `resources.metadata` already documents a `{"slot_minutes": <int>}`
+   override channel (`booking_core.sql`); recommend adding a sibling
+   `buffer_minutes` key there (or on `offerings.metadata`), consumed by
+   `fn_regenerate_availability_slots` (`functions_triggers.sql`) when
+   materializing `availability_slots` so the gap is baked in at
+   precompute time, not the hot path.
+
+2. **E.164 format CHECK constraints.** Neither the legacy live DB nor the
+   new schema enforces phone-number shape at the database boundary —
+   `phone_numbers.e164`, `customers.phone_e164`,
+   `messages_inbound.from_e164`/`to_e164` are all bare `text not null`
+   with only uniqueness constraints. CLAUDE.md Rule 2 already commits to
+   E.164-everywhere as an architecture invariant; recommend
+   `CHECK (col ~ '^\+[1-9]\d{1,14}$')` on each of the four columns above
+   as a defense-in-depth layer independent of the application-level Zod
+   validators, so a normalization bug fails loudly at insert time instead
+   of silently persisting a malformed number (exactly the kind of
+   app-layer-only invariant that drifted unnoticed in the legacy
+   production DB — see Finding 1 in the findings doc).
+
+3. **Booking exclusion-constraint predicate — tripwire, not a change
+   yet.** `bookings`' exclusion constraint only blocks overlap for
+   `status = 'confirmed'` (`booking_core.sql`); legacy's live constraint
+   blocked overlap for every status except `cancelled`. Today this is
+   safe — `create_booking` (BACKEND_SPEC.md §7.2.2) writes `confirmed`
+   directly and no code path uses `scheduled`/a hold state — but the day
+   any tool call starts writing a non-`confirmed` interim status (e.g. a
+   payment-pending hold), the exclusion constraint as written will not
+   catch two concurrent holds on the same resource/time. Whoever adds
+   that first interim-status code path should widen the predicate (e.g.
+   `where (status not in ('cancelled', 'rescheduled'))`) in the same
+   migration.
+
+Also logged for later (dental/HIPAA wave only, not actionable now):
+legacy's `log_phi_access`/`phi_audit_log`/`medical_alerts`/
+`insurance_profiles`/`accepted_carriers` are a working, production-tested
+PHI-audit pattern worth reusing when the dental vertical (Phase 4 per
+MASTER_PLAN) is built — but fix `insurance_profiles`'s
+`UNIQUE (customer_id, is_primary)` quirk (caps a customer at 2 rows
+total) to a partial unique index (`WHERE is_primary`) rather than copying
+it as-is. Full detail in `docs/LEGACY_LIVE_FINDINGS.md` Finding 9.
