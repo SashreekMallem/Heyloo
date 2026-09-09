@@ -70,6 +70,33 @@ staging Retell agent pointed at a logging endpoint and capture the actual
 body.
 **Code:** `packages/adapters/retell/src/raw-types.ts` (`zRetellInboundCallWebhook`).
 
+**LIVE-MINE-EDGE update (docs/LEGACY_LIVE_FINDINGS.md § Edge Functions):**
+read the deployed source of the legacy production project's
+`retell-assistant` edge function (76 production redeploys, read-only via
+the Supabase Management API, never reachable from `legacy/`'s committed
+repo — that repo has no Retell code at all, only a prior `vapi-*`
+integration). Its `call_inbound` handling is:
+```js
+if (payload.event === "call_inbound" && payload.call_inbound) {
+  const { from_number, to_number } = payload.call_inbound;
+```
+i.e. the real envelope is **nested** — `{event: "call_inbound",
+call_inbound: {from_number, to_number, ...}}` — not the flat
+`{call_id, from_number, to_number, agent_id?}` body assumed above. The
+RESPONSE envelope this same live code returns
+(`{call_inbound: {override_agent_id?, dynamic_variables}}`) already
+matches this codebase's assumption exactly, so only the REQUEST-side
+assumption is contradicted. This is strong (production code that
+processed real traffic for months) but not a captured-raw-body-level
+confirmation, so status here moves to **contradicted-by-live-code,
+recommend fix, still fire one staging test call to close it out
+completely** rather than fully RESOLVED. See
+`docs/LEGACY_LIVE_FINDINGS.md` § Edge Functions ("VERIFY-2") for the full
+writeup and exact contradicting file:line
+(`supabase/functions/_shared/schemas/voice-inbound.ts:11-17`,
+`packages/adapters/retell/src/raw-types.ts:31-36`); a fix recommendation
+is logged in `docs/BUILD_NOTES.md` (LIVE-MINE-EDGE).
+
 ### VERIFY-3 — tool-call ("custom function") webhook envelope — **still open (webhook payload), one assumption corroborated**
 
 **Assumed:** the default envelope nests the call under a `call` object
@@ -92,6 +119,24 @@ number is exposed under `call.from_number` (assumed in `tool-call.ts`'s
 cross-check) or a differently-named field.
 **Code:** `packages/adapters/retell/src/raw-types.ts` (`zRetellToolCallWebhook`),
 `packages/adapters/retell/src/tool-call.ts`.
+
+**LIVE-MINE-EDGE update — RESOLVED.** The legacy production project's
+`retell-tools` edge function (50 production redeploys, read-only via the
+Supabase Management API) does exactly:
+```js
+const payload = await req.json();
+const { args: parameters, name: function_name } = payload;
+const call_id = payload.call?.call_id;
+const from_number = payload.call?.from_number;
+```
+This confirms both open sub-questions directly, from code that processed
+real production Retell tool-call traffic: (a) the envelope is
+`{name, args, call: {call_id, from_number, to_number, ...}}` exactly as
+assumed, and (b) the caller's live number is exposed under
+`call.from_number` exactly as `extractCallerNumber` assumes. **VERIFY-3
+is now RESOLVED** — no code change needed; this adapter already matches.
+Full writeup: `docs/LEGACY_LIVE_FINDINGS.md` § Edge Functions
+("VERIFY-3").
 
 ### VERIFY-4 — cost breakdown (`call_cost.product_costs[]`) — **RESOLVED (RETELL-VERIFY)**
 

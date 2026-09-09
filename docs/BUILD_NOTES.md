@@ -2470,3 +2470,94 @@ MASTER_PLAN) is built — but fix `insurance_profiles`'s
 `UNIQUE (customer_id, is_primary)` quirk (caps a customer at 2 rows
 total) to a partial unique index (`WHERE is_primary`) rather than copying
 it as-is. Full detail in `docs/LEGACY_LIVE_FINDINGS.md` Finding 9.
+
+## LIVE-MINE-EDGE — Legacy live edge-function mining
+
+Read-only mining of the live legacy Supabase project's (`qulcubtwqsqgqpfgvorn`)
+deployed edge-function source (Management API, 9 of 14 functions fetched)
+against `docs/VERIFY.md` VERIFY-2/VERIFY-3 and the new adapter/hot-path
+code. Full writeup with all findings: `docs/LEGACY_LIVE_FINDINGS.md` §
+Edge Functions. This entry covers only the follow-ups that recommend a
+concrete change; the rest are ALREADY COVERED, informational, or deferred
+(see that doc for the full picture, including confirmation that the new
+system's webhook idempotency, async recording-fetch, and `lookup_customer`
+caller-scoping designs each independently fix a real gap that shipped in
+the legacy production system).
+
+**No adapter/function code changed by this task** (out of scope per
+CLAUDE.md Rule 4 — mining only, edge-function code changes belong to
+whoever owns `packages/adapters/retell`/`supabase/functions/voice-inbound`
+next). Follow-ups recommended:
+
+1. **`voice-inbound` request shape — highest priority, likely a real bug.**
+   Live legacy evidence (76 production redeploys of `retell-assistant`)
+   shows Retell's `call_inbound` webhook body is
+   `{event: "call_inbound", call_inbound: {from_number, to_number, ...}}`
+   — nested — not the flat `{call_id, from_number, to_number, agent_id?}`
+   body `supabase/functions/_shared/schemas/voice-inbound.ts:11-17`
+   (`VoiceInboundRequestSchema`) currently requires. As written, a real
+   inbound call would fail this schema's required fields and
+   `voice-inbound/index.ts` would return 400 `invalid_request` — silence
+   on the agent's greeting for every real call. Recommend: update
+   `VoiceInboundRequestSchema` to accept the nested shape (event
+   discriminator + `call_inbound: {from_number, to_number}`, or `.loose()`
+   both shapes defensively if a live sandbox call can't be run
+   immediately), and the mirroring
+   `packages/adapters/retell/src/raw-types.ts:31-36`
+   (`zRetellInboundCallWebhook`) for consistency. The RESPONSE envelope
+   both already emit is correct as-is — do not change that half. Cheapest
+   way to fully close this out: one real inbound test call against a
+   staging Retell agent before this ships, per VERIFY-2's own standing
+   recommendation. See `docs/LEGACY_LIVE_FINDINGS.md` § Edge Functions
+   ("VERIFY-2") and `docs/VERIFY.md`'s updated VERIFY-2 entry.
+
+2. **`agents.ts` — add `webhook_timeout_ms` to Agent create/update.**
+   Legacy's live `create_agent` calls always set `webhook_timeout_ms: 10000`
+   alongside `webhook_url` — very likely a hotfix reaction to its own
+   (separately fixed) synchronous-recording-download timeout risk. The new
+   `CreateOrUpdateAgentInput`/`agents.ts` sets `webhook_url` but no
+   timeout override at all. Since the new system already processes
+   recordings asynchronously this is low-risk either way, but it's a
+   free, cheap knob — recommend adding an explicit
+   `webhook_timeout_ms` field (default ~10000ms) rather than relying on
+   whatever Retell's undocumented default is.
+
+3. **`square.ts` comment update — confirmation, not a behavior change.**
+   `supabase/functions/_shared/providers/square.ts:193-204`'s own comment
+   flags its `HMAC-SHA256(notificationUrl + rawBody)` signature scheme as
+   an unconfirmed "starting hypothesis" (Square's docs were egress-blocked
+   during that build). Live legacy `square-webhook` (v15) implements the
+   identical algorithm/message construction/header name. Recommend
+   updating that comment to cite this live confirmation (and drop the
+   "re-verify before coding" framing) next time that file is touched —
+   no logic change needed, the implementation is already correct and
+   already stronger than legacy's (uses `timingSafeEqual`, fails closed
+   on a missing secret; legacy's caller silently allowed traffic through
+   when the secret env var was unset).
+
+4. **Future Clover adapter — two informational notes to carry forward.**
+   No Clover adapter exists yet in this repo. When one is built: (a)
+   legacy's live `clover-webhook` has no signature/HMAC verification of
+   any kind — confirm from Clover's *current* docs (Rule 1) whether a
+   real verification mechanism exists before assuming none does; if none
+   does, legacy's mitigating pattern (treat the webhook only as a
+   "something changed, re-fetch via the stored OAuth token" trigger,
+   never trust webhook-body fields as data) is worth adopting deliberately
+   rather than by accident. (b) Clover's OAuth credential env vars may be
+   documented under either "Client ID/Secret" or "App ID/Secret" naming
+   (legacy's live `pos-sync` accepted both via a fallback chain) — pick
+   one canonical `.env.example` name and note the alternate term in its
+   comment.
+
+5. **Conversation-flow `function`-node shape — reference for the compiler.**
+   Live legacy `retell-manage` builds real `type: "function"` nodes
+   (`tool_id`, `tool_type: "local"`, `speak_during_execution`,
+   `speak_after_execution`, `wait_for_result`) — not currently in
+   `packages/adapters/retell/src/compiler/conversation-flow.ts`'s node
+   vocabulary or VERIFY-8's inventory. Potentially relevant to VERIFY-8's
+   already-flagged "no hard per-node tool-restriction" architecture gap
+   (a `function` node, unlike a `conversation` node, only exposes the one
+   tool it names — closer to SYSTEM_DESIGN §4.1's stated hard-slot-filling
+   goal than the current all-tools-everywhere `conversation` node shape).
+   Not actionable within this task's scope; logged for whoever next
+   revisits the conversation-flow compiler.
