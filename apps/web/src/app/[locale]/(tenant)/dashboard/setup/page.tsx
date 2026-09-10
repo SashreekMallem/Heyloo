@@ -1,6 +1,6 @@
 "use client";
 
-import { Card, CardContent, CardHeader, CardTitle, DataState } from "@heyloo/ui";
+import { Card, CardContent, CardHeader, CardTitle, DataState, PageHeader } from "@heyloo/ui";
 import { ArrowRight } from "lucide-react";
 import { Link } from "@/i18n/navigation";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
@@ -63,13 +63,10 @@ export default function SetupIndexPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">Setup</h1>
-        <p className="text-sm text-muted-foreground">
-          Configure what your AI can actually book and sell — resources and offerings feed
-          availability, pricing, and the ordering/booking tools directly.
-        </p>
-      </div>
+      <PageHeader
+        title="Setup"
+        description="Configure what your AI can actually book and sell — resources and offerings feed availability, pricing, and the ordering/booking tools directly."
+      />
 
       <DataState
         query={query}

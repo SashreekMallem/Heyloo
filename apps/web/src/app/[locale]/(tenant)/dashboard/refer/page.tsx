@@ -2,12 +2,14 @@
 
 import {
   Button,
+  Callout,
   Card,
   CardContent,
   CardHeader,
   CardTitle,
   DataState,
   FunnelChart,
+  PageHeader,
 } from "@heyloo/ui";
 import { useQuery } from "@tanstack/react-query";
 import { Copy } from "lucide-react";
@@ -46,17 +48,20 @@ export default function ReferPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold">Refer & earn</h1>
+      <PageHeader
+        title="Refer & earn"
+        description="Share your link — earn a bonus when a business you refer stays on for their 2nd paid month."
+      />
       <DataState
         query={query}
         empty={{ title: "Generating your referral link…" }}
         render={(data) => (
           <>
             {data.approaching_w9_threshold && (
-              <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
+              <Callout tone="warning" title="W-9 needed soon">
                 You&apos;re approaching the $600 1099 reporting threshold — complete a W-9 to keep
                 payouts on track.
-              </div>
+              </Callout>
             )}
             <Card>
               <CardHeader>
@@ -74,6 +79,7 @@ export default function ReferPage() {
                       void navigator.clipboard?.writeText(link);
                       toast.success("Link copied");
                     }}
+                    aria-label="Copy referral link"
                   >
                     <Copy className="size-4" />
                   </Button>

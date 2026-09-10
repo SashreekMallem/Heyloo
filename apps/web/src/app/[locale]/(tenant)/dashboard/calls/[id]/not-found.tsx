@@ -1,10 +1,22 @@
+import { EmptyState } from "@heyloo/ui";
+import { PhoneOff } from "lucide-react";
+import { Link } from "@/i18n/navigation";
+
 export default function CallNotFound() {
   return (
-    <div className="py-24 text-center">
-      <h1 className="text-xl font-semibold">Call not found</h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        This call doesn&apos;t exist or you don&apos;t have access to it.
-      </p>
-    </div>
+    <EmptyState
+      className="mt-10 border-none"
+      icon={<PhoneOff className="size-8" />}
+      title="Call not found"
+      description="This call doesn't exist or you don't have access to it."
+      action={
+        <Link
+          href="/dashboard/calls"
+          className="text-sm font-medium text-primary underline underline-offset-2"
+        >
+          Back to calls
+        </Link>
+      }
+    />
   );
 }

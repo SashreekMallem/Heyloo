@@ -1,4 +1,12 @@
-import { Card, CardContent, CardHeader, CardTitle, FunnelChart, MetricCard } from "@heyloo/ui";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  FunnelChart,
+  MetricCard,
+  PageHeader,
+} from "@heyloo/ui";
 import type { Metadata } from "next";
 import { CopyLinkButton } from "@/components/partner/copy-link-button";
 import { requirePartnerSession } from "@/lib/auth/require-partner-session";
@@ -25,7 +33,10 @@ export default async function PartnerDashboardPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold">Dashboard</h1>
+      <PageHeader
+        title="Dashboard"
+        description="Your referral funnel and where each customer stands."
+      />
 
       {rows.length === 0 ? (
         <Card>
@@ -47,7 +58,7 @@ export default async function PartnerDashboardPage() {
           <CardTitle className="text-base">Your link</CardTitle>
         </CardHeader>
         <CardContent className="flex items-center gap-2">
-          <code className="flex-1 truncate rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+          <code className="flex-1 truncate rounded-md border border-border bg-muted/50 px-3 py-2 font-mono text-small">
             {link ? `/signup?ref=${link.code}` : "Generating…"}
           </code>
           {link && <CopyLinkButton code={link.code} />}

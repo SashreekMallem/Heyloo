@@ -1,13 +1,16 @@
 "use client";
 
 import {
+  Callout,
   Card,
   CardContent,
   CardHeader,
   CardTitle,
   DataState,
+  EmptyState,
   FunnelChart,
   MetricCard,
+  PageHeader,
 } from "@heyloo/ui";
 import { Link } from "@/i18n/navigation";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
@@ -22,21 +25,24 @@ export default function OutreachOverviewPage() {
   const query = useAdminQuery<OutreachOverview>("outreach-overview", [], "admin-outreach/funnel");
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Outreach</h1>
-        <nav className="flex gap-4 text-sm">
-          <Link href="/cockpit/outreach/campaigns" className="underline">
-            Campaigns
-          </Link>
-          <Link href="/cockpit/outreach/leads" className="underline">
-            Leads
-          </Link>
-          <Link href="/cockpit/outreach/replies" className="underline">
-            Replies
-          </Link>
-        </nav>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Outreach"
+        description="Cold-outbound funnel, complaint rate, and acquisition cost."
+        actions={
+          <nav className="flex flex-wrap gap-4 text-small font-medium text-muted-foreground">
+            <Link href="/cockpit/outreach/campaigns" className="hover:text-foreground">
+              Campaigns
+            </Link>
+            <Link href="/cockpit/outreach/leads" className="hover:text-foreground">
+              Leads
+            </Link>
+            <Link href="/cockpit/outreach/replies" className="hover:text-foreground">
+              Replies
+            </Link>
+          </nav>
+        }
+      />
 
       <DataState
         query={query}
@@ -44,10 +50,10 @@ export default function OutreachOverviewPage() {
         render={(data) => (
           <>
             {data.complaintRatePct > 0.2 && (
-              <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-                Complaint rate at {data.complaintRatePct.toFixed(2)}% — approaching the 0.3%
-                auto-pause threshold.
-              </div>
+              <Callout tone="danger" title="Approaching the auto-pause threshold">
+                Complaint rate at {data.complaintRatePct.toFixed(2)}% — campaigns auto-pause at
+                0.3%.
+              </Callout>
             )}
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
               <MetricCard label="CAC (outreach)" value={data.cacSummaryCents} format="currency" />
@@ -57,7 +63,11 @@ export default function OutreachOverviewPage() {
                 <CardTitle className="text-base">Funnel</CardTitle>
               </CardHeader>
               <CardContent>
-                <FunnelChart stages={data.funnel} />
+                {data.funnel && data.funnel.length > 0 ? (
+                  <FunnelChart stages={data.funnel} />
+                ) : (
+                  <EmptyState title="No funnel data yet" />
+                )}
               </CardContent>
             </Card>
           </>

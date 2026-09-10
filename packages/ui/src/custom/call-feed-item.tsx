@@ -1,3 +1,5 @@
+"use client";
+
 import { Phone } from "lucide-react";
 import { StatusBadge } from "./status-badge.js";
 

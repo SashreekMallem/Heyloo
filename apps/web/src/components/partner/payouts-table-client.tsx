@@ -1,7 +1,7 @@
 "use client";
 
 import { formatCentsUSD } from "@heyloo/canonical-types";
-import { DataTable, EmptyState } from "@heyloo/ui";
+import { Badge, type BadgeProps, DataTable, EmptyState } from "@heyloo/ui";
 import type { ColumnDef } from "@tanstack/react-table";
 
 export interface PayoutRow {
@@ -12,25 +12,40 @@ export interface PayoutRow {
   created_at: string;
 }
 
+const STATUS_VARIANT: Record<string, BadgeProps["variant"]> = {
+  sent: "success",
+  paid: "success",
+  pending: "outline",
+  processing: "secondary",
+  failed: "destructive",
+};
+
 const columns: ColumnDef<PayoutRow, unknown>[] = [
   {
     accessorKey: "period",
     header: "Period",
-    cell: ({ row }) =>
-      new Date(row.original.period).toLocaleDateString(undefined, {
-        year: "numeric",
-        month: "long",
-      }),
+    cell: ({ row }) => {
+      const date = new Date(row.original.period);
+      return Number.isNaN(date.getTime())
+        ? "—"
+        : date.toLocaleDateString(undefined, { year: "numeric", month: "long" });
+    },
   },
   {
     accessorKey: "total_cents",
     header: "Amount",
-    cell: ({ row }) => formatCentsUSD(row.original.total_cents),
+    cell: ({ row }) => (
+      <span className="tabular-nums font-medium">{formatCentsUSD(row.original.total_cents)}</span>
+    ),
   },
   {
     accessorKey: "status",
     header: "Status",
-    cell: ({ row }) => <span className="capitalize">{row.original.status}</span>,
+    cell: ({ row }) => (
+      <Badge variant={STATUS_VARIANT[row.original.status] ?? "outline"} className="capitalize">
+        {row.original.status}
+      </Badge>
+    ),
   },
 ];
 

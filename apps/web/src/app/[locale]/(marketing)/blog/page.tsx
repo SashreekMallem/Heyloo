@@ -1,3 +1,5 @@
+import { Container, Section } from "@heyloo/ui";
+import { ArrowRight } from "lucide-react";
 import type { Metadata } from "next";
 import { setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
@@ -9,22 +11,33 @@ export default async function BlogIndexPage({ params }: { params: Promise<{ loca
   const { locale } = await params;
   setRequestLocale(locale);
   const posts = await listBlogPosts();
+
   return (
-    <div className="mx-auto max-w-3xl px-4 py-16">
-      <h1 className="text-3xl font-semibold">Blog</h1>
-      <div className="mt-8 space-y-6">
-        {posts.map((post) => (
-          <Link
-            key={post.slug}
-            href={`/blog/${post.slug}`}
-            className="block rounded-lg border border-border p-5 hover:bg-secondary"
-          >
-            <p className="text-xs text-muted-foreground">{post.date}</p>
-            <h2 className="mt-1 text-lg font-medium">{post.title}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">{post.excerpt}</p>
-          </Link>
-        ))}
-      </div>
-    </div>
+    <Section spacing="spacious" className="pt-12 md:pt-16">
+      <Container size="content">
+        <h1 className="font-display text-display font-semibold">Blog</h1>
+        <div className="mt-10 divide-y divide-border">
+          {posts.map((post) => (
+            <Link
+              key={post.slug}
+              href={`/blog/${post.slug}`}
+              className="group flex items-start justify-between gap-4 py-6 first:pt-0"
+            >
+              <div className="space-y-1.5">
+                <p className="font-mono text-micro text-muted-foreground">{post.date}</p>
+                <h2 className="text-h4 font-semibold transition-colors group-hover:text-primary">
+                  {post.title}
+                </h2>
+                <p className="text-small text-pretty text-muted-foreground">{post.excerpt}</p>
+              </div>
+              <ArrowRight
+                className="mt-1 size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                aria-hidden="true"
+              />
+            </Link>
+          ))}
+        </div>
+      </Container>
+    </Section>
   );
 }

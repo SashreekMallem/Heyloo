@@ -12,6 +12,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { EmptyState } from "../custom/empty-error-state.js";
 
 export type WaterfallSegmentKind = "add" | "subtract" | "total";
 
@@ -22,7 +23,7 @@ export interface WaterfallSegment {
 }
 
 export interface MarginWaterfallProps {
-  segments: WaterfallSegment[];
+  segments?: WaterfallSegment[];
   onSegmentClick?: (segment: WaterfallSegment) => void;
   height?: number;
 }
@@ -42,7 +43,11 @@ interface Bucket {
  * the documented escape hatch (FRONTEND_STACK.md) — not needed for the
  * current margin-cockpit/Config Lab uses.
  */
-export function MarginWaterfall({ segments, onSegmentClick, height = 320 }: MarginWaterfallProps) {
+export function MarginWaterfall({
+  segments = [],
+  onSegmentClick,
+  height = 320,
+}: MarginWaterfallProps) {
   const buckets = useMemo<Bucket[]>(() => {
     let running = 0;
     return segments.map((segment) => {
@@ -69,6 +74,16 @@ export function MarginWaterfall({ segments, onSegmentClick, height = 320 }: Marg
       };
     });
   }, [segments]);
+
+  if (buckets.length === 0) {
+    return (
+      <EmptyState
+        title="No margin data yet"
+        description="The waterfall fills in once this period has billed usage."
+        className="w-full"
+      />
+    );
+  }
 
   return (
     <ResponsiveContainer width="100%" height={height}>

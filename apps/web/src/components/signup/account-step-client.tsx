@@ -18,9 +18,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { Link } from "@/i18n/navigation";
+import { SIGNUP_STEPS } from "@/lib/marketing/signup-steps";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
-
-const SIGNUP_STEPS = ["Business info", "Plan", "Account", "Payment", "Provisioning", "Phone setup"];
 
 export function AccountStepClient({
   annual,
@@ -92,6 +91,12 @@ export function AccountStepClient({
 
   return (
     <div className="mx-auto max-w-md space-y-8">
+      <div className="space-y-1.5 text-center">
+        <h1 className="font-display text-h2 font-semibold">Create your account</h1>
+        <p className="text-small text-muted-foreground">
+          You&apos;ll set up payment on the next step.
+        </p>
+      </div>
       <WizardStepper steps={SIGNUP_STEPS} current={2} completed={[0, 1]} />
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
@@ -168,7 +173,7 @@ export function AccountStepClient({
                 : "Something went wrong creating your account — please try again."}
             </p>
           )}
-          <Button type="submit" size="lg" className="w-full" disabled={submitting}>
+          <Button type="submit" size="lg" className="w-full" loading={submitting}>
             Create account & continue
           </Button>
         </form>

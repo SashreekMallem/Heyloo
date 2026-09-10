@@ -1,7 +1,7 @@
 "use client";
 
 import type { CallClassification } from "@heyloo/supabase-client";
-import { Badge, Button, DataTable, StatusBadge } from "@heyloo/ui";
+import { Badge, Button, DataTable, PageHeader, StatusBadge } from "@heyloo/ui";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
 import { useRouter } from "@/i18n/navigation";
@@ -124,12 +124,14 @@ export function CallsListClient({ tenantId }: { tenantId: string }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Calls</h1>
-        <Button variant="outline" size="sm" asChild>
-          <a href={`/api/tenant/calls/export?tenant_id=${tenantId}`}>Export CSV</a>
-        </Button>
-      </div>
+      <PageHeader
+        title="Calls"
+        actions={
+          <Button variant="outline" size="sm" asChild>
+            <a href={`/api/tenant/calls/export?tenant_id=${tenantId}`}>Export CSV</a>
+          </Button>
+        }
+      />
 
       <DataTable
         columns={columns}

@@ -63,10 +63,20 @@ export function ServiceOfferingEditor({ offerings, onChange }: ServiceOfferingEd
                 </TableCell>
                 <TableCell>{offering.active ? "Active" : "Inactive"}</TableCell>
                 <TableCell className="flex gap-1">
-                  <Button size="icon" variant="ghost" onClick={() => onChange("edit", offering)}>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => onChange("edit", offering)}
+                    aria-label={`Edit ${offering.name}`}
+                  >
                     <Pencil className="size-4" />
                   </Button>
-                  <Button size="icon" variant="ghost" onClick={() => onChange("delete", offering)}>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => onChange("delete", offering)}
+                    aria-label={`Delete ${offering.name}`}
+                  >
                     <Trash2 className="size-4" />
                   </Button>
                 </TableCell>

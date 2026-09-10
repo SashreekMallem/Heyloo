@@ -30,10 +30,10 @@ export function AppShell({
   return (
     <SidebarProvider>
       {sidebar}
-      <div className={cn("flex min-h-svh flex-1 flex-col", className)}>
+      <div className={cn("flex min-h-svh min-w-0 flex-1 flex-col", className)}>
         {topBar}
         {banner}
-        <main className="flex-1 overflow-x-hidden p-4 pb-20 md:pb-4">{children}</main>
+        <main className="min-w-0 flex-1 overflow-x-hidden p-4 pb-20 md:pb-4">{children}</main>
         {mobileTabBar}
       </div>
     </SidebarProvider>

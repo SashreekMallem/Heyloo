@@ -1,6 +1,15 @@
 "use client";
 
-import { Card, CardContent, ConnectionLifecycleCard, Input, Label, Switch } from "@heyloo/ui";
+import {
+  Callout,
+  Card,
+  CardContent,
+  ConnectionLifecycleCard,
+  Input,
+  Label,
+  PageHeader,
+  Switch,
+} from "@heyloo/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -133,13 +142,16 @@ export default function DeliveryPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold">Delivery preferences</h1>
+      <PageHeader
+        title="Delivery preferences"
+        description="Choose how you and your customers hear about calls, bookings, and orders."
+      />
 
       {a2pStatus === "pending_verification" && (
-        <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
-          SMS delivery is pending carrier verification (1–5 business days) — email delivery stays
-          active in the meantime.
-        </div>
+        <Callout tone="warning" title="SMS pending carrier verification">
+          Carrier approval usually takes 1–5 business days — email delivery stays active in the
+          meantime.
+        </Callout>
       )}
 
       <Card>
@@ -161,8 +173,9 @@ export default function DeliveryPage() {
             />
           </div>
           <div className="space-y-1">
-            <Label>Notification email</Label>
+            <Label htmlFor="notification-email">Notification email</Label>
             <Input
+              id="notification-email"
               value={prefs.notification_email}
               onChange={(e) => setPrefs({ ...prefs, notification_email: e.target.value })}
               onBlur={() => void save(prefs)}

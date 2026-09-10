@@ -2,10 +2,12 @@
 
 import {
   CallFeedItem,
+  Callout,
   DataState,
   DateRangePills,
   type DateRangePreset,
   MetricCard,
+  PageHeader,
   TrendChart,
 } from "@heyloo/ui";
 import { useState } from "react";
@@ -113,10 +115,10 @@ export function OverviewClient({
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">Overview</h1>
-        <DateRangePills value={preset} onChange={setPreset} tenantTz="America/New_York" />
-      </div>
+      <PageHeader
+        title="Overview"
+        actions={<DateRangePills value={preset} onChange={setPreset} tenantTz="America/New_York" />}
+      />
 
       <SetupProgressPanel tenantId={tenantId} />
 
@@ -175,20 +177,20 @@ export function OverviewClient({
       </div>
 
       {!hasPhoneNumber && (
-        <div className="rounded-lg border border-primary/30 bg-primary/5 p-4 text-sm">
+        <Callout tone="info" title="Your number isn't connected yet">
           <Link href="/dashboard/phone-setup" className="font-medium underline">
             Finish phone setup
           </Link>{" "}
           to start receiving calls.
-        </div>
+        </Callout>
       )}
       {hasPhoneNumber && !hasAnyCallEver && liveNumber && (
-        <div className="rounded-lg border border-border p-4 text-sm">
+        <Callout tone="neutral" title="Try it out">
           Test your number:{" "}
           <a href={`tel:${liveNumber}`} className="font-medium underline">
             {liveNumber}
           </a>
-        </div>
+        </Callout>
       )}
     </div>
   );

@@ -24,6 +24,7 @@ import {
   FormLabel,
   FormMessage,
   Input,
+  PageHeader,
   Select,
   SelectContent,
   SelectItem,
@@ -161,18 +162,15 @@ export default function ResourcesSetupPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <h1 className="text-xl font-semibold">Resources</h1>
-          <p className="text-sm text-muted-foreground">
-            The rooms, chairs, bays, tables, or staff lines your AI checks availability against and
-            books onto.
-          </p>
-        </div>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="mr-1 size-4" /> Add resource
-        </Button>
-      </div>
+      <PageHeader
+        title="Resources"
+        description="The rooms, chairs, bays, tables, or staff lines your AI checks availability against and books onto."
+        actions={
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="mr-1 size-4" /> Add resource
+          </Button>
+        }
+      />
 
       <DataState
         query={query}

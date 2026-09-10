@@ -42,7 +42,7 @@ export interface DataTableProps<TData> {
 /** Generic table on @tanstack/react-table: sort, column filters, server-side pagination, row click, mobile card-collapse (FRONTEND_SPEC.md §1.3). Used by calls/bookings/customers/tenants/outreach leads-replies/alert-rules. */
 export function DataTable<TData>({
   columns,
-  data,
+  data = [],
   pageCount,
   pageIndex = 0,
   onPageChange,
@@ -87,7 +87,7 @@ export function DataTable<TData>({
       )}
 
       {renderMobileCard && (
-        <div className="flex flex-col gap-2 sm:hidden">
+        <div className="flex flex-col gap-2 lg:hidden">
           {table.getRowModel().rows.map((row) =>
             onRowClick ? (
               <button
@@ -105,7 +105,7 @@ export function DataTable<TData>({
         </div>
       )}
 
-      <div className={cn(renderMobileCard ? "hidden sm:block" : undefined)}>
+      <div className={cn("overflow-x-auto", renderMobileCard ? "hidden lg:block" : undefined)}>
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (

@@ -7,6 +7,7 @@ import {
   CardContent,
   Input,
   Label,
+  PageHeader,
   Select,
   SelectContent,
   SelectItem,
@@ -80,7 +81,7 @@ export default function TeamPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold">Team</h1>
+      <PageHeader title="Team" description="Give teammates their own dashboard sign-in." />
 
       <Card>
         <CardContent className="space-y-4 pt-6">

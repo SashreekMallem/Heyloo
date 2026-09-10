@@ -1,3 +1,5 @@
+"use client";
+
 import { Badge } from "../primitives/badge.js";
 import { Button } from "../primitives/button.js";
 import { Card, CardContent } from "../primitives/card.js";

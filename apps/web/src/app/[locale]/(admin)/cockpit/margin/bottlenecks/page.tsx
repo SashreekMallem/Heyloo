@@ -1,6 +1,6 @@
 "use client";
 
-import { DataState, LatencyPercentileChart, type LatencyPoint } from "@heyloo/ui";
+import { DataState, LatencyPercentileChart, type LatencyPoint, PageHeader } from "@heyloo/ui";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
 
 export default function BottlenecksPage() {
@@ -10,16 +10,22 @@ export default function BottlenecksPage() {
     "admin-cockpit/bottleneck",
   );
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Tool latency & error rate</h1>
+    <div className="space-y-6">
+      <PageHeader
+        title="Tool latency & error rate"
+        description="p50/p95/p99 latency per voice tool, so a slow tool call never becomes a customer-visible pause."
+      />
       <DataState
         query={query}
-        empty={{ title: "No latency data yet" }}
+        empty={{
+          title: "No latency data yet",
+          isEmpty: (data) => Object.keys(data?.byTool ?? {}).length === 0,
+        }}
         render={(data) => (
           <div className="space-y-6">
-            {Object.entries(data.byTool).map(([tool, points]) => (
-              <div key={tool} className="rounded-lg border border-border p-4">
-                <h2 className="mb-2 text-sm font-medium">{tool}</h2>
+            {Object.entries(data.byTool ?? {}).map(([tool, points]) => (
+              <div key={tool} className="rounded-lg border border-border p-4 shadow-xs">
+                <h2 className="mb-2 font-mono text-small font-medium">{tool}</h2>
                 <LatencyPercentileChart data={points} />
               </div>
             ))}

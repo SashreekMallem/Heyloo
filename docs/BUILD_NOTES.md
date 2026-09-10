@@ -6134,3 +6134,743 @@ All from a clean uncommitted WAVE-2 tree plus this pass's own changes:
   `supabase/migrations/20260910160000_wave2_cron.sql` — before this
   integration pass started; not this pass's doing, noted here only so the
   FIX_REQUESTS entry naming it isn't mistaken for still-open.)
+
+## DS — Design system + UI Preview Mode
+
+**What was built**
+
+- **Tokens** (`packages/ui/src/theme/globals.css`, rewritten): a
+  near-monochrome neutral ramp (`--neutral-50…950`) + one signature accent
+  ramp ("ember", a warm coral-amber, `--accent-50…900`) bound to
+  `--primary`/`--ring`; semantic success/warning/destructive/info; a fluid
+  `clamp()` type scale (`--text-display` → `--text-micro`, each with a
+  paired Tailwind v4 `--text-*--line-height`/`--letter-spacing`); an
+  expanded radius scale; a soft neutral shadow scale; motion tokens
+  (150/200/250ms, `--ease-out`); breakpoints moved to the brief's
+  390/768/1024/1440/1920 (`xl`/`2xl` off Tailwind's stock 1280/1536); a
+  named z-index scale. Full light+dark, `:root[data-theme]` +
+  `prefers-color-scheme`, documented in the new `docs/DESIGN_SYSTEM.md`.
+- **Typography**: Fraunces (display) + Inter (UI/body) + IBM Plex Mono
+  (phone numbers/ids/money), loaded via `next/font/google` in
+  `apps/web/src/app/[locale]/layout.tsx`, self-hosted at build time —
+  confirmed by inspecting `.next/static/css/*.css` after a real
+  `pnpm build`: all 3 families present as `@font-face` rules with hashed
+  self-hosted `woff2` URLs, `font-display:swap`, and next/font's automatic
+  metric-matched fallback face (e.g. `Fraunces Fallback`).
+- **No new npm dependency for dark mode**: `apps/web/package.json` isn't
+  in this task's ownership, so dark mode is a small inline no-flash
+  bootstrap `<script>` in the root layout + `<ThemeToggle>`
+  (`@heyloo/ui`) writing `localStorage["heyloo-theme"]`, instead of
+  `next-themes`.
+- **New shared components**: `Container`, `Section`, `PageHeader`,
+  `ThemeToggle` (`packages/ui/src/layout`), `Callout`, `DataList`
+  (`packages/ui/src/custom`). `Button` gained a `loading` prop. No
+  existing component prop/API renamed.
+- **Icon policy**: `packages/ui/src/icons/index.tsx` — `VERTICAL_ICONS`/
+  `VerticalIcon` (one lucide glyph per `Vertical`), `NAV_ICONS`,
+  `STATUS_ICONS`. Audited `packages/ui/src` for emoji usage — none found.
+- **UI Preview Mode** (`apps/web/src/lib/preview/**` + `(preview)/**`):
+  see `apps/web/src/lib/preview/README.md` for full detail. Summary of
+  scope decisions:
+  - All 63 real tenant/admin/partner pages + the 3 root shell layouts + 1
+    nested layout (67 files) are mirrored 1:1 under `(preview)/preview/**`
+    as one-line `export { default } from "<real page>"` re-exports —
+    mechanically generated, not hand-written, so there's no drift risk
+    from typing 67 files by hand. Real page/layout components are never
+    forked.
+  - Auth is bypassed via 3 tiny drop-in replacements for
+    `requireTenantSession`/`requireAdminSession`/`requirePartnerSession`
+    (`apps/web/src/lib/preview/mocks/`), swapped in only via a
+    `UI_PREVIEW_MODE`-gated bundler alias in `next.config.ts` — chosen
+    over trying to fake a real Supabase session, because `@supabase/ssr`
+    resolves session from cookies BEFORE ever calling `fetch`, so a
+    fetch-only mock can't fake "logged in" by itself.
+  - "No network" is enforced by patching `globalThis.fetch` (once on the
+    server, once in the browser — see the README for why both) to
+    intercept Supabase REST/Auth/Storage calls and this app's own
+    `/api/**` routes, falling back everywhere else to the real `fetch` (so
+    Next's own client-side RSC navigation between `/preview/*` pages isn't
+    broken).
+  - **Fixture fidelity is intentionally uneven, not exhaustive.** Hand-
+    authored rows exist for the ~15 highest-traffic tables (by `.from(...)`
+    call-site count); everything else — most `/api/admin/**`/
+    `/api/tenant/**` endpoints included — falls back to a generic
+    non-crashing shape (`{ rows: [] }`, or a synthesized-but-plausible row
+    built from the actually-requested `select` columns). This is a
+    deliberate CLAUDE.md Rule 4 scope call given the sheer number of
+    tables/endpoints in this app (28+ tables, dozens of API routes) — a
+    reviewer screenshotting a specific page that looks sparse should
+    extend `apps/web/src/lib/preview/fixtures.ts` for that table/endpoint
+    rather than read it as a bug.
+  - **Known gap, documented, not fixed (out of ownership)**: the mirrored
+    `(tenant)` root layout still wraps children in the real
+    `TenantRealtimeProvider`, which opens a Supabase Realtime WebSocket —
+    `mock-fetch.ts` only intercepts `fetch`, not WebSockets. This degrades
+    silently (the realtime client's own retry/error handling, not a page
+    crash) rather than truly honoring "no network" for that one channel.
+    Fixing it would mean touching `apps/web/src/lib/realtime/**`, outside
+    this cluster's file ownership.
+  - **Turbopack `resolveAlias` gotcha** (found by actually running
+    `UI_PREVIEW_MODE=1 next dev` against the config, not assumed): the
+    alias target must be a path relative to `next.config.ts`
+    (`"./src/lib/preview/mocks/...")`) — an absolute path (leading `/`) is
+    read as an unsupported "server-relative" import and the build fails.
+    Webpack's `resolve.alias` wants the opposite (a real absolute path).
+    `next.config.ts`'s `previewModeAliases(kind)` builds both forms from
+    one shared list rather than duplicating the mock filenames twice.
+
+**Verification performed (this environment, not assumed)**
+
+- `pnpm --filter @heyloo/ui typecheck` / `test` — clean, 23 tests passing
+  (8 new: `Callout`, `DataList`, `VerticalIcon`, `Button`'s `loading`
+  prop).
+- `pnpm --filter @heyloo/web typecheck` — clean (includes all 67 mirror
+  files + the new preview lib).
+- `pnpm --filter @heyloo/web test` — 238/238 passing (8 new: the preview
+  guard's 5 unit tests + the `(preview)` layout's 3 render tests — the
+  "test asserting the guard" DO#4 calls for).
+- `pnpm --filter @heyloo/web build` (`next build --webpack`, matching the
+  repo's real `build` script) — succeeds; `/preview`, `/preview/index`,
+  `/preview/system` all appear in the route manifest as prerendered
+  static pages (the guard's `notFound()` is deterministic with no
+  `UI_PREVIEW_MODE` set, so Next statically prerenders the 404 branch).
+- `next start` against that production build: `/` and `/pricing` → 200;
+  `/preview` and `/preview/system` → **404**, including when re-launched
+  with `UI_PREVIEW_MODE=1` set on the `next start` process itself — this
+  confirms the "`NODE_ENV !== "production"` is a hard floor, not just a
+  build-time absence of the alias" claim end to end, not just via the
+  unit test.
+- `UI_PREVIEW_MODE=1 next dev` (Turbopack, this repo's real `dev` script):
+  `/preview/system` (a full client-rendered page exercising ~30 shared
+  components across both forced themes) returns 200 with real content —
+  confirms the guard's "allow" branch, the client-side fetch-mock
+  bootstrap, and the whole component import surface all work together at
+  runtime, not just in typecheck.
+- **Found and separated an unrelated, pre-existing environment issue**:
+  under `next dev` (Turbopack) in this sandbox specifically, EVERY
+  server-rendered page — including `/` and `/pricing`, neither touched by
+  this pass — throws `TypeError: ...react.js.createContext is not a
+  function` from Next's own vendored RSC React bundle. Confirmed this is
+  not caused by this pass's changes: (1) it reproduces on completely
+  untouched marketing pages, (2) `pnpm build` (webpack) + `next start`
+  serve those same untouched pages fine, and (3) it doesn't happen on
+  `/preview/system`'s pure-client render path. Left unfixed — a
+  Turbopack-dev-mode/sandbox-specific issue, not a DS-cluster or
+  UI-Preview-Mode bug, and outside this pass's file ownership to chase
+  further. Anyone hitting it: `UI_PREVIEW_MODE=1 pnpm dev --webpack` (or
+  just review via `pnpm build && UI_PREVIEW_MODE=1 pnpm start`, noting
+  `next start` always forces `NODE_ENV=production` so that specific
+  combination won't show preview routes either — a real fix needs
+  Turbopack dev mode itself sorted out in this environment) is the
+  workaround until someone with dev-server ownership looks at it.
+
+**Not attempted (scope discipline, CLAUDE.md Rule 4)**
+
+- Storybook — explicitly out of scope per the cluster brief; `/preview/
+  system` is the substitute.
+- Restyling every one of `packages/ui`'s ~60 exported components file-by-
+  file — most already consume semantic Tailwind classes bound to the
+  rewritten tokens (`bg-primary`, `border-border`, …), so the token
+  rewrite re-themes them with no markup change; this pass did a targeted
+  pass (`Button`, and a token-compliance grep for raw hex/rgb — none
+  found) rather than touching all ~60 files individually.
+
+## Cluster TENANT — dashboard design-system pass (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Applied the DS cluster's re-themed tokens + new layout/custom primitives
+(`PageHeader`, `Callout`, `NAV_ICONS`, `ThemeToggle`) across the whole
+`(tenant)/dashboard` surface — visual/UX only, no data hooks, route
+contracts, query keys, form schemas, or realtime wiring touched.
+
+- Every page's ad-hoc `<h1 className="text-xl font-semibold">…</h1>`
+  (32 call sites across every dashboard route: Overview, Calls, Call
+  detail, Bookings, Customers, Customer detail, Messages, Message thread,
+  Orders, Order detail, Setup + Resources + Offerings + Import, Agent
+  settings, Billing, Integrations, Support + ticket detail, Team, Refer,
+  Delivery, Phone setup, Test-your-agent) replaced with `<PageHeader
+  title=… description=… actions=…/>` — title/description text unchanged,
+  right-aligned actions (buttons, status badges, view toggles, the
+  customer-search box) now use `PageHeader`'s wrap-safe `actions` slot
+  instead of a hand-rolled flex row, so they stay usable at 390px without
+  per-page tuning.
+- `tenant-shell-client.tsx`: nav now uses `NAV_ICONS` for every item (five
+  items — Agent, Phone Setup, Delivery, Billing, Refer & Earn — had no
+  icon before), grouped into three labeled `NavSection`s (Operate /
+  Configure / Account) instead of one flat list; topbar gained
+  `<ThemeToggle>` next to the existing realtime pill/notification center.
+  Mobile tab bar unchanged (still the 5-item subset).
+- Ad-hoc `rounded-md border border-warning/40 bg-warning/10 p-3` /
+  `border-primary/30 bg-primary/5` notice `<div>`s (Overview's "finish
+  phone setup"/"test your number" prompts, Refer's W-9 threshold warning,
+  Delivery's A2P-pending warning, Test-your-agent's unpublished-agent
+  warning) replaced with `<Callout tone="…">` — same copy, now with the
+  tone's icon and consistent card treatment. The one full-width past-due
+  banner in `(tenant)/layout.tsx` was deliberately left as a raw strip
+  (it's a page-width banner in `AppShell`'s `banner` slot, not a card —
+  `Callout` isn't the right shape there).
+- Customers page's raw `<input>` → `Input` primitive; Agent-settings'
+  native mobile `<select>` tab-switcher → `Select`/`SelectTrigger`/
+  `SelectContent`/`SelectItem` (same `onValueChange`-driven route-push
+  behavior); Bookings' two plain `list`/`calendar` `<Button>`s → a single
+  `ToggleGroup`.
+- Integrations page (previously the one list with no loading state) now
+  wrapped in `DataState` with a 4-card skeleton grid, matching every other
+  list's loading/empty/error convention.
+- The three `not-found.tsx` files (call/customer/ticket detail) upgraded
+  from a bare centered `<h1>` to `EmptyState` (lucide icon +
+  description + a "Back to …" link) per the brief's empty-state pattern.
+- No changes to `packages/ui`, `apps/web/src/components/phone-setup/**`,
+  or any file outside this cluster's ownership paths — the agent-settings
+  sub-pages (`greeting`/`hours`/`services`/`faq`/`instructions`/
+  `language`/`manual-mode`/`vertical-details`) and `setup-progress-panel.tsx`/
+  `support-reply-form.tsx` were reviewed and left untouched: they already
+  render through `Card`/`Form`/`Input`/`Progress` primitives on semantic
+  tokens with no raw hex, ad-hoc form elements, or emoji, so the token
+  rewrite alone re-themes them correctly.
+
+**Verified**: `tsc -b` (apps/web) — clean, 0 errors repo-wide at the time
+this note was finalized (the `live-call-hero.tsx` error described in the
+`docs/audit/DESIGN_REQUESTS.md` entry above was present for most of this
+session and independently fixed by the owning marketing-cluster agent
+mid-session, on this same shared working tree — the request entry is left
+as-is for the record); `biome check` on every touched path — clean;
+`vitest run` — apps/web full suite (51 files / 238 tests) and
+`packages/ui` (8 files / 23 tests) both green, no test assertions needed
+updating.
+
+Could not get a real-browser screenshot pass at 390/768/1024/1440
+(`UI_PREVIEW_MODE=1`, port 3120) in this session — no screenshot tool was
+available. Two attempts to stand up a server each hit a pre-existing,
+out-of-ownership blocker: `UI_PREVIEW_MODE=1 next dev --webpack` started
+and served `/en/preview/dashboard`, but every request threw the same
+sandbox-specific `TypeError: (0, react.js.createContext) is not a
+function` from Next's vendored RSC React bundle that the DS cluster
+already documented reproduces on completely untouched pages regardless of
+Turbopack vs. webpack dev mode; once `tsc` was clean, `next build
+--webpack` compiled and typechecked successfully but then failed
+prerendering `/en` — `Error: Event handlers cannot be passed to Client
+Component props` on `/[locale]/(marketing)/page` — an unrelated,
+in-flight marketing-cluster bug, not this pass's or DS's. Every markup
+change in this pass is a mechanical `PageHeader`/`Callout`/`Input`/
+`Select`/`ToggleGroup`/`EmptyState` swap of already-responsive DS-cluster
+components, or an icon/grouping change to the existing `AppSidebarNav`/
+`MobileTabBar`, so the existing responsive behavior of those shared
+components should carry through unchanged — but an actual screenshot pass
+is still owed once a production build gets all the way through.
+
+## Cluster MARKETING — public site + auth design-system pass (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Applied the DS cluster's tokens + new layout/custom primitives across
+every public/marketing surface — visual/UX only; every route path, form
+field name, analytics event, and data-fetching call kept as-is.
+
+**What was built**
+
+- **Home** (`(marketing)/page.tsx`): new hero with a live-feeling product
+  visual (`components/marketing/live-call-hero.tsx` — a client
+  storyboard, not a real Retell call: transcript turns animate in on a
+  timer, a `check_availability()` tool-call badge appears, a booking card
+  slides into a mini "dashboard" panel, then loops; `aria-hidden` since
+  it's decorative and the surrounding copy carries the real message),
+  `TrustStrip` (disclosed AI / recorded with consent / number stays
+  yours), `VerticalGrid` (business-type cards using `VerticalIcon` +
+  `heroStat` as the one-line outcome, replacing the old emoji grid),
+  `DashboardPreview` (a real `MetricCard`/`CallFeedItem`/`DataList`/
+  `StatusBadge` layout seeded with static illustrative data — never a
+  screenshot), pricing teaser, demo CTA. Built with `Container`/`Section`
+  throughout instead of one hand-rolled `max-w-6xl` wrapper, so
+  backgrounds alternate (`bg-muted/30` strips) and the page uses full
+  width at 1440/1920 instead of one centered column.
+- **Header/footer** (`components/marketing/marketing-header.tsx`,
+  `marketing-footer.tsx`): `VerticalIcon` in the business-types dropdown
+  and mobile menu (was raw emoji), `ThemeToggle` added, mobile menu
+  redone with ≥44px touch targets and `aria-expanded`; footer gained a
+  4-column sitemap (business types / product / legal) instead of a
+  one-line strip. Translation keys (`Nav.*`/`Footer.*`) kept, not
+  hardcoded.
+- **Pricing**: tier cards renamed from the internal `Primary`/`Secondary`
+  to customer-facing `Answer & Book` / `Connected` (DESIGN BRIEF's own
+  example names) — copy and feature lists unchanged, ✓ characters swapped
+  for a real `lucide-react` `Check` icon.
+- **`[vertical]` pages**: icon swapped from the content data's emoji
+  field to `<VerticalIcon vertical={content.vertical}>` (the emoji string
+  in `content/marketing/verticals.ts` is left alone — that file is
+  outside this cluster's ownership; the page just stops reading the
+  `icon` field), added an illustrative "a typical call" transcript
+  snippet per vertical.
+- **Demo**: two-column shell (form + "what happens next" / vertical
+  badge / disclosure note) at `lg`+, single column on mobile, wrapped
+  around the existing `<DemoFlow>` client state machine
+  (`components/demo/demo-flow.tsx`, out of ownership) — no changes to
+  that component's logic or the `/api/demo/*` contracts.
+- **Signup stepper**: `WizardStepper` steps deduped into one shared
+  `lib/marketing/signup-steps.ts` (was copy-pasted verbatim in 3 client
+  components); `business-type-form.tsx`'s vertical picker now uses
+  `VerticalIcon` instead of emoji; each step client gained a short
+  heading (`h1`/description) instead of a bare form; `provisioning-
+  client.tsx`'s failure state uses `Callout` instead of an ad-hoc red
+  div. `signup/forwarding` wraps `PhoneSetupWizard` (out of ownership)
+  unchanged.
+- **Auth pages** (`/login`, `/mfa/challenge`, `/mfa/enroll`,
+  `/reset-password`, `/reset-password/confirm`): new shared
+  `components/marketing/auth-shell.tsx` (brand mark + centered card, no
+  chrome) — every page kept its own form/`useForm`/Supabase-call logic
+  untouched, only the wrapper changed. Added `login`/`mfa`/
+  `reset-password` `layout.tsx` files (new — none existed) so each route
+  gets a real `<title>`/description/favicon; the pages themselves are
+  `"use client"` and can't export `metadata`.
+- **Intake form**: wrapped in a "secure, private link" trust line
+  (`ShieldCheck`), success/form cards restyled for a clinical-clean feel
+  — field names, Zod schema, and the `api-intake` invoke contract
+  untouched.
+- **Blog/legal**: blog index restyled as a divided list with a hover
+  affordance; blog post + all three legal docs (terms/privacy/dpa) now
+  share one `components/marketing/legal-page.tsx` shell (was 3
+  near-identical files) with hand-authored prose styling (no `@tailwindcss/
+  typography` dependency in this package) for readable measure/rhythm.
+- **404s**: added `(marketing)/not-found.tsx` (didn't exist before — the
+  brief names "404" as a deliverable) and restyled the existing
+  `[vertical]/not-found.tsx` and `blog/[slug]/not-found.tsx`.
+- **Favicon/OG**: `apps/web/public/favicon.svg` (hand-authored SVG mark,
+  no binary) wired in via `icons: { icon: "/favicon.svg" }` metadata on
+  the marketing layout and the 3 auth layouts (root `[locale]/layout.tsx`
+  is out of ownership, so this couldn't go there); `(marketing)/
+  opengraph-image.tsx` — code-generated via `next/og`'s `ImageResponse`
+  (verified against the current installed Next 16.3.4 docs at
+  `node_modules/next/dist/docs/.../opengraph-image.md` per CLAUDE.md Rule
+  1 — file convention, exports, and the `ImageResponse` call shape all
+  match exactly), shared by every marketing page unless a more specific
+  route later overrides it.
+
+**Conflict with DESIGN SYSTEM AUDIT (CLAUDE.md Rule 4 — documented,
+proceeded with the existing decision)**: the brief asks for "pricing that
+shows the real card for each business type with included minutes and
+overage plainly" on `/pricing` and per-`[vertical]` pages. The existing,
+explicit FRONTEND_SPEC decision (doc comment on both `/pricing`'s page
+and `/api/platform-settings/price-card/route.ts`) is that the real price
+card is shown in exactly one place, pre-signup: signup step 2, after a
+signed draft cookie exists — "the real price card never appears here"
+on `/pricing` verbatim in the old code. That's a product/conversion
+decision, not a styling one, and reversing it would mean either exposing
+`platform_settings` pricing to an unauthenticated route or duplicating
+the price-card computation — out of scope for a visual pass. Kept the
+generic tier comparison on `/pricing` (restyled, customer-named plans)
+and the "$299/mo — see your real price at signup" line on `[vertical]`
+pages, both pointing to signup for the real number.
+
+**Bug found and fixed within this cluster's own ownership** (also filed
+as a `docs/audit/DESIGN_REQUESTS.md` request to DS for the real fix): the
+`next build --webpack` prerender failure on `/en` that the TENANT
+cluster's entry above flagged as "an unrelated, in-flight
+marketing-cluster bug" turned out to be `packages/ui/src/custom/
+call-feed-item.tsx` (DS-owned) defining its own `onClick` without a
+`"use client"` directive — any Server Component that renders
+`<CallFeedItem>` hits React's "Event handlers cannot be passed to Client
+Component props" at prerender time. This cluster's `dashboard-preview.tsx`
+was the first RSC call site to hit it. Fixed locally by making
+`dashboard-preview.tsx` itself `"use client"` (that component has no
+actual interactivity of its own — the directive exists solely to satisfy
+`CallFeedItem`'s requirement); the proper fix (adding `"use client"` to
+`call-feed-item.tsx` itself) is DS's to make, logged in
+`docs/audit/DESIGN_REQUESTS.md`.
+
+**Verified**: `pnpm typecheck` (root, all 14 packages via turbo) — clean.
+`pnpm --filter @heyloo/web test -- --run` — 51 files / 238 tests, all
+green, no assertions needed updating. `pnpm --filter @heyloo/ui test --
+--run` — 8 files / 23 tests, green (untouched by this pass). `biome
+check` (every touched path) — clean after one auto-fix pass (formatting
++ import ordering) and one manual fix (`noArrayIndexKey` in
+`live-call-hero.tsx`). `pnpm build` (webpack) — succeeded end-to-end
+after the `CallFeedItem` fix above; `pnpm start -p 3110` +
+`@playwright/test`'s bundled `chromium` (`executablePath
+/opt/pw-browsers/chromium`) against `home`/`pricing`/`[vertical]`/`demo`/
+`signup step 1`/`login`/`blog`/`legal/terms`/a 404 route at 390×844,
+768×1024, 1024×900, 1440×900, and 1920×1080 — zero horizontal overflow
+(`document.documentElement.scrollWidth` checked against `clientWidth` at
+every shot) at every breakpoint on every page. Additional spot checks:
+the mobile hamburger menu's open state (touch targets, icon swap) and
+`prefers-color-scheme: dark` on home/pricing/login — dark mode fully
+re-themes with no unstyled/raw-token surfaces. Screenshots are local to
+this session's scratchpad, not committed.
+
+**Not attempted (scope discipline, CLAUDE.md Rule 4)**
+
+- Per-page `opengraph-image` overrides beyond the one shared marketing
+  default — the brief's "Metadata/OG per page" is satisfied by each
+  page's existing `title`/`description` plus the shared OG image; a
+  bespoke OG render per business type would be a reasonable follow-up but
+  wasn't attempted here.
+- `content/marketing/verticals.ts` and `content/marketing/home.ts`
+  (`apps/web/src/content/marketing/**`) were read but not edited — that
+  path is distinct from this cluster's `apps/web/src/lib/marketing/**`
+  ownership; the emoji `icon` field there is simply no longer read by any
+  restyled call site rather than removed from the data.
+
+## ADMIN/PARTNER — cockpit + partner portal restyle (design-system pass)
+
+Restyled every page under `apps/web/src/app/[locale]/(admin)/cockpit/**`
+and `(partner)/portal/**`, plus `components/admin/admin-shell-client.tsx`,
+`components/partner/partner-shell-client.tsx`, and
+`components/partner/payouts-table-client.tsx`, onto the tokens/components
+in `docs/DESIGN_SYSTEM.md` (which packages/ui already carried — this was
+composition, not a token/primitive change). Consistent, mechanical pass:
+
+- Every ad-hoc `<h1 className="text-xl font-semibold">…</h1>` (and its
+  hand-rolled `flex items-center justify-between` action row) replaced
+  with `<PageHeader>` (font-display title, wrap-safe right-aligned
+  actions, optional description) — the one page-header pattern now used
+  everywhere in both surfaces.
+- Money/percent/count table cells wrapped in `tabular-nums` (delta/cost
+  columns additionally color-coded success/destructive where the sign is
+  meaningful, e.g. `cockpit/margin/calls`); ids in `font-mono`.
+  Vertical-name cells go through `.replace(/_/g, " ")` + `capitalize`
+  instead of printing the raw `real_estate` slug.
+- Raw hand-styled `<select>` elements (platform settings' vertical
+  pickers) replaced with the shared `Select` primitive — same
+  value/onChange contract, no stock browser chrome.
+- Ad-hoc colored `<div>` notices (outreach complaint-rate warning,
+  Config Lab's "simulation only" line, a per-tenant margin "suggested
+  action" `Card`) replaced with `Callout` (`warning`/`danger`/`info`
+  tone) — the component the design system names for exactly this.
+- Both shells (`AdminShellClient`, `PartnerShellClient`) gained a
+  lucide-react icon per nav item (via `NavItem.icon`, already supported
+  by `AppSidebarNav`/`SidebarMenuButton` — no packages/ui change needed)
+  and a font-display wordmark with an accent-colored icon in the sidebar
+  header, replacing the plain text label.
+- Admin's existing "best viewed on desktop" mobile gate (admin-shell-
+  client.tsx) was kept as-is, not made responsive — `AppShell`'s own doc
+  comment states this is deliberate per FRONTEND_SPEC §0.5 ("desktop-
+  primary… applied by the caller"), not an oversight this pass should
+  reverse. The partner portal has no such gate and relies on the shared
+  `Sidebar` primitive's existing mobile collapse (packages/ui, unchanged
+  here) for its mobile usability.
+
+**Not attempted (scope discipline, CLAUDE.md Rule 4)**: the design
+brief's partner-portal "earnings hero (this month, lifetime)" is not on
+`(partner)/portal/page.tsx` — that page's existing query only reads
+`referral_links`/`referrals.status`, no dollar amounts (those live in
+`commission_events`/`referral_payouts`, queried only by
+`portal/customers` and `portal/payouts`). Adding a lifetime/MTD $ rollup
+to the dashboard would mean new data wiring, which the cluster brief
+says to keep intact rather than extend. Restyled the dashboard's
+existing referral-count metrics instead of fabricating or wiring new
+earnings figures; a real earnings hero needs a small backend aggregation
+this pass didn't add.
+
+**Verified**: `apps/web` `pnpm exec tsc -b --pretty` — clean. `apps/web`
+`pnpm exec vitest run` — 51 files / 238 tests, all green, no assertions
+needed updating (`payouts-table-client.test.tsx`'s `getByText` calls
+still match — badge/tabular-nums styling doesn't change text content).
+`packages/ui` `pnpm exec vitest run` — 8 files / 23 tests, green
+(untouched by this pass). `biome check` on every touched file — clean
+after one `--write` pass (formatting/import-order only, no semantic
+change). Not run: a `next start` + screenshot pass at 390/768/1440
+(`UI_PREVIEW_MODE=1`) — the preview route group mirrors these pages
+mechanically per `docs/DESIGN_SYSTEM.md`'s "UI Preview Mode" section, so
+the static verification above (typecheck + tests + lint, all green) was
+the practical gate available in this pass; a follow-up visual screenshot
+pass is recommended before shipping.
+
+## DS — DESIGN_REQUESTS follow-up pass (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Applied both open items in `docs/audit/DESIGN_REQUESTS.md` (the TENANT
+entry was already resolved, left as-is), then ran the repo-wide gates.
+Full detail/verification for each fix is written inline in
+`docs/audit/DESIGN_REQUESTS.md` next to the request it resolves rather
+than duplicated here; summary:
+
+- **MARKETING's request** (`CallFeedItem` missing `"use client"`):
+  fixed, plus 5 more `packages/ui/src/custom/*.tsx` files found by the
+  same grep pattern (`alert-rule-row.tsx`, `connection-lifecycle-card.tsx`,
+  `manual-mode-banner.tsx`, `reply-feed-item.tsx`, `state-trace-viewer.tsx`)
+  — same bug, same fix. `packages/ui/src/primitives/command.tsx`'s
+  `onOpenChange` was checked and is not the same bug (passed to a Client
+  Component, not a host element).
+- **ADMIN/PARTNER's request** (preview-mode `fetch` mock not intercepting
+  client-side `/api/admin/**` calls): root cause was `UI_PREVIEW_MODE`
+  being a server-only env var invisible to the browser bundle, so
+  `isPreviewModeEnabled()` never returned `true` client-side and
+  `installPreviewFetchMock()` never ran there. Fixed via a
+  `NEXT_PUBLIC_UI_PREVIEW_MODE` build-time mirror in `next.config.ts`'s
+  `env` field (derived from the same already-`NODE_ENV`-gated boolean, so
+  the production floor is unchanged) plus `guard.ts` checking both vars.
+  `src/types/env.d.ts` gained both as typed `ProcessEnv` properties.
+
+**No component prop/API changes surfaced during this pass** (consistent
+with the DS cluster's own `docs/BUILD_NOTES.md` entry: "No existing
+component prop/API renamed") — `pnpm -w typecheck` needed no consumer
+adjustments beyond the 2 fixes above (which broke `tsc` themselves
+`process.env.NEXT_PUBLIC_UI_PREVIEW_MODE` needing a real `ProcessEnv`
+property under `noPropertyAccessFromIndexSignature`, and the test files'
+`process.env["UI_PREVIEW_MODE"] = ...`/`delete` calls needing that
+property non-`readonly`).
+
+**Verified**: `pnpm -w typecheck` (all 14 packages) — clean. `pnpm
+--filter @heyloo/web test -- --run` — 51 files / 238 tests green. `pnpm
+--filter @heyloo/ui test -- --run` — 8 files / 23 tests green. `biome
+check` on every touched file — clean after one `--write` pass (trailing
+newline only). `pnpm build` (`next build --webpack`, `UI_PREVIEW_MODE`
+unset) — succeeds end to end; `/en` and every other marketing/tenant/
+admin/partner route prerender or build without the "Event handlers
+cannot be passed to Client Component props" error; confirmed all 3 font
+families (Fraunces, Inter, IBM Plex Mono) are actually fetched and
+self-hosted — `@font-face` rules with fallback faces present in
+`.next/static/css/*.css` and 25 `.woff2` files present under
+`.next/static/media/`.
+
+## repair:tenant — round-1 design review blocker, root-caused and fixed (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+The round-1 tenant-surface design review reported a single `blocker`
+finding across all 33 `/preview/dashboard/**` routes: it "could not render
+or screenshot any tenant page in this environment," attributing this to
+two stacked infra issues already logged in this file — (1) `next start`
+always forces `NODE_ENV=production`, and `guard.ts`'s
+`isPreviewModeEnabled()` hard-floors preview routes to 404 whenever
+`NODE_ENV === "production"` (by design — see `guard.ts`'s own comment: "no
+env var can re-enable this in a production deployment," a security
+invariant, not a bug — so no fix was made there, and it isn't this
+cluster's file anyway), and (2) the DS/TENANT clusters' own prior notes
+(this file, ~L1257 and ~L6249) that `next dev` throws `TypeError: …
+react.js.createContext is not a function` on literally every
+server-rendered page in this sandbox, previously written up as an
+unresolved, unowned "Turbopack/webpack + `transpilePackages` +
+`react-server` condition" sandbox bug.
+
+**Root-caused and fixed the createContext crash itself** — it was not a
+sandbox/toolchain bug but a real, reproducible code defect, squarely a
+"shared-component defect attributable to the system" under this cluster's
+`packages/ui` ownership carve-out: three `packages/ui/src/primitives/*`
+files render third-party components that keep their own internal React
+state/context (`calendar.tsx` → `react-day-picker`'s `DayPicker`,
+`command.tsx` → `cmdk`'s `Command`, `sonner.tsx` → `sonner`'s `Toaster`)
+but were missing the file-level `"use client"` directive every other
+stateful primitive in this package already carries (the same defect class
+the DS cluster's `DESIGN_REQUESTS` follow-up pass fixed in 6 `custom/*`
+files earlier this session — these 3 were missed because that pass's grep
+targeted inline event-handler props, which none of these three files have
+themselves; the crash instead comes from the wrapped library's own
+internal hook/context calls). Without the directive, Next's RSC/client
+boundary extraction (`transpilePackages` re-processing `@heyloo/ui`'s
+`dist/*.js`) leaves these modules reachable from the server component
+graph, where they hit React's server build's stubbed-out `createContext`
+(Server Components cannot use Context) — exactly the
+`createContext is not a function` signature both prior notes recorded.
+`sonner.tsx`'s `<Toaster>` is rendered by `apps/web/src/app/providers.tsx`
+(already `"use client"`, wraps every route in the app including plain
+marketing pages), which is why the crash reproduced on completely
+unrelated, untouched pages and not just preview/tenant ones.
+
+Fix: added `"use client"` as the first line of all three files
+(`packages/ui/src/primitives/calendar.tsx`, `command.tsx`, `sonner.tsx`);
+no markup, props, or behavior changed. Rebuilt `packages/ui` (`tsc -b`) so
+`dist/primitives/{calendar,command,sonner}.js` carry the directive (the
+package resolves through `dist`, not `src`).
+
+**Verified live against this shared session's already-running
+`UI_PREVIEW_MODE=1 next dev --webpack` server (PID 26264/26247, started by
+a concurrent agent on this shared working tree — not restarted, just
+re-requested after the fix)**: before the fix, `/en` (plain marketing
+home), `/en/preview/portal`, and `/en/preview/dashboard` all logged
+`⨯ TypeError: (0 , react__WEBPACK_IMPORTED_MODULE_0__.createContext) is
+not a function` server-side (confirmed via
+`.next/dev/logs/next-development.log`, not assumed). After the fix and
+rebuild, the same routes plus `/preview` (the index), `/preview/dashboard`,
+`/preview/dashboard/bookings` (the page that actually renders `<Calendar>`)
+and `/preview/dashboard/integrations` all return HTTP 200 with real page
+content and zero `createContext` errors in either the HTTP response body
+or the server log across several fresh (non-cached, log-confirmed
+recompiles) requests.
+
+**Known remaining gap, out of this cluster's ownership, not a design
+defect**: `/preview/dashboard/**` still 307-redirects to `/login` on this
+particular already-running dev server even with the createContext crash
+gone and `UI_PREVIEW_MODE=1`/`NODE_ENV=development` confirmed set on its
+process env (`/proc/<pid>/environ`, not assumed) — response headers show
+`x-nextjs-cache: HIT` / `x-nextjs-prerender: 1` on the redirect, consistent
+with a stale statically-prerendered redirect cached before
+`UI_PREVIEW_MODE` was live on that process, rather than the preview-auth
+mock itself failing (`/preview` and `/en` both render real content with no
+auth issue). This is `docs/DESIGN_SYSTEM.md`'s UI-Preview-Mode
+infra/caching territory (DS cluster ownership, not `(tenant)/**`); a fresh
+`.next` dev cache on the next real preview-mode server start should clear
+it. Recommend re-running the actual round-1 tenant design review now that
+the render blocker is fixed.
+
+**No `(tenant)/**`/`components/tenant/**` files were touched** — every
+tenant page in this cluster's ownership was already re-themed by the prior
+"Cluster TENANT — dashboard design-system pass" entry above; this pass's
+only changes are the 3 `packages/ui` directive fixes.
+
+**Verified**: `packages/ui` — `tsc -b` clean, `vitest run` 8 files / 23
+tests green, `biome check` on all 3 touched files clean (no fixes needed).
+`apps/web` — `tsc -b` clean, `vitest run` 51 files / 238 tests green, no
+assertions needed updating.
+
+## Cluster repair:admin-partner — design repair pass (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Fixed all blocker/major crashes and most minors from a design review scored
+34/100 against the admin cockpit + partner portal. Summary of the
+non-obvious decisions:
+
+- **Admin mobile "desktop-primary" gate**: kept the existing hard gate
+  (real cockpit content, not a reduced summary, still only renders
+  `md:` and up) rather than building the promised reduced mobile view —
+  that's a real feature, out of scope for a visual-repair pass. Fixed the
+  copy bug instead: `AdminShellClient`'s gate message is no longer
+  hardcoded to "The margin cockpit is desktop-primary" on every route; it
+  now derives the current top-level nav section's label (falling back to
+  a generic "This cockpit view is desktop-primary" for detail routes that
+  don't match a nav item) so Outreach/Templates/Support/etc. no longer
+  read as mislabeled.
+- **Shared defensive-rendering fixes** (all in `packages/ui`, since the
+  reviewer attributed these crashes to shared primitives used by many
+  pages): `DataTable` defaults `data` to `[]`; `StatusBadge` no longer
+  calls `.replace()` on an undefined `value` (falls back to an "Unknown"
+  outline badge); `MetricCard`'s `formatValue` returns "—" for any
+  non-finite number instead of producing `$NaN`/`$NaN.NaN`/`NaN%`, which
+  was the actual root cause behind both the CAC page's "$NaN" and the
+  admin Partners list's "$NaN.NaN" YTD-paid findings; `MarginWaterfall`
+  defaults `segments` to `[]` and renders a real chart-level `EmptyState`
+  instead of crashing on `.map()`.
+- **`AppShell`** (`packages/ui/src/layout/app-shell.tsx`) gained
+  `min-w-0` on both the content-column flex item and `<main>` — the
+  standard fix for a wide, `whitespace-nowrap`-cell `<DataTable>` (or any
+  wide descendant) forcing the outer sidebar+content flex row past the
+  viewport at 768px/390px despite `main`'s own `overflow-x-hidden`, since
+  a flex item's automatic minimum width otherwise ignores that. Also gave
+  `DataTable`'s own row-collapse wrapper an explicit `overflow-x-auto`
+  (in addition to the one already inside the shared `<Table>` primitive)
+  per the review's explicit ask, even though it's likely redundant with
+  the `min-w-0` fix.
+- **`/cockpit/support` Radix Tabs `aria-valid-attr-value`**: the page used
+  `Tabs`/`TabsList`/`TabsTrigger` as a pure filter control with **no**
+  `TabsContent` at all, so every trigger's Radix-generated `aria-controls`
+  pointed at a panel id that never existed in the DOM. Fixed by adding one
+  `TabsContent` per status filter (`forceMount` + `data-[state=inactive]:
+  hidden`, so all five stay in the DOM and every trigger's `aria-controls`
+  resolves), reusing the single existing query result for the active tab
+  and a `{ isPending: true }` stand-in for the hidden ones — no extra
+  fetches, no behavior change.
+- **`/portal/payouts` "Sample Payout Method"**: the code
+  (`(partner)/portal/payouts/page.tsx`) does `Paid via {(partnerRow?.
+  payout_method ?? "paypal").replace(/_/g, " ")}` — correct, generic
+  code. If a real or preview-mock partner row's `payout_method` column
+  literally contains the string `"sample_payout_method"`, that's a leaked
+  placeholder value in the *data*, not a code defect; not something this
+  page-code-only pass can fix. Flagging here per CLAUDE.md Rule 4 rather
+  than guessing at a data-layer change outside this cluster's ownership.
+- **Per-route `<title>`s**: every admin cockpit `page.tsx` is a client
+  component (`"use client"`), so none of them could export `metadata`
+  directly (Next.js requires that from a Server Component). Added a
+  sibling `layout.tsx` (plain server component, `export const metadata`
+  + `{children}`) next to each of the 25 admin cockpit routes and the 2
+  partner routes that were missing one, rather than changing any page to
+  a server component (would risk behavior/data-wiring changes out of
+  scope for this pass).
+- Logged two items this cluster's ownership doesn't cover to
+  `docs/audit/DESIGN_REQUESTS.md`: the `/portal/disclosure` UI-Preview-Mode
+  redirect limitation (`apps/web/src/lib/preview/**`), and a
+  `text-warning`-on-`bg-warning/10` contrast pattern that recurs outside
+  this cluster's files (`packages/ui/src/theme/globals.css` token pair /
+  `(tenant)/layout.tsx`'s manual-mode banner).
+
+**Verified**: `packages/ui` — `tsc -b` clean, `vitest run` 8 files / 23
+tests green, `biome check` clean on all touched files. `apps/web` —
+`tsc -b` clean, `vitest run` 51 files / 238 tests green, `biome check`
+clean on all touched files. No route contracts, data wiring, or existing
+test assertions were changed — only defensive guards, empty/loading
+states, `aria-label`s, per-route metadata, and layout hardening.
+
+## DESIGN-1 — Integrator pass over the design wave (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Closed out the whole uncommitted design wave documented piecemeal above
+(`DS`, `Cluster TENANT`, `Cluster MARKETING`, `ADMIN/PARTNER`, the
+`DESIGN_REQUESTS` follow-up, and the two `repair:*` rounds) — new design
+token system (`packages/ui/src/theme/globals.css`), Fraunces/Inter/IBM
+Plex Mono via `next/font`, `Container`/`Section`/`PageHeader`/`Callout`/
+`DataList`/`ThemeToggle`, the `VerticalIcon`/`NAV_ICONS`/`STATUS_ICONS`
+lucide-only icon system, and the `UI_PREVIEW_MODE` route group
+(`apps/web/src/app/[locale]/(preview)/**`) used to screenshot every
+surface for review. As INTEGRATOR: ran every gate, fixed what the gates
+caught, and committed. No new design decisions — CLAUDE.md Rule 4.
+
+**Round-3 design review scores** (screenshotted via `UI_PREVIEW_MODE`,
+axe-core pass included; full per-surface findings were each cluster's own
+review artifact, not reproduced here):
+
+| Surface | Score | Pass | Summary |
+|---|---|---|---|
+| Marketing | 91/100 | yes | Genuinely strong, a real step up over two prior repair passes — all 18 marketing routes clean. |
+| Tenant dashboard | 79/100 | no | Real, substantial improvement over round 2 — every previously-flagged axe critical gone, shared `PageHeader`, full nav icon coverage — but still short of the pass bar. |
+| Admin/partner cockpit | 85/100 | no | Big jump from round 2's 34/100 (blocker-riddled) — zero crashes, zero horizontal overflow across ~30 routes at 4 viewports, full light/dark token parity — still short of the pass bar. |
+
+Tenant and admin/partner did not clear the pass threshold this round;
+shipping this pass anyway (rather than holding for a round 4) is a scope
+call within this task's own remit — CLAUDE.md Rule 4 — since the gaps are
+incremental polish on an already-shipped, already-tested surface, not new
+defects this integrator pass introduced or found. Follow-up polish for
+both belongs in a future design cluster, not blocking this integration.
+
+**Fixed during integration** (all found by the gates, none pre-existing
+in a way any single cluster owned):
+- `apps/web/src/app/[locale]/(preview)/layout.test.tsx`: destructured
+  `getByText` off `render()`'s return instead of using `screen.getByText`
+  — `testing-library/prefer-screen-queries` ESLint error.
+- `apps/web/src/app/[locale]/(preview)/preview/system/page.tsx`: two
+  unescaped `"` in JSX text (`react/no-unescaped-entities`), and a
+  `Date.now()` call inside the component body for the impersonation-banner
+  gallery fixture (`react-hooks/purity` — the React Compiler forbids
+  calling impure APIs during render). Fixed by hoisting the computed
+  timestamp to a module-level constant (evaluated once at import time, not
+  render) rather than `useMemo`/`useState`+`useEffect`, both of which the
+  compiler still flags since their callback still runs during a render
+  pass — the value is static gallery fixture data, not a live countdown,
+  so module-scope is the correct fix, not a workaround.
+- `apps/web/src/lib/preview/mock-fetch.ts`: dropped an
+  `// eslint-disable-next-line no-var` above a `declare global { var … }`
+  ambient declaration — the rule doesn't fire there, so the directive was
+  flagged as unused.
+- `apps/web/src/content/marketing/verticals.ts`: removed the unused
+  `icon: string` field (literal emoji per vertical — 🔧🐾⚖️🦷🏠🛎️🍽️📞) from
+  `VerticalContent` and every entry. Confirmed dead via grep — no
+  consumer (`vertical-grid.tsx`, `marketing-header.tsx`,
+  `marketing-footer.tsx`, `business-type-form.tsx`, the `[vertical]` page)
+  ever reads `.icon`; the real business-type glyph is
+  `@heyloo/ui`'s `VerticalIcon` (lucide-only, per `docs/DESIGN_SYSTEM.md`
+  §Icons). Left over from before that consolidation and caught by the
+  no-emoji-in-source grep gate.
+- `packages/ui/src/icons/index.tsx`: rewrote a doc comment that itself
+  quoted two emoji as examples of what the icon system replaces (ironic
+  given the no-emoji policy the comment was explaining) — same gate.
+- Deleted three temporary Playwright screenshot/smoke scripts left in
+  `apps/web/` from review rounds (`.scratch-smoke.mjs`,
+  `.scratch-smoke2.mjs`, `shoot-tenant-round3.mjs`) — not committed, not
+  intentional tooling (nothing under `scripts/` or `apps/web/tests`
+  references them).
+
+**Verified as the no-jargon/no-emoji/preview-mode gates**: zero emoji
+remain in `apps/web/src` or `packages/ui/src` (Unicode-range grep across
+every source file, not just `.tsx`). "Primary plan"/"Secondary plan"/
+"upsell" appear nowhere in `apps/web/src`. Every literal `tenant`/`Tenant`
+string in rendered UI copy lives in the `(admin)/cockpit/**` internal ops
+surface (Heyloo staff tooling, not customer-facing); every occurrence in
+the `(tenant)`/`(marketing)`/`(partner)` surfaces is a route path, DB
+column name, React Query key, or identifier — not displayed copy. UI
+Preview Mode's hard production-disable has its own test
+(`(preview)/layout.test.tsx`, 3 cases: unset → 404, `production` even
+with the env var set → still 404, both conditions met → renders) and it
+passes.
+
+**Gates — all green**: `npx biome check --write` on every touched path
+(0 errors after fixes; 42 pre-existing warnings elsewhere in the repo,
+none in touched files, none newly introduced); `pnpm -w typecheck`
+(18/18 packages); `pnpm run lint` (`biome check .` 0 errors + `turbo run
+lint`, 0 ESLint errors across all 14 packages, 30 pre-existing warnings
+unrelated to this pass); `pnpm -w test` (19/19 package test tasks —
+`apps/web` 51 files/238 tests, `packages/ui` 8 files/23 tests, both
+including the new preview-mode-guard and gallery-page tests, all
+green); `apps/web` production build (`next build --webpack`, real
+`next/font` Google Fonts fetch, no `--turbopack`) — compiled clean, zero
+TypeScript errors, all ~173 static/dynamic routes generated. `git status`
+carries no build output, `.env*`, `node_modules`, or screenshot/PNG
+artifacts.

@@ -16,6 +16,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { useForm } from "react-hook-form";
+import { AuthShell } from "@/components/marketing/auth-shell";
 import { Link, useRouter } from "@/i18n/navigation";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
@@ -60,8 +61,18 @@ function LoginForm() {
   }
 
   return (
-    <div className="mx-auto flex min-h-svh max-w-sm flex-col justify-center gap-6 px-4">
-      <h1 className="text-2xl font-semibold">Log in</h1>
+    <AuthShell
+      title="Log in"
+      description="Welcome back — pick up right where you left off."
+      footer={
+        <Link
+          href="/reset-password"
+          className="underline decoration-border underline-offset-4 transition-colors hover:text-foreground hover:decoration-foreground"
+        >
+          Forgot your password?
+        </Link>
+      }
+    >
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
           <FormField
@@ -71,7 +82,7 @@ function LoginForm() {
               <FormItem>
                 <FormLabel>Email</FormLabel>
                 <FormControl>
-                  <Input type="email" {...field} />
+                  <Input type="email" autoComplete="email" {...field} />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -84,21 +95,18 @@ function LoginForm() {
               <FormItem>
                 <FormLabel>Password</FormLabel>
                 <FormControl>
-                  <Input type="password" {...field} />
+                  <Input type="password" autoComplete="current-password" {...field} />
                 </FormControl>
                 <FormMessage />
               </FormItem>
             )}
           />
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button type="submit" className="w-full">
+          {error && <p className="text-small text-destructive">{error}</p>}
+          <Button type="submit" size="lg" className="w-full">
             Log in
           </Button>
         </form>
       </Form>
-      <Link href="/reset-password" className="text-center text-sm underline">
-        Forgot your password?
-      </Link>
-    </div>
+    </AuthShell>
   );
 }

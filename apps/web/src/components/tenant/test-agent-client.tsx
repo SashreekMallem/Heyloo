@@ -3,12 +3,14 @@
 import {
   Badge,
   Button,
+  Callout,
   Card,
   CardContent,
   CardHeader,
   CardTitle,
   Input,
   Label,
+  PageHeader,
   TranscriptViewer,
 } from "@heyloo/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -150,24 +152,19 @@ export function TestAgentClient({
 
   return (
     <div className="max-w-2xl space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">Test your agent</h1>
-        <p className="text-sm text-muted-foreground">
-          Try a real scenario, then review exactly what your agent heard and did before turning on
-          live call forwarding.
-        </p>
-      </div>
+      <PageHeader
+        title="Test your agent"
+        description="Try a real scenario, then review exactly what your agent heard and did before turning on live call forwarding."
+      />
 
       {!agentPublished && (
-        <Card>
-          <CardContent className="pt-6 text-sm text-warning">
-            Your agent hasn&apos;t been published yet —{" "}
-            <Link href="/dashboard/agent" className="underline">
-              publish it first
-            </Link>{" "}
-            before testing.
-          </CardContent>
-        </Card>
+        <Callout tone="warning">
+          Your agent hasn&apos;t been published yet —{" "}
+          <Link href="/dashboard/agent" className="underline">
+            publish it first
+          </Link>{" "}
+          before testing.
+        </Callout>
       )}
 
       <Card>

@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
   Input,
+  PageHeader,
   Table,
   TableBody,
   TableCell,
@@ -17,7 +18,7 @@ import {
   TableRow,
   Textarea,
 } from "@heyloo/ui";
-import { Trash2 } from "lucide-react";
+import { Trash2, Upload } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { useRouter } from "@/i18n/navigation";
@@ -50,12 +51,14 @@ export default function MenuImportPage() {
     media_type: string;
     data_base64: string;
   } | null>(null);
+  const [fileName, setFileName] = useState<string | null>(null);
   const [items, setItems] = useState<ParsedItem[] | null>(null);
   const [parsing, setParsing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
 
   async function handleFile(file: File) {
+    setFileName(file.name);
     if (file.type === "application/pdf" || file.type.startsWith("image/")) {
       const dataUrl = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -155,13 +158,10 @@ export default function MenuImportPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">Import menu</h1>
-        <p className="text-sm text-muted-foreground">
-          Paste your menu below, upload a file (text, PDF, or a photo), or import from a URL —
-          you&apos;ll review every item before anything is added.
-        </p>
-      </div>
+      <PageHeader
+        title="Import menu"
+        description="Paste your menu below, upload a file (text, PDF, or a photo), or import from a URL — you'll review every item before anything is added."
+      />
 
       {!items && (
         <Card>
@@ -175,16 +175,24 @@ export default function MenuImportPage() {
               onChange={(e) => setRawText(e.target.value)}
             />
             <div className="flex flex-wrap items-center gap-2">
-              <Input
+              <input
                 ref={fileInputRef}
                 type="file"
+                aria-label="Upload a menu file (text, PDF, or photo)"
                 accept=".txt,.csv,.md,image/*,application/pdf"
-                className="max-w-xs"
+                className="sr-only"
+                tabIndex={-1}
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) void handleFile(file);
                 }}
               />
+              <Button type="button" variant="outline" onClick={() => fileInputRef.current?.click()}>
+                <Upload className="size-4" /> Choose file
+              </Button>
+              <span className="truncate text-sm text-muted-foreground">
+                {fileName ?? "No file chosen"}
+              </span>
               <Button onClick={parse} disabled={parsing}>
                 {parsing ? "Reading menu…" : "Parse menu"}
               </Button>
@@ -268,7 +276,12 @@ export default function MenuImportPage() {
                           )}
                         </TableCell>
                         <TableCell className="text-right">
-                          <Button variant="ghost" size="icon" onClick={() => removeItem(i)}>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => removeItem(i)}
+                            aria-label={`Remove ${item.name || `item ${i + 1}`}`}
+                          >
                             <Trash2 className="size-4" />
                           </Button>
                         </TableCell>

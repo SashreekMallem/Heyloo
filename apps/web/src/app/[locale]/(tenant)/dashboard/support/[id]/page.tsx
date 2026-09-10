@@ -1,4 +1,4 @@
-import { Card, CardContent, StatusBadge } from "@heyloo/ui";
+import { Card, CardContent, PageHeader, StatusBadge } from "@heyloo/ui";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { SupportReplyForm } from "@/components/tenant/support-reply-form";
@@ -26,10 +26,10 @@ export default async function SupportDetailPage({ params }: { params: Promise<{ 
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">{ticket.subject}</h1>
-        <StatusBadge variant="ticket" value={ticket.status} />
-      </div>
+      <PageHeader
+        title={ticket.subject}
+        actions={<StatusBadge variant="ticket" value={ticket.status} />}
+      />
       <Card>
         <CardContent className="space-y-4 pt-6">
           <div>

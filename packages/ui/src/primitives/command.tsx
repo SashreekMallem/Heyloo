@@ -1,3 +1,5 @@
+"use client";
+
 import { Command as CommandPrimitive } from "cmdk";
 import { Search } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";

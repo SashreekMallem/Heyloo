@@ -5,6 +5,7 @@ import { Button, InputOTP, InputOTPGroup, InputOTPSlot } from "@heyloo/ui";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { toast } from "sonner";
+import { AuthShell } from "@/components/marketing/auth-shell";
 import { useRouter } from "@/i18n/navigation";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
@@ -60,19 +61,29 @@ function MfaChallengeForm() {
   }
 
   return (
-    <div className="mx-auto flex min-h-svh max-w-sm flex-col items-center justify-center gap-6 px-4 text-center">
-      <h1 className="text-2xl font-semibold">Enter your authentication code</h1>
-      <InputOTP maxLength={6} value={code} onChange={setCode}>
-        <InputOTPGroup>
-          {Array.from({ length: 6 }, (_, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: fixed 6-slot OTP, slot position is the identity
-            <InputOTPSlot key={i} index={i} />
-          ))}
-        </InputOTPGroup>
-      </InputOTP>
-      <Button className="w-full" onClick={verify} disabled={submitting || code.length !== 6}>
-        Verify
-      </Button>
-    </div>
+    <AuthShell
+      title="Enter your authentication code"
+      description="Open your authenticator app and enter the 6-digit code."
+    >
+      <div className="flex flex-col items-center gap-6">
+        <InputOTP maxLength={6} value={code} onChange={setCode}>
+          <InputOTPGroup>
+            {Array.from({ length: 6 }, (_, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: fixed 6-slot OTP, slot position is the identity
+              <InputOTPSlot key={i} index={i} />
+            ))}
+          </InputOTPGroup>
+        </InputOTP>
+        <Button
+          size="lg"
+          className="w-full"
+          onClick={verify}
+          loading={submitting}
+          disabled={code.length !== 6}
+        >
+          Verify
+        </Button>
+      </div>
+    </AuthShell>
   );
 }

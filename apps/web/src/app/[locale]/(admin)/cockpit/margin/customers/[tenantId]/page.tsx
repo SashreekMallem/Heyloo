@@ -1,7 +1,7 @@
 "use client";
 
 import { formatCentsUSD } from "@heyloo/canonical-types";
-import { Card, CardContent, CardHeader, CardTitle, DataState, DataTable } from "@heyloo/ui";
+import { Callout, DataState, DataTable, PageHeader } from "@heyloo/ui";
 import type { ColumnDef } from "@tanstack/react-table";
 import { use } from "react";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
@@ -14,21 +14,31 @@ interface CallCostRow {
 }
 
 const columns: ColumnDef<CallCostRow, unknown>[] = [
-  { accessorKey: "call_id", header: "Call" },
+  {
+    accessorKey: "call_id",
+    header: "Call",
+    cell: ({ row }) => <span className="font-mono text-small">{row.original.call_id}</span>,
+  },
   {
     accessorKey: "cost_cents",
     header: "Cost",
-    cell: ({ row }) => formatCentsUSD(row.original.cost_cents),
+    cell: ({ row }) => (
+      <span className="tabular-nums">{formatCentsUSD(row.original.cost_cents)}</span>
+    ),
   },
   {
     accessorKey: "billed_cents",
     header: "Billed",
-    cell: ({ row }) => formatCentsUSD(row.original.billed_cents),
+    cell: ({ row }) => (
+      <span className="tabular-nums">{formatCentsUSD(row.original.billed_cents)}</span>
+    ),
   },
   {
     accessorKey: "delta_cents",
     header: "Delta",
-    cell: ({ row }) => formatCentsUSD(row.original.delta_cents),
+    cell: ({ row }) => (
+      <span className="tabular-nums">{formatCentsUSD(row.original.delta_cents)}</span>
+    ),
   },
 ];
 
@@ -45,20 +55,23 @@ export default function TenantMarginDetailPage({
   );
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Tenant margin detail</h1>
+    <div className="space-y-6">
+      <PageHeader
+        title="Tenant margin detail"
+        description="Per-call cost vs. billed for this customer."
+      />
       <DataState
         query={query}
-        empty={{ title: "No per-call data for this tenant" }}
+        empty={{
+          title: "No per-call data for this tenant",
+          isEmpty: (data) => (data?.calls?.length ?? 0) === 0,
+        }}
         render={(data) => (
           <>
             {data.suggestedAction && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Suggested action</CardTitle>
-                </CardHeader>
-                <CardContent>{data.suggestedAction}</CardContent>
-              </Card>
+              <Callout tone="info" title="Suggested action">
+                {data.suggestedAction}
+              </Callout>
             )}
             <DataTable columns={columns} data={data.calls} />
           </>

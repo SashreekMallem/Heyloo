@@ -1,7 +1,22 @@
+import { EmptyState } from "@heyloo/ui";
+import { FileQuestion } from "lucide-react";
+import { Link } from "@/i18n/navigation";
+
 export default function TicketNotFound() {
   return (
-    <div className="py-24 text-center">
-      <h1 className="text-xl font-semibold">Ticket not found</h1>
-    </div>
+    <EmptyState
+      className="mt-10 border-none"
+      icon={<FileQuestion className="size-8" />}
+      title="Ticket not found"
+      description="This support ticket doesn't exist or you don't have access to it."
+      action={
+        <Link
+          href="/dashboard/support"
+          className="text-sm font-medium text-primary underline underline-offset-2"
+        >
+          Back to support
+        </Link>
+      }
+    />
   );
 }

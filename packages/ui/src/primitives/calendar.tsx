@@ -1,3 +1,5 @@
+"use client";
+
 import type { ComponentProps } from "react";
 import { DayPicker } from "react-day-picker";
 import { cn } from "../lib/utils.js";

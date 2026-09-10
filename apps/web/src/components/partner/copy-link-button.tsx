@@ -9,6 +9,7 @@ export function CopyLinkButton({ code }: { code: string }) {
     <Button
       size="icon"
       variant="outline"
+      aria-label="Copy your referral link"
       onClick={() => {
         void navigator.clipboard?.writeText(`${window.location.origin}/signup?ref=${code}`);
         toast.success("Link copied");

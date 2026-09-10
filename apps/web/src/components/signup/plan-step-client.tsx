@@ -5,8 +5,7 @@ import { Button, Card, CardContent, Checkbox, Label, PriceCard, WizardStepper } 
 import { useState } from "react";
 import type { PriceCardResponse } from "@/app/api/platform-settings/price-card/route";
 import { useRouter } from "@/i18n/navigation";
-
-const SIGNUP_STEPS = ["Business info", "Plan", "Account", "Payment", "Provisioning", "Phone setup"];
+import { SIGNUP_STEPS } from "@/lib/marketing/signup-steps";
 
 export function PlanStepClient({ priceCard }: { priceCard: PriceCardResponse }) {
   const router = useRouter();
@@ -27,6 +26,12 @@ export function PlanStepClient({ priceCard }: { priceCard: PriceCardResponse }) 
 
   return (
     <div className="mx-auto max-w-md space-y-8">
+      <div className="space-y-1.5 text-center">
+        <h1 className="font-display text-h2 font-semibold">Choose your plan</h1>
+        <p className="text-small text-muted-foreground">
+          Included minutes and overage rate for your business type.
+        </p>
+      </div>
       <WizardStepper steps={SIGNUP_STEPS} current={1} completed={[0]} />
       <PriceCard
         plan={priceCard}

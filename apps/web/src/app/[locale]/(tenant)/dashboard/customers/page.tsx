@@ -1,6 +1,14 @@
 "use client";
 
-import { Badge, type CustomerSegment, DataState, DataTable, SegmentBadge } from "@heyloo/ui";
+import {
+  Badge,
+  type CustomerSegment,
+  DataState,
+  DataTable,
+  Input,
+  PageHeader,
+  SegmentBadge,
+} from "@heyloo/ui";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
 import { useRouter } from "@/i18n/navigation";
@@ -62,15 +70,17 @@ export default function CustomersPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <h1 className="text-xl font-semibold">Customers</h1>
-        <input
-          className="h-9 w-56 rounded-md border border-input bg-background px-3 text-sm"
-          placeholder="Search name or phone"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-      </div>
+      <PageHeader
+        title="Customers"
+        actions={
+          <Input
+            className="w-full sm:w-56"
+            placeholder="Search name or phone"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        }
+      />
       <DataState
         query={query}
         empty={{

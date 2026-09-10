@@ -14,6 +14,7 @@ import {
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
+import { AuthShell } from "@/components/marketing/auth-shell";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
 export default function ResetPasswordRequestPage() {
@@ -31,10 +32,12 @@ export default function ResetPasswordRequestPage() {
   }
 
   return (
-    <div className="mx-auto flex min-h-svh max-w-sm flex-col justify-center gap-6 px-4">
-      <h1 className="text-2xl font-semibold">Reset your password</h1>
+    <AuthShell
+      title="Reset your password"
+      description={sent ? undefined : "We'll email you a link to set a new one."}
+    >
       {sent ? (
-        <p className="text-sm text-muted-foreground">
+        <p className="text-center text-small text-muted-foreground">
           If that email is registered, we&apos;ve sent a reset link.
         </p>
       ) : (
@@ -47,18 +50,18 @@ export default function ResetPasswordRequestPage() {
                 <FormItem>
                   <FormLabel>Email</FormLabel>
                   <FormControl>
-                    <Input type="email" {...field} />
+                    <Input type="email" autoComplete="email" {...field} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
               )}
             />
-            <Button type="submit" className="w-full">
+            <Button type="submit" size="lg" className="w-full">
               Send reset link
             </Button>
           </form>
         </Form>
       )}
-    </div>
+    </AuthShell>
   );
 }

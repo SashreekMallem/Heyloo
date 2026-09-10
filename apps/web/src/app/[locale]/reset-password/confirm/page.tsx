@@ -14,6 +14,7 @@ import {
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
+import { AuthShell } from "@/components/marketing/auth-shell";
 import { useRouter } from "@/i18n/navigation";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
@@ -37,8 +38,7 @@ export default function ResetPasswordConfirmPage() {
   }
 
   return (
-    <div className="mx-auto flex min-h-svh max-w-sm flex-col justify-center gap-6 px-4">
-      <h1 className="text-2xl font-semibold">Set a new password</h1>
+    <AuthShell title="Set a new password">
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
           <FormField
@@ -48,7 +48,7 @@ export default function ResetPasswordConfirmPage() {
               <FormItem>
                 <FormLabel>New password</FormLabel>
                 <FormControl>
-                  <Input type="password" {...field} />
+                  <Input type="password" autoComplete="new-password" {...field} />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -61,18 +61,18 @@ export default function ResetPasswordConfirmPage() {
               <FormItem>
                 <FormLabel>Confirm password</FormLabel>
                 <FormControl>
-                  <Input type="password" {...field} />
+                  <Input type="password" autoComplete="new-password" {...field} />
                 </FormControl>
                 <FormMessage />
               </FormItem>
             )}
           />
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button type="submit" className="w-full">
+          {error && <p className="text-small text-destructive">{error}</p>}
+          <Button type="submit" size="lg" className="w-full">
             Set password
           </Button>
         </form>
       </Form>
-    </div>
+    </AuthShell>
   );
 }

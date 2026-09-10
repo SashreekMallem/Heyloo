@@ -4,6 +4,7 @@ import { mfaEnrollSchema } from "@heyloo/canonical-types";
 import { Button, InputOTP, InputOTPGroup, InputOTPSlot } from "@heyloo/ui";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { AuthShell } from "@/components/marketing/auth-shell";
 import { useRouter } from "@/i18n/navigation";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
@@ -56,27 +57,37 @@ export default function MfaEnrollPage() {
   }
 
   return (
-    <div className="mx-auto flex min-h-svh max-w-sm flex-col items-center justify-center gap-6 px-4 text-center">
-      <h1 className="text-2xl font-semibold">Set up two-factor authentication</h1>
-      <p className="text-sm text-muted-foreground">
-        Admin accounts require an authenticator app. Scan the code below, then enter the 6-digit
-        code it shows.
-      </p>
-      {qrCode && (
-        // biome-ignore lint/performance/noImgElement: a data: URI QR code from Supabase, not an optimizable remote asset.
-        <img src={qrCode} alt="TOTP QR code" className="size-48" />
-      )}
-      <InputOTP maxLength={6} value={code} onChange={setCode}>
-        <InputOTPGroup>
-          {Array.from({ length: 6 }, (_, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: fixed 6-slot OTP, slot position is the identity
-            <InputOTPSlot key={i} index={i} />
-          ))}
-        </InputOTPGroup>
-      </InputOTP>
-      <Button className="w-full" onClick={verify} disabled={submitting || code.length !== 6}>
-        Verify and continue
-      </Button>
-    </div>
+    <AuthShell
+      title="Set up two-factor authentication"
+      description="Admin accounts require an authenticator app. Scan the code below, then enter the 6-digit code it shows."
+    >
+      <div className="flex flex-col items-center gap-6">
+        {qrCode && (
+          // biome-ignore lint/performance/noImgElement: a data: URI QR code from Supabase, not an optimizable remote asset.
+          <img
+            src={qrCode}
+            alt="TOTP QR code"
+            className="size-48 rounded-lg border border-border p-2"
+          />
+        )}
+        <InputOTP maxLength={6} value={code} onChange={setCode}>
+          <InputOTPGroup>
+            {Array.from({ length: 6 }, (_, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: fixed 6-slot OTP, slot position is the identity
+              <InputOTPSlot key={i} index={i} />
+            ))}
+          </InputOTPGroup>
+        </InputOTP>
+        <Button
+          size="lg"
+          className="w-full"
+          onClick={verify}
+          loading={submitting}
+          disabled={code.length !== 6}
+        >
+          Verify and continue
+        </Button>
+      </div>
+    </AuthShell>
   );
 }

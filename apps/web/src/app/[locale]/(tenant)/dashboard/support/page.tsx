@@ -11,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
   Input,
+  PageHeader,
   StatusBadge,
   Textarea,
 } from "@heyloo/ui";
@@ -103,10 +104,11 @@ function SupportPageContent() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Support</h1>
-        <Button onClick={() => setDialogOpen(true)}>New ticket</Button>
-      </div>
+      <PageHeader
+        title="Support"
+        description="Questions or issues — we usually reply within a business day."
+        actions={<Button onClick={() => setDialogOpen(true)}>New ticket</Button>}
+      />
 
       <DataState
         query={query}

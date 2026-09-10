@@ -1,7 +1,7 @@
 "use client";
 
 import { formatCentsUSD } from "@heyloo/canonical-types";
-import { Badge, DataState, DataTable } from "@heyloo/ui";
+import { Badge, DataState, DataTable, PageHeader } from "@heyloo/ui";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
 import { useRouter } from "@/i18n/navigation";
@@ -160,7 +160,7 @@ export function OrdersListClient({ tenantId }: { tenantId: string }) {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Orders</h1>
+      <PageHeader title="Orders" description="Orders your AI takes over the phone." />
       <DataState
         query={query}
         empty={{

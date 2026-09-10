@@ -1,10 +1,14 @@
-import { Button } from "@heyloo/ui";
+import { Button, Container, Section, VerticalIcon } from "@heyloo/ui";
+import { Sparkles } from "lucide-react";
 import type { Metadata } from "next";
 import { setRequestLocale } from "next-intl/server";
 import { Suspense } from "react";
+import { DashboardPreview } from "@/components/marketing/dashboard-preview";
+import { LiveCallHero } from "@/components/marketing/live-call-hero";
+import { TrustStrip } from "@/components/marketing/trust-strip";
+import { VerticalGrid } from "@/components/marketing/vertical-grid";
 import { RoleGuardToast } from "@/components/shared/role-guard-toast";
 import { HOME_CONTENT } from "@/content/marketing/home";
-import { VERTICAL_CONTENT } from "@/content/marketing/verticals";
 import { Link } from "@/i18n/navigation";
 
 export const metadata: Metadata = {
@@ -19,84 +23,144 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
   setRequestLocale(locale);
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-16">
+    <>
       <Suspense fallback={null}>
         <RoleGuardToast />
       </Suspense>
-      <section className="mx-auto max-w-3xl text-center">
-        <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
-          Every call answered. Every booking captured.
-        </h1>
-        <p className="mt-4 text-lg text-muted-foreground">
-          Heyloo is an AI receptionist that answers your business phone 24/7, books real
-          appointments into your calendar, and disclosed AI, disclosed recording — every time.
-        </p>
-        <p className="mt-6 text-sm font-medium text-muted-foreground">
-          {HOME_CONTENT.heroStats[0]}
-        </p>
-        <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-          <Button size="lg" asChild>
-            <Link href="/demo">Try a live demo</Link>
-          </Button>
-          <Button size="lg" variant="outline" asChild>
-            <Link href="/signup">Get started</Link>
-          </Button>
-        </div>
-      </section>
 
-      <section className="mt-20">
-        <h2 className="text-center text-sm font-medium uppercase tracking-wide text-muted-foreground">
-          Built for your business
-        </h2>
-        <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {VERTICAL_CONTENT.map((vertical) => (
-            <Link
-              key={vertical.slug}
-              href={`/${vertical.slug}`}
-              className="flex flex-col items-center gap-2 rounded-lg border border-border p-4 text-center transition-colors hover:bg-secondary"
-            >
-              <span className="text-2xl">{vertical.icon}</span>
-              <span className="text-sm font-medium">{vertical.displayName}</span>
-            </Link>
-          ))}
-        </div>
-      </section>
+      {/* Hero */}
+      <Section spacing="spacious" className="pt-12 md:pt-16">
+        <Container size="wide">
+          <div className="grid items-center gap-10 lg:grid-cols-2 lg:gap-16">
+            <div className="space-y-6 text-center lg:text-left">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary px-3 py-1 text-small font-medium text-secondary-foreground">
+                <Sparkles className="size-3.5 text-primary" aria-hidden="true" />
+                AI receptionist for real businesses
+              </span>
+              <h1 className="font-display text-display font-semibold text-balance">
+                Every call answered.
+                <br />
+                Every booking captured.
+              </h1>
+              <p className="mx-auto max-w-xl text-body text-pretty text-muted-foreground lg:mx-0">
+                Heyloo answers your business phone 24/7, books real appointments straight into your
+                calendar, and always discloses it&apos;s AI and that the call is recorded.
+              </p>
+              <p className="text-small font-medium text-muted-foreground">
+                {HOME_CONTENT.heroStats[0]}
+              </p>
+              <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center lg:justify-start">
+                <Button size="lg" asChild className="w-full sm:w-auto">
+                  <Link href="/demo">Try a live demo</Link>
+                </Button>
+                <Button size="lg" variant="outline" asChild className="w-full sm:w-auto">
+                  <Link href="/signup">Get started</Link>
+                </Button>
+              </div>
+            </div>
 
-      <section className="mt-20 grid gap-8 sm:grid-cols-3">
-        {HOME_CONTENT.howItWorks.map((step, index) => (
-          <div key={step.title} className="space-y-2">
-            <span className="flex size-8 items-center justify-center rounded-full bg-primary text-sm font-medium text-primary-foreground">
-              {index + 1}
-            </span>
-            <h3 className="font-medium">{step.title}</h3>
-            <p className="text-sm text-muted-foreground">{step.description}</p>
+            <LiveCallHero />
           </div>
-        ))}
-      </section>
+        </Container>
+      </Section>
 
-      <section className="mt-20 rounded-lg border border-border bg-secondary/40 p-8 text-center">
-        <h2 className="text-2xl font-semibold">Starting at $299/mo</h2>
-        <p className="mt-2 text-sm text-muted-foreground">
-          No per-call penalty. See the plan built for your business at signup.
-        </p>
-        <div className="mt-6 flex justify-center gap-3">
-          <Button asChild>
-            <Link href="/pricing">See pricing</Link>
-          </Button>
-        </div>
-      </section>
+      {/* Trust strip */}
+      <Section spacing="compact" className="border-y border-border bg-muted/30">
+        <Container size="wide">
+          <TrustStrip />
+        </Container>
+      </Section>
 
-      <section className="mt-20 rounded-lg border border-primary/30 bg-primary/5 p-8 text-center">
-        <h2 className="text-2xl font-semibold">Hear it for yourself</h2>
-        <p className="mt-2 text-sm text-muted-foreground">
-          A personalized demo agent, built from your own website, in under a minute.
-        </p>
-        <div className="mt-6 flex justify-center">
-          <Button size="lg" asChild>
-            <Link href="/demo">Try a live demo</Link>
-          </Button>
-        </div>
-      </section>
-    </div>
+      {/* Business types */}
+      <Section spacing="spacious">
+        <Container size="wide">
+          <div className="mx-auto max-w-2xl text-center">
+            <h2 className="font-display text-h1 font-semibold text-balance">
+              Built for your business
+            </h2>
+            <p className="mt-3 text-body text-pretty text-muted-foreground">
+              Every business type gets an agent that knows how it actually operates — not a generic
+              script.
+            </p>
+          </div>
+          <div className="mt-10">
+            <VerticalGrid />
+          </div>
+        </Container>
+      </Section>
+
+      {/* How it works */}
+      <Section spacing="spacious" className="border-y border-border bg-muted/30">
+        <Container size="wide">
+          <h2 className="text-center font-display text-h1 font-semibold text-balance">
+            How it works
+          </h2>
+          <div className="mt-12 grid gap-8 sm:grid-cols-3 sm:gap-6">
+            {HOME_CONTENT.howItWorks.map((step, index) => (
+              <div key={step.title} className="space-y-3 text-center sm:text-left">
+                <span className="mx-auto flex size-10 items-center justify-center rounded-full bg-primary font-display text-h4 font-semibold text-primary-foreground sm:mx-0">
+                  {index + 1}
+                </span>
+                <h3 className="text-h4 font-semibold">{step.title}</h3>
+                <p className="text-small text-pretty text-muted-foreground">{step.description}</p>
+              </div>
+            ))}
+          </div>
+        </Container>
+      </Section>
+
+      {/* Dashboard preview */}
+      <Section spacing="spacious">
+        <Container size="wide">
+          <div className="mx-auto max-w-2xl text-center">
+            <h2 className="font-display text-h1 font-semibold text-balance">
+              Every call, every booking, in one place
+            </h2>
+            <p className="mt-3 text-body text-pretty text-muted-foreground">
+              Calls, bookings, and customers land in a dashboard you actually check — not another
+              inbox.
+            </p>
+          </div>
+          <div className="mt-10">
+            <DashboardPreview />
+          </div>
+        </Container>
+      </Section>
+
+      {/* Pricing teaser */}
+      <Section spacing="default">
+        <Container size="wide">
+          <div className="rounded-2xl border border-border bg-card p-8 text-center shadow-sm sm:p-12">
+            <h2 className="font-display text-h2 font-semibold">Starting at $299/mo</h2>
+            <p className="mx-auto mt-2 max-w-md text-small text-pretty text-muted-foreground">
+              No per-call penalty. See the plan built for your business type at signup.
+            </p>
+            <div className="mt-6 flex justify-center">
+              <Button asChild>
+                <Link href="/pricing">See pricing</Link>
+              </Button>
+            </div>
+          </div>
+        </Container>
+      </Section>
+
+      {/* Demo CTA */}
+      <Section spacing="default" className="pb-24">
+        <Container size="wide">
+          <div className="rounded-2xl border border-primary/25 bg-primary/5 p-8 text-center sm:p-12">
+            <VerticalIcon vertical="generic" className="mx-auto size-8 text-primary" />
+            <h2 className="mt-4 font-display text-h2 font-semibold">Hear it for yourself</h2>
+            <p className="mx-auto mt-2 max-w-md text-small text-pretty text-muted-foreground">
+              A personalized demo agent, built from your own website, in under a minute.
+            </p>
+            <div className="mt-6 flex justify-center">
+              <Button size="lg" asChild>
+                <Link href="/demo">Try a live demo</Link>
+              </Button>
+            </div>
+          </div>
+        </Container>
+      </Section>
+    </>
   );
 }

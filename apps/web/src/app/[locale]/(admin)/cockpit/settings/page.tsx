@@ -11,6 +11,12 @@ import {
   DataState,
   Input,
   Label,
+  PageHeader,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Switch,
   Tabs,
   TabsContent,
@@ -137,17 +143,21 @@ function PricingTab({
 
   return (
     <TabsContent value="pricing" className="space-y-4">
-      <select
-        className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+      <Select
         value={vertical}
-        onChange={(e) => onVerticalChange(e.target.value as (typeof VERTICALS)[number])}
+        onValueChange={(v) => onVerticalChange(v as (typeof VERTICALS)[number])}
       >
-        {VERTICALS.map((v) => (
-          <option key={v} value={v}>
-            {v}
-          </option>
-        ))}
-      </select>
+        <SelectTrigger className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {VERTICALS.map((v) => (
+            <SelectItem key={v} value={v} className="capitalize">
+              {v.replace(/_/g, " ")}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
       <div className="space-y-1">
         <label htmlFor="pricing-base-cents" className="text-sm font-medium">
           Base price
@@ -237,17 +247,21 @@ function FeesTab({
 
   return (
     <TabsContent value="fees" className="space-y-4">
-      <select
-        className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+      <Select
         value={vertical}
-        onChange={(e) => onVerticalChange(e.target.value as (typeof VERTICALS)[number])}
+        onValueChange={(v) => onVerticalChange(v as (typeof VERTICALS)[number])}
       >
-        {VERTICALS.map((v) => (
-          <option key={v} value={v}>
-            {v}
-          </option>
-        ))}
-      </select>
+        <SelectTrigger className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {VERTICALS.map((v) => (
+            <SelectItem key={v} value={v} className="capitalize">
+              {v.replace(/_/g, " ")}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
 
       <div className="flex items-center gap-2">
         <Switch id="setup-fee-enabled" checked={setupEnabled} onCheckedChange={setSetupEnabled} />
@@ -309,7 +323,10 @@ export default function PlatformSettingsPage() {
 
   return (
     <div className="max-w-lg space-y-6">
-      <h1 className="text-xl font-semibold">Platform settings</h1>
+      <PageHeader
+        title="Platform settings"
+        description="Referral defaults, per-vertical pricing, and setup/white-glove fees."
+      />
       <DataState
         query={settingsQuery}
         empty={{ title: "No platform settings found" }}
@@ -320,12 +337,15 @@ export default function PlatformSettingsPage() {
               <TabsTrigger value="pricing">Pricing tables</TabsTrigger>
               <TabsTrigger value="fees">Fees</TabsTrigger>
             </TabsList>
-            <ReferralTab initial={data.referral} onSaved={() => void settingsQuery.refetch()} />
+            <ReferralTab
+              initial={data.referral ?? { flat_amount_cents: 0, qualification_rule: "" }}
+              onSaved={() => void settingsQuery.refetch()}
+            />
             <PricingTab
               key={vertical}
               vertical={vertical}
               onVerticalChange={setVertical}
-              initial={data.price_cards[vertical] ?? null}
+              initial={data.price_cards?.[vertical] ?? null}
               onSaved={() => void settingsQuery.refetch()}
             />
             {feesQuery.data && (
@@ -333,7 +353,7 @@ export default function PlatformSettingsPage() {
                 key={`fees-${vertical}`}
                 vertical={vertical}
                 onVerticalChange={setVertical}
-                initial={feesQuery.data.fees[vertical] ?? DEFAULT_VERTICAL_FEES}
+                initial={feesQuery.data?.fees?.[vertical] ?? DEFAULT_VERTICAL_FEES}
                 onSaved={() => void feesQuery.refetch()}
               />
             )}

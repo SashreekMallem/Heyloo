@@ -7,6 +7,7 @@ import {
   CardHeader,
   CardTitle,
   DataState,
+  PageHeader,
   type SimulationCaseResult,
   SimulationResultsPanel,
   Textarea,
@@ -58,7 +59,7 @@ export default function TemplateEditorPage({ params }: { params: Promise<{ verti
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold">{vertical} template</h1>
+      <PageHeader title={`${vertical.replace(/_/g, " ")} template`} className="capitalize" />
 
       <DataState
         query={query}

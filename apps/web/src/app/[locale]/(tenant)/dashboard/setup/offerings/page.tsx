@@ -26,6 +26,7 @@ import {
   FormLabel,
   FormMessage,
   Input,
+  PageHeader,
   Table,
   TableBody,
   TableCell,
@@ -188,23 +189,20 @@ export default function OfferingsSetupPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h1 className="text-xl font-semibold">Offerings &amp; menu</h1>
-          <p className="text-sm text-muted-foreground">
-            Services, room types, or menu items — with prices, modifiers, and allergens — that your
-            AI can quote, book, or take orders against.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" asChild>
-            <Link href="/dashboard/setup/offerings/import">Import menu</Link>
-          </Button>
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="mr-1 size-4" /> Add offering
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="Offerings & menu"
+        description="Services, room types, or menu items — with prices, modifiers, and allergens — that your AI can quote, book, or take orders against."
+        actions={
+          <>
+            <Button variant="outline" size="sm" asChild>
+              <Link href="/dashboard/setup/offerings/import">Import menu</Link>
+            </Button>
+            <Button size="sm" onClick={openCreate}>
+              <Plus className="mr-1 size-4" /> Add offering
+            </Button>
+          </>
+        }
+      />
 
       <DataState
         query={query}
@@ -214,60 +212,118 @@ export default function OfferingsSetupPage() {
           action: { label: "Add offering", onClick: openCreate },
         }}
         render={(offerings) => (
-          <div className="overflow-x-auto rounded-md border border-border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Price</TableHead>
-                  <TableHead>Duration</TableHead>
-                  <TableHead>Allergens</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {offerings.map((offering) => (
-                  <TableRow key={offering.id}>
-                    <TableCell className="font-medium">{offering.name}</TableCell>
-                    <TableCell>{offering.category ?? "—"}</TableCell>
-                    <TableCell>
+          <>
+            {/* Card layout below `lg` — the Name/Category/Price/Duration/Allergens
+                columns don't fit a raw table at phone or tablet widths
+                (matches the DataTable card breakpoint used elsewhere). */}
+            <div className="flex flex-col gap-2 lg:hidden">
+              {offerings.map((offering) => (
+                <div key={offering.id} className="rounded-lg border border-border p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{offering.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {offering.category ?? "No category"}
+                      </p>
+                    </div>
+                    <p className="shrink-0 text-sm tabular-nums">
                       {offering.price_cents != null ? formatCentsUSD(offering.price_cents) : "—"}
-                    </TableCell>
-                    <TableCell>
-                      {offering.duration_minutes ? `${offering.duration_minutes}m` : "—"}
-                    </TableCell>
-                    <TableCell>
-                      {(offering.metadata.allergens ?? []).length > 0 ? (
-                        <div className="flex flex-wrap gap-1">
-                          {(offering.metadata.allergens ?? []).map((a) => (
-                            <Badge key={a} variant="destructive">
-                              {a}
-                            </Badge>
-                          ))}
-                        </div>
-                      ) : (
-                        "—"
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="ghost" size="sm" onClick={() => openEdit(offering)}>
-                        Edit
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-destructive"
-                        onClick={() => setPendingDelete(offering)}
-                      >
-                        Remove
-                      </Button>
-                    </TableCell>
+                    </p>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-1">
+                    {offering.duration_minutes && (
+                      <Badge variant="outline">{offering.duration_minutes}m</Badge>
+                    )}
+                    {(offering.metadata.allergens ?? []).map((a) => (
+                      <Badge key={a} variant="destructive">
+                        {a}
+                      </Badge>
+                    ))}
+                  </div>
+                  <div className="mt-2 flex justify-end gap-1 border-t border-border pt-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => openEdit(offering)}
+                      aria-label={`Edit ${offering.name}`}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive"
+                      onClick={() => setPendingDelete(offering)}
+                      aria-label={`Remove ${offering.name}`}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="hidden overflow-x-auto rounded-md border border-border lg:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Category</TableHead>
+                    <TableHead>Price</TableHead>
+                    <TableHead>Duration</TableHead>
+                    <TableHead>Allergens</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+                </TableHeader>
+                <TableBody>
+                  {offerings.map((offering) => (
+                    <TableRow key={offering.id}>
+                      <TableCell className="font-medium">{offering.name}</TableCell>
+                      <TableCell>{offering.category ?? "—"}</TableCell>
+                      <TableCell>
+                        {offering.price_cents != null ? formatCentsUSD(offering.price_cents) : "—"}
+                      </TableCell>
+                      <TableCell>
+                        {offering.duration_minutes ? `${offering.duration_minutes}m` : "—"}
+                      </TableCell>
+                      <TableCell>
+                        {(offering.metadata.allergens ?? []).length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {(offering.metadata.allergens ?? []).map((a) => (
+                              <Badge key={a} variant="destructive">
+                                {a}
+                              </Badge>
+                            ))}
+                          </div>
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openEdit(offering)}
+                          aria-label={`Edit ${offering.name}`}
+                        >
+                          Edit
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive"
+                          onClick={() => setPendingDelete(offering)}
+                          aria-label={`Remove ${offering.name}`}
+                        >
+                          Remove
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </>
         )}
       />
 
@@ -386,6 +442,7 @@ export default function OfferingsSetupPage() {
                         variant="ghost"
                         size="icon"
                         onClick={() => modifierFields.remove(index)}
+                        aria-label="Remove modifier"
                       >
                         <Trash2 className="size-4" />
                       </Button>

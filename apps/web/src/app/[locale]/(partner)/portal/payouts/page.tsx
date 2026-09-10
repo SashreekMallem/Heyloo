@@ -1,3 +1,4 @@
+import { PageHeader } from "@heyloo/ui";
 import type { Metadata } from "next";
 import { type PayoutRow, PayoutsTableClient } from "@/components/partner/payouts-table-client";
 import { requirePartnerSession } from "@/lib/auth/require-partner-session";
@@ -27,13 +28,18 @@ export default async function PayoutsPage() {
   ]);
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold">Payouts</h1>
-        <p className="text-sm capitalize text-muted-foreground">
-          Paid via {(partnerRow?.payout_method ?? "paypal").replace(/_/g, " ")}
-        </p>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Payouts"
+        description={
+          <span>
+            Paid via{" "}
+            <span className="capitalize">
+              {(partnerRow?.payout_method ?? "paypal").replace(/_/g, " ")}
+            </span>
+          </span>
+        }
+      />
       <PayoutsTableClient payouts={(payouts ?? []) as unknown as PayoutRow[]} />
     </div>
   );

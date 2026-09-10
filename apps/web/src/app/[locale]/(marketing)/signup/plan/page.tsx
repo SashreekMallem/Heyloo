@@ -1,3 +1,4 @@
+import { Container, Section } from "@heyloo/ui";
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
@@ -21,8 +22,10 @@ export default async function SignupPlanPage() {
   const priceCard = (await res.json()) as PriceCardResponse;
 
   return (
-    <div className="px-4 py-16">
-      <PlanStepClient priceCard={priceCard} />
-    </div>
+    <Section spacing="default" className="pb-24">
+      <Container size="content">
+        <PlanStepClient priceCard={priceCard} />
+      </Container>
+    </Section>
   );
 }

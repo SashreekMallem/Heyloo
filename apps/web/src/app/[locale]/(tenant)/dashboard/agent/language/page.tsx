@@ -63,7 +63,7 @@ export default function LanguageTabPage() {
           language.
         </p>
         <Select value={language} onValueChange={setLanguage}>
-          <SelectTrigger className="w-64">
+          <SelectTrigger className="w-64" aria-label="AI call language">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

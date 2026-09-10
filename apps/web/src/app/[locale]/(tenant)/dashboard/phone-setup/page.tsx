@@ -1,3 +1,4 @@
+import { PageHeader } from "@heyloo/ui";
 import type { Metadata } from "next";
 import { PhoneSetupWizard } from "@/components/phone-setup/phone-setup-wizard";
 import { requireTenantSession } from "@/lib/auth/require-tenant-session";
@@ -15,8 +16,11 @@ export default async function PhoneSetupPage() {
     .maybeSingle();
 
   return (
-    <div>
-      <h1 className="mb-6 text-xl font-semibold">Phone setup</h1>
+    <div className="space-y-6">
+      <PageHeader
+        title="Phone setup"
+        description="Forward your business number so your AI can start answering calls."
+      />
       <PhoneSetupWizard
         tenantId={tenant.id}
         forwardingNumber={phoneNumber?.e164 ?? ""}

@@ -1,7 +1,16 @@
 "use client";
 
 import { formatCentsUSD } from "@heyloo/canonical-types";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Separator } from "@heyloo/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  PageHeader,
+  Separator,
+} from "@heyloo/ui";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Link, useRouter } from "@/i18n/navigation";
@@ -104,10 +113,10 @@ export function OrderDetailClient({ order }: { order: OrderDetailData }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Order</h1>
-        <Badge variant={ORDER_STATUS_VARIANT[status] ?? "outline"}>{status}</Badge>
-      </div>
+      <PageHeader
+        title="Order"
+        actions={<Badge variant={ORDER_STATUS_VARIANT[status] ?? "outline"}>{status}</Badge>}
+      />
 
       <Card>
         <CardHeader>

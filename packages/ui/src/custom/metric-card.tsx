@@ -15,6 +15,7 @@ export interface MetricCardProps {
 }
 
 function formatValue(value: number, format: MetricFormat): string {
+  if (!Number.isFinite(value)) return "—";
   switch (format) {
     case "currency":
       return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
@@ -47,7 +48,7 @@ export function MetricCard({ label, value, delta, format, loading, className }: 
             <span className="text-2xl font-semibold tabular-nums">
               {formatValue(value, format)}
             </span>
-            {delta !== undefined && (
+            {delta !== undefined && Number.isFinite(delta) && (
               <span
                 className={cn(
                   "flex items-center gap-0.5 text-xs font-medium",

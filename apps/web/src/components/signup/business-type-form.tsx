@@ -15,14 +15,14 @@ import {
   FormLabel,
   FormMessage,
   Input,
+  VerticalIcon,
   WizardStepper,
 } from "@heyloo/ui";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { VERTICAL_CONTENT } from "@/content/marketing/verticals";
 import { useRouter } from "@/i18n/navigation";
-
-const SIGNUP_STEPS = ["Business info", "Plan", "Account", "Payment", "Provisioning", "Phone setup"];
+import { SIGNUP_STEPS } from "@/lib/marketing/signup-steps";
 
 export function BusinessTypeForm({
   initialVertical,
@@ -48,6 +48,14 @@ export function BusinessTypeForm({
 
   return (
     <div className="mx-auto max-w-2xl space-y-8">
+      <div className="space-y-1.5 text-center">
+        <h1 className="font-display text-h2 font-semibold">
+          Let&apos;s set up your AI receptionist
+        </h1>
+        <p className="text-small text-muted-foreground">
+          Six quick steps — most take under a minute.
+        </p>
+      </div>
       <WizardStepper steps={SIGNUP_STEPS} current={0} completed={[]} />
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
@@ -64,13 +72,19 @@ export function BusinessTypeForm({
                       type="button"
                       onClick={() => field.onChange(v.vertical)}
                       className={cn(
-                        "flex flex-col items-center gap-1 rounded-lg border p-4 text-sm transition-colors",
+                        "flex min-h-24 flex-col items-center justify-center gap-2 rounded-xl border p-4 text-center text-small transition-colors duration-(--duration-fast) ease-(--ease-out)",
                         field.value === v.vertical
-                          ? "border-primary bg-primary/5"
-                          : "border-border hover:bg-secondary",
+                          ? "border-primary bg-primary/5 ring-1 ring-primary"
+                          : "border-border hover:border-primary/40 hover:bg-secondary",
                       )}
                     >
-                      <span className="text-xl">{v.icon}</span>
+                      <VerticalIcon
+                        vertical={v.vertical}
+                        className={cn(
+                          "size-5",
+                          field.value === v.vertical ? "text-primary" : "text-muted-foreground",
+                        )}
+                      />
                       {v.slug === "generic" ? "Something else" : v.displayName}
                     </button>
                   ))}
@@ -86,7 +100,7 @@ export function BusinessTypeForm({
               <FormItem>
                 <FormLabel>Business name</FormLabel>
                 <FormControl>
-                  <Input placeholder="Riverside Auto Repair" {...field} />
+                  <Input placeholder="Sunrise Group" {...field} />
                 </FormControl>
                 <FormMessage />
               </FormItem>

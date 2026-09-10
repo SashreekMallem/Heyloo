@@ -79,6 +79,7 @@ export default function ManualModeTabPage() {
               if (checked) setConfirmOpen(true);
               else void setManualMode(false);
             }}
+            aria-label="Manual Mode"
           />
         </CardContent>
       </Card>

@@ -1,4 +1,5 @@
-import { Button } from "@heyloo/ui";
+import { Button, Container, Section, VerticalIcon } from "@heyloo/ui";
+import { Check } from "lucide-react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { setRequestLocale } from "next-intl/server";
@@ -35,48 +36,98 @@ export default async function VerticalPage({
   if (!content) notFound();
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-16">
-      <section className="text-center">
-        <span className="text-4xl">{content.icon}</span>
-        <h1 className="mt-4 text-4xl font-semibold tracking-tight">
-          Heyloo for {content.displayName}
-        </h1>
-        <p className="mt-4 text-lg text-muted-foreground">{content.heroStat}</p>
-      </section>
-
-      <section className="mt-10 grid gap-4 sm:grid-cols-3">
-        {content.painStats.map((stat) => (
-          <div key={stat} className="rounded-lg border border-border p-4 text-sm">
-            {stat}
+    <>
+      <Section spacing="spacious" className="pt-12 md:pt-16">
+        <Container size="content" className="text-center">
+          <span className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-secondary">
+            <VerticalIcon vertical={content.vertical} className="size-7 text-foreground" />
+          </span>
+          <h1 className="mt-5 font-display text-display font-semibold text-balance">
+            Heyloo for {content.displayName}
+          </h1>
+          <p className="mx-auto mt-4 max-w-xl text-body text-pretty text-muted-foreground">
+            {content.heroStat}
+          </p>
+          <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+            <Button size="lg" asChild className="w-full sm:w-auto">
+              <Link href={`/demo?vertical=${content.slug}`}>Try a live demo</Link>
+            </Button>
+            <Button size="lg" variant="outline" asChild className="w-full sm:w-auto">
+              <Link href={`/signup?vertical=${content.slug}`}>Get started</Link>
+            </Button>
           </div>
-        ))}
-      </section>
+        </Container>
+      </Section>
 
-      <section className="mt-12">
-        <h2 className="text-xl font-semibold">What your AI receptionist handles</h2>
-        <ul className="mt-4 space-y-2">
-          {content.intakeSummary.map((item) => (
-            <li key={item} className="flex items-start gap-2 text-sm">
-              <span className="mt-1 size-1.5 shrink-0 rounded-full bg-primary" />
-              {item}
-            </li>
-          ))}
-        </ul>
-      </section>
+      <Section spacing="default" className="border-y border-border bg-muted/30">
+        <Container size="wide">
+          <div className="grid gap-4 sm:grid-cols-3">
+            {content.painStats.map((stat) => (
+              <div
+                key={stat}
+                className="rounded-xl border border-border bg-card p-5 text-small text-pretty shadow-xs"
+              >
+                {stat}
+              </div>
+            ))}
+          </div>
+        </Container>
+      </Section>
 
-      <p className="mt-10 text-sm text-muted-foreground">{content.competitorAnchor}</p>
-      <p className="mt-1 text-sm font-medium">
-        Plans start at $299/mo — see your real price at signup.
-      </p>
+      <Section spacing="spacious">
+        <Container size="content">
+          <div className="grid gap-10 sm:grid-cols-2">
+            <div>
+              <h2 className="text-h2 font-display font-semibold">
+                What your AI receptionist handles
+              </h2>
+              <ul className="mt-5 space-y-3">
+                {content.intakeSummary.map((item) => (
+                  <li key={item} className="flex items-start gap-2.5 text-small">
+                    <Check className="mt-0.5 size-4 shrink-0 text-success" />
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </div>
 
-      <div className="mt-8 flex flex-wrap justify-center gap-3">
-        <Button size="lg" asChild>
-          <Link href={`/demo?vertical=${content.slug}`}>Try a live demo</Link>
-        </Button>
-        <Button size="lg" variant="outline" asChild>
-          <Link href={`/signup?vertical=${content.slug}`}>Get started</Link>
-        </Button>
-      </div>
-    </div>
+            <div className="rounded-xl border border-border bg-card p-5 shadow-sm">
+              <p className="mb-3 text-micro font-medium uppercase tracking-wide text-muted-foreground">
+                A typical call
+              </p>
+              <div className="space-y-2.5">
+                <p className="max-w-[90%] rounded-lg bg-muted px-3 py-2 text-small">
+                  Hi, do you have anything available this week?
+                </p>
+                <p className="ml-auto max-w-[90%] rounded-lg bg-primary/10 px-3 py-2 text-small">
+                  This is your AI receptionist — this call is recorded. I can check that for you
+                  now.
+                </p>
+                <p className="max-w-[90%] rounded-lg bg-muted px-3 py-2 text-small">
+                  Great, let&apos;s book it.
+                </p>
+              </div>
+            </div>
+          </div>
+        </Container>
+      </Section>
+
+      <Section spacing="default" className="border-t border-border">
+        <Container size="content" className="text-center">
+          <p className="text-small text-pretty text-muted-foreground">{content.competitorAnchor}</p>
+          <p className="mt-1 text-body font-medium">
+            Plans start at $299/mo — see your real price at signup.
+          </p>
+          <div className="mt-8 flex flex-wrap justify-center gap-3">
+            <Button size="lg" asChild>
+              <Link href={`/demo?vertical=${content.slug}`}>Try a live demo</Link>
+            </Button>
+            <Button size="lg" variant="outline" asChild>
+              <Link href={`/signup?vertical=${content.slug}`}>Get started</Link>
+            </Button>
+          </div>
+        </Container>
+      </Section>
+    </>
   );
 }

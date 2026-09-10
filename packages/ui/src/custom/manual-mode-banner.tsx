@@ -1,3 +1,5 @@
+"use client";
+
 import { AlertOctagon } from "lucide-react";
 import { Button } from "../primitives/button.js";
 

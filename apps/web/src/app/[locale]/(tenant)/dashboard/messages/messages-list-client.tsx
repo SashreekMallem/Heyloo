@@ -1,6 +1,6 @@
 "use client";
 
-import { Badge, DataState } from "@heyloo/ui";
+import { Badge, DataState, PageHeader } from "@heyloo/ui";
 import { useRouter } from "@/i18n/navigation";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
 import { describeOutboundMessage } from "@/lib/messages/outbound-preview";
@@ -105,7 +105,7 @@ export function MessagesListClient({ tenantId }: { tenantId: string }) {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Messages</h1>
+      <PageHeader title="Messages" description="Two-way texts with your customers." />
       <DataState
         query={query}
         empty={{

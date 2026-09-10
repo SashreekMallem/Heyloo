@@ -1,3 +1,5 @@
+"use client";
+
 import { RefreshCw } from "lucide-react";
 import { Badge } from "../primitives/badge.js";
 import { Button } from "../primitives/button.js";

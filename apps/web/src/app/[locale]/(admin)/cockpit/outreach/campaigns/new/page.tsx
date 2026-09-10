@@ -12,6 +12,7 @@ import {
   FormMessage,
   Input,
   Label,
+  PageHeader,
   Select,
   SelectContent,
   SelectItem,
@@ -53,7 +54,7 @@ export default function NewCampaignPage() {
 
   return (
     <div className="max-w-lg space-y-6">
-      <h1 className="text-xl font-semibold">New campaign</h1>
+      <PageHeader title="New campaign" />
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
           <FormField
@@ -83,8 +84,8 @@ export default function NewCampaignPage() {
                   </FormControl>
                   <SelectContent>
                     {VERTICALS.map((v) => (
-                      <SelectItem key={v} value={v}>
-                        {v}
+                      <SelectItem key={v} value={v} className="capitalize">
+                        {v.replace(/_/g, " ")}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -137,8 +138,15 @@ export default function NewCampaignPage() {
             )}
           />
           <div className="flex items-center gap-2">
-            <Checkbox checked disabled />
-            <Label className="font-normal">Respect suppression list (always on)</Label>
+            <Checkbox
+              id="respect-suppression-list"
+              checked
+              disabled
+              aria-label="Respect suppression list (always on)"
+            />
+            <Label htmlFor="respect-suppression-list" className="font-normal">
+              Respect suppression list (always on)
+            </Label>
           </div>
           <Button type="submit">Create campaign</Button>
         </form>

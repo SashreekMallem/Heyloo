@@ -1,4 +1,5 @@
 import type { Vertical } from "@heyloo/canonical-types";
+import { Container, Section } from "@heyloo/ui";
 import type { Metadata } from "next";
 import { BusinessTypeForm } from "@/components/signup/business-type-form";
 import { getVerticalContent } from "@/content/marketing/verticals";
@@ -15,11 +16,13 @@ export default async function SignupStep1Page({
   const content = vertical ? getVerticalContent(vertical) : undefined;
 
   return (
-    <div className="px-4 py-16">
-      <BusinessTypeForm
-        initialVertical={content?.vertical as Vertical | undefined}
-        demoId={demo_id}
-      />
-    </div>
+    <Section spacing="default" className="pb-24">
+      <Container size="content">
+        <BusinessTypeForm
+          initialVertical={content?.vertical as Vertical | undefined}
+          demoId={demo_id}
+        />
+      </Container>
+    </Section>
   );
 }

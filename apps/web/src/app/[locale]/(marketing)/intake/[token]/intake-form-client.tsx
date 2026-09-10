@@ -16,6 +16,7 @@ import {
   Input,
 } from "@heyloo/ui";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { CheckCircle2 } from "lucide-react";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -92,12 +93,17 @@ export function IntakeFormClient({
 
   if (submitted) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Thank you{patientFirstName ? `, ${patientFirstName}` : ""}</CardTitle>
+      <Card className="shadow-md">
+        <CardHeader className="items-center text-center">
+          <span className="flex size-12 items-center justify-center rounded-full bg-success/15 text-success">
+            <CheckCircle2 className="size-6" aria-hidden="true" />
+          </span>
+          <CardTitle className="mt-2 font-display text-h3 font-semibold">
+            Thank you{patientFirstName ? `, ${patientFirstName}` : ""}
+          </CardTitle>
         </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
+        <CardContent className="text-center">
+          <p className="text-small text-muted-foreground">
             Your information has been received by {tenantName}. You&apos;re all set for your
             appointment.
           </p>
@@ -107,10 +113,12 @@ export function IntakeFormClient({
   }
 
   return (
-    <Card>
+    <Card className="shadow-md">
       <CardHeader>
-        <CardTitle>Patient intake — {tenantName}</CardTitle>
-        <p className="text-sm text-muted-foreground">
+        <CardTitle className="font-display text-h3 font-semibold">
+          Patient intake — {tenantName}
+        </CardTitle>
+        <p className="text-small text-muted-foreground">
           {patientFirstName ? `Hi ${patientFirstName} — please` : "Please"} confirm your date of
           birth and insurance details ahead of your appointment. This link is private to you.
         </p>

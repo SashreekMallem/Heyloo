@@ -1,5 +1,42 @@
 # Launch Status
 
+## Design: world-class UI system + marketing/dashboard/admin restyle (DESIGN-1, 2026-09-10)
+
+Integrated the uncommitted design wave (token system, typography,
+`Container`/`Section`/`PageHeader`/`Callout`/`DataList`/`ThemeToggle`,
+lucide-only icon system, `UI_PREVIEW_MODE` review route group, and three
+rounds of review + repair across marketing/tenant/admin-partner — full
+per-cluster detail in `docs/BUILD_NOTES.md`'s `DS`/`Cluster TENANT`/
+`Cluster MARKETING`/`ADMIN/PARTNER`/`repair:*` sections) as the
+INTEGRATOR: ran every gate, fixed what the gates caught (2 ESLint errors,
+1 unused-directive warning, 8 dead literal-emoji values, 3 stray review
+scripts), and committed. Round-3 review: **marketing 91/100 (pass)**,
+**tenant dashboard 79/100**, **admin/partner cockpit 85/100** — tenant and
+admin/partner are a real, substantial improvement over round 2 (round 2
+admin/partner was 34/100) but did not clear the pass bar this round;
+shipping now rather than holding for a round 4 is a documented scope call,
+not a silent gap — see `docs/BUILD_NOTES.md`'s DESIGN-1 section for the
+full score table and what was fixed. UI Preview Mode is confirmed
+hard-disabled in production (own test, 3 cases, passing) and its temporary
+screenshot/smoke scripts were removed from the tree.
+
+**Gates:** all green — `npx biome check --write` (0 errors on touched
+paths), `pnpm -w typecheck` (18/18), `pnpm run lint` (0 errors), `pnpm -w
+test` (19/19 package test tasks, `apps/web` 238 + `packages/ui` 23 among
+them), `apps/web` production build (`next build --webpack`, real Google
+Fonts fetch). No emoji remain in `apps/web/src`/`packages/ui/src`; no
+internal-jargon customer-facing copy (`tenant` only appears in the
+internal `(admin)/cockpit` ops surface or as identifiers/route
+paths/DB columns, never as displayed copy on marketing/tenant/partner
+surfaces).
+
+**New secrets needed:** none.
+
+**Owner to-do, added by this pass:** none blocking. Non-blocking: a round
+4 design pass to close the remaining tenant-dashboard and admin/partner
+polish gaps the round-3 review flagged (see `docs/BUILD_NOTES.md`'s
+DESIGN-1 section) before either surface is treated as launch-final.
+
 ## Vertical wave (WAVE-2, 2026-09-10) — integration pass
 
 Integrated the uncommitted vertical-completeness build wave (engine,
@@ -201,6 +238,7 @@ consolidated version a launch decision actually needs.
 | 2 | T6 | 8 vertical agent templates, red-team adversarial suite, compiler-gate tests | 104 |
 | 3 | T8 | Outreach engine (Apollo/Outscraper fetch, Claude personalize, Smartlead send, reply classification), admin outreach panel | 350 (cumulative) |
 | 4 | **T9 (this task)** | Sentry wiring (`_shared/sentry.ts` + `logger.ts`, env-gated), `docs/OPS_RUNBOOK.md`, `docs/DEPLOY.md`, CI completion (`e2e`/`repo-hygiene` jobs, clean-build assertion, actionlint-clean), 3 new Playwright specs + auth infrastructure, `scripts/e2e-backend.ts` | 397 (`supabase/functions` cumulative, +20 from this task) |
+| — | DESIGN-1 | Design token system + typography (`packages/ui/src/theme`), shared layout/custom components, lucide-only icon system, `UI_PREVIEW_MODE` review route group, full marketing/tenant/admin-partner restyle across 3 review rounds | 238 (`apps/web`) + 23 (`packages/ui`) |
 
 **Not yet done by any task** (real, not oversight): `packages/adapters/
 shopmonkey`/`ezyvet`/`google-calendar`/`square` and their webhook/two-way-

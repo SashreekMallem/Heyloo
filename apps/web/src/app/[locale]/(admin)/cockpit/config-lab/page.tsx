@@ -3,12 +3,14 @@
 import { configLabScenarioSchema, VERTICALS } from "@heyloo/canonical-types";
 import {
   Button,
+  Callout,
   Card,
   CardContent,
   CardHeader,
   CardTitle,
   Input,
   MarginWaterfall,
+  PageHeader,
   Select,
   SelectContent,
   SelectItem,
@@ -62,8 +64,11 @@ export default function ConfigLabPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold">Config Lab</h1>
-      <p className="text-sm font-medium text-warning">Simulation only — no changes applied.</p>
+      <PageHeader
+        title="Config Lab"
+        description="Model a pricing/tier change before it ever touches a live customer."
+      />
+      <Callout tone="warning">Simulation only — no changes are applied to live pricing.</Callout>
 
       <Card>
         <CardHeader>
@@ -81,8 +86,8 @@ export default function ConfigLabPage() {
             </SelectTrigger>
             <SelectContent>
               {VERTICALS.map((v) => (
-                <SelectItem key={v} value={v}>
-                  {v}
+                <SelectItem key={v} value={v} className="capitalize">
+                  {v.replace(/_/g, " ")}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -122,11 +127,11 @@ export default function ConfigLabPage() {
       {result && (
         <div className="grid gap-6 sm:grid-cols-2">
           <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">Before</h2>
+            <h2 className="mb-2 text-small font-medium text-muted-foreground">Before</h2>
             <MarginWaterfall segments={result.before} />
           </div>
           <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">After</h2>
+            <h2 className="mb-2 text-small font-medium text-muted-foreground">After</h2>
             <MarginWaterfall segments={result.after} />
           </div>
         </div>

@@ -24,8 +24,8 @@ export default async function TenantLayout({ children }: { children: ReactNode }
   if (tenant.status === "paused" || tenant.status === "canceled") {
     return (
       <div className="mx-auto flex min-h-svh max-w-md flex-col items-center justify-center gap-4 p-6 text-center">
-        <h1 className="text-xl font-semibold">Your account is paused</h1>
-        <p className="text-sm text-muted-foreground">
+        <h1 className="font-display text-h3 font-semibold">Your account is paused</h1>
+        <p className="text-body text-muted-foreground">
           {tenant.status === "canceled"
             ? "Your subscription has been canceled. Contact support if you'd like to reactivate."
             : "Your account has been paused. Contact support for details or to resume service."}

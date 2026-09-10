@@ -1,3 +1,4 @@
+import { Container, Section } from "@heyloo/ui";
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { PhoneSetupWizard } from "@/components/phone-setup/phone-setup-wizard";
@@ -19,14 +20,16 @@ export default async function SignupForwardingPage() {
     .maybeSingle();
 
   return (
-    <div className="px-4 py-16">
-      <h1 className="mb-10 text-center text-2xl font-semibold">Almost there</h1>
-      <PhoneSetupWizard
-        tenantId={tenant.id}
-        forwardingNumber={phoneNumber?.e164 ?? ""}
-        forwardingVerifiedAt={phoneNumber?.forwarding_verified_at}
-        onboarding
-      />
-    </div>
+    <Section spacing="default" className="pb-24">
+      <Container size="content">
+        <h1 className="mb-10 text-center font-display text-h2 font-semibold">Almost there</h1>
+        <PhoneSetupWizard
+          tenantId={tenant.id}
+          forwardingNumber={phoneNumber?.e164 ?? ""}
+          forwardingVerifiedAt={phoneNumber?.forwarding_verified_at}
+          onboarding
+        />
+      </Container>
+    </Section>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { formatCentsUSD } from "@heyloo/canonical-types";
-import { DataState, DataTable, StatusBadge } from "@heyloo/ui";
+import { DataState, DataTable, PageHeader, StatusBadge } from "@heyloo/ui";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useRouter } from "@/i18n/navigation";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
@@ -21,17 +21,25 @@ const columns: ColumnDef<TenantMarginRow, unknown>[] = [
   {
     accessorKey: "revenue_cents",
     header: "Revenue",
-    cell: ({ row }) => formatCentsUSD(row.original.revenue_cents),
+    cell: ({ row }) => (
+      <span className="tabular-nums">{formatCentsUSD(row.original.revenue_cents)}</span>
+    ),
   },
   {
     accessorKey: "cost_cents",
     header: "Cost",
-    cell: ({ row }) => formatCentsUSD(row.original.cost_cents),
+    cell: ({ row }) => (
+      <span className="tabular-nums">{formatCentsUSD(row.original.cost_cents)}</span>
+    ),
   },
   {
     accessorKey: "margin_pct",
     header: "Margin %",
-    cell: ({ row }) => `${row.original.margin_pct.toFixed(1)}%`,
+    cell: ({ row }) => (
+      <span className="tabular-nums">
+        {row.original.margin_pct != null ? `${row.original.margin_pct.toFixed(1)}%` : "—"}
+      </span>
+    ),
   },
   {
     accessorKey: "health",
@@ -54,8 +62,11 @@ export default function PerCustomerMarginPage() {
   );
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Margin by customer</h1>
+    <div className="space-y-6">
+      <PageHeader
+        title="Margin by customer"
+        description="Revenue, cost, and margin health for every active customer."
+      />
       <DataState
         query={query}
         empty={{ title: "No customer margin data yet" }}
@@ -64,6 +75,7 @@ export default function PerCustomerMarginPage() {
             columns={columns}
             data={data.rows}
             onRowClick={(row) => router.push(`/cockpit/margin/customers/${row.tenant_id}`)}
+            emptyState={{ title: "No customer margin data yet" }}
           />
         )}
       />

@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
   type CustomerSegment,
+  PageHeader,
   SegmentBadge,
   StatusBadge,
   Textarea,
@@ -83,28 +84,30 @@ export function CustomerDetailClient({ customer }: { customer: CustomerDetailDat
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold">{customer.name ?? "Unknown customer"}</h1>
-          <div className="flex items-center gap-2">
-            <p className="text-sm text-muted-foreground">{customer.phone}</p>
+      <PageHeader
+        title={customer.name ?? "Unknown customer"}
+        description={
+          <span className="flex items-center gap-2">
+            {customer.phone}
             <Link
               href={`/dashboard/messages/${encodeURIComponent(customer.phone)}`}
-              className="text-sm text-primary underline underline-offset-2"
+              className="text-primary underline underline-offset-2"
             >
               Message this customer
             </Link>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {hasConsent ? (
-            <Badge variant="success">Consent on file</Badge>
-          ) : (
-            <Badge variant="outline">No consent on file</Badge>
-          )}
-          <SegmentBadge segment={customer.segment} />
-        </div>
-      </div>
+          </span>
+        }
+        actions={
+          <>
+            {hasConsent ? (
+              <Badge variant="success">Consent on file</Badge>
+            ) : (
+              <Badge variant="outline">No consent on file</Badge>
+            )}
+            <SegmentBadge segment={customer.segment} />
+          </>
+        }
+      />
 
       {(vehicles.length > 0 || pets.length > 0) && (
         <Card>

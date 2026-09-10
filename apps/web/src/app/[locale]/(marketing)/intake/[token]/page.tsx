@@ -1,3 +1,5 @@
+import { Container, Section } from "@heyloo/ui";
+import { ShieldCheck } from "lucide-react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { setRequestLocale } from "next-intl/server";
@@ -54,13 +56,19 @@ export default async function IntakeTokenPage({
   if (!lookup?.valid) notFound();
 
   return (
-    <div className="mx-auto max-w-lg px-4 py-12">
-      <IntakeFormClient
-        token={token}
-        tenantName={lookup.tenant_name ?? "your provider"}
-        patientFirstName={lookup.patient_first_name ?? null}
-        alreadySubmitted={!!lookup.already_submitted}
-      />
-    </div>
+    <Section spacing="default" className="min-h-svh">
+      <Container size="content" className="max-w-lg">
+        <div className="mb-6 flex items-center justify-center gap-2 text-small text-muted-foreground">
+          <ShieldCheck className="size-4 text-success" aria-hidden="true" />
+          Secure, private link — only visible to you
+        </div>
+        <IntakeFormClient
+          token={token}
+          tenantName={lookup.tenant_name ?? "your provider"}
+          patientFirstName={lookup.patient_first_name ?? null}
+          alreadySubmitted={!!lookup.already_submitted}
+        />
+      </Container>
+    </Section>
   );
 }

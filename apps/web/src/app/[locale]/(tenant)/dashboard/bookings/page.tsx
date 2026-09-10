@@ -12,12 +12,15 @@ import {
   CardHeader,
   CardTitle,
   DataState,
+  PageHeader,
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
   Skeleton,
   StatusBadge,
+  ToggleGroup,
+  ToggleGroupItem,
 } from "@heyloo/ui";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -326,25 +329,24 @@ export default function BookingsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Bookings</h1>
-        <div className="flex gap-2">
-          <Button
-            size="sm"
-            variant={view === "list" ? "default" : "outline"}
-            onClick={() => setView("list")}
+      <PageHeader
+        title="Bookings"
+        actions={
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            value={view}
+            onValueChange={(v) => v && setView(v as BookingCalendarView)}
           >
-            List
-          </Button>
-          <Button
-            size="sm"
-            variant={view === "calendar" ? "default" : "outline"}
-            onClick={() => setView("calendar")}
-          >
-            Calendar
-          </Button>
-        </div>
-      </div>
+            <ToggleGroupItem value="list" aria-label="List view">
+              List
+            </ToggleGroupItem>
+            <ToggleGroupItem value="calendar" aria-label="Calendar view">
+              Calendar
+            </ToggleGroupItem>
+          </ToggleGroup>
+        }
+      />
 
       <DataState
         query={query}

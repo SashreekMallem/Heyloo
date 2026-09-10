@@ -1,5 +1,5 @@
 import { formatCentsUSD } from "@heyloo/canonical-types";
-import { Badge, type BadgeProps, Card, CardContent } from "@heyloo/ui";
+import { Badge, type BadgeProps, Card, CardContent, PageHeader } from "@heyloo/ui";
 import type { Metadata } from "next";
 import { requirePartnerSession } from "@/lib/auth/require-partner-session";
 import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-role";
@@ -31,6 +31,13 @@ interface CommissionRow {
  * `commission_base` (gross profit net of cost, or revenue) per the terms
  * an admin set for them.
  */
+function formatCommissionPeriod(period: string | null): string {
+  if (!period) return "One-time bonus";
+  const date = new Date(period);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString(undefined, { year: "numeric", month: "short" });
+}
+
 const REFERRAL_STATUS_VARIANT: Record<string, BadgeProps["variant"]> = {
   pending: "outline",
   qualified: "success",
@@ -75,8 +82,11 @@ export default async function PartnerCustomersPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Your customers</h1>
+    <div className="space-y-6">
+      <PageHeader
+        title="Your customers"
+        description="Every business you've referred, and what each one has earned you."
+      />
       {(referrals ?? []).length === 0 ? (
         <Card>
           <CardContent className="pt-6 text-sm text-muted-foreground">
@@ -124,23 +134,16 @@ export default async function PartnerCustomersPage() {
                         <tbody>
                           {commissions.map((c) => (
                             <tr key={c.id} className="border-t border-border">
-                              <td className="py-1.5 pr-4">
-                                {c.period
-                                  ? new Date(c.period).toLocaleDateString(undefined, {
-                                      year: "numeric",
-                                      month: "short",
-                                    })
-                                  : "One-time bonus"}
-                              </td>
-                              <td className="py-1.5 pr-4">
+                              <td className="py-1.5 pr-4">{formatCommissionPeriod(c.period)}</td>
+                              <td className="py-1.5 pr-4 tabular-nums">
                                 {c.base_cents != null ? formatCentsUSD(c.base_cents) : "—"}
                               </td>
-                              <td className="py-1.5 pr-4">
-                                {c.rate_bps != null
+                              <td className="py-1.5 pr-4 tabular-nums">
+                                {c.rate_bps != null && Number.isFinite(c.rate_bps)
                                   ? `${(c.rate_bps / 100).toFixed(2).replace(/\.?0+$/, "")}%`
                                   : "—"}
                               </td>
-                              <td className="py-1.5 pr-4 font-medium">
+                              <td className="py-1.5 pr-4 font-medium tabular-nums">
                                 {formatCentsUSD(c.amount_cents)}
                               </td>
                               <td className="py-1.5 capitalize">{c.status}</td>

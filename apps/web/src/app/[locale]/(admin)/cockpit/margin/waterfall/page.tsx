@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, DataState, MarginWaterfall, type WaterfallSegment } from "@heyloo/ui";
+import { Button, DataState, MarginWaterfall, PageHeader, type WaterfallSegment } from "@heyloo/ui";
 import { useState } from "react";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
 
@@ -13,26 +13,29 @@ export default function MarginWaterfallPage() {
   );
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Margin waterfall</h1>
-        <div className="flex gap-2">
-          <Button
-            size="sm"
-            variant={period === "mtd" ? "default" : "outline"}
-            onClick={() => setPeriod("mtd")}
-          >
-            MTD
-          </Button>
-          <Button
-            size="sm"
-            variant={period === "quarter" ? "default" : "outline"}
-            onClick={() => setPeriod("quarter")}
-          >
-            Quarter
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Margin waterfall"
+        description="Revenue down to net margin, segment by segment, for the selected period."
+        actions={
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant={period === "mtd" ? "default" : "outline"}
+              onClick={() => setPeriod("mtd")}
+            >
+              MTD
+            </Button>
+            <Button
+              size="sm"
+              variant={period === "quarter" ? "default" : "outline"}
+              onClick={() => setPeriod("quarter")}
+            >
+              Quarter
+            </Button>
+          </div>
+        }
+      />
       <DataState
         query={query}
         empty={{ title: "No margin data for this period" }}

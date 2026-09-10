@@ -5,6 +5,7 @@ import {
   Button,
   DataState,
   LeadTable,
+  PageHeader,
   Select,
   SelectContent,
   SelectItem,
@@ -38,11 +39,11 @@ export default function LeadsPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Leads</h1>
-      <div className="flex flex-wrap items-end gap-2 rounded-lg border border-border p-4">
+    <div className="space-y-6">
+      <PageHeader title="Leads" description="Pull fresh prospect lists from a sourcing provider." />
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-border p-4 shadow-xs">
         <div>
-          <label htmlFor="leads-vertical" className="mb-1 block text-xs text-muted-foreground">
+          <label htmlFor="leads-vertical" className="mb-1 block text-micro text-muted-foreground">
             Vertical
           </label>
           <Select value={vertical} onValueChange={setVertical}>
@@ -51,15 +52,15 @@ export default function LeadsPage() {
             </SelectTrigger>
             <SelectContent>
               {VERTICALS.map((v) => (
-                <SelectItem key={v} value={v}>
-                  {v}
+                <SelectItem key={v} value={v} className="capitalize">
+                  {v.replace(/_/g, " ")}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
         <div>
-          <label htmlFor="leads-source" className="mb-1 block text-xs text-muted-foreground">
+          <label htmlFor="leads-source" className="mb-1 block text-micro text-muted-foreground">
             Source
           </label>
           <Select value={source} onValueChange={(v) => setSource(v as typeof source)}>

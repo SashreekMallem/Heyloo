@@ -5,6 +5,7 @@ import {
   Card,
   CardContent,
   DataState,
+  PageHeader,
   Select,
   SelectContent,
   SelectItem,
@@ -80,33 +81,35 @@ export default function AdminSupportTicketPage({ params }: { params: Promise<{ i
   return (
     <DataState
       query={query}
-      empty={{ title: "Ticket not found" }}
+      empty={{ title: "Ticket not found", isEmpty: (d) => !d?.ticket }}
       render={(data) => (
-        <div className="max-w-2xl space-y-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h1 className="text-xl font-semibold">{data.ticket.subject}</h1>
-              <p className="text-sm text-muted-foreground">
+        <div className="max-w-2xl space-y-6">
+          <PageHeader
+            title={data.ticket.subject}
+            description={
+              <>
                 {data.ticket.tenant_name}
                 {data.ticket.tenant_vertical ? ` · ${data.ticket.tenant_vertical}` : ""}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <StatusBadge variant="ticket" value={data.ticket.status} />
-              <Select value={data.ticket.status} onValueChange={setStatus}>
-                <SelectTrigger className="w-36">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STATUSES.map((s) => (
-                    <SelectItem key={s} value={s} className="capitalize">
-                      {s}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
+              </>
+            }
+            actions={
+              <>
+                <StatusBadge variant="ticket" value={data.ticket.status} />
+                <Select value={data.ticket.status} onValueChange={setStatus}>
+                  <SelectTrigger className="w-36">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {STATUSES.map((s) => (
+                      <SelectItem key={s} value={s} className="capitalize">
+                        {s}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </>
+            }
+          />
 
           <Card>
             <CardContent className="space-y-4 pt-6">
@@ -116,7 +119,7 @@ export default function AdminSupportTicketPage({ params }: { params: Promise<{ i
                 </p>
                 <p className="mt-1 text-sm">{data.ticket.body}</p>
               </div>
-              {data.notes.map((note) => (
+              {(data.notes ?? []).map((note) => (
                 <div key={note.id} className="border-t border-border pt-4">
                   <p className="text-xs text-muted-foreground">
                     {new Date(note.created_at).toLocaleString()}

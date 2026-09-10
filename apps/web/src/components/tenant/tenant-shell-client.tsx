@@ -7,25 +7,15 @@ import {
   ManualModeBanner,
   MobileTabBar,
   MobileTabBarLabel,
+  NAV_ICONS,
   type NavItem,
   type NavSection,
   NotificationCenter,
   RealtimeIndicator,
+  ThemeToggle,
   TopBar,
 } from "@heyloo/ui";
-import {
-  Calendar,
-  Inbox,
-  MessageSquare,
-  MoreHorizontal,
-  Phone,
-  Plug,
-  Settings,
-  ShoppingBag,
-  UserPlus,
-  Users,
-  Wrench,
-} from "lucide-react";
+import { MoreHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, usePathname } from "@/i18n/navigation";
 import { useTenantNotifications } from "@/lib/hooks/use-tenant-notifications";
@@ -33,37 +23,53 @@ import { useImpersonationBanner } from "@/lib/impersonation/use-impersonation-ba
 import { useTenantRealtimeStatus } from "@/lib/realtime/tenant-realtime-provider";
 import { TenantIdProvider } from "@/lib/tenant/tenant-context";
 
-const NAV_ITEMS: NavItem[] = [
-  { label: "Overview", href: "/dashboard" },
-  { label: "Calls", href: "/dashboard/calls", icon: Phone },
-  { label: "Bookings", href: "/dashboard/bookings", icon: Calendar },
-  { label: "Customers", href: "/dashboard/customers", icon: Users },
-  { label: "Messages", href: "/dashboard/messages", icon: Inbox },
-  { label: "Orders", href: "/dashboard/orders", icon: ShoppingBag },
-  { label: "Setup", href: "/dashboard/setup", icon: Wrench },
-  { label: "Agent", href: "/dashboard/agent" },
-  { label: "Phone Setup", href: "/dashboard/phone-setup" },
-  { label: "Delivery", href: "/dashboard/delivery" },
-  { label: "Integrations", href: "/dashboard/integrations", icon: Plug },
-  { label: "Team", href: "/dashboard/team", icon: UserPlus },
-  { label: "Billing", href: "/dashboard/billing" },
-  { label: "Refer & Earn", href: "/dashboard/refer" },
-  { label: "Support", href: "/dashboard/support", icon: MessageSquare },
-];
+const OPERATE_SECTION: NavSection = {
+  label: "Operate",
+  items: [
+    { label: "Overview", href: "/dashboard", icon: NAV_ICONS.overview },
+    { label: "Calls", href: "/dashboard/calls", icon: NAV_ICONS.calls },
+    { label: "Bookings", href: "/dashboard/bookings", icon: NAV_ICONS.bookings },
+    { label: "Customers", href: "/dashboard/customers", icon: NAV_ICONS.customers },
+    { label: "Messages", href: "/dashboard/messages", icon: NAV_ICONS.messages },
+    { label: "Orders", href: "/dashboard/orders", icon: NAV_ICONS.orders },
+  ],
+};
+
+const CONFIGURE_SECTION: NavSection = {
+  label: "Configure",
+  items: [
+    { label: "Setup", href: "/dashboard/setup", icon: NAV_ICONS.settings },
+    { label: "Agent", href: "/dashboard/agent", icon: NAV_ICONS.agent },
+    { label: "Phone setup", href: "/dashboard/phone-setup", icon: NAV_ICONS.phoneSetup },
+    { label: "Delivery", href: "/dashboard/delivery", icon: NAV_ICONS.delivery },
+    { label: "Integrations", href: "/dashboard/integrations", icon: NAV_ICONS.integrations },
+    { label: "Team", href: "/dashboard/team", icon: NAV_ICONS.team },
+  ],
+};
+
+const GROW_SECTION: NavSection = {
+  label: "Account",
+  items: [
+    { label: "Billing", href: "/dashboard/billing", icon: NAV_ICONS.billing },
+    { label: "Refer & earn", href: "/dashboard/refer", icon: NAV_ICONS.refer },
+    { label: "Support", href: "/dashboard/support", icon: NAV_ICONS.support },
+  ],
+};
 
 const MOBILE_TABS: NavItem[] = [
-  { label: "Overview", href: "/dashboard" },
-  { label: "Calls", href: "/dashboard/calls", icon: Phone },
-  { label: "Bookings", href: "/dashboard/bookings", icon: Calendar },
-  { label: "Customers", href: "/dashboard/customers", icon: Users },
+  { label: "Overview", href: "/dashboard", icon: NAV_ICONS.overview },
+  { label: "Calls", href: "/dashboard/calls", icon: NAV_ICONS.calls },
+  { label: "Bookings", href: "/dashboard/bookings", icon: NAV_ICONS.bookings },
+  { label: "Customers", href: "/dashboard/customers", icon: NAV_ICONS.customers },
   { label: "More", href: "/dashboard/support", icon: MoreHorizontal },
 ];
 
-const SECTIONS: NavSection[] = [{ items: NAV_ITEMS }];
+const SECTIONS: NavSection[] = [OPERATE_SECTION, CONFIGURE_SECTION, GROW_SECTION];
 
 function TopBarContent({ tenantId, tenantName }: { tenantId: string; tenantName: string }) {
   const status = useTenantRealtimeStatus();
   const { data: notifications } = useTenantNotifications(tenantId);
+  const SettingsIcon = NAV_ICONS.settings;
 
   return (
     <>
@@ -74,11 +80,13 @@ function TopBarContent({ tenantId, tenantName }: { tenantId: string; tenantName:
         unreadCount={notifications?.unreadCount ?? 0}
         onOpen={() => {}}
       />
+      <ThemeToggle />
       <Link
         href="/dashboard/agent/greeting"
-        className="flex size-8 items-center justify-center rounded-full bg-secondary"
+        aria-label="Agent settings"
+        className="flex size-8 items-center justify-center rounded-full bg-secondary transition-colors duration-(--duration-fast) ease-(--ease-out) hover:bg-secondary/70"
       >
-        <Settings className="size-4" />
+        <SettingsIcon className="size-4" />
       </Link>
     </>
   );

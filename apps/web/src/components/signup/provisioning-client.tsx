@@ -1,6 +1,6 @@
 "use client";
 
-import { type ProvisioningStep, ProvisioningTimeline } from "@heyloo/ui";
+import { Callout, type ProvisioningStep, ProvisioningTimeline } from "@heyloo/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useRouter } from "@/i18n/navigation";
@@ -65,21 +65,24 @@ function Inner({ tenantId }: { tenantId: string }) {
   }, [startedAt]);
 
   return (
-    <div className="mx-auto max-w-md space-y-6">
+    <div className="mx-auto max-w-md space-y-8">
+      <div className="space-y-1.5 text-center">
+        <h1 className="font-display text-h2 font-semibold">Setting up your AI receptionist</h1>
+        <p className="text-small text-muted-foreground">This usually takes under a minute.</p>
+      </div>
       <ProvisioningTimeline steps={steps} />
       {allSucceeded && (
-        <p className="text-center font-medium text-success">
+        <p className="text-center text-small font-medium text-success">
           You&apos;re live! Taking you to phone setup…
         </p>
       )}
       {failed && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
-          We hit a snag on &quot;{failed.label}&quot; — we&apos;re on it. Contact support if this
-          doesn&apos;t clear in a few minutes.
-        </div>
+        <Callout tone="danger" title={`We hit a snag on "${failed.label}"`}>
+          We&apos;re on it. Contact support if this doesn&apos;t clear in a few minutes.
+        </Callout>
       )}
       {!allSucceeded && !failed && timedOut && (
-        <p className="text-center text-sm text-muted-foreground">
+        <p className="text-center text-small text-muted-foreground">
           Still working — we&apos;ll email you the moment it&apos;s ready. Feel free to close this
           tab.
         </p>

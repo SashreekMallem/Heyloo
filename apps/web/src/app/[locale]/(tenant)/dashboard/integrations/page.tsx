@@ -1,6 +1,18 @@
 "use client";
 
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from "@heyloo/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  DataState,
+  Input,
+  Label,
+  PageHeader,
+  Skeleton,
+} from "@heyloo/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -145,110 +157,124 @@ export default function IntegrationsPage() {
     }
   }
 
-  const integrations = query.data?.integrations ?? [];
-
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">Integrations</h1>
-        <p className="text-sm text-muted-foreground">
-          Connect the systems you already use so bookings and orders sync automatically.
-        </p>
-      </div>
+      <PageHeader
+        title="Integrations"
+        description="Connect the systems you already use so bookings and orders sync automatically."
+      />
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        {integrations.map((integration) => {
-          const meta = STATUS_META[integration.status];
-          const isOAuth = OAUTH_PROVIDERS.has(integration.provider);
-          const isPending = pending === integration.provider;
-          return (
-            <Card key={integration.provider}>
-              <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
-                <CardTitle className="text-base">{integration.display_name}</CardTitle>
-                <Badge variant={meta.variant}>{meta.label}</Badge>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-xs text-muted-foreground">
-                  {integration.status === "connected" && integration.last_refreshed_at
-                    ? `Last refreshed ${new Date(integration.last_refreshed_at).toLocaleString()}`
-                    : integration.status === "error"
-                      ? (integration.last_error ??
-                        "The provider revoked access — reconnect to resume syncing.")
-                      : "Not connected yet."}
-                </p>
+      <DataState
+        query={query}
+        empty={{
+          title: "No integrations available",
+          description: "Check back once integrations are configured for your business type.",
+          isEmpty: (data) => data.integrations.length === 0,
+        }}
+        loadingSkeleton={
+          <div className="grid gap-4 sm:grid-cols-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton count, never reordered
+              <Skeleton key={i} className="h-32 w-full rounded-lg" />
+            ))}
+          </div>
+        }
+        render={(data) => (
+          <div className="grid gap-4 sm:grid-cols-2">
+            {data.integrations.map((integration) => {
+              const meta = STATUS_META[integration.status];
+              const isOAuth = OAUTH_PROVIDERS.has(integration.provider);
+              const isPending = pending === integration.provider;
+              return (
+                <Card key={integration.provider}>
+                  <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
+                    <CardTitle className="text-base">{integration.display_name}</CardTitle>
+                    <Badge variant={meta.variant}>{meta.label}</Badge>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <p className="text-xs text-muted-foreground">
+                      {integration.status === "connected" && integration.last_refreshed_at
+                        ? `Last refreshed ${new Date(integration.last_refreshed_at).toLocaleString()}`
+                        : integration.status === "error"
+                          ? (integration.last_error ??
+                            "The provider revoked access — reconnect to resume syncing.")
+                          : "Not connected yet."}
+                    </p>
 
-                {!integration.can_manage ? (
-                  <p className="text-xs text-muted-foreground">
-                    Only the account owner or an admin can manage integrations.
-                  </p>
-                ) : integration.status === "connected" ? (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={isPending}
-                    onClick={() => void disconnect(integration.provider)}
-                  >
-                    Disconnect
-                  </Button>
-                ) : isOAuth ? (
-                  <Button
-                    size="sm"
-                    disabled={isPending}
-                    onClick={() => void connectOAuth(integration.provider)}
-                  >
-                    {integration.status === "error" ? "Reconnect" : "Connect"}
-                  </Button>
-                ) : pasteKeyOpenFor === integration.provider ? (
-                  <div className="space-y-2">
-                    <Label htmlFor={`paste-${integration.provider}`}>
-                      {integration.provider === "ezyvet" ? "Practice base URL" : "API key"}
-                    </Label>
-                    <Input
-                      id={`paste-${integration.provider}`}
-                      value={pasteValue}
-                      onChange={(e) => setPasteValue(e.target.value)}
-                      placeholder={
-                        integration.provider === "ezyvet"
-                          ? "https://your-practice.ezyvet.com"
-                          : "sk_..."
-                      }
-                    />
-                    <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        disabled={isPending}
-                        onClick={() => void submitPasteKey(integration.provider)}
-                      >
-                        Save
-                      </Button>
+                    {!integration.can_manage ? (
+                      <p className="text-xs text-muted-foreground">
+                        Only the account owner or an admin can manage integrations.
+                      </p>
+                    ) : integration.status === "connected" ? (
                       <Button
                         size="sm"
                         variant="ghost"
+                        disabled={isPending}
+                        onClick={() => void disconnect(integration.provider)}
+                      >
+                        Disconnect
+                      </Button>
+                    ) : isOAuth ? (
+                      <Button
+                        size="sm"
+                        disabled={isPending}
+                        onClick={() => void connectOAuth(integration.provider)}
+                      >
+                        {integration.status === "error" ? "Reconnect" : "Connect"}
+                      </Button>
+                    ) : pasteKeyOpenFor === integration.provider ? (
+                      <div className="space-y-2">
+                        <Label htmlFor={`paste-${integration.provider}`}>
+                          {integration.provider === "ezyvet" ? "Practice base URL" : "API key"}
+                        </Label>
+                        <Input
+                          id={`paste-${integration.provider}`}
+                          value={pasteValue}
+                          onChange={(e) => setPasteValue(e.target.value)}
+                          placeholder={
+                            integration.provider === "ezyvet"
+                              ? "https://your-practice.ezyvet.com"
+                              : "sk_..."
+                          }
+                        />
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            disabled={isPending}
+                            onClick={() => void submitPasteKey(integration.provider)}
+                          >
+                            Save
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              setPasteKeyOpenFor(null);
+                              setPasteValue("");
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <Button
+                        size="sm"
                         onClick={() => {
-                          setPasteKeyOpenFor(null);
+                          setPasteKeyOpenFor(integration.provider);
                           setPasteValue("");
                         }}
                       >
-                        Cancel
+                        Connect
                       </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      setPasteKeyOpenFor(integration.provider);
-                      setPasteValue("");
-                    }}
-                  >
-                    Connect
-                  </Button>
-                )}
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
+      />
     </div>
   );
 }

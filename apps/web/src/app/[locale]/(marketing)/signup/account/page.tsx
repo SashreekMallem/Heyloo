@@ -1,3 +1,4 @@
+import { Container, Section } from "@heyloo/ui";
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
@@ -17,8 +18,10 @@ export default async function SignupAccountPage({
 
   const { annual, white_glove: whiteGlove } = await searchParams;
   return (
-    <div className="px-4 py-16">
-      <AccountStepClient annual={annual === "1"} whiteGlove={whiteGlove === "1"} />
-    </div>
+    <Section spacing="default" className="pb-24">
+      <Container size="content">
+        <AccountStepClient annual={annual === "1"} whiteGlove={whiteGlove === "1"} />
+      </Container>
+    </Section>
   );
 }

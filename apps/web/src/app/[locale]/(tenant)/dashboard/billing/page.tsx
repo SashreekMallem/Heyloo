@@ -9,6 +9,7 @@ import {
   CardTitle,
   DataState,
   DataTable,
+  PageHeader,
   StatusBadge,
   UsageMeter,
 } from "@heyloo/ui";
@@ -100,7 +101,7 @@ export default function BillingPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold">Billing</h1>
+      <PageHeader title="Billing" description="Usage, payment method, and invoices." />
 
       <DataState
         query={usageQuery}

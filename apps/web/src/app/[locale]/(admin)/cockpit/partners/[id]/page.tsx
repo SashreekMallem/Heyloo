@@ -9,6 +9,7 @@ import {
   DataState,
   Input,
   Label,
+  PageHeader,
   Select,
   SelectContent,
   SelectItem,
@@ -99,7 +100,7 @@ function TermsForm({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">{title}</CardTitle>
+        <CardTitle className="text-base capitalize">{title.replace(/_/g, " ")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="grid gap-3 sm:grid-cols-3">
@@ -219,15 +220,12 @@ export default function AdminPartnerDetailPage({ params }: { params: Promise<{ i
   return (
     <DataState
       query={query}
-      empty={{ title: "Partner not found" }}
+      empty={{ title: "Partner not found", isEmpty: (d) => !d?.partner }}
       render={(data) => {
-        const overrideByVertical = new Map(data.overrides.map((o) => [o.vertical, o]));
+        const overrideByVertical = new Map((data.overrides ?? []).map((o) => [o.vertical, o]));
         return (
           <div className="max-w-2xl space-y-6">
-            <div>
-              <h1 className="text-xl font-semibold">{data.partner.name}</h1>
-              <p className="text-sm text-muted-foreground">{data.partner.email}</p>
-            </div>
+            <PageHeader title={data.partner.name} description={data.partner.email} />
 
             <TermsForm
               title="Default commission terms"
@@ -236,7 +234,7 @@ export default function AdminPartnerDetailPage({ params }: { params: Promise<{ i
             />
 
             <div>
-              <h2 className="mb-2 text-sm font-medium text-muted-foreground">
+              <h2 className="mb-2 text-small font-medium text-muted-foreground">
                 Per-vertical overrides — any field left blank inherits the default above
               </h2>
               <div className="space-y-3">

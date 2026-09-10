@@ -37,7 +37,7 @@ export function UsageMeter({
           </span>
         )}
       </div>
-      <Progress value={pct} indicatorClassName={color} />
+      <Progress value={pct} indicatorClassName={color} aria-label="Minutes used this period" />
     </div>
   );
 }

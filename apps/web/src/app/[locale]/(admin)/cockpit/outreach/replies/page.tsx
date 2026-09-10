@@ -1,6 +1,6 @@
 "use client";
 
-import { DataState, type ReplyData, ReplyFeedItem } from "@heyloo/ui";
+import { DataState, PageHeader, type ReplyData, ReplyFeedItem } from "@heyloo/ui";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
@@ -24,14 +24,20 @@ export default function RepliesPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Replies</h1>
+    <div className="space-y-6">
+      <PageHeader
+        title="Replies"
+        description="Inbound replies to outreach — reply, unsubscribe, or escalate."
+      />
       <DataState
         query={query}
-        empty={{ title: "No replies yet" }}
+        empty={{
+          title: "No replies yet",
+          isEmpty: (data) => (data?.replies?.length ?? 0) === 0,
+        }}
         render={(data) => (
           <div className="space-y-2">
-            {data.replies.map((reply) => (
+            {(data.replies ?? []).map((reply) => (
               <ReplyFeedItem
                 key={reply.id}
                 reply={reply}

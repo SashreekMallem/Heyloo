@@ -1,3 +1,4 @@
+import { Container, Section } from "@heyloo/ui";
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { ProvisioningClient } from "@/components/signup/provisioning-client";
@@ -12,9 +13,10 @@ export default async function SignupProvisioningPage() {
   if (tenant.status === "active") redirect("/signup/forwarding");
 
   return (
-    <div className="px-4 py-16">
-      <h1 className="mb-10 text-center text-2xl font-semibold">Setting up your AI receptionist</h1>
-      <ProvisioningClient tenantId={tenant.id} />
-    </div>
+    <Section spacing="default" className="flex min-h-svh items-center pb-24">
+      <Container size="content">
+        <ProvisioningClient tenantId={tenant.id} />
+      </Container>
+    </Section>
   );
 }

@@ -11,6 +11,7 @@ export const UI_PACKAGE_VERSION = "0.1.0" as const;
 export * from "./charts/index.js";
 export * from "./custom/index.js";
 export * from "./forms/index.js";
+export * from "./icons/index.js";
 export * from "./layout/index.js";
 export * from "./lib/utils.js";
 export * from "./primitives/index.js";

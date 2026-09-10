@@ -1,3 +1,5 @@
+"use client";
+
 import { Beaker, Pencil } from "lucide-react";
 import { Button } from "../primitives/button.js";
 import { Switch } from "../primitives/switch.js";

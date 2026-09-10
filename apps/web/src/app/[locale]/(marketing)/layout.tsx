@@ -1,7 +1,12 @@
+import type { Metadata } from "next";
 import { setRequestLocale } from "next-intl/server";
 import type { ReactNode } from "react";
 import { MarketingFooter } from "@/components/marketing/marketing-footer";
 import { MarketingHeader } from "@/components/marketing/marketing-header";
+
+export const metadata: Metadata = {
+  icons: { icon: "/favicon.svg" },
+};
 
 /**
  * (marketing) route group — no guard (FRONTEND_SPEC.md §0.1), header+footer

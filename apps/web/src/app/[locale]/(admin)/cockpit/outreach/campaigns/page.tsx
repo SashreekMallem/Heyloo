@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, DataState, DataTable, StatusBadge } from "@heyloo/ui";
+import { Button, DataState, DataTable, PageHeader, StatusBadge } from "@heyloo/ui";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Link, useRouter } from "@/i18n/navigation";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
@@ -28,13 +28,15 @@ export default function CampaignsListPage() {
   const query = useAdminQuery<{ rows: CampaignRow[] }>("campaigns", [], "admin-outreach/campaigns");
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Campaigns</h1>
-        <Button asChild>
-          <Link href="/cockpit/outreach/campaigns/new">New campaign</Link>
-        </Button>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Campaigns"
+        actions={
+          <Button asChild>
+            <Link href="/cockpit/outreach/campaigns/new">New campaign</Link>
+          </Button>
+        }
+      />
       <DataState
         query={query}
         empty={{ title: "No campaigns yet" }}
@@ -43,6 +45,13 @@ export default function CampaignsListPage() {
             columns={columns}
             data={data.rows}
             onRowClick={(row) => router.push(`/cockpit/outreach/campaigns/${row.id}`)}
+            emptyState={{
+              title: "No campaigns yet",
+              action: {
+                label: "New campaign",
+                onClick: () => router.push("/cockpit/outreach/campaigns/new"),
+              },
+            }}
           />
         )}
       />

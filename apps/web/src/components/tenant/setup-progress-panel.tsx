@@ -82,7 +82,7 @@ export function SetupProgressPanel({ tenantId }: { tenantId: string }) {
             </Button>
           )}
         </div>
-        <Progress value={pct} />
+        <Progress value={pct} aria-label="Setup progress" />
         <ul className="divide-y divide-border">
           {steps.map((step) => {
             const row = (

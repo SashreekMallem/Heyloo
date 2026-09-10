@@ -13,6 +13,7 @@ import {
   DialogTitle,
   Input,
   Label,
+  PageHeader,
   Select,
   SelectContent,
   SelectItem,
@@ -118,16 +119,18 @@ export default function AlertsPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Alert rules</h1>
-        <Button onClick={openCreate}>New rule</Button>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Alert rules"
+        description="Thresholds that page the team before a margin or reliability problem reaches customers."
+        actions={<Button onClick={openCreate}>New rule</Button>}
+      />
       <DataState
         query={query}
         empty={{
           title: "No alert rules configured yet",
           action: { label: "New rule", onClick: openCreate },
+          isEmpty: (d) => (d.rules ?? []).length === 0,
         }}
         render={(data) => (
           <Table>
@@ -142,7 +145,7 @@ export default function AlertsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data.rules.map((rule) => (
+              {(data.rules ?? []).map((rule) => (
                 <AlertRuleRow
                   key={rule.id}
                   rule={rule}

@@ -1,7 +1,7 @@
 "use client";
 
 import { formatCentsUSD } from "@heyloo/canonical-types";
-import { DataState, DataTable, type W9Status, W9StatusBadge } from "@heyloo/ui";
+import { DataState, DataTable, PageHeader, type W9Status, W9StatusBadge } from "@heyloo/ui";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useRouter } from "@/i18n/navigation";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
@@ -40,7 +40,13 @@ const columns: ColumnDef<PartnerRow, unknown>[] = [
   {
     accessorKey: "ytd_payout_cents",
     header: "YTD paid",
-    cell: ({ row }) => formatCentsUSD(row.original.ytd_payout_cents),
+    cell: ({ row }) => (
+      <span className="tabular-nums">
+        {Number.isFinite(row.original.ytd_payout_cents)
+          ? formatCentsUSD(row.original.ytd_payout_cents)
+          : "—"}
+      </span>
+    ),
   },
 ];
 
@@ -54,8 +60,11 @@ export default function AdminPartnersPage() {
   );
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Partners</h1>
+    <div className="space-y-6">
+      <PageHeader
+        title="Partners"
+        description="Referral partners, their commission terms, and W-9 status."
+      />
       <DataState
         query={query}
         empty={{ title: "No referral partners yet" }}

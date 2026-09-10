@@ -12,6 +12,7 @@ import {
   FormLabel,
   FormMessage,
   Input,
+  PageHeader,
 } from "@heyloo/ui";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
@@ -39,7 +40,7 @@ export default function PartnerSettingsPage() {
 
   return (
     <div className="max-w-md space-y-6">
-      <h1 className="text-xl font-semibold">Settings</h1>
+      <PageHeader title="Settings" description="Where we send your commission payouts." />
       <Card>
         <CardContent className="pt-6">
           <Form {...form}>

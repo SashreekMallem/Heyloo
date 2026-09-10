@@ -17,6 +17,7 @@ import {
   DataState,
   Input,
   MetricCard,
+  PageHeader,
   StatusBadge,
   Textarea,
 } from "@heyloo/ui";
@@ -104,20 +105,20 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
         empty={{ title: "Tenant not found" }}
         render={(tenant) => (
           <>
-            <div className="flex items-center justify-between">
-              <div>
-                <h1 className="text-xl font-semibold">{tenant.name}</h1>
-                <StatusBadge variant="tenant" value={tenant.status} />
-              </div>
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={() => setImpersonateOpen(true)}>
-                  Impersonate
-                </Button>
-                <Button variant="destructive" onClick={() => setSuspendOpen(true)}>
-                  Suspend
-                </Button>
-              </div>
-            </div>
+            <PageHeader
+              title={tenant.name || "Unnamed tenant"}
+              description={<StatusBadge variant="tenant" value={tenant.status} />}
+              actions={
+                <>
+                  <Button variant="outline" onClick={() => setImpersonateOpen(true)}>
+                    Impersonate
+                  </Button>
+                  <Button variant="destructive" onClick={() => setSuspendOpen(true)}>
+                    Suspend
+                  </Button>
+                </>
+              }
+            />
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
               <MetricCard label="MRR" value={tenant.mrr_cents} format="currency" />
               <MetricCard label="Margin %" value={tenant.margin_pct} format="percent" />
@@ -132,7 +133,7 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
           <CardTitle className="text-base">Recent calls</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-small text-muted-foreground">
             Read-only observability view — pending backend endpoint.
           </p>
         </CardContent>

@@ -8,6 +8,7 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  PageHeader,
   type StateTraceEntry,
   StateTraceViewer,
   StatusBadge,
@@ -58,21 +59,27 @@ export function CallDetailClient({ call }: { call: CallDetailData }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-xl font-semibold">Call detail</h1>
-        <div className="flex flex-wrap items-center gap-2">
-          {call.urgencyFlag && <Badge variant="destructive">Urgent</Badge>}
-          {call.legalAdviceGiven && <Badge variant="destructive">Legal advice given</Badge>}
-          {call.classification && <StatusBadge variant="call-class" value={call.classification} />}
-          {call.sentiment && (
-            <Badge variant={SENTIMENT_VARIANT[call.sentiment] ?? "outline"}>{call.sentiment}</Badge>
-          )}
-          {call.followUpNeeded && <Badge variant="warning">Follow-up needed</Badge>}
-          <Button variant="outline" size="sm" asChild>
-            <Link href={`/dashboard/support?call_id=${call.id}`}>Create support ticket</Link>
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="Call detail"
+        actions={
+          <>
+            {call.urgencyFlag && <Badge variant="destructive">Urgent</Badge>}
+            {call.legalAdviceGiven && <Badge variant="destructive">Legal advice given</Badge>}
+            {call.classification && (
+              <StatusBadge variant="call-class" value={call.classification} />
+            )}
+            {call.sentiment && (
+              <Badge variant={SENTIMENT_VARIANT[call.sentiment] ?? "outline"}>
+                {call.sentiment}
+              </Badge>
+            )}
+            {call.followUpNeeded && <Badge variant="warning">Follow-up needed</Badge>}
+            <Button variant="outline" size="sm" asChild>
+              <Link href={`/dashboard/support?call_id=${call.id}`}>Create support ticket</Link>
+            </Button>
+          </>
+        }
+      />
 
       {(call.callSummary || call.outcome || call.messageText) && (
         <Card>

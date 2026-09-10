@@ -83,13 +83,15 @@ function resolve(
 
 export interface StatusBadgeProps {
   variant: StatusBadgeVariant;
-  value: string;
+  value: string | undefined | null;
   className?: string;
 }
 
 /** Enum → color-coded badge: 12 call classes, booking lifecycle, ticket status, tenant status, margin health (FRONTEND_SPEC.md §1.3). */
 export function StatusBadge({ variant, value, className }: StatusBadgeProps) {
-  const { color, label } = resolve(variant, value);
+  const { color, label } = value
+    ? resolve(variant, value)
+    : { color: "outline" as const, label: "Unknown" };
   return (
     <Badge variant={color} className={className}>
       {label}

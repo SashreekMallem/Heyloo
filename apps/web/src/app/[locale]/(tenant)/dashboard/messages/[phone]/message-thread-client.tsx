@@ -10,6 +10,7 @@ import {
   FormField,
   FormItem,
   FormMessage,
+  PageHeader,
   Textarea,
 } from "@heyloo/ui";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -128,15 +129,13 @@ export function MessageThreadClient({ tenantId, phone }: { tenantId: string; pho
         empty={{ title: "No messages with this number yet" }}
         render={(data) => (
           <>
-            <div>
-              <h1 className="text-xl font-semibold">{data.customerName ?? phone}</h1>
-              {data.customerName && <p className="text-sm text-muted-foreground">{phone}</p>}
-              {data.smsOptOut && (
-                <Badge variant="destructive" className="mt-1">
-                  Opted out of texts
-                </Badge>
-              )}
-            </div>
+            <PageHeader
+              title={data.customerName ?? phone}
+              description={data.customerName ? phone : undefined}
+              actions={
+                data.smsOptOut ? <Badge variant="destructive">Opted out of texts</Badge> : undefined
+              }
+            />
             <div className="flex-1 space-y-2 overflow-y-auto rounded-md border border-border p-3">
               {data.messages.map((m) => (
                 <div

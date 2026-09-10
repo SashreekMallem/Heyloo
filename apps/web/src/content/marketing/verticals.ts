@@ -14,7 +14,6 @@ export interface VerticalContent {
   slug: string;
   vertical: Vertical;
   displayName: string;
-  icon: string;
   heroStat: string;
   painStats: string[];
   intakeSummary: string[];
@@ -26,7 +25,6 @@ export const VERTICAL_CONTENT: VerticalContent[] = [
     slug: "auto-repair",
     vertical: "auto",
     displayName: "Auto Repair Shops",
-    icon: "🔧",
     heroStat:
       "Independent shops miss ~38% of incoming calls — about $135k/yr in lost repair orders.",
     painStats: [
@@ -46,7 +44,6 @@ export const VERTICAL_CONTENT: VerticalContent[] = [
     slug: "veterinary",
     vertical: "vet",
     displayName: "Veterinary Clinics",
-    icon: "🐾",
     heroStat: "Missed new-patient calls cost the average clinic $100k–$182k a year.",
     painStats: [
       "24–28% of calls go unanswered",
@@ -65,7 +62,6 @@ export const VERTICAL_CONTENT: VerticalContent[] = [
     slug: "legal-intake",
     vertical: "legal",
     displayName: "Legal Intake",
-    icon: "⚖️",
     heroStat:
       "A missed intake call can cost $3,200–$6,500 — and personal-injury cases run far higher.",
     painStats: [
@@ -85,7 +81,6 @@ export const VERTICAL_CONTENT: VerticalContent[] = [
     slug: "dental",
     vertical: "dental",
     displayName: "Dental Practices",
-    icon: "🦷",
     heroStat:
       "Dental practices lose $75k–$180k a year to unanswered calls — patient LTV runs $5k–$8k.",
     painStats: [
@@ -105,7 +100,6 @@ export const VERTICAL_CONTENT: VerticalContent[] = [
     slug: "real-estate",
     vertical: "real_estate",
     displayName: "Real Estate Teams",
-    icon: "🏠",
     heroStat:
       "The median inquiry response time is 917 minutes — and 48% of inquiries go unanswered.",
     painStats: [
@@ -124,7 +118,6 @@ export const VERTICAL_CONTENT: VerticalContent[] = [
     slug: "motels",
     vertical: "motel",
     displayName: "Motels & Small Hotels",
-    icon: "🛎️",
     heroStat:
       "A missed 11pm call is a booking lost to the motel down the road — every single time.",
     painStats: [
@@ -144,7 +137,6 @@ export const VERTICAL_CONTENT: VerticalContent[] = [
     slug: "restaurants",
     vertical: "restaurant",
     displayName: "Restaurants",
-    icon: "🍽️",
     heroStat:
       "Every missed call during peak service is a lost order or reservation — on margins as thin as 3–5%.",
     painStats: [
@@ -164,7 +156,6 @@ export const VERTICAL_CONTENT: VerticalContent[] = [
     slug: "generic",
     vertical: "generic",
     displayName: "Any Service Business",
-    icon: "📞",
     heroStat:
       "Businesses that don't answer the phone lose the customer who called next door instead.",
     painStats: [

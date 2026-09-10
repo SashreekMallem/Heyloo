@@ -92,6 +92,7 @@ export function HoursEditor({ hours, exceptions, onChange }: HoursEditorProps) {
                     className="w-32"
                     value={day.open}
                     onChange={(e) => updateDay(key, 0, { open: e.target.value })}
+                    aria-label={`${label} opening time`}
                   />
                   <span className="text-sm text-muted-foreground">to</span>
                   <Input
@@ -99,6 +100,7 @@ export function HoursEditor({ hours, exceptions, onChange }: HoursEditorProps) {
                     className="w-32"
                     value={day.close}
                     onChange={(e) => updateDay(key, 0, { close: e.target.value })}
+                    aria-label={`${label} closing time`}
                   />
                 </>
               )}
@@ -133,6 +135,7 @@ export function HoursEditor({ hours, exceptions, onChange }: HoursEditorProps) {
                 );
                 onChange(hours, next);
               }}
+              aria-label="Exception date"
             />
             <Input
               placeholder="Note (e.g. Christmas)"
@@ -144,8 +147,14 @@ export function HoursEditor({ hours, exceptions, onChange }: HoursEditorProps) {
                 );
                 onChange(hours, next);
               }}
+              aria-label="Exception note"
             />
-            <Button size="icon" variant="ghost" onClick={() => removeException(index)}>
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={() => removeException(index)}
+              aria-label="Remove exception"
+            >
               <Trash2 className="size-4" />
             </Button>
           </div>
