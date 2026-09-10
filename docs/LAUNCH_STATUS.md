@@ -44,6 +44,35 @@ RLS, and admin cockpit proxy contract — full per-cluster detail already in
   remain reviewed-but-unexecuted-in-this-sandbox, same status as the
   Playwright e2e specs noted below).
 
+## Deployed to live project — update 2026-09-10 (FIX-1 wave)
+
+Applied over the Management API after commit 380f65b: 10 new migrations
+(32 recorded), 34 edge functions ACTIVE (7 new: webhooks-paypal,
+job-churn-scoring, job-value-email, job-offboarding, job-retention-sweep,
+job-keep-warm, api-payment-link-resend), Vault secrets
+`cron_functions_base_url` + `cron_invoke_secret` created. Live-verified:
+21 cron jobs scheduled, 8 pgmq queues (4 + 4 DLQ), RLS on all 53 tables,
+the 4 admin views are security_invoker with zero anon/authenticated grants,
+4 tenant-scoped booking/order write policies present.
+
+Owner must set these edge-function secrets in the dashboard (Edge
+Functions -> Secrets) — the build environment is not permitted to write
+credentials to the live project:
+
+- `CRON_INVOKE_SECRET` = the value stored in Vault as `cron_invoke_secret`
+  (run `select decrypted_secret from vault.decrypted_secrets where
+  name='cron_invoke_secret'` in the SQL editor and paste it) — until this
+  matches, every cron-invoked job returns 401.
+- `ADAPTER_TOKEN_ENCRYPTION_KEY` = any 64-hex random string (used to encrypt
+  adapter OAuth tokens at rest; generate with `openssl rand -hex 32`).
+- `SB_SECRET_KEY` = the project's `sb_secret_...` key (Settings -> API keys).
+- Optional until Airtable delivery is offered: `AIRTABLE_OAUTH_CLIENT_ID`,
+  `AIRTABLE_OAUTH_CLIENT_SECRET`, `AIRTABLE_OAUTH_REDIRECT_URI`,
+  `AIRTABLE_OAUTH_STATE_SECRET`.
+
+Still to delete in the dashboard: the 14 legacy edge functions and 3 legacy
+storage buckets listed above.
+
 ## Deployed to live project (2026-09-09)
 
 Live Supabase project: `qulcubtwqsqgqpfgvorn` ("Heyloo", us-east-2, PG 17).
