@@ -102,6 +102,24 @@ RLS, and admin cockpit proxy contract — full per-cluster detail already in
   remain reviewed-but-unexecuted-in-this-sandbox, same status as the
   Playwright e2e specs noted below).
 
+## Deployed to live project — update 2026-09-10 (WAVE-2 vertical wave)
+
+Applied after commit 0af1ade: 13 new migrations (45 recorded), 41 edge
+functions ACTIVE (new: api-intake, api-lead-callback, api-menu-import,
+api-team-invite, api-tenant-test-call, job-commission-accrual,
+job-lead-callback-retry). Live-verified: 57 tables, RLS on all, 24 cron
+jobs (incl. commission accrual, lead-callback retry, motel deposit-hold
+expiry), 8 queues, resources.room_type/capacity, orders allergy/delivery
+columns, bookings quoted_rate/hold_expiry, referral_partners
+rate_bps/commission_base/duration_months, lead_callback_requests +
+intake tables present.
+
+Owner secrets still to set (Edge Functions -> Secrets), in addition to the
+FIX-1 list below: `INTAKE_ENCRYPTION_KEY` (64-hex random, encrypts dental
+intake DOB/insurance at rest) and `ANTHROPIC_MENU_IMPORT_MODEL` (model id
+for menu extraction; see .env.example) — plus `ANTHROPIC_API_KEY` when the
+Anthropic account exists.
+
 ## Deployed to live project — update 2026-09-10 (FIX-1 wave)
 
 Applied over the Management API after commit 380f65b: 10 new migrations
