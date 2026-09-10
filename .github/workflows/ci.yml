@@ -82,6 +82,19 @@ jobs:
           fi
           echo "Working tree clean after build."
 
+  verify-jwt-guard:
+    name: verify_jwt drift guard (EDGE_AUDIT M3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # No pnpm install needed — scripts/ci/verify-jwt-guard.ts is
+      # deliberately dependency-free (same convention as
+      # scripts/ci/rls-cross-tenant-probe.ts), plain node:fs/node:path.
+      - run: node --experimental-strip-types scripts/ci/verify-jwt-guard.ts
+
   repo-hygiene:
     name: Repo hygiene (large files, no stray compiled JS)
     runs-on: ubuntu-latest
@@ -179,6 +192,13 @@ jobs:
         if: steps.migrations.outputs.count != '0'
         with:
           version: latest
+      - uses: pnpm/action-setup@v4
+        if: steps.migrations.outputs.count != '0'
+      - uses: actions/setup-node@v7
+        if: steps.migrations.outputs.count != '0'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
       # `supabase start` applies every migration in supabase/migrations/ (in
       # filename order) plus supabase/seed/*.sql against a fresh local
       # Postgres in Docker (ubuntu-latest runners ship Docker preinstalled)
@@ -199,6 +219,30 @@ jobs:
       # real Supabase project + SUPABASE_ACCESS_TOKEN/SUPABASE_PROJECT_ID
       # repo secrets that don't exist yet at this stage of the build —
       # tracked as a deploy-time follow-up in docs/DEPLOY.md, not a T1 gap.
+      #
+      # EDGE_AUDIT M2 (docs/audit/EDGE_AUDIT.md, docs/BUILD_NOTES.md's M2
+      # entry): pins the actual "hot-path abort cancels the underlying query"
+      # claim against this job's already-running REAL local Postgres, since
+      # no unit test (mocked or otherwise) can demonstrate a server-enforced
+      # GUC actually canceling server-side work. `pnpm install` here is
+      # scoped by `--filter` to `@heyloo/edge-functions` only (the one
+      # package that declares `postgres` as a devDependency for this exact
+      # script), not a full-workspace install.
+      - name: Install @heyloo/edge-functions deps (for statement-timeout-check.ts)
+        if: steps.migrations.outputs.count != '0'
+        run: pnpm --filter @heyloo/edge-functions... install --frozen-lockfile
+      - name: Export local Supabase DB URL
+        if: steps.migrations.outputs.count != '0'
+        run: |
+          supabase status -o env > /tmp/supabase-status.env
+          set -a
+          # shellcheck disable=SC1091
+          source /tmp/supabase-status.env
+          set +a
+          echo "SUPABASE_DB_URL=$DB_URL" >> "$GITHUB_ENV"
+      - name: statement_timeout cancellation check (EDGE_AUDIT M2)
+        if: steps.migrations.outputs.count != '0'
+        run: node --experimental-strip-types supabase/functions/_shared/statement-timeout-check.ts
       - name: No migrations yet
         if: steps.migrations.outputs.count == '0'
         run: echo "::notice::No migrations in supabase/migrations/ yet (T1) — nothing to lint. Placeholder job, no-op."
@@ -252,3 +296,48 @@ jobs:
       - name: No migrations yet
         if: steps.migrations.outputs.count == '0'
         run: echo "::notice::No migrations in supabase/migrations/ yet (T1) — nothing to probe. Placeholder job, no-op."
+
+  cron-queues-check:
+    name: Cron jobs + pgmq queues check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check for migrations
+        id: migrations
+        run: |
+          count=$(find supabase/migrations -maxdepth 1 -name '*.sql' | wc -l | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+      - uses: supabase/setup-cli@v3
+        if: steps.migrations.outputs.count != '0'
+        with:
+          version: latest
+      - uses: actions/setup-node@v7
+        if: steps.migrations.outputs.count != '0'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Ensure psql is available
+        if: steps.migrations.outputs.count != '0'
+        run: command -v psql >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client)
+      - name: supabase start (applies all migrations + seed)
+        if: steps.migrations.outputs.count != '0'
+        run: supabase start
+      # DB_URL is `-o env`'s default name for the local Postgres connection
+      # string (confirmed against github.com/supabase/cli's current
+      # `status-values.ts` — supabase.com's docs site is egress-blocked from
+      # every build agent's environment, Rule 1 item 2 fallback; see
+      # docs/VERIFY.md).
+      - name: Export local Supabase DB URL
+        if: steps.migrations.outputs.count != '0'
+        run: |
+          supabase status -o env > /tmp/supabase-status.env
+          set -a
+          # shellcheck disable=SC1091
+          source /tmp/supabase-status.env
+          set +a
+          echo "SUPABASE_DB_URL=$DB_URL" >> "$GITHUB_ENV"
+      - name: Run cron jobs + pgmq queues check
+        if: steps.migrations.outputs.count != '0'
+        run: node --experimental-strip-types scripts/ci/cron-queues-check.ts
+      - name: No migrations yet
+        if: steps.migrations.outputs.count == '0'
+        run: echo "::notice::No migrations in supabase/migrations/ yet (T1) — nothing to check. Placeholder job, no-op."

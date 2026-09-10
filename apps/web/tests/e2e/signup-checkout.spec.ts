@@ -11,9 +11,11 @@ import { expect, test } from "@playwright/test";
  *
  * Every remaining network call in this path is browser-originated, so it's
  * mocked at the network boundary: Supabase Auth's `signUp`, then our own
- * `/api/signup/create-tenant` and `/api/checkout/session` Route Handlers,
- * plus the mock checkout destination itself (so the final
- * `window.location.href` redirect has somewhere real to land).
+ * `/api/checkout/session` Route Handler (which now owns proxying to the
+ * real `api-checkout` edge function — the separate `/api/signup/
+ * create-tenant` duplicate tenant-creation path has been removed,
+ * E2E_FLOWS_AUDIT B1), plus the mock checkout destination itself (so the
+ * final `window.location.href` redirect has somewhere real to land).
  */
 test("signup account step reaches the (mocked) checkout redirect", async ({ page }) => {
   const mockCheckoutUrl = "https://example.com/mock-checkout";
@@ -42,15 +44,6 @@ test("signup account step reaches the (mocked) checkout redirect", async ({ page
           user_metadata: { owner_name: "Test Owner" },
         },
       }),
-    });
-  });
-
-  // Our own tenant-creation Route Handler.
-  await page.route("**/api/signup/create-tenant", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ tenant_id: "tenant_mock_1" }),
     });
   });
 

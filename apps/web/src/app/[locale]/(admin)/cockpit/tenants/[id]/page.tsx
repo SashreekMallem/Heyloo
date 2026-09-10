@@ -23,6 +23,8 @@ import {
 import { use, useState } from "react";
 import { toast } from "sonner";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
+import { startImpersonation } from "@/lib/impersonation/state";
+import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
 interface TenantDetail {
   id: string;
@@ -43,14 +45,45 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
   const [reason, setReason] = useState("");
 
   async function impersonate() {
+    if (!reason.trim()) {
+      toast.error("A reason is required for the audit log.");
+      return;
+    }
     const res = await fetch(`/api/admin/admin-tenants/${id}/impersonate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ tenant_id: id, reason }),
     });
     setImpersonateOpen(false);
-    if (res.ok) toast.success("Impersonation session started");
-    else toast.error("Impersonation isn't available yet.");
+    if (!res.ok) {
+      toast.error(
+        res.status === 501
+          ? "Impersonation isn't available yet."
+          : "Couldn't start impersonation — please try again.",
+      );
+      return;
+    }
+    const body = (await res.json()) as {
+      impersonation_link?: string;
+      tenant_id?: string;
+      expires_at?: string;
+    };
+    if (!body.impersonation_link || !body.expires_at) {
+      toast.error("Impersonation isn't available yet.");
+      return;
+    }
+    const {
+      data: { session: adminSession },
+    } = await supabaseBrowserClient.auth.getSession();
+    startImpersonation({
+      tenantId: id,
+      tenantName: query.data?.name ?? "this tenant",
+      adminEmail: adminSession?.user.email ?? "an admin",
+      expiresAt: body.expires_at,
+      editMode: false,
+    });
+    window.open(body.impersonation_link, "_blank", "noopener");
+    toast.success("Impersonation session started in a new tab");
   }
 
   async function suspend() {

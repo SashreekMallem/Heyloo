@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { enqueueAdapterPush } from "../../_shared/adapter-push.ts";
 import { bookingIdempotencyKey } from "../../_shared/idempotency.ts";
 import { normalizeE164 } from "../../_shared/phone.ts";
 import type { CreateBookingArgsSchema } from "../../_shared/schemas/voice-tools.ts";
@@ -11,7 +12,7 @@ export type CreateBookingResult =
   | { booking_id: string; confirmed: true; start: string; end: string }
   | {
       confirmed: false;
-      reason: "slot_taken" | "invalid_phone";
+      reason: "slot_taken" | "invalid_phone" | "resource_not_found" | "offering_not_found";
       nearest_alternative?: { start: string; end: string };
     };
 
@@ -39,6 +40,34 @@ export async function createBooking(
   const phone = normalizeE164(args.customer.phone);
   if (!phone) {
     return { confirmed: false, reason: "invalid_phone" };
+  }
+
+  // EDGE_AUDIT B1: every referenced id must be verified to belong to the
+  // caller's OWN tenant before it's ever written — same pattern already
+  // used by `update_booking`/`cancel_booking`/`create_order`/
+  // `send_payment_link`. `args.resource_id`/`args.offering_id` come
+  // straight from the Retell tool-call args (Zod-shape-validated only, not
+  // ownership-validated) — without this, a manipulated/adversarial call on
+  // Tenant A's agent could create a `confirmed` booking against Tenant B's
+  // resource.
+  const resourceRows = await sql<{ id: string }>`
+    select id from public.resources
+    where id = ${args.resource_id} and tenant_id = ${ctx.tenantId} and active
+    limit 1
+  `;
+  if (!resourceRows[0]) {
+    return { confirmed: false, reason: "resource_not_found" };
+  }
+
+  if (args.offering_id) {
+    const offeringRows = await sql<{ id: string }>`
+      select id from public.offerings
+      where id = ${args.offering_id} and tenant_id = ${ctx.tenantId} and active
+      limit 1
+    `;
+    if (!offeringRows[0]) {
+      return { confirmed: false, reason: "offering_not_found" };
+    }
   }
 
   const idempotencyKey = bookingIdempotencyKey(ctx.retellCallId, args.start);
@@ -102,6 +131,18 @@ export async function createBooking(
     if (!booking) {
       return { confirmed: false, reason: "slot_taken" };
     }
+
+    // E2E_FLOWS_AUDIT B4 (producer side): push this booking to every
+    // connected deep-integration adapter — never inline (hot-path
+    // discipline), and a no-op for the common case of a tenant with no
+    // connected adapter.
+    await enqueueAdapterPush(sql, {
+      tenantId: ctx.tenantId,
+      entityType: "booking",
+      entityId: booking.id,
+      idempotencyKey,
+    });
+
     return {
       booking_id: booking.id,
       confirmed: true,

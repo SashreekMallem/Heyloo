@@ -2,6 +2,25 @@ import type { StripeEvent } from "../_shared/schemas/stripe-event.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
+ * `/webhooks-stripe` (BACKEND_SPEC §7.9, E2E_FLOWS_AUDIT H3): the ONLY
+ * live-network call this otherwise pure-DB-effects file makes is kicking
+ * off the provisioning saga — injected so this stays unit-testable with a
+ * mocked `sql` (the Deno `index.ts` wires the real `fetch` call against
+ * `/functions/v1/api-provision` with the `PROVISION_INTERNAL_SECRET`
+ * header, matching `api-provision/index.ts`'s own internal-call contract
+ * exactly: header `x-internal-secret`, body `{tenant_id}`).
+ */
+export interface StripeEventDeps {
+  invokeProvisioning: (
+    tenantId: string,
+  ) => Promise<{ ok: boolean; status?: number; error?: string }>;
+}
+
+const defaultStripeEventDeps: StripeEventDeps = {
+  invokeProvisioning: async () => ({ ok: true }),
+};
+
+/**
  * `/webhooks-stripe` background processing (BACKEND_SPEC §7.4). The Deno
  * `index.ts` owns signature verification + `webhook_events` dedup +
  * fast-ack; this file is the pure-DB-effects branch per event type, unit
@@ -11,6 +30,7 @@ export async function processStripeEvent(
   sql: SqlClient,
   event: StripeEvent,
   logger: Logger,
+  deps: StripeEventDeps = defaultStripeEventDeps,
 ): Promise<void> {
   const obj = event.data.object;
 
@@ -21,16 +41,47 @@ export async function processStripeEvent(
       const subscriptionId = typeof obj["subscription"] === "string" ? obj["subscription"] : null;
 
       if (metadata["tenant_id"]) {
-        // Signup/subscription checkout — kicks off the provisioning saga
-        // (BACKEND_SPEC §7.9) if not already started; the saga itself is
-        // idempotent/re-entrant, so this call is safe to fire even if a
-        // provisioning_runs row already exists.
+        const tenantId = metadata["tenant_id"];
         await sql`
           update public.tenants
           set status = 'active', stripe_customer_id = coalesce(${customerId}, stripe_customer_id),
               stripe_subscription_id = coalesce(${subscriptionId}, stripe_subscription_id)
-          where id = ${metadata["tenant_id"]}
+          where id = ${tenantId}
         `;
+
+        // Signup/subscription checkout — kicks off the provisioning saga
+        // (BACKEND_SPEC §7.9) if not already started; the saga itself is
+        // idempotent/re-entrant, so this call is safe to fire even if a
+        // provisioning_runs row already exists. Skip the network round trip
+        // entirely once this tenant has already published successfully.
+        const publishedRuns = await sql<{ status: string }>`
+          select status from public.provisioning_runs where tenant_id = ${tenantId} and step = 'publish_agent'
+        `;
+        if (publishedRuns[0]?.status !== "succeeded") {
+          const invoked = await deps.invokeProvisioning(tenantId);
+          if (!invoked.ok) {
+            logger.error("provisioning_invoke_failed", {
+              tenant_id: tenantId,
+              status: invoked.status,
+              error: invoked.error,
+            });
+            const invokeError = `provisioning_invoke_failed: ${invoked.error ?? invoked.status ?? "unknown"}`;
+            await sql`
+              insert into public.provisioning_runs (tenant_id, step, status, error, attempts, updated_at)
+              values (${tenantId}, 'tenant_finalize', 'failed', ${invokeError}, 1, now())
+              on conflict (tenant_id, step) do update set
+                status = 'failed', error = excluded.error,
+                attempts = provisioning_runs.attempts + 1, updated_at = now()
+            `;
+            await sql`
+              insert into public.alerts (rule, severity, tenant_id, payload)
+              values (
+                'provisioning_invoke_failed', 'critical', ${tenantId},
+                ${JSON.stringify({ status: invoked.status ?? null, error: invoked.error ?? null })}::jsonb
+              )
+            `;
+          }
+        }
       }
 
       if (metadata["order_id"] || metadata["booking_id"]) {
@@ -162,8 +213,87 @@ export async function processStripeEvent(
       return;
     }
 
+    // Referral anti-fraud clawback (SYSTEM_DESIGN §6/§10 G34: "clawback on
+    // refund/chargeback of the referred account", E2E_FLOWS_AUDIT H1). A
+    // `charge.refunded`/`charge.dispute.created` event on the REFERRED
+    // tenant's own subscription charge reverses that tenant's referral —
+    // never a customer-facing phone-payment refund, since those charges'
+    // `customer`/`payment_processing_events.tenant_id` never resolve to a
+    // `tenants.stripe_customer_id` in the first place.
+    case "charge.refunded": {
+      const customerId = typeof obj["customer"] === "string" ? obj["customer"] : null;
+      if (!customerId) return;
+      const tenantRows = await sql<{ id: string }>`
+        select id from public.tenants where stripe_customer_id = ${customerId} limit 1
+      `;
+      const tenantId = tenantRows[0]?.id;
+      if (!tenantId) return;
+      await clawBackReferral(sql, logger, tenantId, event.type);
+      return;
+    }
+
+    case "charge.dispute.created": {
+      // The Dispute object itself carries no `customer` field (only
+      // `charge`/`payment_intent`, VERIFY confirmed against Stripe's API
+      // reference — docs.stripe.com is egress-blocked here, see
+      // docs/VERIFY.md) — resolved via the charge->tenant mapping this same
+      // handler already writes in `payment_processing_events` on
+      // `charge.succeeded`, rather than an extra live Stripe API call.
+      const chargeId = typeof obj["charge"] === "string" ? obj["charge"] : null;
+      if (!chargeId) return;
+      const tenantRows = await sql<{ tenant_id: string }>`
+        select tenant_id from public.payment_processing_events where stripe_charge_id = ${chargeId} limit 1
+      `;
+      const tenantId = tenantRows[0]?.tenant_id;
+      if (!tenantId) return;
+      await clawBackReferral(sql, logger, tenantId, event.type);
+      return;
+    }
+
     default:
       logger.debug("stripe_event_unhandled_type", { type: event.type });
       return;
   }
+}
+
+async function clawBackReferral(
+  sql: SqlClient,
+  logger: Logger,
+  referredTenantId: string,
+  eventType: string,
+): Promise<void> {
+  const referralRows = await sql<{ id: string; referral_partner_id: string; status: string }>`
+    select id, referral_partner_id, status from public.referrals
+    where referred_tenant_id = ${referredTenantId}
+  `;
+  const referral = referralRows[0];
+  if (!referral || referral.status === "clawed_back" || referral.status === "disqualified") return;
+
+  await sql`update public.referrals set status = 'clawed_back' where id = ${referral.id}`;
+
+  const commissionRows = await sql<{ id: string; amount_cents: number; status: string }>`
+    select id, amount_cents, status from public.commission_events
+    where referral_id = ${referral.id} and status <> 'clawed_back'
+  `;
+  for (const commission of commissionRows) {
+    await sql`update public.commission_events set status = 'clawed_back' where id = ${commission.id}`;
+    if (commission.status === "paid") {
+      // Already sent to the partner and counted toward their 1099-NEC
+      // threshold (`referral_partners.ytd_payout_cents`) — reverse that
+      // count even though recovering the actual PayPal payout is a manual
+      // finance action outside this webhook's scope.
+      await sql`
+        update public.referral_partners
+        set ytd_payout_cents = greatest(0, ytd_payout_cents - ${commission.amount_cents})
+        where id = ${referral.referral_partner_id}
+      `;
+    }
+  }
+
+  logger.warn("referral_clawback", {
+    tenant_id: referredTenantId,
+    referral_id: referral.id,
+    commission_events_reversed: commissionRows.length,
+    event_type: eventType,
+  });
 }

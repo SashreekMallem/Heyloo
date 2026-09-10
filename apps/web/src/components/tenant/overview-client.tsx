@@ -9,6 +9,7 @@ import {
   TrendChart,
 } from "@heyloo/ui";
 import { useState } from "react";
+import type { TenantPlanResponse } from "@/app/api/platform-settings/tenant-plan/route";
 import { Link, useRouter } from "@/i18n/navigation";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
@@ -56,23 +57,33 @@ export function OverviewClient({
       const days = rangeDays(preset);
       const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-      const { data: usage } = await supabaseBrowserClient
-        .from("usage_daily")
-        .select("date, total_calls, total_minutes, billable_minutes, total_bookings")
-        .eq("tenant_id", tenantId)
-        .gte("date", since)
-        .order("date", { ascending: true });
+      const [{ data: usage }, { count: spamCount }, planRes] = await Promise.all([
+        supabaseBrowserClient
+          .from("usage_daily")
+          .select("date, total_calls, total_minutes, billable_minutes, total_bookings")
+          .eq("tenant_id", tenantId)
+          .gte("date", since)
+          .order("date", { ascending: true }),
+        supabaseBrowserClient
+          .from("call_logs")
+          .select("id", { count: "exact", head: true })
+          .eq("tenant_id", tenantId)
+          .eq("classification", "spam_robocall")
+          .gte("started_at", `${since}T00:00:00.000Z`),
+        fetch("/api/platform-settings/tenant-plan"),
+      ]);
 
       const rows = usage ?? [];
       const today = new Date().toISOString().slice(0, 10);
       const todayRow = rows.find((r) => r.date === today);
+      const plan = planRes.ok ? ((await planRes.json()) as TenantPlanResponse) : null;
 
       return {
         callsToday: todayRow?.total_calls ?? 0,
         bookingsToday: todayRow?.total_bookings ?? 0,
         minutesUsed: rows.reduce((sum, r) => sum + Number(r.billable_minutes), 0),
-        minutesIncluded: 300,
-        spamDeflected: 0,
+        minutesIncluded: plan?.included_minutes ?? 0,
+        spamDeflected: spamCount ?? 0,
         trend: rows.map((r) => ({ label: r.date.slice(5), value: r.total_calls })),
       };
     },

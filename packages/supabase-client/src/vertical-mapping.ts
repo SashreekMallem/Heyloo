@@ -2,21 +2,24 @@ import type { Vertical } from "@heyloo/canonical-types";
 import type { TenantRow } from "./database.types.js";
 
 /**
- * `packages/canonical-types`' `Vertical` enum (T2:
- * `auto|vet|legal|dental|real_estate|motel|restaurant|generic`) and
- * `tenants.vertical`'s DB check constraint (T1:
- * `auto_repair|veterinary|legal|dental|real_estate|motel|restaurant|generic`)
- * were built by different tasks against the same spec and landed with two
- * different spellings for the same two verticals (auto/auto_repair,
- * vet/veterinary). Documented in docs/BUILD_NOTES.md T5 entry rather than
- * silently reconciled in either package (CLAUDE.md Rule 4 — flag, don't
- * redesign someone else's committed schema). This mapping is the single
- * place apps/web converts between the two; nowhere else should hardcode
- * either spelling against the other.
+ * Historical note (docs/audit/FIX_REQUESTS.md): this mapping used to
+ * translate between `@heyloo/canonical-types`' `Vertical` short form
+ * (`auto|vet|...`) and a long-form spelling (`auto_repair|veterinary`) that
+ * a stale `docs/BUILD_NOTES.md` T5 entry claimed the live `tenants.vertical`
+ * CHECK constraint used. The actual committed constraint
+ * (`supabase/migrations/20260907130100_tenancy.sql`) has always been short
+ * form only, matching `Vertical` exactly — confirmed by grepping every
+ * consumer repo-wide (only `apps/web/src/app/api/checkout|signup/**`, and
+ * the checkout route deliberately bypasses this mapping, passing the short
+ * form straight through). `TenantRow["vertical"]` in `database.types.ts` was
+ * fixed to the same short form alongside this change, so these are now
+ * identity maps. Kept (rather than deleted) only so any external caller of
+ * this exported name doesn't need to change — inline both at the call site
+ * once no one imports them anymore.
  */
 export const VERTICAL_TO_DB_VALUE: Record<Vertical, TenantRow["vertical"]> = {
-  auto: "auto_repair",
-  vet: "veterinary",
+  auto: "auto",
+  vet: "vet",
   legal: "legal",
   dental: "dental",
   real_estate: "real_estate",
@@ -26,8 +29,8 @@ export const VERTICAL_TO_DB_VALUE: Record<Vertical, TenantRow["vertical"]> = {
 };
 
 export const DB_VALUE_TO_VERTICAL: Record<TenantRow["vertical"], Vertical> = {
-  auto_repair: "auto",
-  veterinary: "vet",
+  auto: "auto",
+  vet: "vet",
   legal: "legal",
   dental: "dental",
   real_estate: "real_estate",

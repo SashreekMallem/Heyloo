@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { decryptSecret, encryptSecret } from "../_shared/crypto.ts";
 import { createLogger } from "../_shared/logger.ts";
 import type { SqlClient } from "../_shared/types.ts";
 import type { AdapterPushDeps } from "./handler.ts";
 import { ADAPTER_PUSHERS, pollAdapterChanges, pushToAdapter } from "./handler.ts";
+
+const TEST_TOKEN_ENCRYPTION_KEY = btoa("abcdefghijklmnopqrstuvwxyz012345");
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -16,6 +19,7 @@ const DEPS: AdapterPushDeps = {
   square: { clientId: "c1", clientSecret: "s1" },
   ezyvet: { clientId: "c1", clientSecret: "s1", partnerId: "p1" },
   googleCalendar: { clientId: "c1", clientSecret: "s1" },
+  tokenEncryptionKey: TEST_TOKEN_ENCRYPTION_KEY,
 };
 
 /** A tiny query-router mock: each call inspects the joined template text
@@ -62,6 +66,7 @@ describe("pushToAdapter dispatch", () => {
 
   it("registers a pusher for every T7 adapter", () => {
     expect(Object.keys(ADAPTER_PUSHERS).sort()).toEqual([
+      "airtable",
       "ezyvet",
       "google_calendar",
       "shopmonkey",
@@ -241,6 +246,159 @@ describe("pushToAdapter: square", () => {
   });
 });
 
+describe("adapter_connections token encryption (DB-H2)", () => {
+  const BOOKING_ROW = {
+    id: "booking_1",
+    start_at: "2026-09-10T14:00:00Z",
+    end_at: "2026-09-10T14:30:00Z",
+    notes: null,
+    party_size: null,
+    customer_name: "Jane Doe",
+    customer_phone: "+15551234567",
+    customer_email: null,
+    offering_metadata: { adapter_external_id: { square: "svc_1" } },
+    resource_metadata: {},
+  };
+
+  it("decrypts an encrypted access_token before using it against the provider", async () => {
+    const encryptedAccessToken = await encryptSecret(
+      "real_access_token",
+      TEST_TOKEN_ENCRYPTION_KEY,
+    );
+    const connectionRow = {
+      id: "conn_1",
+      status: "connected",
+      access_token: encryptedAccessToken,
+      refresh_token: null,
+      expires_at: null,
+      provider_account_id: "merchant_1",
+      metadata: { locationId: "loc_1", defaultTeamMemberId: "team_1" },
+    };
+    const sql = makeSql([
+      { when: "from public.adapter_connections", rows: [connectionRow] },
+      { when: "from public.bookings b", rows: [BOOKING_ROW] },
+      { when: "insert into public.adapter_sync_state", rows: [] },
+    ]);
+    let capturedAuthHeader: string | null = null;
+    const deps: AdapterPushDeps = {
+      ...DEPS,
+      fetchImpl: (async (_url: unknown, init?: RequestInit) => {
+        capturedAuthHeader = (init?.headers as Record<string, string>)?.["authorization"] ?? null;
+        return jsonResponse({ booking: { id: "sq_booking_1" } });
+      }) as unknown as typeof fetch,
+    };
+
+    const result = await pushToAdapter(
+      sql,
+      {
+        tenant_id: "t1",
+        adapter: "square",
+        entity_type: "booking",
+        entity_id: "booking_1",
+        idempotency_key: "k1",
+        attempt: 0,
+      },
+      createLogger(),
+      deps,
+    );
+    expect(result).toBe(true);
+    expect(capturedAuthHeader).toBe("Bearer real_access_token");
+  });
+
+  it("still works against a legacy plaintext row written before encryption shipped", async () => {
+    const connectionRow = {
+      id: "conn_1",
+      status: "connected",
+      access_token: "legacy_plaintext_token",
+      refresh_token: null,
+      expires_at: null,
+      provider_account_id: "merchant_1",
+      metadata: { locationId: "loc_1", defaultTeamMemberId: "team_1" },
+    };
+    const sql = makeSql([
+      { when: "from public.adapter_connections", rows: [connectionRow] },
+      { when: "from public.bookings b", rows: [BOOKING_ROW] },
+      { when: "insert into public.adapter_sync_state", rows: [] },
+    ]);
+    let capturedAuthHeader: string | null = null;
+    const deps: AdapterPushDeps = {
+      ...DEPS,
+      fetchImpl: (async (_url: unknown, init?: RequestInit) => {
+        capturedAuthHeader = (init?.headers as Record<string, string>)?.["authorization"] ?? null;
+        return jsonResponse({ booking: { id: "sq_booking_1" } });
+      }) as unknown as typeof fetch,
+    };
+
+    const result = await pushToAdapter(
+      sql,
+      {
+        tenant_id: "t1",
+        adapter: "square",
+        entity_type: "booking",
+        entity_id: "booking_1",
+        idempotency_key: "k1",
+        attempt: 0,
+      },
+      createLogger(),
+      deps,
+    );
+    expect(result).toBe(true);
+    expect(capturedAuthHeader).toBe("Bearer legacy_plaintext_token");
+  });
+
+  it("re-encrypts a refreshed access_token before writing it back (never plaintext at rest)", async () => {
+    const expiredConnectionRow = {
+      id: "conn_1",
+      status: "connected",
+      access_token: await encryptSecret("stale_access_token", TEST_TOKEN_ENCRYPTION_KEY),
+      refresh_token: await encryptSecret("refresh_token_value", TEST_TOKEN_ENCRYPTION_KEY),
+      expires_at: "2020-01-01T00:00:00Z", // long expired -> forces a refresh
+      provider_account_id: "merchant_1",
+      metadata: { locationId: "loc_1", defaultTeamMemberId: "team_1" },
+    };
+    let capturedUpdateValues: unknown[] = [];
+    const sql = makeSql([
+      { when: "from public.adapter_connections", rows: [expiredConnectionRow] },
+      { when: "from public.bookings b", rows: [BOOKING_ROW] },
+      { when: "insert into public.adapter_sync_state", rows: [] },
+      {
+        when: "set access_token",
+        rows: (v) => {
+          capturedUpdateValues = v;
+          return [];
+        },
+      },
+    ]);
+    const deps: AdapterPushDeps = {
+      ...DEPS,
+      fetchImpl: (async (url: unknown) => {
+        if (String(url).includes("oauth2/token"))
+          return jsonResponse({ access_token: "fresh_access_token" });
+        return jsonResponse({ booking: { id: "sq_booking_1" } });
+      }) as unknown as typeof fetch,
+    };
+
+    const result = await pushToAdapter(
+      sql,
+      {
+        tenant_id: "t1",
+        adapter: "square",
+        entity_type: "booking",
+        entity_id: "booking_1",
+        idempotency_key: "k1",
+        attempt: 0,
+      },
+      createLogger(),
+      deps,
+    );
+    expect(result).toBe(true);
+    const storedValue = capturedUpdateValues[0] as string;
+    expect(storedValue).not.toBe("fresh_access_token");
+    expect(storedValue.startsWith("v1:")).toBe(true);
+    expect(await decryptSecret(storedValue, TEST_TOKEN_ENCRYPTION_KEY)).toBe("fresh_access_token");
+  });
+});
+
 describe("pushToAdapter: ezyvet", () => {
   const CONNECTION_ROW = {
     id: "conn_2",
@@ -395,6 +553,155 @@ describe("pushToAdapter: google_calendar", () => {
     );
     expect(result).toBe(true);
     expect(call).toBe(2);
+  });
+});
+
+describe("pushToAdapter: airtable", () => {
+  const CONNECTION_ROW = {
+    id: "conn_5",
+    status: "connected",
+    access_token: "at_token",
+    refresh_token: null,
+    expires_at: null,
+    provider_account_id: null,
+    metadata: { baseId: "app123", tableIdOrName: "Bookings" },
+  };
+  const BOOKING_ROW = {
+    id: "booking_5",
+    start_at: "2026-09-10T14:00:00Z",
+    end_at: "2026-09-10T14:30:00Z",
+    notes: null,
+    party_size: null,
+    customer_name: "Jane Doe",
+    customer_phone: "+15551234567",
+    customer_email: null,
+    offering_metadata: {},
+    resource_metadata: {},
+  };
+
+  it("creates an Airtable record for a booking push and records the sync state", async () => {
+    const sql = makeSql([
+      { when: "from public.adapter_connections", rows: [CONNECTION_ROW] },
+      { when: "from public.bookings b", rows: [BOOKING_ROW] },
+      { when: "insert into public.adapter_sync_state", rows: [] },
+    ]);
+    let capturedUrl = "";
+    const deps: AdapterPushDeps = {
+      ...DEPS,
+      fetchImpl: (async (url: unknown) => {
+        capturedUrl = String(url);
+        return jsonResponse({ id: "rec123" });
+      }) as unknown as typeof fetch,
+    };
+    const result = await pushToAdapter(
+      sql,
+      {
+        tenant_id: "t1",
+        adapter: "airtable",
+        entity_type: "booking",
+        entity_id: "booking_5",
+        idempotency_key: "k1",
+        attempt: 0,
+      },
+      createLogger(),
+      deps,
+    );
+    expect(result).toBe(true);
+    expect(capturedUrl).toContain("app123");
+    expect(capturedUrl).toContain("Bookings");
+  });
+
+  it("pushes an order to Airtable too (a generic base supports both entity types)", async () => {
+    const orderRow = {
+      id: "order_5",
+      items: [{ name: "Burger", qty: 1, unit_price_cents: 899 }],
+      fulfillment_type: "pickup",
+      delivery_address: null,
+      total_cents: 899,
+      customer_name: "Jane Doe",
+      customer_phone: "+15551234567",
+    };
+    const sql = makeSql([
+      { when: "from public.adapter_connections", rows: [CONNECTION_ROW] },
+      { when: "from public.orders o", rows: [orderRow] },
+      { when: "insert into public.adapter_sync_state", rows: [] },
+    ]);
+    const deps: AdapterPushDeps = {
+      ...DEPS,
+      fetchImpl: (async () => jsonResponse({ id: "rec456" })) as unknown as typeof fetch,
+    };
+    const result = await pushToAdapter(
+      sql,
+      {
+        tenant_id: "t1",
+        adapter: "airtable",
+        entity_type: "order",
+        entity_id: "order_5",
+        idempotency_key: "k1",
+        attempt: 0,
+      },
+      createLogger(),
+      deps,
+    );
+    expect(result).toBe(true);
+  });
+
+  it("returns false and never invents a base/table mapping when connection metadata is missing it", async () => {
+    const sql = makeSql([
+      {
+        when: "from public.adapter_connections",
+        rows: [{ ...CONNECTION_ROW, metadata: {} }],
+      },
+    ]);
+    const result = await pushToAdapter(
+      sql,
+      {
+        tenant_id: "t1",
+        adapter: "airtable",
+        entity_type: "booking",
+        entity_id: "booking_5",
+        idempotency_key: "k1",
+        attempt: 0,
+      },
+      createLogger(),
+      DEPS,
+    );
+    expect(result).toBe(false);
+  });
+
+  it("marks the connection disconnected on a 401", async () => {
+    let disconnectCalled = false;
+    const sql = makeSql([
+      { when: "from public.adapter_connections", rows: [CONNECTION_ROW] },
+      { when: "from public.bookings b", rows: [BOOKING_ROW] },
+      {
+        when: "update public.adapter_connections",
+        rows: () => {
+          disconnectCalled = true;
+          return [];
+        },
+      },
+    ]);
+    const deps: AdapterPushDeps = {
+      ...DEPS,
+      fetchImpl: (async () =>
+        jsonResponse({ error: "unauthorized" }, 401)) as unknown as typeof fetch,
+    };
+    const result = await pushToAdapter(
+      sql,
+      {
+        tenant_id: "t1",
+        adapter: "airtable",
+        entity_type: "booking",
+        entity_id: "booking_5",
+        idempotency_key: "k1",
+        attempt: 0,
+      },
+      createLogger(),
+      deps,
+    );
+    expect(result).toBe(false);
+    expect(disconnectCalled).toBe(true);
   });
 });
 

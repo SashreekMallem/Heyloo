@@ -1,6 +1,7 @@
 import { Button } from "@heyloo/ui";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { setRequestLocale } from "next-intl/server";
 import { getVerticalContent, VERTICAL_CONTENT } from "@/content/marketing/verticals";
 import { Link } from "@/i18n/navigation";
 
@@ -23,8 +24,13 @@ export async function generateMetadata({
 }
 
 /** `/[vertical]` — vertical landing pages, one template (FRONTEND_SPEC.md §3.2). */
-export default async function VerticalPage({ params }: { params: Promise<{ vertical: string }> }) {
-  const { vertical } = await params;
+export default async function VerticalPage({
+  params,
+}: {
+  params: Promise<{ locale: string; vertical: string }>;
+}) {
+  const { locale, vertical } = await params;
+  setRequestLocale(locale);
   const content = getVerticalContent(vertical);
   if (!content) notFound();
 

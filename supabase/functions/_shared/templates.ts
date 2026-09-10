@@ -24,7 +24,8 @@ export type TemplateKey =
   | "dunning_payment_failed"
   | "reminder"
   | "review_request"
-  | "outreach_demo_followup";
+  | "outreach_demo_followup"
+  | "owner_reply";
 
 export interface RenderedMessage {
   subject?: string;
@@ -111,6 +112,12 @@ export function renderTemplate(
           `Hi ${str("contact_name", "there")} — thanks for your interest! Here's a live demo you can ` +
           `try right now: ${str("demo_url")}`,
       };
+    case "owner_reply":
+      // Verbatim passthrough of the tenant owner's own typed reply text
+      // (dashboard Messages-thread "reply" feature) — unlike every other
+      // case above, this isn't a fixed transactional template; the whole
+      // point is that the SMS says exactly what the owner typed.
+      return { body: str("body") };
     default:
       return { body: "" };
   }

@@ -1,7 +1,13 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { setRequestLocale } from "next-intl/server";
 import { MDXRemote } from "next-mdx-remote/rsc";
-import { getBlogPost } from "@/lib/content/blog";
+import { getBlogPost, listBlogPosts } from "@/lib/content/blog";
+
+export async function generateStaticParams() {
+  const posts = await listBlogPosts();
+  return posts.map((post) => ({ slug: post.slug }));
+}
 
 export async function generateMetadata({
   params,
@@ -14,8 +20,13 @@ export async function generateMetadata({
   return { title: `${post.title} — Heyloo blog`, description: post.excerpt };
 }
 
-export default async function BlogPostPage({ params }: { params: Promise<{ slug: string }> }) {
-  const { slug } = await params;
+export default async function BlogPostPage({
+  params,
+}: {
+  params: Promise<{ locale: string; slug: string }>;
+}) {
+  const { locale, slug } = await params;
+  setRequestLocale(locale);
   const post = await getBlogPost(slug);
   if (!post) notFound();
 

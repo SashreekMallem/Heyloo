@@ -56,10 +56,39 @@ describe("cancelBooking", () => {
       { rows: [bookingRow] },
       { rows: [{ id: "booking_1", customer_id: "customer_1" }] },
       { rows: [{ id: "msg_1" }] },
-      { rows: [] },
+      { rows: [] }, // messages_outbound enqueue
+      { rows: [] }, // adapter-push producer: no connected adapter
     ]);
     const result = await cancelBooking(sql, ctx, args);
     expect(result).toEqual({ cancelled: true });
+  });
+
+  it("EDGE_AUDIT B4: enqueues an adapter_push_queue booking entry (cancellation) per connected adapter", async () => {
+    const enqueueCalls: unknown[] = [];
+    const steps: Step[] = [
+      { rows: [bookingRow] },
+      { rows: [{ id: "booking_1", customer_id: "customer_1" }] },
+      { rows: [{ id: "msg_1" }] },
+      // messages_outbound's own enqueue() call is a `pgmq.send` and is
+      // intercepted below, never consuming a step here — the next
+      // non-pgmq.send call is the adapter-push producer's connections list.
+      { rows: [{ provider: "shopmonkey" }, { provider: "google_calendar" }] },
+    ];
+    let i = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("pgmq.send")) {
+        enqueueCalls.push(values);
+        return Promise.resolve([]);
+      }
+      const step = steps[i];
+      i += 1;
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+    const result = await cancelBooking(sql, ctx, args);
+    expect(result).toEqual({ cancelled: true });
+    // one messages_outbound enqueue + two adapter pushes (shopmonkey, google_calendar)
+    expect(enqueueCalls).toHaveLength(3);
   });
 
   it("rejects when the caller number differs and no verification claim was offered", async () => {

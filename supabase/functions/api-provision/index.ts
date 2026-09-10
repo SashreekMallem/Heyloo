@@ -7,14 +7,21 @@
 // tenant + role, per CLAUDE.md Rule 2 ("every secret-key edge function
 // still explicitly filters by a verified tenant_id" — service_role callers
 // bypass RLS but not this check).
+import type { CompilerAgentTemplate } from "../_shared/compiler/template-compiler.ts";
+import { compileTemplate as compileRetellTemplate } from "../_shared/compiler/template-compiler.ts";
 import { getSql } from "../_shared/deno/db.ts";
 import { requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
+import type { CompiledTemplateResult } from "./handler.ts";
 import { runProvisioningSaga } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-provision" });
 const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
+// Passed to the compiler as every tool's webhook `url` (same convention as
+// admin/index.ts's identical `deps.retell.toolWebhookUrl` wiring for the
+// template-publish route).
+const VOICE_TOOLS_WEBHOOK_URL = requireEnv("VOICE_TOOLS_WEBHOOK_URL");
 // RETELL-VERIFY (VERIFY-7, resolved): `termination_uri` is a REQUIRED field
 // on `/import-phone-number` (confirmed via retell-typescript-sdk) — this
 // saga previously omitted it entirely, which would 4xx against the real
@@ -87,22 +94,35 @@ Deno.serve(async (req: Request) => {
     twilioFetch: fetch,
     twilioAccountSid: TWILIO_ACCOUNT_SID,
     twilioAuthToken: TWILIO_AUTH_TOKEN,
-    async compileTemplate(tenantIdForCompile: string) {
-      // T2's `packages/adapters/retell` compiler (built concurrently with
-      // this task — see BUILD_NOTES) isn't importable from Deno without a
-      // bundling step; resolves the tenant's active template row directly
-      // here as a stand-in until that wiring lands.
-      const rows = await sql<{ id: string; version: number }>`
-        select at.id, at.version from public.agent_templates at
+    async compileTemplate(tenantIdForCompile: string): Promise<CompiledTemplateResult | null> {
+      const rows = await sql<Record<string, unknown>>`
+        select at.* from public.agent_templates at
         join public.tenants t on t.vertical = at.vertical
         where t.id = ${tenantIdForCompile} and at.is_active
         order by at.version desc limit 1
       `;
-      const template = rows[0];
+      const row = rows[0];
+      if (!row) return null;
+
+      const template: CompilerAgentTemplate = {
+        compile_target: row["compile_target"] as CompilerAgentTemplate["compile_target"],
+        system_prompt: (row["system_prompt"] as string | null) ?? null,
+        states: (row["states"] as CompilerAgentTemplate["states"]) ?? [],
+        transitions: (row["transitions"] as CompilerAgentTemplate["transitions"]) ?? [],
+        global_intents: (row["global_intents"] as CompilerAgentTemplate["global_intents"]) ?? [],
+        tools: (row["tools"] as CompilerAgentTemplate["tools"]) ?? [],
+        disclosure_line: row["disclosure_line"] as string,
+      };
+      const compiled = compileRetellTemplate(template, VOICE_TOOLS_WEBHOOK_URL);
+
       return {
-        templateId: template?.id ?? "",
-        templateVersion: template?.version ?? 0,
-        compiledConfig: { tenant_id: tenantIdForCompile },
+        templateId: row["id"] as string,
+        templateVersion: row["version"] as number,
+        voiceId: row["voice_id"] as string,
+        model: row["model"] as string,
+        agentName: `heyloo-tenant-${tenantIdForCompile}`,
+        disclosureVerified: compiled.disclosureVerified,
+        flow: compiled.flow,
       };
     },
     async resolvePhoneNumberToProvision() {

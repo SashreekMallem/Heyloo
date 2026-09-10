@@ -26,11 +26,12 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
  *
  * Item-level payout status (`PAYMENT.PAYOUTS-ITEM.SUCCEEDED`/`FAILED`/
  * `BLOCKED`/`UNCLAIMED`, per A.4) arrives asynchronously via PayPal
- * webhooks — consuming those to flip `referral_payouts`/`commission_events`
- * from `'sent'`/`'batched'` to a final `paid`/`failed` state is a follow-up
- * (docs/BUILD_NOTES.md T4 entry): no `/webhooks-paypal` function exists yet,
- * so this job's own success only means "PayPal accepted the batch for
- * async processing," not "every partner was paid."
+ * webhooks — `/webhooks-paypal` (CLUSTER-F) now consumes those and flips
+ * `referral_payouts` from `'sent'` to `'completed'`/`'failed'`/`'returned'`
+ * (and `commission_events` to `'paid'`/back to `'accrued'` alongside it),
+ * so this job's own success still only means "PayPal accepted the batch
+ * for async processing" — the terminal outcome lands via that webhook, not
+ * here.
  */
 export interface ReferralPayoutsDeps {
   paypalFetch: PayPalFetch;

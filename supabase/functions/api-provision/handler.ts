@@ -1,6 +1,9 @@
+import type { CompiledFlowRequest } from "../_shared/compiler/template-compiler.ts";
 import type { RetellFetch } from "../_shared/providers/retell.ts";
 import {
   createAgent,
+  createConversationFlow,
+  createRetellLLM,
   getAgent,
   importPhoneNumber,
   publishAgentVersion,
@@ -18,17 +21,28 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
  * attempts, updated_at`) tracks progress so a re-entrant call resumes
  * rather than re-running completed steps.
  *
- * This build implements every step's idempotent-check + real provider call
- * where BACKEND_SPEC specifies one; the template-compiler call in step 2
- * (`packages/adapters/retell`'s compiler, T2) is invoked here as a plain
- * function reference resolved at deploy time — T2 was building that
- * compiler concurrently with this task (see BUILD_NOTES); this file calls
- * a narrow `compileTemplate` interface rather than importing T2's package
- * directly (a Deno function can't import a Node workspace package without
- * a bundling step neither task adds), so wiring the real compiler in is a
- * one-line follow-up once that package's build output is bundled for Deno
- * or exposed over an internal call.
+ * Step 2 (agent compile, EDGE_AUDIT B2) runs the tenant's active vertical
+ * template through the REAL compiler — `_shared/compiler/template-compiler.ts`,
+ * the same lean, deliberately-duplicated port of
+ * `packages/adapters/retell/src/compiler/*` that `admin/handler.ts`'s
+ * template-publish route already uses in production for the identical
+ * Deno/Node workspace-package-boundary reason documented on that module
+ * (Deno can't import a Node-only pnpm workspace package without a bundling
+ * step neither task adds) — never a stub. `deps.compileTemplate` resolves
+ * the row from `agent_templates` and returns the compiled Retell flow; this
+ * saga HARD-FAILS the whole step (never calls Retell) when
+ * `disclosureVerified` is false, per CLAUDE.md Rule 2 (G1/G2).
  */
+
+export interface CompiledTemplateResult {
+  templateId: string;
+  templateVersion: number;
+  voiceId: string;
+  model: string;
+  agentName: string;
+  disclosureVerified: boolean;
+  flow: CompiledFlowRequest;
+}
 
 export const STEPS = [
   "tenant_finalize",
@@ -60,11 +74,14 @@ export interface ProvisionDeps {
   twilioFetch: TwilioFetch;
   twilioAccountSid: string;
   twilioAuthToken: string;
-  compileTemplate: (tenantId: string) => Promise<{
-    templateId: string;
-    templateVersion: number;
-    compiledConfig: Record<string, unknown>;
-  }>;
+  /**
+   * Resolves + compiles the tenant's active vertical template. `null` means
+   * no active `agent_templates` row exists for the tenant's vertical (a
+   * real, distinct failure from a disclosure-gate refusal). Real callers
+   * (index.ts) run this through `_shared/compiler/template-compiler.ts`;
+   * never a hand-built stand-in payload.
+   */
+  compileTemplate: (tenantId: string) => Promise<CompiledTemplateResult | null>;
   /** Resolves the specific E.164 number to purchase for this tenant — the
    * caller (index.ts) is responsible for the Twilio "search available
    * numbers by area code" step (a separate Twilio API call this saga
@@ -120,12 +137,57 @@ export async function runProvisioningSaga(
     let retellAgentId = existingConfig[0]?.retell_agent_id ?? null;
     if (!retellAgentId) {
       const compiled = await deps.compileTemplate(tenantId);
-      const created = await createAgent(
-        deps.retellFetch,
-        deps.retellApiKey,
-        compiled.compiledConfig,
-      );
-      const createdBody = created.body as { agent_id?: string; llm_id?: string };
+      if (!compiled) {
+        await recordStep(sql, tenantId, "agent_compile", "failed", "no_active_template");
+        return { status: "failed", failedStep: "agent_compile", error: "no_active_template" };
+      }
+      // HARD-FAIL (CLAUDE.md Rule 2, G1/G2): never call Retell with a
+      // compiled flow whose first turn doesn't contain the tenant's
+      // `disclosure_line` verbatim — this is the actual publish refusal,
+      // not just a passthrough of the compiler's own boolean.
+      if (!compiled.disclosureVerified) {
+        await recordStep(sql, tenantId, "agent_compile", "failed", "disclosure_gate_failed");
+        return { status: "failed", failedStep: "agent_compile", error: "disclosure_gate_failed" };
+      }
+
+      // Two-step protocol (RETELL-VERIFY, matches admin/handler.ts's
+      // template-publish route exactly): create the conversation-flow/LLM
+      // resource first, then create the agent referencing it.
+      const flowPayload =
+        compiled.flow.kind === "conversation_flow"
+          ? { ...compiled.flow.body, model_choice: { model: compiled.model, type: "cascading" } }
+          : { ...compiled.flow.body, model: compiled.model };
+      const flowResult =
+        compiled.flow.kind === "conversation_flow"
+          ? await createConversationFlow(deps.retellFetch, deps.retellApiKey, flowPayload)
+          : await createRetellLLM(deps.retellFetch, deps.retellApiKey, flowPayload);
+      const flowBody = flowResult.body as { conversation_flow_id?: string; llm_id?: string };
+      const flowId = flowBody.conversation_flow_id ?? flowBody.llm_id;
+      if (!flowResult.ok || !flowId) {
+        await recordStep(
+          sql,
+          tenantId,
+          "agent_compile",
+          "failed",
+          `retell_flow_create_status_${flowResult.status}`,
+        );
+        return {
+          status: "failed",
+          failedStep: "agent_compile",
+          error: "retell_flow_create_failed",
+        };
+      }
+
+      const responseEngine =
+        compiled.flow.kind === "conversation_flow"
+          ? { type: "conversation-flow", conversation_flow_id: flowId }
+          : { type: "retell-llm", llm_id: flowId };
+      const created = await createAgent(deps.retellFetch, deps.retellApiKey, {
+        agent_name: compiled.agentName,
+        voice_id: compiled.voiceId,
+        response_engine: responseEngine,
+      });
+      const createdBody = created.body as { agent_id?: string };
       if (!created.ok || !createdBody.agent_id) {
         await recordStep(
           sql,
@@ -141,9 +203,11 @@ export async function runProvisioningSaga(
         };
       }
       retellAgentId = createdBody.agent_id;
+      const retellLlmId =
+        compiled.flow.kind === "conversation_flow" ? null : (flowBody.llm_id ?? null);
       await sql`
         insert into public.agent_configs (tenant_id, template_id, template_version, retell_agent_id, retell_llm_id, compiled_config)
-        values (${tenantId}, ${compiled.templateId}, ${compiled.templateVersion}, ${retellAgentId}, ${createdBody.llm_id ?? null}, ${JSON.stringify(compiled.compiledConfig)}::jsonb)
+        values (${tenantId}, ${compiled.templateId}, ${compiled.templateVersion}, ${retellAgentId}, ${retellLlmId}, ${JSON.stringify({ compileTarget: compiled.flow.kind, flow: compiled.flow.body, response_engine: responseEngine })}::jsonb)
         on conflict (tenant_id) do update set
           retell_agent_id = excluded.retell_agent_id, retell_llm_id = excluded.retell_llm_id, compiled_config = excluded.compiled_config
       `;

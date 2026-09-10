@@ -1,3 +1,5 @@
+import { decryptSecret, encryptSecret } from "../_shared/crypto.ts";
+import { createAirtableRecord } from "../_shared/providers/airtable.ts";
 import {
   createEzyVetAppointment,
   createEzyVetContact,
@@ -76,6 +78,10 @@ export interface AdapterPushDeps {
   square: { clientId: string; clientSecret: string };
   ezyvet: { clientId: string; clientSecret: string; partnerId: string };
   googleCalendar: { clientId: string; clientSecret: string };
+  // DB-H2: AES-256-GCM key `adapter_connections.access_token`/
+  // `refresh_token` are decrypted with on read / re-encrypted with on
+  // refresh — see `_shared/crypto.ts`.
+  tokenEncryptionKey: string;
 }
 
 interface ConnectionRow {
@@ -92,6 +98,7 @@ async function loadConnection(
   sql: SqlClient,
   tenantId: string,
   provider: string,
+  tokenEncryptionKey: string,
 ): Promise<ConnectionRow | null> {
   const rows = await sql<ConnectionRow>`
     select id, status, access_token, refresh_token, expires_at, provider_account_id, metadata
@@ -99,7 +106,20 @@ async function loadConnection(
     where tenant_id = ${tenantId} and provider = ${provider}
     limit 1
   `;
-  return rows[0] ?? null;
+  const row = rows[0];
+  if (!row) return null;
+  // DB-H2: decrypt on read — `decryptSecret` tolerates a legacy plaintext
+  // row (no "v1:" prefix) so this works against data written before the
+  // encryption fix, too.
+  return {
+    ...row,
+    access_token: row.access_token
+      ? await decryptSecret(row.access_token, tokenEncryptionKey)
+      : null,
+    refresh_token: row.refresh_token
+      ? await decryptSecret(row.refresh_token, tokenEncryptionKey)
+      : null,
+  };
 }
 
 async function markConnectionDisconnected(
@@ -118,10 +138,12 @@ async function markConnectionRefreshed(
   sql: SqlClient,
   connectionId: string,
   patch: { accessToken: string; expiresAt?: string | undefined },
+  tokenEncryptionKey: string,
 ): Promise<void> {
+  const encryptedAccessToken = await encryptSecret(patch.accessToken, tokenEncryptionKey);
   await sql`
     update public.adapter_connections
-    set access_token = ${patch.accessToken},
+    set access_token = ${encryptedAccessToken},
         expires_at = ${patch.expiresAt ?? null},
         last_refreshed_at = now(),
         last_error = null
@@ -227,7 +249,7 @@ async function pushToSquare(
   logger: Logger,
   deps: AdapterPushDeps,
 ): Promise<boolean> {
-  const connection = await loadConnection(sql, msg.tenant_id, "square");
+  const connection = await loadConnection(sql, msg.tenant_id, "square", deps.tokenEncryptionKey);
   if (connection?.status !== "connected" || !connection.access_token) {
     logger.warn("adapter_push_no_connection", { adapter: "square", tenant_id: msg.tenant_id });
     return false;
@@ -250,7 +272,12 @@ async function pushToSquare(
     }
     const body = refreshed.body as { access_token: string; expires_at?: string };
     accessToken = body.access_token;
-    await markConnectionRefreshed(sql, connection.id, { accessToken, expiresAt: body.expires_at });
+    await markConnectionRefreshed(
+      sql,
+      connection.id,
+      { accessToken, expiresAt: body.expires_at },
+      deps.tokenEncryptionKey,
+    );
   }
 
   const locationId = connection.metadata["locationId"];
@@ -349,7 +376,12 @@ async function pushToShopmonkey(
     });
     return false;
   }
-  const connection = await loadConnection(sql, msg.tenant_id, "shopmonkey");
+  const connection = await loadConnection(
+    sql,
+    msg.tenant_id,
+    "shopmonkey",
+    deps.tokenEncryptionKey,
+  );
   if (connection?.status !== "connected" || !connection.access_token) {
     logger.warn("adapter_push_no_connection", { adapter: "shopmonkey", tenant_id: msg.tenant_id });
     return false;
@@ -426,7 +458,7 @@ async function pushToEzyVet(
     });
     return false;
   }
-  const connection = await loadConnection(sql, msg.tenant_id, "ezyvet");
+  const connection = await loadConnection(sql, msg.tenant_id, "ezyvet", deps.tokenEncryptionKey);
   if (connection?.status !== "connected" || !connection.access_token) {
     logger.warn("adapter_push_no_connection", { adapter: "ezyvet", tenant_id: msg.tenant_id });
     return false;
@@ -453,7 +485,12 @@ async function pushToEzyVet(
     const expiresAt = body.expires_in
       ? new Date(Date.now() + body.expires_in * 1000).toISOString()
       : undefined;
-    await markConnectionRefreshed(sql, connection.id, { accessToken, expiresAt });
+    await markConnectionRefreshed(
+      sql,
+      connection.id,
+      { accessToken, expiresAt },
+      deps.tokenEncryptionKey,
+    );
   }
 
   const booking = await loadBookingForPush(sql, msg.tenant_id, msg.entity_id);
@@ -526,7 +563,12 @@ async function pushToGoogleCalendar(
     });
     return false;
   }
-  const connection = await loadConnection(sql, msg.tenant_id, "google_calendar");
+  const connection = await loadConnection(
+    sql,
+    msg.tenant_id,
+    "google_calendar",
+    deps.tokenEncryptionKey,
+  );
   if (connection?.status !== "connected" || !connection.access_token || !connection.refresh_token) {
     logger.warn("adapter_push_no_connection", {
       adapter: "google_calendar",
@@ -552,10 +594,15 @@ async function pushToGoogleCalendar(
     }
     const body = refreshed.body as { access_token: string; expires_in: number };
     accessToken = body.access_token;
-    await markConnectionRefreshed(sql, connection.id, {
-      accessToken,
-      expiresAt: new Date(Date.now() + body.expires_in * 1000).toISOString(),
-    });
+    await markConnectionRefreshed(
+      sql,
+      connection.id,
+      {
+        accessToken,
+        expiresAt: new Date(Date.now() + body.expires_in * 1000).toISOString(),
+      },
+      deps.tokenEncryptionKey,
+    );
   }
 
   const calendarId = (connection.metadata["calendarId"] as string | undefined) ?? "primary";
@@ -603,10 +650,91 @@ async function pushToGoogleCalendar(
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Airtable (booking + order push — a generic no-code base, unlike the
+// booking-only Shopmonkey/ezyVet adapters). docs/audit/FIX_REQUESTS.md
+// (cluster C, "request the worker from cluster E").
+// ---------------------------------------------------------------------------
+
+function airtableFieldsForBooking(booking: BookingRow): Record<string, unknown> {
+  return {
+    "Customer Name": booking.customer_name ?? "Phone caller",
+    Phone: booking.customer_phone ?? "",
+    Start: booking.start_at,
+    End: booking.end_at,
+    Notes: booking.notes ?? "",
+  };
+}
+
+function airtableFieldsForOrder(order: OrderRow): Record<string, unknown> {
+  return {
+    "Customer Name": order.customer_name ?? "Phone caller",
+    Phone: order.customer_phone ?? "",
+    Items: order.items.map((item) => `${item.qty}x ${item.name}`).join(", "),
+    "Total ($)": order.total_cents / 100,
+    Fulfillment: order.fulfillment_type,
+  };
+}
+
+async function pushToAirtable(
+  sql: SqlClient,
+  msg: AdapterPushQueueMsg,
+  logger: Logger,
+  deps: AdapterPushDeps,
+): Promise<boolean> {
+  const connection = await loadConnection(sql, msg.tenant_id, "airtable", deps.tokenEncryptionKey);
+  if (connection?.status !== "connected" || !connection.access_token) {
+    logger.warn("adapter_push_no_connection", { adapter: "airtable", tenant_id: msg.tenant_id });
+    return false;
+  }
+  const baseId = connection.metadata["baseId"];
+  const tableIdOrName = connection.metadata["tableIdOrName"];
+  if (typeof baseId !== "string" || typeof tableIdOrName !== "string") {
+    logger.warn("adapter_push_missing_metadata", {
+      adapter: "airtable",
+      field: "baseId/tableIdOrName",
+    });
+    return false;
+  }
+
+  let fields: Record<string, unknown> | undefined;
+  if (msg.entity_type === "booking") {
+    const booking = await loadBookingForPush(sql, msg.tenant_id, msg.entity_id);
+    if (!booking) return false;
+    fields = airtableFieldsForBooking(booking);
+  } else {
+    const order = await loadOrderForPush(sql, msg.tenant_id, msg.entity_id);
+    if (!order) return false;
+    fields = airtableFieldsForOrder(order);
+  }
+
+  const result = await createAirtableRecord(deps.fetchImpl, connection.access_token, {
+    baseId,
+    tableIdOrName,
+    fields,
+  });
+  if (!result.ok) {
+    if (result.status === 401 || result.status === 403) {
+      await markConnectionDisconnected(sql, connection.id, "airtable 401/403 on push");
+    }
+    return false;
+  }
+  const external = (result.body as { id: string }).id;
+  await recordSyncSuccess(sql, {
+    tenantId: msg.tenant_id,
+    provider: "airtable",
+    entityType: msg.entity_type,
+    entityId: msg.entity_id,
+    externalId: external,
+  });
+  return true;
+}
+
 export const ADAPTER_PUSHERS: Record<string, AdapterPusher> = {
   square: pushToSquare,
   shopmonkey: pushToShopmonkey,
   ezyvet: pushToEzyVet,
+  airtable: pushToAirtable,
   google_calendar: pushToGoogleCalendar,
 };
 
@@ -672,7 +800,7 @@ export async function pollAdapterChanges(
   logger: Logger,
   deps: AdapterPushDeps,
 ): Promise<PollResult> {
-  const connection = await loadConnection(sql, tenantId, provider);
+  const connection = await loadConnection(sql, tenantId, provider, deps.tokenEncryptionKey);
   if (connection?.status !== "connected" || !connection.access_token) {
     return { pulled: 0, conflictsFlagged: 0 };
   }

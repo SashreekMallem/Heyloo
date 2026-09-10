@@ -1,5 +1,49 @@
 # Launch Status
 
+## Audit fix wave (FIX-1, 2026-09-10)
+
+Integrated the large parallel audit fix wave (Clusters B-G + the repair
+tasks covering realtime/dashboard truthfulness, impersonation, DB-H1 write
+RLS, and admin cockpit proxy contract — full per-cluster detail already in
+`docs/BUILD_NOTES.md`). This pass's own additional work:
+
+- Fixed `public.fn_enqueue_message_outbound`'s JWT/tenant-identity mismatch:
+  both real call sites (`apps/web`'s `api/tenant/bookings/[id]` and
+  `api/tenant/messages/[phone]` routes) invoke it through a service-role
+  client, whose JWT carries no `app_metadata.tenant_id` — the function's
+  own-tenant check always compared against NULL and silently no-op'd, so
+  every booking-confirmation/reschedule/cancellation SMS and every Messages
+  "reply" send stayed queued forever and never actually went out. Fixed by
+  making the function service-role-aware (a `service_role` caller is
+  trusted as already tenant-verified upstream, matching CLAUDE.md Rule 2's
+  standing convention for every other service-role code path in this
+  schema; an `authenticated` caller still gets the strict own-tenant
+  match). See `docs/BUILD_NOTES.md`'s FIX-1 section for the full account
+  and the local-Postgres verification that exercised all three cases
+  (service_role, authenticated+matching tenant, authenticated+mismatched
+  tenant).
+- Verified every `docs/audit/FIX_REQUESTS.md` bullet filed by the prior
+  clusters against the current tree; removed everything confirmed applied,
+  kept the genuinely still-open ones (BIPA retention default pending
+  counsel, per-tenant usage-alert-prefs pending a product decision, Airtable
+  two-way sync, `tenants.canceled_at`/`paused_at`, the decorative
+  `outreach_send_queue`, and the admin-cockpit-proxy impersonation
+  edit-mode 403 — the last one specifically needs a joint
+  `apps/web`+`admin` edge-function auth-model change, out of this pass's
+  scope per CLAUDE.md Rule 4).
+- All gates green: `biome check --write` (changed paths clean, 0 errors
+  repo-wide), `pnpm -w typecheck` (18/18), `pnpm run lint` (0 errors),
+  `pnpm -w test` (all packages, incl. `edge-functions`/`ui`/`web` — 563 +
+  15 + 134 tests passing), `apps/web` production build, the
+  `verify-jwt-guard` CI script, and all 31 real migrations + seed applied
+  clean from an empty database in a throwaway local-Postgres harness (no
+  Docker/`supabase start` available in this environment — same documented
+  constraint as every prior pass; `scripts/ci/rls-cross-tenant-probe.ts`
+  and `scripts/ci/cron-queues-check.ts` both need a live GoTrue+PostgREST
+  stack via `supabase start`, so neither was runnable here either — both
+  remain reviewed-but-unexecuted-in-this-sandbox, same status as the
+  Playwright e2e specs noted below).
+
 ## Deployed to live project (2026-09-09)
 
 Live Supabase project: `qulcubtwqsqgqpfgvorn` ("Heyloo", us-east-2, PG 17).

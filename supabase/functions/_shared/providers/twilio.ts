@@ -60,6 +60,25 @@ export async function purchasePhoneNumber(
   });
 }
 
+/** Reads back a Twilio number's current `voice_url` (and friends) — used by
+ * the Retell-health-failover job to snapshot the live Retell-routing
+ * webhook BEFORE overwriting it, so recovery can restore the exact prior
+ * value rather than guessing/reconstructing it. Standard `IncomingPhoneNumber`
+ * resource GET, same base path as every other call in this file. */
+export async function getIncomingPhoneNumber(
+  fetchImpl: TwilioFetch,
+  accountSid: string,
+  authToken: string,
+  twilioSid: string,
+): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const res = await fetchImpl(
+    `${TWILIO_BASE_URL}/Accounts/${accountSid}/IncomingPhoneNumbers/${twilioSid}.json`,
+    { method: "GET", headers: { authorization: basicAuthHeader(accountSid, authToken) } },
+  );
+  const body = await res.json().catch(() => undefined);
+  return { ok: res.ok, status: res.status, body };
+}
+
 /** Updates an existing Twilio number's voice webhook — used by the
  * Retell-health-failover job (BACKEND_SPEC §8, G5) to flip routing away
  * from Retell during an outage, and back once recovered. */

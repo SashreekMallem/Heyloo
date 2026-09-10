@@ -91,7 +91,7 @@ Deno.serve(async (req: Request) => {
     sql,
     {
       method: req.method,
-      path: url.pathname.replace(/^\/functions\/v1\//, ""),
+      path: url.pathname.replace(/^\/functions\/v1\/admin\//, ""),
       claims,
       body,
       adminUserId: claims?.sub ?? null,

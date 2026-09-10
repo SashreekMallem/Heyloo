@@ -9,7 +9,7 @@ type Args = z.infer<typeof SendSmsConfirmationArgsSchema>;
 
 export type SendSmsConfirmationResult =
   | { queued: true; message_id: string }
-  | { queued: false; reason: "invalid_phone" };
+  | { queued: false; reason: "invalid_phone" | "booking_not_found" | "order_not_found" };
 
 /**
  * BACKEND_SPEC §7.2.7 — enqueue-only, the actual Twilio send happens in the
@@ -27,6 +27,25 @@ export async function sendSmsConfirmation(
 ): Promise<SendSmsConfirmationResult> {
   const phone = normalizeE164(args.phone);
   if (!phone) return { queued: false, reason: "invalid_phone" };
+
+  // EDGE_AUDIT M1: `args.booking_id`/`args.order_id` come straight from the
+  // tool call — verify each actually belongs to the caller's OWN tenant
+  // before it's used anywhere (the idempotency soft-check below, and the
+  // `related_booking_id`/`related_order_id` write), same pattern as every
+  // other write path in this directory (`cancel_booking`, `update_booking`,
+  // `create_order`, `send_payment_link`).
+  if (args.booking_id) {
+    const bookingRows = await sql<{ id: string }>`
+      select id from public.bookings where id = ${args.booking_id} and tenant_id = ${ctx.tenantId} limit 1
+    `;
+    if (!bookingRows[0]) return { queued: false, reason: "booking_not_found" };
+  }
+  if (args.order_id) {
+    const orderRows = await sql<{ id: string }>`
+      select id from public.orders where id = ${args.order_id} and tenant_id = ${ctx.tenantId} limit 1
+    `;
+    if (!orderRows[0]) return { queued: false, reason: "order_not_found" };
+  }
 
   // Idempotency soft-check: don't double-confirm on a Retell tool-call retry.
   if (args.booking_id) {

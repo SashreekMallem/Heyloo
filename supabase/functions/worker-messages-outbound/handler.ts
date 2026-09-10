@@ -14,7 +14,62 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
  * Airtable adapter aren't built yet) — routed to an explicit `failed` status
  * with a clear error rather than silently dropped, matching the "never
  * silently failing" principle the spec states for A2P specifically.
+ *
+ * H1 fix: a PROVIDER send failure (Twilio/Resend actually rejected the
+ * message) must THROW so `index.ts`'s catch engages pgmq's own
+ * visibility-timeout retry and, after `MAX_ATTEMPTS`, `moveToDeadLetter` —
+ * BACKEND_SPEC §9's "after 5 attempts, row status -> failed, moved to
+ * messages_outbound_dlq" contract. Never true before this fix: every
+ * provider response (2xx or not) was written straight to `status='failed'`
+ * and swallowed, so a transient Twilio 5xx/Resend outage permanently
+ * dropped the message on its FIRST attempt with no retry and no DLQ entry.
+ * A genuinely PERMANENT provider rejection (opt-out, an invalid/undeliverable
+ * recipient number/address) still resolves immediately to `status='failed'`
+ * without throwing — retrying an unfixable rejection 5 times before
+ * dead-lettering it wastes queue cycles and delays the DLQ signal for no
+ * benefit. Pre-flight validation failures this worker detects itself before
+ * ever contacting a provider (`no_sending_number`, `no_recipient_email`, an
+ * unimplemented channel) are a separate case again — no provider was called
+ * at all, so there is nothing to retry; those keep the original immediate-
+ * fail behavior unconditionally.
+ *
+ * VERIFY (docs/VERIFY.md): the permanent-vs-transient Twilio/Resend error
+ * classifiers below are training-knowledge-confident, stable, long-
+ * documented error taxonomies (Twilio's numeric `code` on a message-create
+ * rejection; Resend's `name` on a 4xx `/emails` error) — `twilio.com`/
+ * `resend.com` doc fetches were egress-blocked in this build (matching this
+ * file's siblings' existing VERIFY notes), so confirm both code/name lists
+ * against a live sandbox call before relying on the permanent branch to
+ * classify every real rejection correctly; misclassifying a genuinely
+ * transient failure as permanent only means "retried 0 times instead of 5"
+ * (fails closed toward the old behavior, never worse), and misclassifying a
+ * permanent one as transient only costs wasted retries before the same DLQ
+ * outcome — neither direction silently drops a message.
  */
+
+const PERMANENT_TWILIO_ERROR_CODES = new Set([
+  21211, // Invalid 'To' Phone Number
+  21614, // 'To' number is not a valid, SMS-capable mobile number
+  21408, // Permission to send to this region has not been enabled
+  21610, // Recipient has replied STOP (opt-out desync defense-in-depth)
+]);
+
+function isPermanentTwilioFailure(body: unknown): boolean {
+  const code = (body as { code?: unknown } | undefined)?.code;
+  return typeof code === "number" && PERMANENT_TWILIO_ERROR_CODES.has(code);
+}
+
+const PERMANENT_RESEND_ERROR_NAMES = new Set([
+  "validation_error",
+  "invalid_to_address",
+  "invalid_from_address",
+  "missing_required_field",
+]);
+
+function isPermanentResendFailure(error: unknown): boolean {
+  const name = (error as { name?: unknown } | undefined)?.name;
+  return typeof name === "string" && PERMANENT_RESEND_ERROR_NAMES.has(name);
+}
 export interface OutboundDeps {
   twilioFetch: TwilioFetch;
   twilioAccountSid: string;
@@ -94,8 +149,15 @@ export async function processOutboundMessage(
     });
     const body = result.body as { sid?: string };
     if (!result.ok || !body.sid) {
-      await sql`update public.messages_outbound set status = 'failed', error = ${JSON.stringify(result.body)} where id = ${message.id}`;
-      return "failed";
+      if (isPermanentTwilioFailure(result.body)) {
+        await sql`update public.messages_outbound set status = 'failed', error = ${JSON.stringify(result.body)} where id = ${message.id}`;
+        return "failed";
+      }
+      deps.logger.warn("worker_messages_outbound_transient_twilio_failure", {
+        message_id: message.id,
+        status: result.status,
+      });
+      throw new Error(`twilio_send_transient_failure:${result.status}`);
     }
     await sql`
       update public.messages_outbound
@@ -118,8 +180,15 @@ export async function processOutboundMessage(
       html: `<p>${rendered.body}</p>`,
     });
     if (!result.ok) {
-      await sql`update public.messages_outbound set status = 'failed', error = ${JSON.stringify(result.error)} where id = ${message.id}`;
-      return "failed";
+      if (isPermanentResendFailure(result.error)) {
+        await sql`update public.messages_outbound set status = 'failed', error = ${JSON.stringify(result.error)} where id = ${message.id}`;
+        return "failed";
+      }
+      deps.logger.warn("worker_messages_outbound_transient_resend_failure", {
+        message_id: message.id,
+        status: result.status,
+      });
+      throw new Error(`resend_send_transient_failure:${result.status}`);
     }
     await sql`
       update public.messages_outbound

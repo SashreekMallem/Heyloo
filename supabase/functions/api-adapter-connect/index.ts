@@ -43,6 +43,7 @@ const DEPS: AdapterConnectDeps = {
     clientSecret: requireEnv("EZYVET_CLIENT_SECRET"),
     partnerId: requireEnv("EZYVET_PARTNER_ID"),
   },
+  tokenEncryptionKey: requireEnv("ADAPTER_TOKEN_ENCRYPTION_KEY"),
   logger,
 };
 

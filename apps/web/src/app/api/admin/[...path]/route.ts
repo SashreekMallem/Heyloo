@@ -11,9 +11,15 @@ export const runtime = "nodejs";
  * Forwards the caller's own access token (that edge function is
  * `verify_jwt: true` and checks `platform_admin` + AAL2 itself server-side
  * — this proxy re-checks role here too, defense in depth matching
- * FRONTEND_SPEC.md §0.1's two-guard model). `path` reconstructs
- * `admin-tenants`, `admin-cockpit/waterfall`, etc. exactly as
- * BACKEND_SPEC.md names them.
+ * FRONTEND_SPEC.md §0.1's two-guard model). The single deployed function
+ * slug is `admin` (supabase/config.toml's `[functions.admin]`, directory
+ * `supabase/functions/admin/`) — the internal route names
+ * (`admin-tenants`, `admin-cockpit/waterfall`, etc.) are its FIRST PATH
+ * SEGMENT, not separate function slugs, so the target URL must be
+ * `.../functions/v1/admin/<internal-route>` (Supabase's function routing
+ * always prefixes with the function name — see
+ * supabase.com/docs/guides/functions/routing). `admin/index.ts` strips
+ * that same `admin/` segment back off before dispatching.
  */
 async function handle(request: Request, path: string[]) {
   const supabase = await createSupabaseServerComponentClient();
@@ -25,7 +31,7 @@ async function handle(request: Request, path: string[]) {
   const claims = claimsFromUser(session.user);
   if (!claims.platform_admin) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
-  const target = `${env.supabaseFunctionsUrl}/${path.join("/")}${new URL(request.url).search}`;
+  const target = `${env.supabaseFunctionsUrl}/admin/${path.join("/")}${new URL(request.url).search}`;
   const init: RequestInit = {
     method: request.method,
     headers: {

@@ -26,6 +26,11 @@ describe("renderTemplate", () => {
     expect(result.body).toContain("Call me back");
   });
 
+  it("renders owner_reply as a verbatim passthrough of the owner's typed text", () => {
+    const result = renderTemplate("owner_reply", { body: "We'll see you at 3pm, thanks!" });
+    expect(result.body).toBe("We'll see you at 3pm, thanks!");
+  });
+
   it("returns an empty body for an unknown template key rather than throwing", () => {
     expect(() => renderTemplate("not_a_real_template", {})).not.toThrow();
     expect(renderTemplate("not_a_real_template", {}).body).toBe("");

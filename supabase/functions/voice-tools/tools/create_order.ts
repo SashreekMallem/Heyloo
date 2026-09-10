@@ -1,8 +1,8 @@
 import type { z } from "zod";
+import { enqueueAdapterPush } from "../../_shared/adapter-push.ts";
 import { isWithinRadius } from "../../_shared/geo.ts";
 import { orderIdempotencyKey } from "../../_shared/idempotency.ts";
 import { normalizeE164 } from "../../_shared/phone.ts";
-import type { AdapterPushQueueMsg } from "../../_shared/queue.ts";
 import { enqueue, QUEUE_NAMES } from "../../_shared/queue.ts";
 import type { CreateOrderArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { Logger, SqlClient } from "../../_shared/types.ts";
@@ -208,15 +208,18 @@ export async function createOrder(
     await enqueue(sql, QUEUE_NAMES.messagesOutbound, { message_id: message.id });
   }
 
-  const pushMsg: AdapterPushQueueMsg = {
-    tenant_id: ctx.tenantId,
-    adapter: "pos",
-    entity_type: "order",
-    entity_id: order.id,
-    idempotency_key: idempotencyKey,
-    attempt: 0,
-  };
-  await enqueue(sql, QUEUE_NAMES.adapterPush, pushMsg);
+  // E2E_FLOWS_AUDIT B4 (producer side): the literal `adapter: "pos"` this
+  // used to send matched no key in `worker-adapter-push`'s `ADAPTER_PUSHERS`
+  // map (only real provider names — "square", "shopmonkey", "ezyvet",
+  // "google_calendar" — are registered there), so every order push ever
+  // enqueued this way silently dead-ended at `adapter_push_not_implemented`.
+  // Addressing it to the tenant's own actually-connected adapter fixes that.
+  await enqueueAdapterPush(sql, {
+    tenantId: ctx.tenantId,
+    entityType: "order",
+    entityId: order.id,
+    idempotencyKey,
+  });
 
   return { order_id: order.id, confirmed: true, total_cents: totalCents };
 }

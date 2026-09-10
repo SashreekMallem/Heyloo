@@ -1,3 +1,4 @@
+import { encryptSecret } from "../_shared/crypto.ts";
 import { refreshEzyVetToken } from "../_shared/providers/ezyvet.ts";
 import { validateShopmonkeyApiKey } from "../_shared/providers/shopmonkey.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
@@ -21,6 +22,9 @@ export interface AdapterConnectDeps {
   square: { clientId: string; clientSecret: string; redirectUri: string };
   googleCalendar: { clientId: string; clientSecret: string; redirectUri: string };
   ezyvet: { clientId: string; clientSecret: string; partnerId: string };
+  // DB-H2: AES-256-GCM key `access_token`/`refresh_token` are encrypted
+  // with before ever reaching `adapter_connections` — see `_shared/crypto.ts`.
+  tokenEncryptionKey: string;
   logger: Logger;
 }
 
@@ -57,15 +61,20 @@ async function upsertConnection(
     providerAccountId?: string | undefined;
     metadata?: Record<string, unknown> | undefined;
     connectedBy: string;
+    tokenEncryptionKey: string;
   },
 ): Promise<void> {
+  const encryptedAccessToken = await encryptSecret(params.accessToken, params.tokenEncryptionKey);
+  const encryptedRefreshToken = params.refreshToken
+    ? await encryptSecret(params.refreshToken, params.tokenEncryptionKey)
+    : undefined;
   await sql`
     insert into public.adapter_connections
       (tenant_id, provider, status, auth_mode, access_token, refresh_token, expires_at,
        provider_account_id, metadata, connected_by, last_refreshed_at)
     values
-      (${params.tenantId}, ${params.provider}, 'connected', ${params.authMode}, ${params.accessToken},
-       ${params.refreshToken ?? null}, ${params.expiresAt ?? null}, ${params.providerAccountId ?? null},
+      (${params.tenantId}, ${params.provider}, 'connected', ${params.authMode}, ${encryptedAccessToken},
+       ${encryptedRefreshToken ?? null}, ${params.expiresAt ?? null}, ${params.providerAccountId ?? null},
        ${JSON.stringify(params.metadata ?? {})}::jsonb, ${params.connectedBy}, now())
     on conflict (tenant_id, provider) do update set
       status = 'connected',
@@ -176,6 +185,7 @@ export async function handleAdapterConnect(
           expiresAt: body.expires_at,
           providerAccountId: body.merchant_id,
           connectedBy: userId,
+          tokenEncryptionKey: deps.tokenEncryptionKey,
         });
         return { ok: true, status: 200, body: { connected: true, provider: "square" } };
       }
@@ -208,6 +218,7 @@ export async function handleAdapterConnect(
           : undefined,
         metadata: { calendarId: "primary" },
         connectedBy: userId,
+        tokenEncryptionKey: deps.tokenEncryptionKey,
       });
       return { ok: true, status: 200, body: { connected: true, provider: "google_calendar" } };
     }
@@ -224,6 +235,7 @@ export async function handleAdapterConnect(
           authMode: "api_key",
           accessToken: req.api_key,
           connectedBy: userId,
+          tokenEncryptionKey: deps.tokenEncryptionKey,
         });
         return { ok: true, status: 200, body: { connected: true, provider: "shopmonkey" } };
       }
@@ -248,6 +260,7 @@ export async function handleAdapterConnect(
           : undefined,
         metadata: { baseUrl: req.base_url },
         connectedBy: userId,
+        tokenEncryptionKey: deps.tokenEncryptionKey,
       });
       return { ok: true, status: 200, body: { connected: true, provider: "ezyvet" } };
     }

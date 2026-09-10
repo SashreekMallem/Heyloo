@@ -378,6 +378,22 @@ demo tenants in production (probably not) — if you do, apply
 `supabase/seed/seed.sql` by hand via `psql "$SUPABASE_DB_URL" -f
 supabase/seed/seed.sql` once.
 
+Run §3.6's two `vault.create_secret` calls **before** this step (or accept
+that the cron/queue migration will skip its HTTP-calling jobs until you
+insert them and push again — see §3.6) — otherwise the ordering here
+doesn't matter.
+
+The four admin-cockpit views (`v_tenant_margin`, `v_call_cost_vs_billed`,
+`v_usage_alerts`, `v_referral_pnl`) are `security_invoker` and revoked from
+`anon`/`authenticated` as of `20260910090000_view_security_and_write_rls_
+hardening.sql` (DB_AUDIT.md DB-B1 — they previously leaked every tenant's
+revenue/cost/margin/referral-commission data to any publishable-key holder).
+Nothing to configure here: the admin cockpit and `job-alert-evaluation`
+both read these views over a raw `SUPABASE_DB_URL` Postgres connection
+(`supabase/functions/_shared/deno/db.ts`), a role that bypasses RLS
+regardless of this change — see that migration's header comment if you add
+a new PostgREST-facing read path for these views later.
+
 ### 3.3 Set every edge-function secret
 
 ```bash
@@ -430,100 +446,81 @@ price-card row now carries real `stripe_*_id` fields (spot-check via the
 Supabase Table Editor or a quick `select` if you want to be sure before the
 first real checkout).
 
-### 3.6 Register cron schedules and queues
+### 3.6 Insert the two Vault secrets the cron/queue migration reads
 
-**This is genuine one-time setup this codebase does not run for you** —
-every `pg_cron`/`pgmq` extension is created by the migrations (§3.2), but no
-migration registers an actual schedule or queue (a real, intentional gap:
-BACKEND_SPEC §8-§9 wiring was left to whichever deploy actually needs it
-running — see `docs/BUILD_NOTES.md`'s T1/T3 entries). Run this once, via the
-Supabase SQL Editor or `psql "$SUPABASE_DB_URL"`, against your linked
-project (replace `<project-ref>` and `<CRON_INVOKE_SECRET>` with your real
-values — the exact same secret set as an edge-function secret in §3.3):
+**This used to be a manual, copy-pasteable `cron.schedule`/`pgmq.create`
+script run by hand against the SQL Editor — it is not anymore.**
+`supabase/migrations/20260910093000_queues_and_scheduled_jobs.sql` now
+registers every queue, dead-letter queue, and `cron.schedule` entry
+(BACKEND_SPEC §8/§9 cadences) itself, idempotently, as part of `supabase db
+push` (§3.2) — see that migration's own header comment for exactly which
+jobs it registers and why (DB_AUDIT.md DB-B2/DB-B3). It reads the Postgres
+job base URL and the shared cron-invoke secret from **Supabase Vault**
+rather than having them hardcoded into a script, so **run this once, before
+`supabase db push`**, via the Supabase SQL Editor or `psql
+"$SUPABASE_DB_URL"` (replace `<project-ref>` and `<CRON_INVOKE_SECRET>`
+with your real values — the exact same secret you also set as the
+`CRON_INVOKE_SECRET` edge-function secret in §3.3):
 
 ```sql
--- Queues (worker-* functions poll these every minute via cron below).
-select pgmq.create('messages_outbound_queue');
-select pgmq.create('recording_fetch_queue');
-select pgmq.create('adapter_push_queue');
-select pgmq.create('outreach_send_queue');
--- Dead-letter queues (see _shared/queue.ts's `deadLetter` helper).
-select pgmq.create('messages_outbound_queue_dlq');
-select pgmq.create('recording_fetch_queue_dlq');
-select pgmq.create('adapter_push_queue_dlq');
-select pgmq.create('outreach_send_queue_dlq');
-
--- Cron schedules (BACKEND_SPEC §8 cadences — every worker/job function
--- already checks the `x-cron-secret` header itself, fail-closed).
-select cron.schedule('worker-messages-outbound', '* * * * *', $$
-  select net.http_post(
-    url := 'https://<project-ref>.supabase.co/functions/v1/worker-messages-outbound',
-    headers := jsonb_build_object('x-cron-secret', '<CRON_INVOKE_SECRET>')
-  );
-$$);
-select cron.schedule('worker-recording-fetch', '* * * * *', $$
-  select net.http_post(
-    url := 'https://<project-ref>.supabase.co/functions/v1/worker-recording-fetch',
-    headers := jsonb_build_object('x-cron-secret', '<CRON_INVOKE_SECRET>')
-  );
-$$);
-select cron.schedule('worker-adapter-push', '* * * * *', $$
-  select net.http_post(
-    url := 'https://<project-ref>.supabase.co/functions/v1/worker-adapter-push',
-    headers := jsonb_build_object('x-cron-secret', '<CRON_INVOKE_SECRET>')
-  );
-$$);
-select cron.schedule('job-retell-health-failover', '*/2 * * * *', $$
-  select net.http_post(
-    url := 'https://<project-ref>.supabase.co/functions/v1/job-retell-health-failover',
-    headers := jsonb_build_object('x-cron-secret', '<CRON_INVOKE_SECRET>')
-  );
-$$);
-select cron.schedule('job-alert-evaluation', '*/5 * * * *', $$
-  select net.http_post(
-    url := 'https://<project-ref>.supabase.co/functions/v1/job-alert-evaluation',
-    headers := jsonb_build_object('x-cron-secret', '<CRON_INVOKE_SECRET>')
-  );
-$$);
-select cron.schedule('job-reminder-scheduler', '0 * * * *', $$
-  select net.http_post(
-    url := 'https://<project-ref>.supabase.co/functions/v1/job-reminder-scheduler',
-    headers := jsonb_build_object('x-cron-secret', '<CRON_INVOKE_SECRET>')
-  );
-$$);
-select cron.schedule('job-review-request', '0 * * * *', $$
-  select net.http_post(
-    url := 'https://<project-ref>.supabase.co/functions/v1/job-review-request',
-    headers := jsonb_build_object('x-cron-secret', '<CRON_INVOKE_SECRET>')
-  );
-$$);
-select cron.schedule('job-billing-cycle', '0 1 * * *', $$
-  select net.http_post(
-    url := 'https://<project-ref>.supabase.co/functions/v1/job-billing-cycle',
-    headers := jsonb_build_object('x-cron-secret', '<CRON_INVOKE_SECRET>')
-  );
-$$);
-select cron.schedule('job-reconciliation', '0 3 * * *', $$
-  select net.http_post(
-    url := 'https://<project-ref>.supabase.co/functions/v1/job-reconciliation',
-    headers := jsonb_build_object('x-cron-secret', '<CRON_INVOKE_SECRET>')
-  );
-$$);
-select cron.schedule('job-referral-payouts', '0 8 1 * *', $$
-  select net.http_post(
-    url := 'https://<project-ref>.supabase.co/functions/v1/job-referral-payouts',
-    headers := jsonb_build_object('x-cron-secret', '<CRON_INVOKE_SECRET>')
-  );
-$$);
+select vault.create_secret(
+  'https://<project-ref>.supabase.co/functions/v1',
+  'cron_functions_base_url'
+);
+select vault.create_secret(
+  '<CRON_INVOKE_SECRET>',
+  'cron_invoke_secret'
+);
 ```
 
-`pgmq`/`pg_cron`/`pg_net`'s exact function signatures above are this
-codebase's own VERIFY-flagged best-effort reconstruction (`docs/VERIFY.md`
-— `supabase.com/docs` was egress-blocked in every build agent's
-environment); confirm the current signatures against Supabase's live docs
-before running this in production, and check `cron.job` /
-`pgmq.list_queues()` afterward to confirm every schedule/queue registered
-as expected.
+Then run `supabase db push` (§3.2) as normal — the migration creates the
+four queues + four dead-letter queues (`pgmq.create`, skipped per-queue if
+it already exists) and registers every `cron.schedule` entry (upserted by
+job name, so safe to re-run/re-push). If you run `db push` **before**
+inserting these two secrets (e.g. on a fresh project where you haven't
+reached this step yet), the migration does not fail — it creates the
+queues and the four DB-internal jobs (availability roll-forward, usage
+rollup, internal retention sweep, referral qualification — these need only
+`pg_cron`, not Vault/`pg_net`) and skips every HTTP-calling job with a
+`NOTICE`, logged to the migration output. Insert the two secrets above and
+re-run `supabase db push` (or re-apply just that migration file, and each of
+`20260910100500_new_job_cron_schedules.sql` /
+`20260910100600_job_keep_warm_cron_schedule.sql`) afterward to pick up the
+rest — nothing needs to be dropped or undone first.
+
+Confirm the result:
+
+```sql
+select jobname, schedule, active from cron.job order by jobname;
+select queue_name from pgmq.list_queues() order by queue_name;
+```
+
+You should see 8 queues (4 primary + 4 `_dlq`) and 21 cron jobs: 4
+DB-internal (`job-internal-availability-rollforward`,
+`job-internal-usage-rollup`, `job-internal-retention-sweep`,
+`job-internal-referral-qualification` — DB_AUDIT.md DB-M1's
+webhook_events/tool_health retention fix rides along here too, distinct
+from the Storage-recording retention sweep below) plus 17 HTTP-calling jobs:
+3 `worker-*`, the original 7 `job-*` rows from BACKEND_SPEC §8's table
+(`job-retell-health-failover`, `job-alert-evaluation`,
+`job-reminder-scheduler`, `job-review-request`, `job-billing-cycle`,
+`job-reconciliation`, `job-referral-payouts`), the 2-stage
+outreach-personalize pipeline, cluster F's four jobs (`job-churn-scoring`,
+`job-value-email`, `job-offboarding`, `job-retention-sweep` — the
+Storage-recording sweep that actually deletes `recordings/{tenant}/*`
+Storage objects past `tenants.retention_days` and nulls `call_logs`'s
+recording-URL columns, distinct from the DB-internal retention job above),
+and `job-keep-warm`
+(`20260910100600_job_keep_warm_cron_schedule.sql`) — every job-table row in
+BACKEND_SPEC §8 is now scheduled; none remain "not yet covered" here.
+
+`pgmq`/`pg_cron`/`pg_net`/Vault's exact function signatures the migration
+relies on were confirmed against each extension's own current GitHub
+source (`supabase.com/docs` itself returned egress-blocked from every build
+agent's environment) — see that migration file's header comment for the
+specific signatures and sources. Still worth a final live check before
+go-live: re-verify `cron.job`/`pgmq.list_queues()` yourself against your own
+project's actual extension versions, per that same header's own caveat.
 
 ### 3.7 Deploy `apps/web` to Vercel
 

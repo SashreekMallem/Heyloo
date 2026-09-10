@@ -37,7 +37,17 @@ export async function generateMagicLink(
   supabaseUrl: string,
   serviceRoleKey: string,
   email: string,
+  redirectTo?: string,
 ): Promise<GenerateLinkResult> {
+  // `redirectTo` (docs/audit/FIX_REQUESTS.md, cluster C): lets a caller
+  // (e.g. `admin/handler.ts`'s impersonation route) deep-link the minted
+  // session straight into `${APP_BASE_URL}/dashboard` instead of wherever
+  // the project's default Site URL happens to land — optional and
+  // backward-compatible, existing callers that omit it get today's
+  // behavior unchanged. VERIFY (docs/VERIFY.md): `options.redirect_to` is
+  // this file's own existing assumption about GoTrue's `generate_link`
+  // field name (egress-blocked); unconfirmed like the rest of this
+  // endpoint's shape.
   const res = await fetchImpl(`${supabaseUrl}/auth/v1/admin/generate_link`, {
     method: "POST",
     headers: {
@@ -45,7 +55,11 @@ export async function generateMagicLink(
       authorization: `Bearer ${serviceRoleKey}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({ type: "magiclink", email }),
+    body: JSON.stringify({
+      type: "magiclink",
+      email,
+      ...(redirectTo ? { options: { redirect_to: redirectTo } } : {}),
+    }),
   });
   const body = (await res.json().catch(() => undefined)) as
     | {

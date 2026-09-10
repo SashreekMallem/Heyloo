@@ -17,13 +17,12 @@ import {
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
-import { Link, useRouter } from "@/i18n/navigation";
+import { Link } from "@/i18n/navigation";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
 const SIGNUP_STEPS = ["Business info", "Plan", "Account", "Payment", "Provisioning", "Phone setup"];
 
 export function AccountStepClient({ annual }: { annual: boolean }) {
-  const router = useRouter();
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -65,24 +64,15 @@ export function AccountStepClient({ annual }: { annual: boolean }) {
       return;
     }
 
-    const tenantRes = await fetch("/api/signup/create-tenant", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ annual }),
-    });
-    if (!tenantRes.ok) {
-      setSubmitting(false);
-      setSubmitError("tenant_create_failed");
-      return;
-    }
-    const { tenant_id: tenantId } = (await tenantRes.json()) as { tenant_id: string };
-
     const checkoutRes = await fetch("/api/checkout/session", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tenant_id: tenantId, annual }),
+      body: JSON.stringify({
+        annual,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      }),
     });
-    const checkout = (await checkoutRes.json()) as { url?: string };
+    const checkout = (await checkoutRes.json()) as { url?: string; error?: string };
     if (checkoutRes.ok && checkout.url) {
       // eslint-disable-next-line react-hooks/immutability -- hard redirect to an external (Stripe-hosted) URL from an event handler; router.push only handles internal routes
       window.location.href = checkout.url;
@@ -90,10 +80,7 @@ export function AccountStepClient({ annual }: { annual: boolean }) {
     }
 
     setSubmitting(false);
-    // Checkout Session creation isn't wired up yet on the backend
-    // (docs/VERIFY.md) — fall through to the provisioning screen so the
-    // flow isn't a dead end during development.
-    router.push("/signup/provisioning");
+    setSubmitError(checkout.error ?? "checkout_failed");
   }
 
   return (

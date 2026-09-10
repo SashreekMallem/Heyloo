@@ -10,6 +10,12 @@ export interface ImpersonationBannerProps {
   expiresAt: string;
   editMode: boolean;
   onEnd: () => void;
+  /** Requests a switch to edit mode (server-enforced — see
+   * `use-impersonation-banner.tsx`'s `onToggleEdit`, which hits
+   * `POST .../impersonate/edit-mode` before this ever flips the RLS-checked
+   * claim). Omit to render the toggle disabled (no-op) — e.g. while the
+   * request is in flight. */
+  onToggleEdit?: () => void;
 }
 
 function remaining(expiresAt: string): string {
@@ -27,6 +33,7 @@ export function ImpersonationBanner({
   expiresAt,
   editMode,
   onEnd,
+  onToggleEdit,
 }: ImpersonationBannerProps) {
   const [countdown, setCountdown] = useState(() => remaining(expiresAt));
 
@@ -44,9 +51,22 @@ export function ImpersonationBanner({
           {editMode ? "edits enabled" : "read-only"} — {countdown} remaining
         </span>
       </div>
-      <Button size="sm" variant="secondary" onClick={onEnd}>
-        End impersonation
-      </Button>
+      <div className="flex items-center gap-2">
+        {!editMode && (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={onToggleEdit}
+            disabled={!onToggleEdit}
+            aria-label="Enable edits"
+          >
+            Enable edits
+          </Button>
+        )}
+        <Button size="sm" variant="secondary" onClick={onEnd}>
+          End impersonation
+        </Button>
+      </div>
     </div>
   );
 }

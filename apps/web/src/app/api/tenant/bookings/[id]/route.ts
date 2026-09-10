@@ -1,9 +1,26 @@
+import { bookingCancelSchema, bookingRescheduleSchema } from "@heyloo/canonical-types";
 import { NextResponse } from "next/server";
 import { claimsFromUser } from "@/lib/auth/claims";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-role";
+import { parseTstzrange } from "@/lib/tstzrange";
 
 export const runtime = "nodejs";
+
+function formatLocal(iso: string, timeZone: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(iso));
+  } catch {
+    return iso;
+  }
+}
 
 /**
  * Confirm/reschedule/cancel a booking (FRONTEND_SPEC.md §6.4) — the DB
@@ -13,7 +30,18 @@ export const runtime = "nodejs";
  * no tenant write policy — sends are otherwise queue-worker-only) so a
  * failed notification never blocks the booking mutation itself, per §6.4's
  * "distinct non-blocking warning, never rolled into a single pass/fail
- * state" rule.
+ * state" rule. Route Handlers have no raw SQL access to call `pgmq.send`
+ * directly, so after the insert we call the tenant-scoped
+ * `fn_enqueue_message_outbound` RPC
+ * (`supabase/migrations/20260910100200_fn_enqueue_message_outbound.sql`) to
+ * push `{message_id}` onto `messages_outbound_queue` for
+ * `worker-messages-outbound` — without it the row would persist at
+ * `status: 'queued'` forever and never actually send. Reschedule takes a
+ * `new_slot_id` from `availability_slots`
+ * (`bookingRescheduleSchema`) — the same table the voice backend reads, per
+ * §6.4 ("the dashboard cannot offer a double-book any more than the phone
+ * agent can") — rather than raw timestamps, so the browser never invents a
+ * start/end time itself.
  */
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -32,49 +60,94 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   } catch {
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
-  const body = json as {
-    action: "confirm" | "reschedule" | "cancel";
-    new_start?: string;
-    new_end?: string;
-    reason?: string;
-  };
+  const action = (json as { action?: unknown }).action;
+  if (action !== "confirm" && action !== "reschedule" && action !== "cancel") {
+    return NextResponse.json({ error: "invalid_request" }, { status: 422 });
+  }
 
   const { data: booking, error: fetchError } = await supabase
     .from("bookings")
-    .select("id, customer_id, status")
+    .select("id, customer_id, resource_id, status")
     .eq("id", id)
     .eq("tenant_id", claims.tenant_id)
     .maybeSingle();
   if (fetchError || !booking) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
+  const { data: tenant } = await supabase
+    .from("tenants")
+    .select("timezone")
+    .eq("id", claims.tenant_id)
+    .maybeSingle();
+  const timeZone = tenant?.timezone ?? "America/New_York";
+
   let templateKey: string;
+  let payload: Record<string, unknown> = {};
   let updateResult: { error: { code?: string } | null };
-  if (body.action === "confirm") {
-    templateKey = "booking_confirmed";
+
+  if (action === "confirm") {
+    const { data: current } = await supabase
+      .from("bookings")
+      .select("start_at")
+      .eq("id", id)
+      .maybeSingle();
+    templateKey = "booking_confirmation";
+    payload = { start_local: current ? formatLocal(current.start_at, timeZone) : undefined };
     updateResult = await supabase
       .from("bookings")
       .update({ status: "confirmed" })
       .eq("id", id)
       .eq("tenant_id", claims.tenant_id);
-  } else if (body.action === "cancel") {
+  } else if (action === "cancel") {
+    const parsed = bookingCancelSchema.safeParse({
+      booking_id: id,
+      reason: (json as { reason?: unknown }).reason,
+    });
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "invalid_request", issues: parsed.error.issues },
+        { status: 422 },
+      );
+    }
     templateKey = "booking_cancelled";
     updateResult = await supabase
       .from("bookings")
       .update({
         status: "cancelled",
         cancelled_at: new Date().toISOString(),
-        cancel_reason: body.reason ?? null,
+        cancel_reason: parsed.data.reason ?? null,
       })
       .eq("id", id)
       .eq("tenant_id", claims.tenant_id);
   } else {
-    if (!body.new_start || !body.new_end) {
-      return NextResponse.json({ error: "missing_slot" }, { status: 422 });
+    const parsed = bookingRescheduleSchema.safeParse({
+      booking_id: id,
+      new_slot_id: (json as { new_slot_id?: unknown }).new_slot_id,
+    });
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "invalid_request", issues: parsed.error.issues },
+        { status: 422 },
+      );
     }
-    templateKey = "booking_rescheduled";
+
+    const { data: slot } = await supabase
+      .from("availability_slots")
+      .select("id, slot_range, resource_id, is_available")
+      .eq("id", parsed.data.new_slot_id)
+      .eq("tenant_id", claims.tenant_id)
+      .eq("resource_id", booking.resource_id)
+      .maybeSingle();
+    if (!slot?.is_available) {
+      return NextResponse.json({ error: "slot_not_found" }, { status: 422 });
+    }
+    const range = parseTstzrange(slot.slot_range);
+    if (!range) return NextResponse.json({ error: "slot_not_found" }, { status: 422 });
+
+    templateKey = "booking_confirmation";
+    payload = { start_local: formatLocal(range.start, timeZone) };
     updateResult = await supabase
       .from("bookings")
-      .update({ start_at: body.new_start, end_at: body.new_end, status: "confirmed" })
+      .update({ start_at: range.start, end_at: range.end, status: "confirmed" })
       .eq("id", id)
       .eq("tenant_id", claims.tenant_id);
   }
@@ -97,14 +170,27 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       .eq("id", booking.customer_id)
       .maybeSingle();
     if (customer && !customer.sms_opt_out) {
-      const { error: smsError } = await service.from("messages_outbound").insert({
-        tenant_id: claims.tenant_id,
-        channel: "sms",
-        recipient: customer.phone_e164,
-        template_key: templateKey,
-        related_booking_id: id,
-      });
-      smsQueued = !smsError;
+      const { data: outboundMessage, error: smsError } = await service
+        .from("messages_outbound")
+        .insert({
+          tenant_id: claims.tenant_id,
+          channel: "sms",
+          recipient: customer.phone_e164,
+          template_key: templateKey,
+          payload,
+          related_booking_id: id,
+        })
+        .select("id")
+        .maybeSingle();
+      smsQueued = !smsError && !!outboundMessage;
+      if (smsQueued && outboundMessage) {
+        const { error: enqueueError } = await service.rpc("fn_enqueue_message_outbound", {
+          p_message_id: outboundMessage.id,
+        });
+        if (enqueueError) {
+          console.error("fn_enqueue_message_outbound failed", enqueueError);
+        }
+      }
     }
   }
 

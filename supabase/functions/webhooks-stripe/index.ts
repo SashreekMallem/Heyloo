@@ -9,9 +9,20 @@ import { StripeEventSchema } from "../_shared/schemas/stripe-event.ts";
 import { verifyStripeSignature } from "../_shared/stripe-signature.ts";
 import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/webhook-dedup.ts";
 import { processStripeEvent } from "./handler.ts";
+import { createInvokeProvisioning } from "./invoke-provisioning.ts";
 
 const logger = createLogger({ fn: "webhooks-stripe" });
 const STRIPE_WEBHOOK_SIGNING_SECRET = requireEnv("STRIPE_WEBHOOK_SIGNING_SECRET");
+const SUPABASE_URL = requireEnv("SUPABASE_URL");
+const PROVISION_INTERNAL_SECRET = requireEnv("PROVISION_INTERNAL_SECRET");
+const SB_SECRET_KEY = requireEnv("SB_SECRET_KEY");
+
+const invokeProvisioning = createInvokeProvisioning({
+  supabaseUrl: SUPABASE_URL,
+  serviceRoleKey: SB_SECRET_KEY,
+  internalSecret: PROVISION_INTERNAL_SECRET,
+  fetchImpl: fetch,
+});
 
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
@@ -60,7 +71,7 @@ Deno.serve(async (req: Request) => {
   runInBackground(
     async () => {
       try {
-        await processStripeEvent(sql, event, logger);
+        await processStripeEvent(sql, event, logger, { invokeProvisioning });
         if (dedup.webhookEventId) await markWebhookEventProcessed(sql, dedup.webhookEventId);
       } catch (err) {
         logger.error("stripe_background_error", { error: String(err), type: event.type });

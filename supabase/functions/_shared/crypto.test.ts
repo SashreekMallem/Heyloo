@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { hmacSha1Base64, hmacSha256Hex, timingSafeEqual, toHex } from "./crypto.ts";
+import {
+  decryptSecret,
+  encryptSecret,
+  hmacSha1Base64,
+  hmacSha256Hex,
+  timingSafeEqual,
+  toHex,
+} from "./crypto.ts";
+
+// Exactly 32 raw bytes each, base64-encoded — fixed test keys only, never a
+// real secret.
+const TEST_KEY_B64 = btoa("abcdefghijklmnopqrstuvwxyz012345");
+const OTHER_KEY_B64 = btoa("ZYXWVUTSRQPONMLKJIHGFEDCBA987654");
 
 describe("hmacSha256Hex", () => {
   it("matches the well-known HMAC-SHA256 test vector (RFC 4231 #2)", async () => {
@@ -45,5 +57,44 @@ describe("timingSafeEqual", () => {
   it("returns false for different-length strings without throwing", () => {
     expect(timingSafeEqual("short", "much-longer-string")).toBe(false);
     expect(timingSafeEqual("", "")).toBe(true);
+  });
+});
+
+describe("encryptSecret / decryptSecret (DB-H2 adapter_connections token encryption)", () => {
+  it("round-trips a plaintext token through encrypt then decrypt", async () => {
+    const plaintext = "square_access_token_abc123";
+    const ciphertext = await encryptSecret(plaintext, TEST_KEY_B64);
+    expect(ciphertext).not.toBe(plaintext);
+    expect(ciphertext.startsWith("v1:")).toBe(true);
+    const decrypted = await decryptSecret(ciphertext, TEST_KEY_B64);
+    expect(decrypted).toBe(plaintext);
+  });
+
+  it("produces a different ciphertext for the same plaintext each call (random IV)", async () => {
+    const a = await encryptSecret("same-token", TEST_KEY_B64);
+    const b = await encryptSecret("same-token", TEST_KEY_B64);
+    expect(a).not.toBe(b);
+  });
+
+  it("tolerates a legacy plaintext value with no version prefix, returning it unchanged", async () => {
+    const legacy = "pre-encryption-plaintext-token";
+    expect(await decryptSecret(legacy, TEST_KEY_B64)).toBe(legacy);
+  });
+
+  it("fails closed (throws) when decrypting with the wrong key", async () => {
+    const ciphertext = await encryptSecret("secret-value", TEST_KEY_B64);
+    await expect(decryptSecret(ciphertext, OTHER_KEY_B64)).rejects.toThrow();
+  });
+
+  it("rejects an encryption key that isn't exactly 32 raw bytes", async () => {
+    await expect(encryptSecret("value", btoa("too-short-key"))).rejects.toThrow(
+      "adapter_token_encryption_key_invalid_length",
+    );
+  });
+
+  it("throws on a malformed v1-prefixed value instead of silently returning garbage", async () => {
+    await expect(decryptSecret("v1:no-separator-here", TEST_KEY_B64)).rejects.toThrow(
+      "adapter_token_ciphertext_malformed",
+    );
   });
 });

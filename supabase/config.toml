@@ -115,6 +115,18 @@ verify_jwt = false
 verify_jwt = false
 [functions.job-referral-payouts]
 verify_jwt = false
+[functions.job-churn-scoring]
+verify_jwt = false
+[functions.job-value-email]
+verify_jwt = false
+[functions.job-offboarding]
+verify_jwt = false
+[functions.job-retention-sweep]
+verify_jwt = false
+[functions.job-keep-warm]
+verify_jwt = false
+[functions.webhooks-paypal]
+verify_jwt = false
 [functions.job-outreach-personalize]
 verify_jwt = false
 [functions.job-outreach-personalize-collect]
@@ -136,4 +148,10 @@ verify_jwt = true
 # additionally checks role in ('owner','admin') — same "JWT verification
 # alone is not sufficient" posture as admin/api-provision above.
 [functions.api-adapter-connect]
+verify_jwt = true
+
+# api-payment-link-resend: tenant-owner/admin JWT verified by Supabase,
+# then the function checks the JWT's own app_metadata.tenant_id against the
+# body-supplied tenant_id (docs/audit/FIX_REQUESTS.md, cluster D contract).
+[functions.api-payment-link-resend]
 verify_jwt = true

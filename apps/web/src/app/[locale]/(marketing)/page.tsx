@@ -1,5 +1,6 @@
 import { Button } from "@heyloo/ui";
 import type { Metadata } from "next";
+import { setRequestLocale } from "next-intl/server";
 import { Suspense } from "react";
 import { RoleGuardToast } from "@/components/shared/role-guard-toast";
 import { HOME_CONTENT } from "@/content/marketing/home";
@@ -13,7 +14,10 @@ export const metadata: Metadata = {
 };
 
 /** `/` — Home (FRONTEND_SPEC.md §3.1). RSC, ~zero client JS. */
-export default function HomePage() {
+export default async function HomePage({ params }: { params: Promise<{ locale: string }> }) {
+  const { locale } = await params;
+  setRequestLocale(locale);
+
   return (
     <div className="mx-auto max-w-6xl px-4 py-16">
       <Suspense fallback={null}>

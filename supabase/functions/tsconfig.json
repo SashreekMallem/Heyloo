@@ -14,5 +14,12 @@
     "types": ["node"]
   },
   "include": ["**/*.ts"],
-  "exclude": ["node_modules", "dist", "**/index.ts", "_shared/deno/**", "deno.json"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/index.ts",
+    "**/index.test.ts",
+    "_shared/deno/**",
+    "deno.json"
+  ]
 }

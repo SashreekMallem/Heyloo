@@ -47,9 +47,33 @@ describe("updateBooking", () => {
     const sql = makeStepSql([
       { rows: [bookingRow] },
       { rows: [{ id: "booking_1", start_at: args.new_start, end_at: args.new_end }] },
+      { rows: [] }, // adapter-push producer: no connected adapter
     ]);
     const result = await updateBooking(sql, ctx, args);
     expect(result).toEqual({ confirmed: true, start: args.new_start, end: args.new_end });
+  });
+
+  it("EDGE_AUDIT B4: enqueues an adapter_push_queue booking entry (reschedule) per connected adapter", async () => {
+    const enqueueCalls: unknown[] = [];
+    const steps: Step[] = [
+      { rows: [bookingRow] },
+      { rows: [{ id: "booking_1", start_at: args.new_start, end_at: args.new_end }] },
+      { rows: [{ provider: "square" }] }, // adapter-push producer: one connected adapter
+    ];
+    let i = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("pgmq.send")) {
+        enqueueCalls.push(values);
+        return Promise.resolve([]);
+      }
+      const step = steps[i];
+      i += 1;
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+    const result = await updateBooking(sql, ctx, args);
+    expect(result).toEqual({ confirmed: true, start: args.new_start, end: args.new_end });
+    expect(enqueueCalls).toHaveLength(1);
   });
 
   it("rejects when the caller number differs and no verification claim was offered", async () => {
@@ -62,6 +86,7 @@ describe("updateBooking", () => {
     const sql = makeStepSql([
       { rows: [bookingRow] },
       { rows: [{ id: "booking_1", start_at: args.new_start, end_at: args.new_end }] },
+      { rows: [] }, // adapter-push producer: no connected adapter
     ]);
     const result = await updateBooking(
       sql,

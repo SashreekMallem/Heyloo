@@ -246,6 +246,29 @@ trying to prevent. **Fix:** thread an `AbortSignal`/statement_timeout into
 the query path so a hard-abort actually cancels server-side work, not just
 the response the caller sees.
 
+**Status: FIXED, verified-by-test (not just doc-citation).** `getSql`
+(`_shared/deno/db.ts`) now takes `statementTimeoutMs`, threaded as a
+Postgres `connection.statement_timeout` startup GUC via the new pure
+`_shared/db-options.ts#buildConnectionOptions`; `voice-tools/index.ts` is
+the sole caller passing it (`1200`ms, under its own 1.5s hard-abort). Three
+independent layers of test now cover this, closing the "zero automated
+test coverage" gap this entry originally had:
+- `_shared/timeout.test.ts` — the extracted, Deno-global-free
+  `_shared/timeout.ts#withTimeout` (re-exported from `voice-tools/index.ts`)
+  under Vitest fake timers: race-winner + timer-cleared, timeout-rejection,
+  and no-dangling-timer-after-either-branch assertions.
+- `_shared/db-options.test.ts` — pins the actual `connection.statement_timeout`
+  wiring `buildConnectionOptions` produces (present when
+  `statementTimeoutMs` is given, entirely absent otherwise).
+- `_shared/statement-timeout-check.ts` — a real integration check, run as a
+  new step in the `migrations-check` CI job against the REAL local Postgres
+  that job's `supabase start` already spins up: connects with
+  `connection: { statement_timeout: 500 }`, confirms `select pg_sleep(2)`
+  is actually canceled server-side (SQLSTATE `57014`) well under 2s, and
+  that the same connection still serves `select 1` afterward — the literal
+  "pool cannot be exhausted" claim, demonstrated against a real server
+  rather than inferred from postgres.js's README.
+
 ### M3. Hand-decoded JWTs in `api-checkout`, `api-provision`, `api-adapter-connect`, `admin` have no defense-in-depth against a `verify_jwt` config regression
 
 `api-checkout/index.ts:16-27`, `api-provision/index.ts:34-45`,

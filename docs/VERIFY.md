@@ -1005,3 +1005,381 @@ providers/{square,paypal,twilio,apollo,outscraper,smartlead}.ts`, and the
 handful of test files these changes required updating (listed inline
 above). `docs/BUILD_NOTES.md`'s PROVIDERS-VERIFY entry lists every file
 touched.
+
+## Cluster B fix wave — signup/checkout/provisioning/forwarding (2026-09-10)
+
+### STRIPE-VERIFY-1 — Dispute object has no `customer` field — **RESOLVED (indexed WebSearch, docs.stripe.com egress-blocked)**
+
+`docs.stripe.com` returned `EGRESS_BLOCKED` from this session (same as
+every prior Stripe VERIFY item in this file). Via indexed WebSearch of
+Stripe's own API reference pages (`docs.stripe.com/api/disputes/object`,
+`docs.stripe.com/api/charges/object`) rather than a first-party fetch:
+
+- The **Dispute** object (`charge.dispute.created`'s `data.object`) carries
+  `charge` (the disputed Charge's id, string) and `payment_intent`, but
+  **no `customer` field** — confirmed via two independent search snippets
+  of the same reference page, not merely inferred.
+- The **Charge** object (`charge.refunded`'s `data.object` — Stripe fires
+  this event ON the Charge itself) DOES carry `customer` as a plain string
+  ID (not an expandable object by default) — confirmed via a real captured
+  example payload (`"customer": "cus_Na6dX7aXxi11N4"`) in a third-party
+  webhook-catalog snippet of Stripe's own documented shape.
+
+`supabase/functions/webhooks-stripe/handler.ts`'s referral-clawback case
+was built against this confirmed shape: `charge.refunded` reads
+`obj["customer"]` directly; `charge.dispute.created` instead resolves the
+tenant via `payment_processing_events.stripe_charge_id` (a mapping this
+same handler already writes on `charge.succeeded`) rather than assuming a
+`customer` field that doesn't exist on Dispute. Still recommend one real
+signed `charge.dispute.created` test delivery (Stripe CLI `trigger
+charge.dispute.created`) against a live/test-mode webhook endpoint before
+first production reliance, per this file's standing "confirm before
+go-live" posture for every entry built without a first-party fetch.
+
+## Cluster C fix wave — realtime + dashboard/admin truthfulness (2026-09-10)
+
+### SUPABASE-REALTIME-VERIFY-1 — `realtime.broadcast_changes()` client payload shape — **RESOLVED (indexed WebSearch + GitHub, supabase.com egress-blocked)**
+
+`supabase.com/docs/guides/realtime/broadcast` returned `EGRESS_BLOCKED` from
+this session. Via indexed WebSearch plus a first-party (non-`docs.*`)
+GitHub fetch of `supabase/supabase`'s own
+`examples/prompts/use-realtime.md`:
+
+- `realtime.broadcast_changes(topic, event, operation, table, schema, new,
+  old)`'s trigger-function signature was already correct in
+  `fn_broadcast_tenant_update()` (`supabase/migrations/20260907131400_functions_triggers.sql`).
+- The payload the CLIENT receives on `.on("broadcast", {event}, ({payload})
+  => ...)` includes top-level `topic`, `operation`, `table`, `schema`,
+  `record` (NEW), `old_record` (OLD) fields — confirmed via the example's
+  own documented field list. `apps/web/src/lib/realtime/tenant-realtime-provider.tsx`'s
+  existing `payload.table` access was therefore already correct against the
+  real payload shape; the actual bug (E2E_FLOWS_AUDIT.md B3) was the
+  channel/topic STRING mismatch (`private-tenant-${tenantId}` vs the
+  backend's `'tenant:' || tenant_id`), now fixed via the shared
+  `getTenantRealtimeChannelName()` helper (`apps/web/src/lib/realtime/channel.ts`).
+- Recommend one real end-to-end check (a `call_logs`/`bookings` insert
+  against a live Supabase Realtime instance with the dashboard subscribed)
+  before first production reliance, since this environment has no live
+  Realtime server to test the actual WebSocket delivery against — only the
+  topic-string-equality half of the fix was verifiable statically/via unit
+  test here.
+
+**Code:** `apps/web/src/lib/realtime/channel.ts`,
+`apps/web/src/lib/realtime/tenant-realtime-provider.tsx`.
+
+### AIRTABLE-VERIFY-1 — OAuth2+PKCE endpoints, token exchange shape, scopes — **UNRESOLVED, built against researched shape per Rule 1.2**
+
+`airtable.com/developers/web/api/oauth-reference` and
+`support.airtable.com` both returned `EGRESS_BLOCKED` from this session —
+no first-party fetch was possible (unlike the Supabase Realtime item
+above, no reachable first-party GitHub source was found for Airtable's own
+OAuth implementation either). Built from indexed WebSearch snippets of
+third-party integration write-ups (a `dev.to`/`playfulprogramming.com`
+Node+Angular PKCE walkthrough, `community.airtable.com` threads on the
+`/token` endpoint's Basic-auth + `code_verifier` contract,
+`docs.arcade.dev`/`prismatic.io` scope references) — **not confirmed
+against Airtable's own docs**:
+
+- Authorize: `GET https://airtable.com/oauth2/v1/authorize` with
+  `client_id`, `redirect_uri`, `response_type=code`, `scope`, `state`,
+  `code_challenge`, `code_challenge_method=S256`.
+- Token: `POST https://airtable.com/oauth2/v1/token`,
+  `application/x-www-form-urlencoded`, `grant_type=authorization_code`,
+  `code`, `redirect_uri`, `client_id`, `code_verifier`; `Authorization:
+  Basic base64(client_id:client_secret)` header sent only when a
+  `client_secret` exists (some Airtable OAuth app registrations are
+  public/no-secret) — **assumed, not confirmed**: whether Airtable
+  actually rejects the header's absence/presence the other way is
+  unverified.
+- Response: `{access_token, refresh_token?, expires_in, token_type?,
+  scope?}` — a Zod boundary validator
+  (`AirtableTokenResponseSchema`, `apps/web/src/app/api/tenant/delivery/airtable/shared.ts`)
+  rejects anything that doesn't match this shape rather than trusting it
+  blindly.
+- Bases list (to auto-connect/pick a base): `GET
+  https://api.airtable.com/v0/meta/bases` → `{bases: [{id, name}, ...]}` —
+  **least confident item**, reconstructed from general familiarity with
+  Airtable's Web API meta endpoints rather than a specific search hit;
+  also Zod-validated (`AirtableBasesResponseSchema`) so a shape mismatch
+  fails closed (falls back to no `provider_account_id`/`base_name`) rather
+  than crashing or silently misattributing a base.
+- Scopes used: `data.records:read data.records:write schema.bases:read`
+  (space-delimited, matching OAuth2's standard `scope` param convention) —
+  the exact delimiter/format is unconfirmed.
+- No revoke endpoint was found documented anywhere reachable — disconnect
+  (`apps/web/src/app/api/tenant/delivery/airtable/disconnect/route.ts`)
+  only clears our own stored token, does not call Airtable to revoke it
+  (flagged in that route's own docstring).
+
+**MUST be confirmed against Airtable's own current OAuth reference
+(`airtable.com/developers/web/api/oauth-reference`) from an environment
+that can actually reach it, before registering a real Airtable OAuth app
+and relying on this in production** — every external call in this flow is
+Zod-validated at the boundary so a wrong assumption fails closed (a clear
+error surfaced to the popup) rather than silently misbehaving, but the
+flow has not been exercised against a real Airtable OAuth app at all.
+
+**Code:** `apps/web/src/app/api/tenant/delivery/airtable/{shared.ts,connect/route.ts,callback/route.ts,disconnect/route.ts}`.
+
+## Cluster D fix wave — tenant screens + bookings UI (2026-09-10)
+
+| Item | Assumed shape | Confidence | Confirm against |
+|---|---|---|---|
+| `api-payment-link-resend` edge function name | `apps/web`'s `/api/tenant/payment-links/[id]/resend` Route Handler calls `callEdgeFunction("api-payment-link-resend", ...)` — no function under this or any similar name exists in `supabase/functions/` at the time this cluster ran (grepped the full directory listing). Requested in `docs/audit/FIX_REQUESTS.md` from whichever cluster owns `supabase/functions`, with the exact request/response contract this Route Handler expects (`{tenant_id, payment_link_id}` in, proxies whatever status/body comes back — no fake success synthesized on this side). Same "frontend built against the documented contract, backend function pending" pattern as T5's `api-checkout-session`/`api-billing-portal` entries above. | Medium — the contract (mint a fresh Stripe Checkout Session mirroring `voice-tools/tools/send_payment_link.ts`'s existing shape, update `payment_links`, enqueue an SMS) is derived directly from that already-built, already-verified tool; only the function's deployed NAME and its exact existence are unconfirmed | `supabase/functions/` directory listing once built — if the name differs, it's a one-line fix in the Route Handler above |
+| `public.fn_enqueue_message_outbound` RPC | Assumed to not exist yet (grepped every migration for `pgmq.send`/`fn_enqueue` — zero hits) — this cluster's new Messages-thread reply and the pre-existing booking-notification insert (`api/tenant/bookings/[id]/route.ts`) both write a real `messages_outbound` row today but cannot enqueue it from `apps/web` (PostgREST has no `pgmq` schema access). Requested in `docs/audit/FIX_REQUESTS.md`. Until it lands, these rows are honest `status: 'queued'` — never claimed as delivered. | High confidence the gap is real (verified: `worker-messages-outbound` only ever reads via `pgmq.read`, never scans the table by status) — low confidence on the RPC's eventual exact name/signature, since it doesn't exist yet | `supabase/migrations/*.sql` once added |
+| `supabase/functions/_shared/templates.ts`'s `"owner_reply"` case | Assumed to not exist (read the file directly — confirmed absent, falls to the `default: {body: ""}` case today) | High — read directly from the file, not inferred | Same file, once the one-case addition requested in `docs/audit/FIX_REQUESTS.md` lands |
+| `tenants.vertical`'s real (short-form) values vs. `packages/supabase-client/src/database.types.ts`'s `TenantRow.vertical` union | The DB CHECK constraint (`supabase/migrations/20260907130100_tenancy.sql:15`) is short-form (`auto/vet/legal/...`, matching `@heyloo/canonical-types`' `Vertical`); the hand-maintained `database.types.ts` union is still long-form (`auto_repair/veterinary/...`) — same root cause as cluster B's `vertical-mapping.ts` finding above. This cluster's new Vertical-details tab reads `tenants.vertical` and sidesteps the wrong union with an explicit `as string` cast (documented inline) rather than trusting it. | High — both sides read directly from source (the migration's CHECK clause vs. the type file), not inferred | `packages/supabase-client/src/database.types.ts`, once regenerated/fixed per the FIX_REQUESTS.md entry |
+
+## Cluster E fix wave — voice tools, workers, failover, adapter security (2026-09-10)
+
+| Item | Assumed shape | Confidence | Confirm against |
+|---|---|---|---|
+| postgres.js `connection: { statement_timeout }` startup parameter (EDGE_AUDIT M2) | `docs.postgresql.org`/`www.postgresql.org` were not tested directly, but postgres.js's own README (`raw.githubusercontent.com/porsager/postgres/v3.4.9/README.md`, reachable — GitHub raw content is not behind the same egress block as provider marketing/doc sites) documents `connection: {application_name: '...', ...other connection parameters, see https://www.postgresql.org/docs/current/runtime-config-client.html}` as arbitrary Postgres startup-packet parameters, and `statement_timeout` is one of Postgres's own long-stable client-config GUCs (not postgres.js-specific). Also confirmed the library's `.execute()`/`.cancel()` API in the same README, and deliberately did NOT use it (a protocol-level cancel is explicitly documented there as best-effort/racy — "no guarantee ... might even result in canceling another query" — whereas a session-level `statement_timeout` is enforced by Postgres itself regardless of any JS-side race). | High — first-party source fetched directly, not a WebSearch snippet | A live query against a real `SUPABASE_DB_URL` once deployed, confirming the GUC is honored over the pooler connection this codebase uses (session-mode pooler, port 5432) the same way it would on a direct connection |
+| Twilio permanent-vs-transient SMS error codes (EDGE_AUDIT H1) | `21211` (invalid "To" number), `21614` (not a valid mobile number), `21408` (region not enabled), `21610` (recipient replied STOP) treated as PERMANENT (no retry); every other Twilio Messages-API rejection shape (5xx, unknown/missing `code`, network failure) treated as TRANSIENT (retried via the queue). `www.twilio.com`/`twilio.com` doc fetches (`WebFetch`) returned `EGRESS_BLOCKED` in this build even though a bare `curl` HEAD to the same host returned 200 — same class of block this codebase's other Twilio-touching files (`_shared/twilio-signature.ts`, `_shared/providers/twilio.ts`) already flag. These four codes are long-stable, widely-documented (training-knowledge-confident) Twilio error codes, not a first-party fetch. | Medium — misclassifying a real permanent rejection as transient only costs wasted retries before the same eventual DLQ outcome (never worse than the old always-instant-fail behavior); misclassifying a transient one as permanent means "retried 0 times" (fails toward the OLD behavior, never silently drops more than before) | A live Twilio sandbox send to a deliberately invalid number, confirming the exact `code` value in the response body matches one of the four above |
+| Resend permanent-vs-transient email error `name` values (EDGE_AUDIT H1) | `validation_error`, `invalid_to_address`, `invalid_from_address`, `missing_required_field` treated as PERMANENT; anything else (including `internal_server_error`, `rate_limit_exceeded`, or a missing/unrecognized `name`) treated as TRANSIENT. `resend.com` doc fetch (`WebFetch`) returned `EGRESS_BLOCKED` (same as this codebase's existing `_shared/providers/resend.ts` VERIFY note for the `/emails` request shape itself). Training-knowledge-confident Resend API error taxonomy, not a first-party fetch. | Medium — same fail-direction reasoning as the Twilio item above | A live Resend sandbox send with a deliberately malformed recipient address, confirming the response's `name` field |
+| Twilio `IncomingPhoneNumbers` GET response's `voice_url` field name (EDGE_AUDIT H2, `getIncomingPhoneNumber` in `_shared/providers/twilio.ts`) | Same long-stable Twilio 2010-04-01 REST API this file's other calls already target (`updateIncomingPhoneNumberVoiceUrl` sets `VoiceUrl` as a form param; the GET response is assumed to echo it back as `voice_url`, matching the REST API's consistent snake_case JSON convention for this resource) — `api.twilio.com` egress-blocked, same as every other Twilio call in this file. | Medium-high — this is the read-side mirror of a call this codebase already relies on in production; a wrong field name fails CLOSED (`retell_health_failover_snapshot_failed` logged, failover still proceeds, restore just can't run for that number) rather than silently restoring the wrong value | A live Twilio sandbox `GET /Accounts/{Sid}/IncomingPhoneNumbers/{Sid}.json` call |
+| Airtable record create/update REST shape (`_shared/providers/airtable.ts`, new `pushToAirtable` in `worker-adapter-push/handler.ts`) | `POST/PATCH https://api.airtable.com/v0/{baseId}/{tableIdOrName}` with body `{fields: {...}, typecast: true}`, response `{id, fields, createdTime}` — long-stable, widely-documented Airtable Web API convention. `airtable.com/developers/web/api` egress-blocked in this build, same as this codebase's existing Airtable OAuth work (`apps/web/src/app/api/tenant/delivery/airtable/**`, see that section above). | Medium — matches every third-party summary/community reference this codebase's other Airtable VERIFY entry already cites; not a first-party fetch | A live Airtable base + a real connected `adapter_connections` row, confirming the request/response shape and that `typecast: true` correctly coerces a `Total ($)` number field |
+
+## Cluster F fix wave — referral payout webhook, churn/retention, integrations (2026-09-10)
+
+| Item | Assumed shape | Confidence | Confirm against |
+|---|---|---|---|
+| PayPal `/v1/notifications/verify-webhook-signature` request/response shape (`supabase/functions/webhooks-paypal/signature.ts`) | `developer.paypal.com` egress-blocked (same as `_shared/providers/paypal.ts`'s own existing VERIFY note). Request body `{transmission_id, transmission_time, cert_url, auth_algo, transmission_sig, webhook_id, webhook_event}` sourced from the five `PAYPAL-TRANSMISSION-ID`/`PAYPAL-TRANSMISSION-TIME`/`PAYPAL-CERT-URL`/`PAYPAL-AUTH-ALGO`/`PAYPAL-TRANSMISSION-SIG` request headers; response `{verification_status: "SUCCESS"\|"FAILURE"}` — cross-checked via GitHub code search (`mcp__github__search_code`) against multiple independent real-world PayPal Payouts webhook integrations' source (not memory alone), all agreeing on these exact field names. This endpoint/shape has been stable and unchanged across PayPal's own SDKs for years. | Medium-high — corroborated by several independent real integrations, not a single source, but no first-party PayPal doc fetch succeeded | A live PayPal sandbox webhook delivery, confirming the header names and `verification_status` field against a real `PAYMENT.PAYOUTS-ITEM.SUCCEEDED` delivery |
+| PayPal `PAYMENT.PAYOUTS-ITEM.*` event resource shape (`supabase/functions/webhooks-paypal/schema.ts`'s `parsePayoutItemResource`) | `resource.payout_batch_id` (top-level string) and `resource.payout_item.sender_item_id` (nested, matching `_shared/providers/paypal.ts`'s `createPayoutBatch` request-time `sender_item_id: referral_partner_id`) plus `resource.transaction_status`. Cross-checked via GitHub code search against several independent PayPal Payouts webhook consumers. | Medium — same corroboration basis as above | Same live sandbox delivery — inspect the raw `resource` object of a real `PAYMENT.PAYOUTS-ITEM.SUCCEEDED` event |
+| Retell `DELETE /delete-phone-number/{phone_number}` (`supabase/functions/job-offboarding/retell-delete.ts`) | Confirmed via a direct `WebFetch` of the official `retell-typescript-sdk` GitHub source (`raw.githubusercontent.com/RetellAI/retell-typescript-sdk/main/src/resources/phone-number.ts`, reachable — `docs.retellai.com` itself egress-blocked, same class of block `_shared/providers/retell.ts`'s own VERIFY note documents) — the SDK's `PhoneNumber.delete()` method builds exactly this path/verb. | High — first-party SDK source fetched directly, not a summary or memory | A live Retell sandbox account + imported number, confirming the DELETE call actually un-imports it (a 404 on retry is treated as already-done, per this file's own docstring) |
+| Supabase Storage bulk-delete/list REST shape (`job-retention-sweep/index.ts`'s `removeFromStorage`, and the offboarding/retention-sweep design more broadly) | `DELETE {SUPABASE_URL}/storage/v1/object/{bucket}` with JSON body `{prefixes: string[]}`, bearer-auth with the secret key — confirmed by reading the actual installed `@supabase/storage-js@2.116.0` package source in `node_modules` (`StorageFileApi.remove()`), not a doc fetch (`supabase.com` storage docs were not separately re-tested here; the installed SDK's own source is the authority per CLAUDE.md Rule 1 item 2's "official npm SDK source" fallback). | High — read directly from the installed package's own source code | A live call against a real Supabase Storage bucket, confirming the response shape on success/partial-failure |
+
+**Code:** `supabase/functions/webhooks-paypal/**`, `supabase/functions/job-offboarding/**`, `supabase/functions/job-retention-sweep/**`.
+
+## Cluster G fix wave — test coverage, CI guards, marketing static rendering (2026-09-10)
+
+### EDGE-AUDIT-M4 — Stripe/Twilio hand-rolled webhook signature schemes — **RESOLVED, both CONFIRMED exact, no code change needed**
+
+`docs.stripe.com` and `www.twilio.com`/`twilio.com` were egress-blocked again
+in this pass (same as every prior attempt logged elsewhere in this file).
+Per CLAUDE.md Rule 1 item 2, confirmed instead against each provider's
+official npm SDK source, fetched directly via `raw.githubusercontent.com`
+(reachable) since neither `stripe` nor `twilio` is an installed
+`node_modules` package in this repo — both edge functions are hand-rolled
+specifically to avoid the provider-SDK-in-Deno dependency, per
+`_shared/stripe-signature.ts`/`_shared/twilio-signature.ts`'s own docstrings
+— so the installed-package fallback the other entries in this file used
+wasn't available; the packages' own GitHub source stood in as the
+equivalent first-party authority.
+
+- **Stripe** (`supabase/functions/_shared/stripe-signature.ts`). Source:
+  `stripe/stripe-node` (`master` branch), `src/Webhooks.ts`. CONFIRMED
+  exact, byte-for-byte:
+  - `EXPECTED_SCHEME = 'v1'`, `DEFAULT_TOLERANCE = 300` (seconds) — matches
+    this file's `toleranceMs = 5 * 60 * 1000` default exactly.
+  - Signed payload = `` `${timestamp}.${payload}` `` (literal dot) — matches
+    this file's `` `${timestamp}.${rawBody}` `` exactly.
+  - Header parsed by splitting on `,` then `=`, collecting `t` and every
+    `v1` value (multiple `v1`s during secret rotation) — matches this
+    file's `header.split(",")` / `part.split("=", 2)` loop exactly.
+  - Verification accepts a match against **any** parsed `v1` signature
+    (`details.signatures.filter(secureCompare...).length`) — matches this
+    file's `v1Signatures.some((sig) => timingSafeEqual(expected, sig))`
+    exactly.
+  - HMAC-SHA256, hex-encoded — matches `hmacSha256Hex` exactly.
+  - One behavioral difference, in the safer direction only: the SDK's own
+    `constructEvent` defaults `tolerance` to `0` (skips the timestamp check
+    entirely unless the caller passes one explicitly — the SDK's own source
+    comment flags this as being fixed in a future major version), whereas
+    this file's `verifyStripeSignature` always enforces the 300s
+    `DEFAULT_TOLERANCE`-equivalent by default. Not a mismatch to fix — this
+    codebase's default is strictly stricter (rejects a stale/replayed
+    timestamp the SDK's own default would silently accept), so left as-is.
+  - No code change. Confidence raised from High (long-stable-scheme,
+    WebSearch-based) to Confirmed (first-party source-code-based).
+- **Twilio** (`supabase/functions/_shared/twilio-signature.ts`). Source:
+  `twilio/twilio-node` (`main` branch), `src/webhooks/webhooks.ts`
+  (`getExpectedTwilioSignature`/`toFormUrlEncodedParam`) — independent
+  re-confirmation of the same SDK this file's existing "Twilio — RESOLVED"
+  entry above already confirmed against an older `lib/webhooks/webhooks.js`
+  path; re-fetched here specifically to settle EDGE_AUDIT M4's own named
+  worry ("Twilio's exact parameter-concatenation rule for non-ASCII `Body`
+  values"). CONFIRMED exact, including that specific worry:
+  - `toFormUrlEncodedParam(paramName, paramValue)` for a plain string value
+    (which is what a `Body` field always is — the array branch only exists
+    for a form field the client repeated, e.g. multi-value params, never an
+    SMS body) is exactly `paramName + paramValue` — no percent-encoding, no
+    escaping, no ASCII-only assumption. The whole assembled `data` string is
+    then UTF-8-encoded (`Buffer.from(data, "utf-8")`) before HMAC-SHA1. This
+    codebase's `message += key + (formParams[key] ?? "")` followed by
+    `encoder.encode(message)` (a `TextEncoder`, UTF-8 by spec) is the exact
+    same construction — a non-ASCII `Body` (emoji, accented characters) is
+    concatenated as a plain JS string either way, then UTF-8-encoded once at
+    the very end. There is no separate "non-ASCII rule" in the real
+    algorithm for this codebase to have gotten wrong.
+  - Sorted keys (`Object.keys(params).sort()`), each concatenated directly
+    onto the URL with no separator, HMAC-SHA1 keyed on the auth token,
+    base64 output — matches `sortedKeys`/`message += key + value`/
+    `hmacSha1Base64(authToken, message)` exactly (confirms this file's
+    existing high-confidence entry rather than superseding it).
+  - No code change.
+
+**Code:** no changes — both `supabase/functions/_shared/stripe-signature.ts`
+and `supabase/functions/_shared/twilio-signature.ts` are unmodified;
+this entry only raises documented confidence from "long-stable scheme,
+docs unreachable" to "confirmed against first-party SDK source."
+
+## DB-B2/DB-B3 repair — `scripts/ci/cron-queues-check.ts` / `.github/workflows/ci.yml`
+
+- **Supabase CLI (`supabase status -o env`'s field names).** `supabase.com`
+  returned `EGRESS_BLOCKED` from this build environment (Rule 1 item 2).
+  Per that rule's fallback, confirmed instead against the CLI's own current
+  source: `git clone https://github.com/supabase/cli` (reachable — GitHub,
+  not `supabase.com`), `apps/cli/src/command-internal/status-values.ts`.
+  Confirmed exact:
+  - `-o env`'s default output var for the local Postgres connection string
+    is `DB_URL` (`fieldKey: "db.url"`, `defaultName: "DB_URL"`), and it is
+    "always set unconditionally, before any gating" (that file's own
+    comment on `statusValuesFromState`) — i.e. present regardless of which
+    services (`auth`, `studio`, ...) are enabled, unlike every other field.
+  - `supabase status --help` (run locally via `npx --yes supabase status
+    --help`, since the CLI binary itself is a public npm/GitHub artifact,
+    not a `supabase.com` page) independently confirms `-o env`/`--output`
+    as current, live flags on the installed `latest` version.
+  `scripts/ci/cron-queues-check.ts` and the new `cron-queues-check` CI job
+  in `.github/workflows/ci.yml` read `$DB_URL` (aliased to
+  `SUPABASE_DB_URL` in the workflow) on this basis. Not independently
+  re-verified end-to-end inside a live `supabase start` in this environment
+  (Docker's daemon is unavailable in this sandbox — `docker ps` fails with
+  "no such file or directory" for the socket); the existing `rls-probe` CI
+  job's own `API_URL`/`ANON_KEY`/`SERVICE_ROLE_KEY` reads from the exact
+  same `-o env` output already run green in this repo's real CI, and this
+  entry's `DB_URL` field is resolved by the identical code path in the same
+  source file — same confidence class as those, not a fresh guess.
+
+## Repair task — impersonation server-side boundary
+
+### VERIFY-IMPERSONATION-1 — `custom_access_token_hook` input event shape
+
+`supabase.com/docs/guides/auth/auth-hooks/custom-access-token-hook` returned
+`EGRESS_BLOCKED` from this build environment when checked for the exact
+input JSON fields GoTrue passes into the hook (specifically: whether a
+`session_id` is present alongside `user_id`/`claims`/`authentication_method`,
+which would let `20260910110000_impersonation_claim.sql`'s
+`custom_access_token_hook` update bind an `impersonation_sessions` row to one
+specific session rather than to a `target_user_id` generally). The existing
+hook already in this repo (`20260907131400_functions_triggers.sql`) reads
+only `event->>'user_id'` and `event->'claims'`, so the update in this
+migration is written against that same, already-relied-upon shape rather
+than guessing an unconfirmed `session_id` field. Practical consequence
+(documented in the migration's own header comment): while an admin's
+impersonation session for a given tenant owner is active (<=30 min,
+audited start/end), that owner's own independent login would also receive
+the `impersonated_by`/`impersonation_edit_enabled` claims until the session
+ends or expires. Confirm the current hook event schema against live docs
+before relying on this in a fresh project; if a `session_id` field exists,
+`impersonation_sessions` should gain a `session_id` column and the hook
+should join on it instead of bare `target_user_id`.
+
+### VERIFY-IMPERSONATION-2 — `generate_link` (Auth Admin API) has no `app_metadata` override
+
+Confirmed via the installed `@supabase/supabase-js`/GoTrue admin client type
+declarations in `node_modules` (docs.supabase.com blocked per Rule 1 item 2
+fallback): `generateLink` accepts `email`/`password`/`type`/`redirectTo`/
+`data` (user metadata merged into `user_metadata`, not `app_metadata`) —
+there is no parameter to inject arbitrary `app_metadata` claims at mint
+time. This is why the impersonation claim is stamped by
+`custom_access_token_hook` (joining the new `impersonation_sessions` table)
+rather than baked into the magic-link mint call itself — option (a) from
+the repair task, not (b). Re-confirm against current
+supabase.com/docs/reference/javascript/auth-admin-generatelink before
+relying on a future `app_metadata`-override parameter that may not exist.
+
+## Repair task — admin cockpit proxy contract + Airtable sync truthfulness (2026-09-10)
+
+### VERIFY-REPAIR-1 — `/api/admin/[...path]` proxy target vs. `admin/index.ts` path derivation
+
+By the time this repair task started, `apps/web/src/app/api/admin/[...path]/route.ts`
+and `supabase/functions/admin/index.ts` had already been fixed (by another
+repair cluster working the same tree) to agree on the single deployed
+function slug `admin` — the proxy targets
+`${supabaseFunctionsUrl}/admin/${path.join("/")}` and `index.ts` strips
+`/functions/v1/admin/` (not just `/functions/v1/`) before dispatching on
+`ctx.path`. Confirmed by reading both files directly and by the passing
+`apps/web/src/app/api/admin/[...path]/route.test.ts` (asserts the exact
+constructed upstream URL) plus `supabase/functions/admin/handler.test.ts`.
+No further code change was needed for this item; verifying this contract
+against live Supabase Edge Functions routing docs (`supabase.com/docs/guides/functions/routing`)
+was still blocked by egress in this environment — this internal
+cross-file check (one registered function slug in `supabase/config.toml`,
+proxy and index.ts agreeing on the same prefix) is the evidence trail.
+
+### AIRTABLE-VERIFY-2 — Meta API "list tables for a base" shape (`airtableTablesUrl`, `AirtableTablesResponseSchema`)
+
+`GET https://api.airtable.com/v0/meta/bases/{baseId}/tables` →
+`{tables: [{id, name, ...}]}` — used once, right after OAuth connect, to
+auto-pick the base's first table as the adapter's push target
+(`adapter_connections.metadata.tableIdOrName`). `airtable.com/developers/web/api`
+was egress-blocked in this session, same as every other Airtable item in
+this file (AIRTABLE-VERIFY-1 above) — this is the same long-stable Meta
+API convention that entry's Bases-list endpoint already relies on, not a
+first-party fetch. Zod-validated (`AirtableTablesResponseSchema`) so a
+shape mismatch fails closed: `tableIdOrName` stays unset, and
+`worker-adapter-push/handler.ts`'s `pushToAirtable` honestly no-ops via its
+existing `adapter_push_missing_metadata` log rather than pushing to a
+guessed table. **MUST be confirmed against Airtable's own current Meta API
+reference** before relying on this in production. A real per-tenant table
+picker UI (letting the tenant choose instead of auto-picking the first
+table) remains a follow-up, same as the existing multi-base-picker gap
+already flagged in `docs/BUILD_NOTES.md`.
+
+**Code:** `apps/web/src/app/api/tenant/delivery/airtable/{shared.ts,callback/route.ts}`.
+
+### VERIFY-REPAIR-2 — Airtable sync-log table split, resolved by picking `adapter_sync_state` as source of truth
+
+`apps/web/src/app/api/tenant/delivery/airtable/status/route.ts` previously
+read `public.airtable_sync_state` (the older, Airtable-only table) for its
+sync-log viewer, while `supabase/functions/worker-adapter-push/handler.ts`'s
+`recordSyncSuccess` — shared by every T7 adapter including Airtable's
+`pushToAirtable` branch — writes into the generic `public.adapter_sync_state`
+table. A real push success therefore never appeared in the dashboard. Fixed
+by pointing the status route at `adapter_sync_state` filtered
+`provider = 'airtable'` (the writer's actual table) rather than
+special-casing the writer to target the older Airtable-only table — this
+keeps every T7 adapter's push-bookkeeping on one code path. RLS already
+carries a tenant-scoped select policy on `adapter_sync_state`
+(`adapter_sync_state_select`, `supabase/migrations/20260907160000_t7_adapter_connections.sql`)
+and its `provider` CHECK constraint already includes `'airtable'`
+(`supabase/migrations/20260910100000_adapter_connections_airtable_provider.sql`),
+so no migration was needed for this fix — verified by reading both files
+directly, not assumed. `public.airtable_sync_state` itself is now
+write-orphaned (no code path inserts into it); left in place rather than
+dropped, since dropping a table is outside this repair task's scope and
+not requested by any other cluster.
+
+**Code:** `apps/web/src/app/api/tenant/delivery/airtable/status/route.ts`.
+
+### FIX-1 — `fn_enqueue_message_outbound` service_role JWT shape assumption
+
+`public.fn_enqueue_message_outbound` (`supabase/migrations/20260910100200_
+fn_enqueue_message_outbound.sql`) now branches on `current_setting('request
+.jwt.claims', true)::jsonb ->> 'role' = 'service_role'` to detect a
+service-role PostgREST caller (see `docs/BUILD_NOTES.md`'s FIX-1 entry for
+the full bug/fix account). This assumes PostgREST, when authenticating a
+request with Supabase's `service_role` API key, sets `request.jwt.claims`
+to a JWT payload whose top-level `role` claim is literally the string
+`"service_role"` — the same assumption every pre-existing helper in this
+schema already makes for `authenticated`/`anon` (`fn_jwt_tenant_id()`/
+`fn_jwt_role()` in `supabase/migrations/20260907131500_rls.sql`, unchanged
+by this pass), just extended to the one remaining role value. `supabase.com
+/docs` was unreachable from this environment (same egress constraint as
+every other Rule-1 item in this file), so this was verified LOCALLY
+instead: a throwaway-Postgres harness (`docs/BUILD_NOTES.md` FIX-1's
+reproducibility section) with `set_config('request.jwt.claims', '{"role":
+"service_role"}', false)` confirmed the function takes the service-role
+branch and enqueues, and a second run with an `authenticated`/mismatched-
+tenant claim confirmed the original no-op path is untouched — this
+confirms the SQL logic is correct given the assumed claim shape, not that
+a real hosted Supabase project's PostgREST actually sets that claim this
+way. **MUST be confirmed against a real deployed call** (e.g. re-check
+after the next live deploy that a booking-confirmation SMS sent via
+`api/tenant/bookings/[id]` actually reaches `status: 'sent'`, not stuck at
+`'queued'`) before treating this as fully proven in production, per
+CLAUDE.md Rule 1.2's "no Docker/`supabase start`" fallback path.
+
+**Code:** `supabase/migrations/20260910100200_fn_enqueue_message_outbound.sql`.

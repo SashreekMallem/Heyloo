@@ -10,6 +10,7 @@ const TABS = [
   { value: "services", label: "Services" },
   { value: "faq", label: "FAQ" },
   { value: "instructions", label: "AI Instructions" },
+  { value: "vertical-details", label: "Vertical details" },
   { value: "manual-mode", label: "Manual Mode" },
   { value: "language", label: "Language" },
 ];

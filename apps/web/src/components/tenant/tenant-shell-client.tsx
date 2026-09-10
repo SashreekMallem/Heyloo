@@ -3,6 +3,7 @@
 import {
   AppShell,
   AppSidebarNav,
+  ImpersonationBanner,
   ManualModeBanner,
   MobileTabBar,
   MobileTabBarLabel,
@@ -12,10 +13,21 @@ import {
   RealtimeIndicator,
   TopBar,
 } from "@heyloo/ui";
-import { Calendar, MessageSquare, MoreHorizontal, Phone, Settings, Users } from "lucide-react";
+import {
+  Calendar,
+  Inbox,
+  MessageSquare,
+  MoreHorizontal,
+  Phone,
+  Plug,
+  Settings,
+  ShoppingBag,
+  Users,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, usePathname } from "@/i18n/navigation";
 import { useTenantNotifications } from "@/lib/hooks/use-tenant-notifications";
+import { useImpersonationBanner } from "@/lib/impersonation/use-impersonation-banner";
 import { useTenantRealtimeStatus } from "@/lib/realtime/tenant-realtime-provider";
 import { TenantIdProvider } from "@/lib/tenant/tenant-context";
 
@@ -24,9 +36,12 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Calls", href: "/dashboard/calls", icon: Phone },
   { label: "Bookings", href: "/dashboard/bookings", icon: Calendar },
   { label: "Customers", href: "/dashboard/customers", icon: Users },
+  { label: "Messages", href: "/dashboard/messages", icon: Inbox },
+  { label: "Orders", href: "/dashboard/orders", icon: ShoppingBag },
   { label: "Agent", href: "/dashboard/agent" },
   { label: "Phone Setup", href: "/dashboard/phone-setup" },
   { label: "Delivery", href: "/dashboard/delivery" },
+  { label: "Integrations", href: "/dashboard/integrations", icon: Plug },
   { label: "Billing", href: "/dashboard/billing" },
   { label: "Refer & Earn", href: "/dashboard/refer" },
   { label: "Support", href: "/dashboard/support", icon: MessageSquare },
@@ -79,6 +94,7 @@ export function TenantShellClient({
   children: ReactNode;
 }) {
   const pathname = usePathname();
+  const impersonation = useImpersonationBanner(tenantId);
 
   return (
     <TenantIdProvider tenantId={tenantId}>
@@ -101,7 +117,23 @@ export function TenantShellClient({
             <TopBarContent tenantId={tenantId} tenantName={tenantName} />
           </TopBar>
         }
-        banner={manualMode && manualModeSince ? <ManualModeBanner since={manualModeSince} /> : null}
+        banner={
+          impersonation || (manualMode && manualModeSince) ? (
+            <>
+              {impersonation && (
+                <ImpersonationBanner
+                  tenantName={tenantName}
+                  adminEmail={impersonation.adminEmail}
+                  expiresAt={impersonation.expiresAt}
+                  editMode={impersonation.editMode}
+                  onEnd={impersonation.onEnd}
+                  onToggleEdit={impersonation.onToggleEdit}
+                />
+              )}
+              {manualMode && manualModeSince && <ManualModeBanner since={manualModeSince} />}
+            </>
+          ) : null
+        }
         mobileTabBar={
           <MobileTabBar
             items={MOBILE_TABS}

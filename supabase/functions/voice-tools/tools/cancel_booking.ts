@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { enqueueAdapterPush } from "../../_shared/adapter-push.ts";
 import { verifyBookingIdentity } from "../../_shared/identity-verification.ts";
 import { enqueue, QUEUE_NAMES } from "../../_shared/queue.ts";
 import type { CancelBookingArgsSchema } from "../../_shared/schemas/voice-tools.ts";
@@ -81,6 +82,14 @@ export async function cancelBooking(
     if (message) {
       await enqueue(sql, QUEUE_NAMES.messagesOutbound, { message_id: message.id });
     }
+
+    // E2E_FLOWS_AUDIT B4 (producer side): cancellation path enqueues too.
+    await enqueueAdapterPush(sql, {
+      tenantId: ctx.tenantId,
+      entityType: "booking",
+      entityId: row.id,
+      idempotencyKey: `${args.booking_id}:cancel`,
+    });
   }
 
   return { cancelled: true };

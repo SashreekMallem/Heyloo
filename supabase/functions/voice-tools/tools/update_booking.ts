@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { enqueueAdapterPush } from "../../_shared/adapter-push.ts";
 import { verifyBookingIdentity } from "../../_shared/identity-verification.ts";
 import type { UpdateBookingArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { SqlClient } from "../../_shared/types.ts";
@@ -65,6 +66,15 @@ export async function updateBooking(
     `;
     const row = rows[0];
     if (!row) return { confirmed: false, reason: "not_found" };
+
+    // E2E_FLOWS_AUDIT B4 (producer side): reschedule path enqueues too.
+    await enqueueAdapterPush(sql, {
+      tenantId: ctx.tenantId,
+      entityType: "booking",
+      entityId: row.id,
+      idempotencyKey: `${args.booking_id}:update:${args.new_start}`,
+    });
+
     return { confirmed: true, start: row.start_at, end: row.end_at };
   } catch (err) {
     if (isPgError(err, EXCLUSION_VIOLATION)) {

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { decryptSecret } from "../_shared/crypto.ts";
 import { createLogger } from "../_shared/logger.ts";
 import type { SqlClient } from "../_shared/types.ts";
 import type { AdapterConnectDeps } from "./handler.ts";
 import { handleAdapterConnect } from "./handler.ts";
 import { signOAuthState } from "./state.ts";
+
+const TEST_TOKEN_ENCRYPTION_KEY = btoa("abcdefghijklmnopqrstuvwxyz012345");
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -49,6 +52,7 @@ const BASE_DEPS: AdapterConnectDeps = {
     redirectUri: "https://example.com/cb",
   },
   ezyvet: { clientId: "e_client", clientSecret: "e_secret", partnerId: "partner_1" },
+  tokenEncryptionKey: TEST_TOKEN_ENCRYPTION_KEY,
   logger: createLogger(),
 };
 
@@ -139,7 +143,13 @@ describe("handleAdapterConnect: callback", () => {
       body: { connected: true, provider: "square" },
     });
     expect(captured).toContain("tenant_1");
-    expect(captured).toContain("at");
+    // DB-H2: the access token is written encrypted, never as plaintext.
+    expect(captured).not.toContain("at");
+    const storedAccessToken = captured.find(
+      (v) => typeof v === "string" && v.startsWith("v1:"),
+    ) as string;
+    expect(storedAccessToken).toBeDefined();
+    expect(await decryptSecret(storedAccessToken, TEST_TOKEN_ENCRYPTION_KEY)).toBe("at");
   });
 
   it("rejects a callback whose state was signed for a different tenant (fail closed)", async () => {
@@ -211,7 +221,11 @@ describe("handleAdapterConnect: paste_key", () => {
       status: 200,
       body: { connected: true, provider: "shopmonkey" },
     });
-    expect(captured).toContain("sk_live_1");
+    expect(captured).not.toContain("sk_live_1");
+    const storedApiKey = captured.find(
+      (v) => typeof v === "string" && v.startsWith("v1:"),
+    ) as string;
+    expect(await decryptSecret(storedApiKey, TEST_TOKEN_ENCRYPTION_KEY)).toBe("sk_live_1");
   });
 
   it("rejects an invalid Shopmonkey API key without storing anything", async () => {
@@ -256,7 +270,11 @@ describe("handleAdapterConnect: paste_key", () => {
       status: 200,
       body: { connected: true, provider: "ezyvet" },
     });
-    expect(captured).toContain("token");
+    expect(captured).not.toContain("token");
+    const storedAccessToken = captured.find(
+      (v) => typeof v === "string" && v.startsWith("v1:"),
+    ) as string;
+    expect(await decryptSecret(storedAccessToken, TEST_TOKEN_ENCRYPTION_KEY)).toBe("token");
   });
 
   it("rejects when the practice has not authorized our partner_id for that database", async () => {

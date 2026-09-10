@@ -105,8 +105,8 @@ describe("processOutboundMessage", () => {
     expect(update?.values).toContain("SM123");
   });
 
-  it("marks failed when Twilio returns a non-ok response", async () => {
-    const { sql } = makeSql({
+  it("throws (never swallows) on a transient Twilio failure so the queue retries and eventually dead-letters it", async () => {
+    const { sql, calls } = makeSql({
       "from public.messages_outbound": [BASE_MESSAGE],
       "from public.customers": [{ sms_opt_out: false }],
       "from public.tenants": [{ a2p_status: "verified" }],
@@ -114,7 +114,64 @@ describe("processOutboundMessage", () => {
     const deps = makeDeps({
       twilioFetch: (() =>
         Promise.resolve(
-          new Response(JSON.stringify({ message: "bad" }), { status: 400 }),
+          new Response(JSON.stringify({ message: "internal error" }), { status: 500 }),
+        )) as never,
+    });
+    await expect(processOutboundMessage(sql, "msg_1", deps)).rejects.toThrow(
+      "twilio_send_transient_failure:500",
+    );
+    // Never written to a terminal status on a transient failure — the row
+    // stays retryable.
+    expect(calls.some((c) => c.text.includes("status = 'failed'"))).toBe(false);
+  });
+
+  it("marks failed without throwing on a permanent Twilio rejection (invalid 'To' number)", async () => {
+    const { sql, calls } = makeSql({
+      "from public.messages_outbound": [BASE_MESSAGE],
+      "from public.customers": [{ sms_opt_out: false }],
+      "from public.tenants": [{ a2p_status: "verified" }],
+    });
+    const deps = makeDeps({
+      twilioFetch: (() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ code: 21211, message: "Invalid 'To' Phone Number" }), {
+            status: 400,
+          }),
+        )) as never,
+    });
+    const outcome = await processOutboundMessage(sql, "msg_1", deps);
+    expect(outcome).toBe("failed");
+    expect(calls.some((c) => c.text.includes("status = 'failed'"))).toBe(true);
+  });
+
+  it("throws on a transient Resend failure instead of marking the message failed", async () => {
+    const { sql, calls } = makeSql({
+      "from public.messages_outbound": [BASE_MESSAGE],
+      "from public.customers": [{ sms_opt_out: false }],
+      "from public.tenants": [{ a2p_status: "pending_verification" }],
+    });
+    const deps = makeDeps({
+      resendFetch: (() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ name: "internal_server_error" }), { status: 500 }),
+        )) as never,
+    });
+    await expect(processOutboundMessage(sql, "msg_1", deps)).rejects.toThrow(
+      "resend_send_transient_failure:500",
+    );
+    expect(calls.some((c) => c.text.includes("status = 'failed'"))).toBe(false);
+  });
+
+  it("marks failed without throwing on a permanent Resend validation error", async () => {
+    const { sql } = makeSql({
+      "from public.messages_outbound": [BASE_MESSAGE],
+      "from public.customers": [{ sms_opt_out: false }],
+      "from public.tenants": [{ a2p_status: "pending_verification" }],
+    });
+    const deps = makeDeps({
+      resendFetch: (() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ name: "validation_error" }), { status: 400 }),
         )) as never,
     });
     const outcome = await processOutboundMessage(sql, "msg_1", deps);

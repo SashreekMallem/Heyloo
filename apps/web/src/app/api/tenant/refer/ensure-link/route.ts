@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-role";
+import { computeReferralFunnel, isApproachingW9Threshold } from "./funnel";
 
 export const runtime = "nodejs";
 
@@ -62,5 +63,25 @@ export async function POST() {
         .single()
     ).data?.code;
 
-  return NextResponse.json({ code, partner_id: partnerId });
+  const [{ data: referrals }, { data: partner }] = await Promise.all([
+    service.from("referrals").select("status").eq("referral_partner_id", partnerId),
+    service
+      .from("referral_partners")
+      .select("ytd_payout_cents, w9_status")
+      .eq("id", partnerId)
+      .maybeSingle(),
+  ]);
+
+  const funnel = computeReferralFunnel(referrals ?? []);
+  const ytdPayoutCents = partner?.ytd_payout_cents ?? 0;
+  const w9Status = partner?.w9_status ?? "not_submitted";
+
+  return NextResponse.json({
+    code,
+    partner_id: partnerId,
+    funnel,
+    w9_status: w9Status,
+    ytd_payout_cents: ytdPayoutCents,
+    approaching_w9_threshold: isApproachingW9Threshold(ytdPayoutCents, w9Status),
+  });
 }

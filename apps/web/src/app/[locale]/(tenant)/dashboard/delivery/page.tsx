@@ -2,8 +2,9 @@
 
 import { Card, CardContent, ConnectionLifecycleCard, Input, Label, Switch } from "@heyloo/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import type { AirtableStatusResponse } from "@/app/api/tenant/delivery/airtable/status/route";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
@@ -64,6 +65,70 @@ export default function DeliveryPage() {
     else void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "agent_configs"] });
   }
 
+  const airtableQuery = useQuery({
+    queryKey: ["tenant", tenantId, "adapter_connections", "airtable"],
+    queryFn: async (): Promise<AirtableStatusResponse> => {
+      const res = await fetch("/api/tenant/delivery/airtable/status");
+      return (await res.json()) as AirtableStatusResponse;
+    },
+    enabled: !!tenantId,
+  });
+
+  const [syncLogOpen, setSyncLogOpen] = useState(false);
+
+  useEffect(() => {
+    function onMessage(event: MessageEvent) {
+      // Fixed-origin check (FRONTEND_SPEC.md §6.8) — never trust a message
+      // from any origin but our own popup.
+      if (event.origin !== window.location.origin) return;
+      const data = event.data as { source?: string; ok?: boolean; error?: string } | null;
+      if (data?.source !== "heyloo-airtable-oauth") return;
+      if (data.ok) {
+        toast.success("Airtable connected");
+      } else {
+        toast.error(
+          data.error === "airtable_oauth_not_configured"
+            ? "Airtable connect isn't configured yet — contact support."
+            : "Couldn't connect Airtable — please try again.",
+        );
+      }
+      void queryClient.invalidateQueries({
+        queryKey: ["tenant", tenantId, "adapter_connections"],
+      });
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [queryClient, tenantId]);
+
+  function connectAirtable() {
+    window.open(
+      "/api/tenant/delivery/airtable/connect",
+      "heyloo-airtable-connect",
+      "width=520,height=640",
+    );
+  }
+
+  async function disconnectAirtable() {
+    const res = await fetch("/api/tenant/delivery/airtable/disconnect", { method: "POST" });
+    if (res.ok) {
+      toast.success("Airtable disconnected");
+      void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "adapter_connections"] });
+    } else {
+      toast.error("Couldn't disconnect — please try again.");
+    }
+  }
+
+  async function syncNowAirtable() {
+    const res = await fetch("/api/tenant/delivery/airtable/sync-now", { method: "POST" });
+    const body = (await res.json()) as { enqueued?: number; pending?: number };
+    if (res.ok) {
+      toast.success(`Sync queued for ${body.enqueued ?? 0} record(s)`);
+      void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "adapter_connections"] });
+    } else {
+      toast.error("Sync isn't available yet — we've flagged it for the team.");
+    }
+  }
+
   if (!loaded) return null;
 
   return (
@@ -108,11 +173,45 @@ export default function DeliveryPage() {
 
       <ConnectionLifecycleCard
         provider="Airtable"
-        status="disconnected"
-        onConnect={() => toast.info("Airtable connect is coming soon.")}
-        onDisconnect={() => {}}
-        onSyncNow={() => {}}
+        status={airtableQuery.data?.status ?? "disconnected"}
+        lastSyncAt={airtableQuery.data?.last_synced_at ?? undefined}
+        onConnect={connectAirtable}
+        onDisconnect={() => void disconnectAirtable()}
+        onSyncNow={() => void syncNowAirtable()}
       />
+
+      {airtableQuery.data && airtableQuery.data.sync_log.length > 0 && (
+        <div className="rounded-lg border border-border">
+          <button
+            type="button"
+            className="w-full px-3 py-2 text-left text-sm font-medium"
+            onClick={() => setSyncLogOpen((v) => !v)}
+          >
+            {syncLogOpen ? "Hide" : "Show"} sync log ({airtableQuery.data.sync_log.length})
+          </button>
+          {syncLogOpen && (
+            <ul className="divide-y divide-border border-t border-border text-sm">
+              {airtableQuery.data.sync_log.map((row) => (
+                <li
+                  key={`${row.entity_type}-${row.entity_id}`}
+                  className="flex items-center justify-between px-3 py-2"
+                >
+                  <span>
+                    {row.entity_type} {row.entity_id.slice(0, 8)}
+                  </span>
+                  <span className={row.sync_conflict ? "text-warning" : "text-muted-foreground"}>
+                    {row.sync_conflict
+                      ? "Conflict — edited in Airtable since last sync"
+                      : row.last_synced_at
+                        ? new Date(row.last_synced_at).toLocaleString()
+                        : "Not yet synced"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }

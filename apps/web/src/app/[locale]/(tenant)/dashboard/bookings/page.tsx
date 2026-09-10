@@ -1,29 +1,72 @@
 "use client";
 
+import { formatCentsUSD } from "@heyloo/canonical-types";
 import {
+  Badge,
   BookingCalendar,
   type BookingCalendarEntry,
   type BookingCalendarView,
   Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
   DataState,
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
+  Skeleton,
   StatusBadge,
 } from "@heyloo/ui";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
-import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
+import { Link } from "@/i18n/navigation";
+import { tenantQueryKey, useTenantQuery } from "@/lib/hooks/use-tenant-query";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
+import { parseTstzrange } from "@/lib/tstzrange";
+
+interface BookingDetail {
+  resourceId: string | null;
+  customerPhone: string | null;
+  paymentLink: {
+    id: string;
+    amountCents: number;
+    purpose: string;
+    status: string;
+  } | null;
+}
+
+interface SlotOption {
+  id: string;
+  start: string;
+}
+
+interface WaitlistRow {
+  id: string;
+  customerName: string;
+  windowStart: string | null;
+  createdAt: string;
+}
+
+const PAYMENT_STATUS_VARIANT: Record<string, "outline" | "secondary" | "success" | "destructive"> =
+  {
+    pending: "outline",
+    sent: "secondary",
+    paid: "success",
+    expired: "destructive",
+    cancelled: "destructive",
+  };
 
 export default function BookingsPage() {
   const tenantId = useCurrentTenantId();
   const queryClient = useQueryClient();
   const [view, setView] = useState<BookingCalendarView>("list");
   const [selected, setSelected] = useState<BookingCalendarEntry | null>(null);
+  const [rescheduling, setRescheduling] = useState(false);
+  const [resendingLink, setResendingLink] = useState(false);
 
   const query = useTenantQuery(
     tenantId ?? "",
@@ -59,7 +102,114 @@ export default function BookingsPage() {
     { enabled: !!tenantId },
   );
 
-  async function runAction(action: "confirm" | "reschedule" | "cancel") {
+  const detailQuery = useTenantQuery(
+    tenantId ?? "",
+    "booking_detail",
+    [selected?.id ?? ""],
+    async (): Promise<BookingDetail> => {
+      const bookingId = selected?.id as string;
+      const [{ data: booking }, { data: paymentLink }] = await Promise.all([
+        supabaseBrowserClient
+          .from("bookings")
+          .select("resource_id, customer_id")
+          .eq("id", bookingId)
+          .eq("tenant_id", tenantId as string)
+          .maybeSingle(),
+        supabaseBrowserClient
+          .from("payment_links")
+          .select("id, amount_cents, purpose, status")
+          .eq("booking_id", bookingId)
+          .eq("tenant_id", tenantId as string)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ]);
+      const { data: customer } = booking?.customer_id
+        ? await supabaseBrowserClient
+            .from("customers")
+            .select("phone_e164")
+            .eq("id", booking.customer_id)
+            .maybeSingle()
+        : { data: null };
+      return {
+        resourceId: booking?.resource_id ?? null,
+        customerPhone: customer?.phone_e164 ?? null,
+        paymentLink: paymentLink
+          ? {
+              id: paymentLink.id,
+              amountCents: paymentLink.amount_cents,
+              purpose: paymentLink.purpose,
+              status: paymentLink.status,
+            }
+          : null,
+      };
+    },
+    { enabled: !!selected && !!tenantId },
+  );
+
+  const slotsQuery = useTenantQuery(
+    tenantId ?? "",
+    "reschedule_slots",
+    [detailQuery.data?.resourceId ?? ""],
+    async (): Promise<SlotOption[]> => {
+      const { data } = await supabaseBrowserClient
+        .from("availability_slots")
+        .select("id, slot_range")
+        .eq("tenant_id", tenantId as string)
+        .eq("resource_id", detailQuery.data?.resourceId as string)
+        .eq("is_available", true)
+        .order("slot_range", { ascending: true })
+        .limit(30);
+      const options: SlotOption[] = [];
+      for (const s of data ?? []) {
+        const range = parseTstzrange(s.slot_range);
+        if (range) options.push({ id: s.id, start: range.start });
+      }
+      return options;
+    },
+    { enabled: rescheduling && !!detailQuery.data?.resourceId },
+  );
+
+  const waitlistQuery = useTenantQuery(
+    tenantId ?? "",
+    "waitlist_entries",
+    [],
+    async (): Promise<WaitlistRow[]> => {
+      const { data: entries } = await supabaseBrowserClient
+        .from("waitlist_entries")
+        .select("id, customer_id, window, created_at")
+        .eq("tenant_id", tenantId as string)
+        .eq("status", "active")
+        .order("created_at", { ascending: false })
+        .limit(50);
+      const customerIds = [...new Set((entries ?? []).map((e) => e.customer_id))];
+      const { data: customers } = customerIds.length
+        ? await supabaseBrowserClient
+            .from("customers")
+            .select("id, name, phone_e164")
+            .in("id", customerIds)
+        : { data: [] as { id: string; name: string | null; phone_e164: string }[] };
+      const byId = new Map((customers ?? []).map((c) => [c.id, c]));
+      return (entries ?? []).map((e) => {
+        const customer = byId.get(e.customer_id);
+        const range = parseTstzrange(e.window);
+        return {
+          id: e.id,
+          customerName: customer?.name ?? customer?.phone_e164 ?? "Unknown customer",
+          windowStart: range?.start ?? null,
+          createdAt: e.created_at,
+        };
+      });
+    },
+    { enabled: !!tenantId },
+  );
+
+  function closeSheet() {
+    setSelected(null);
+    setRescheduling(false);
+  }
+
+  async function runAction(action: "confirm" | "cancel") {
     if (!selected) return;
     const res = await fetch(`/api/tenant/bookings/${selected.id}`, {
       method: "PATCH",
@@ -74,13 +224,70 @@ export default function BookingsPage() {
     toast.success(
       body.sms_queued ? "Customer notified by SMS" : "Saved — SMS notification pending",
     );
-    setSelected(null);
+    closeSheet();
     if (tenantId)
       void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "bookings"] });
   }
 
+  async function pickSlot(slotId: string) {
+    if (!selected || !tenantId) return;
+    const res = await fetch(`/api/tenant/bookings/${selected.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "reschedule", new_slot_id: slotId }),
+    });
+    if (res.status === 409) {
+      toast.error("That slot was just taken — pick another.");
+      void queryClient.invalidateQueries({
+        queryKey: tenantQueryKey(tenantId, "reschedule_slots", detailQuery.data?.resourceId ?? ""),
+      });
+      return;
+    }
+    const body = (await res.json()) as { ok?: boolean; sms_queued?: boolean; error?: string };
+    if (!res.ok || !body.ok) {
+      toast.error("Something went wrong — please try again.");
+      return;
+    }
+    toast.success(
+      body.sms_queued ? "Customer notified by SMS" : "Saved — SMS notification pending",
+    );
+    closeSheet();
+    void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "bookings"] });
+  }
+
+  async function resendPaymentLink() {
+    const link = detailQuery.data?.paymentLink;
+    if (!link || !tenantId) return;
+    setResendingLink(true);
+    const res = await fetch(`/api/tenant/payment-links/${link.id}/resend`, { method: "POST" });
+    setResendingLink(false);
+    if (!res.ok) {
+      toast.error("Couldn't resend the payment link — please try again shortly.");
+      return;
+    }
+    toast.success("Payment link re-sent by SMS");
+    void queryClient.invalidateQueries({
+      queryKey: tenantQueryKey(tenantId, "booking_detail", selected?.id ?? ""),
+    });
+  }
+
+  async function removeFromWaitlist(id: string) {
+    if (!tenantId) return;
+    const res = await fetch(`/api/tenant/waitlist/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "expired" }),
+    });
+    if (!res.ok) {
+      toast.error("Couldn't update — please try again.");
+      return;
+    }
+    toast.success("Removed from waitlist");
+    void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "waitlist_entries"] });
+  }
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Bookings</h1>
         <div className="flex gap-2">
@@ -114,7 +321,46 @@ export default function BookingsPage() {
         )}
       />
 
-      <Sheet open={!!selected} onOpenChange={(open) => !open && setSelected(null)}>
+      <Card>
+        <CardHeader>
+          <CardTitle>Waitlist</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <DataState
+            query={waitlistQuery}
+            empty={{
+              title: "No one's waiting",
+              description:
+                "Customers offered a waitlist spot when nothing was available show up here.",
+            }}
+            render={(entries) => (
+              <ul className="divide-y divide-border">
+                {entries.map((entry) => (
+                  <li key={entry.id} className="flex items-center justify-between gap-3 py-2">
+                    <div>
+                      <p className="text-sm font-medium">{entry.customerName}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {entry.windowStart
+                          ? `Wants ${new Date(entry.windowStart).toLocaleString()}`
+                          : "Open window"}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => removeFromWaitlist(entry.id)}
+                    >
+                      Remove
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          />
+        </CardContent>
+      </Card>
+
+      <Sheet open={!!selected} onOpenChange={(open) => !open && closeSheet()}>
         <SheetContent>
           <SheetHeader>
             <SheetTitle>{selected?.customerName ?? "Booking"}</SheetTitle>
@@ -125,12 +371,96 @@ export default function BookingsPage() {
               <p className="text-sm text-muted-foreground">
                 {new Date(selected.startAt).toLocaleString()}
               </p>
-              <div className="flex flex-col gap-2">
-                <Button onClick={() => runAction("confirm")}>Confirm</Button>
-                <Button variant="outline" onClick={() => runAction("cancel")}>
-                  Cancel booking
-                </Button>
+              {detailQuery.data?.customerPhone && (
+                <Link
+                  href={`/dashboard/messages/${encodeURIComponent(detailQuery.data.customerPhone)}`}
+                  className="text-sm text-primary underline underline-offset-2"
+                >
+                  Message this customer
+                </Link>
+              )}
+
+              <div>
+                <p className="mb-1 text-xs font-medium text-muted-foreground">Payment</p>
+                {detailQuery.isLoading ? (
+                  <Skeleton className="h-8 w-full" />
+                ) : detailQuery.data?.paymentLink ? (
+                  <div className="flex items-center justify-between gap-2 rounded-md border border-border p-2">
+                    <div>
+                      <p className="text-sm">
+                        {formatCentsUSD(detailQuery.data.paymentLink.amountCents)} —{" "}
+                        {detailQuery.data.paymentLink.purpose}
+                      </p>
+                      <Badge
+                        variant={
+                          PAYMENT_STATUS_VARIANT[detailQuery.data.paymentLink.status] ?? "outline"
+                        }
+                      >
+                        {detailQuery.data.paymentLink.status}
+                      </Badge>
+                    </div>
+                    {detailQuery.data.paymentLink.status !== "paid" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={resendingLink}
+                        onClick={resendPaymentLink}
+                      >
+                        Resend link
+                      </Button>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    No payment requested for this booking.
+                  </p>
+                )}
               </div>
+
+              {!rescheduling ? (
+                <div className="flex flex-col gap-2">
+                  <Button onClick={() => runAction("confirm")}>Confirm</Button>
+                  <Button variant="outline" onClick={() => setRescheduling(true)}>
+                    Reschedule
+                  </Button>
+                  <Button variant="outline" onClick={() => runAction("cancel")}>
+                    Cancel booking
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Pick a new time — only slots this resource can actually hold are shown.
+                  </p>
+                  <DataState
+                    query={slotsQuery}
+                    empty={{ title: "No open slots in the next few weeks" }}
+                    render={(slots) => (
+                      <div className="grid max-h-64 grid-cols-2 gap-2 overflow-y-auto">
+                        {slots.map((slot) => (
+                          <Button
+                            key={slot.id}
+                            size="sm"
+                            variant="outline"
+                            onClick={() => pickSlot(slot.id)}
+                          >
+                            {new Date(slot.start).toLocaleString(undefined, {
+                              weekday: "short",
+                              month: "short",
+                              day: "numeric",
+                              hour: "numeric",
+                              minute: "2-digit",
+                            })}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
+                  />
+                  <Button variant="ghost" size="sm" onClick={() => setRescheduling(false)}>
+                    Back
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </SheetContent>

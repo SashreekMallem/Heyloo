@@ -31,6 +31,9 @@ const args = {
   customer: { name: "Jordan Lee", phone: "555-123-4567" },
 };
 
+const RESOURCE_FOUND: Step = { rows: [{ id: "res_1" }] };
+const NO_ADAPTER_CONNECTIONS: Step = { rows: [] };
+
 describe("createBooking", () => {
   it("rejects an unparseable phone number without touching the DB for the insert", async () => {
     const { sql } = makeStepSql([]);
@@ -38,8 +41,24 @@ describe("createBooking", () => {
     expect(result).toEqual({ confirmed: false, reason: "invalid_phone" });
   });
 
+  it("EDGE_AUDIT B1: rejects a resource_id that doesn't belong to (or isn't active for) the caller's tenant", async () => {
+    const { sql } = makeStepSql([{ rows: [] }]); // resource ownership check: no match
+    const result = await createBooking(sql, ctx, args);
+    expect(result).toEqual({ confirmed: false, reason: "resource_not_found" });
+  });
+
+  it("EDGE_AUDIT B1: rejects an offering_id that doesn't belong to the caller's tenant", async () => {
+    const { sql } = makeStepSql([
+      RESOURCE_FOUND,
+      { rows: [] }, // offering ownership check: no match
+    ]);
+    const result = await createBooking(sql, ctx, { ...args, offering_id: "off_other_tenant" });
+    expect(result).toEqual({ confirmed: false, reason: "offering_not_found" });
+  });
+
   it("returns the existing booking on an idempotent replay (same call_id + start)", async () => {
     const { sql } = makeStepSql([
+      RESOURCE_FOUND,
       { rows: [{ id: "booking_1", start_at: args.start, end_at: args.end }] }, // idempotency pre-check
     ]);
     const result = await createBooking(sql, ctx, args);
@@ -53,9 +72,11 @@ describe("createBooking", () => {
 
   it("creates a new booking end-to-end: customer upsert then insert", async () => {
     const { sql } = makeStepSql([
+      RESOURCE_FOUND,
       { rows: [] }, // idempotency pre-check: none found
       { rows: [{ id: "customer_1" }] }, // customer upsert
       { rows: [{ id: "booking_1", start_at: args.start, end_at: args.end }] }, // booking insert
+      NO_ADAPTER_CONNECTIONS, // adapter-push producer: no connected adapter
     ]);
     const result = await createBooking(sql, ctx, args);
     expect(result).toEqual({
@@ -66,8 +87,35 @@ describe("createBooking", () => {
     });
   });
 
+  it("EDGE_AUDIT B4: enqueues an adapter_push_queue booking entry per connected adapter", async () => {
+    const enqueueCalls: unknown[] = [];
+    let i = 0;
+    const steps: Step[] = [
+      RESOURCE_FOUND,
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+      { rows: [{ id: "booking_1", start_at: args.start, end_at: args.end }] }, // booking insert
+      { rows: [{ provider: "shopmonkey" }] }, // adapter-push producer: one connected adapter
+    ];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("pgmq.send")) {
+        enqueueCalls.push(values);
+        return Promise.resolve([]);
+      }
+      const step = steps[i];
+      i += 1;
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+
+    const result = await createBooking(sql, ctx, args);
+    expect(result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
+    expect(enqueueCalls).toHaveLength(1);
+  });
+
   it("returns confirmed:false/slot_taken on an exclusion-constraint violation (23P01), never throwing", async () => {
     const { sql } = makeStepSql([
+      RESOURCE_FOUND,
       { rows: [] }, // idempotency pre-check
       { rows: [{ id: "customer_1" }] }, // customer upsert
       { throws: { code: "23P01", message: "conflicting key value" } }, // booking insert races
@@ -79,6 +127,7 @@ describe("createBooking", () => {
 
   it("returns the race winner's booking when the concurrent insert was actually the same idempotency key", async () => {
     const { sql } = makeStepSql([
+      RESOURCE_FOUND,
       { rows: [] },
       { rows: [{ id: "customer_1" }] },
       { throws: { code: "23505", message: "duplicate key" } },
@@ -95,6 +144,7 @@ describe("createBooking", () => {
 
   it("re-throws an unrelated DB error rather than masking it as slot_taken", async () => {
     const { sql } = makeStepSql([
+      RESOURCE_FOUND,
       { rows: [] },
       { rows: [{ id: "customer_1" }] },
       { throws: new Error("connection reset") },

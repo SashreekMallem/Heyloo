@@ -98,6 +98,7 @@ describe("routeAdminRequest — tenants group", () => {
         method: "POST",
         path: "/admin-tenants/t1/impersonate",
         claims: { app_metadata: { platform_admin: true }, aal: "aal1" },
+        body: { reason: "customer escalation" },
       }),
       logger,
     );
@@ -105,7 +106,23 @@ describe("routeAdminRequest — tenants group", () => {
     expect(calls.some((c) => c.text.includes("insert into public.admin_actions"))).toBe(false);
   });
 
-  it("writes admin_actions impersonate_start when AAL2 is present, and returns 501 without supabaseAdmin deps", async () => {
+  it("rejects impersonation with no reason (adminImpersonateSchema requires one for the audit log)", async () => {
+    const { sql, calls } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-tenants/t1/impersonate",
+        claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
+        body: {},
+      }),
+      logger,
+    );
+    expect(result).toEqual({ status: 422, body: { error: "reason_required" } });
+    expect(calls.some((c) => c.text.includes("insert into public.admin_actions"))).toBe(false);
+  });
+
+  it("writes admin_actions impersonate_start (with reason + timebox) when AAL2 is present, and returns 501 without supabaseAdmin deps", async () => {
     const { sql, calls } = makeSql({ "from public.tenants where id": [{ id: "t1" }] });
     const result = await routeAdminRequest(
       sql,
@@ -113,15 +130,18 @@ describe("routeAdminRequest — tenants group", () => {
         method: "POST",
         path: "/admin-tenants/t1/impersonate",
         claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
+        body: { reason: "customer escalation" },
       }),
       logger,
     );
-    expect(calls.some((c) => c.text.includes("insert into public.admin_actions"))).toBe(true);
+    const auditCall = calls.find((c) => c.text.includes("insert into public.admin_actions"));
+    expect(auditCall).toBeDefined();
+    expect(JSON.stringify(auditCall?.values)).toContain("customer escalation");
     // Token minting itself needs deps.supabaseAdmin wired at deploy time.
     expect(result.status).toBe(501);
   });
 
-  it("mints a real impersonation link when supabaseAdmin deps are wired", async () => {
+  it("mints a real impersonation link + expires_at when supabaseAdmin deps are wired", async () => {
     const { sql } = makeSql({
       "from public.tenants where id": [{ id: "t1" }],
       "from public.memberships where tenant_id": [{ user_id: "owner-1" }],
@@ -140,13 +160,154 @@ describe("routeAdminRequest — tenants group", () => {
         method: "POST",
         path: "/admin-tenants/t1/impersonate",
         claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
+        body: { reason: "customer escalation" },
       }),
       logger,
       { supabaseAdmin: { fetchImpl, url: "https://project.supabase.co", serviceRoleKey: "sk" } },
     );
-    expect(result).toEqual({
-      status: 200,
-      body: { impersonation_link: "https://project.supabase.co/magic", tenant_id: "t1" },
+    expect(result.status).toBe(200);
+    const body = result.body as {
+      impersonation_link: string;
+      tenant_id: string;
+      expires_at: string;
+    };
+    expect(body.impersonation_link).toBe("https://project.supabase.co/magic");
+    expect(body.tenant_id).toBe("t1");
+    expect(new Date(body.expires_at).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("inserts a read-only impersonation_sessions row (edit_enabled=false) once the mint succeeds", async () => {
+    const { sql, calls } = makeSql({
+      "from public.tenants where id": [{ id: "t1" }],
+      "from public.memberships where tenant_id": [{ user_id: "owner-1" }],
+    });
+    const fetchImpl = (async (url: string) => {
+      if (url.includes("/admin/users/")) {
+        return new Response(JSON.stringify({ email: "owner@example.com" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ action_link: "https://project.supabase.co/magic" }), {
+        status: 200,
+      });
+    }) as never;
+    await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-tenants/t1/impersonate",
+        claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
+        body: { reason: "customer escalation" },
+      }),
+      logger,
+      { supabaseAdmin: { fetchImpl, url: "https://project.supabase.co", serviceRoleKey: "sk" } },
+    );
+    const insertCall = calls.find((c) =>
+      c.text.includes("insert into public.impersonation_sessions"),
+    );
+    expect(insertCall).toBeDefined();
+    expect(insertCall?.values.slice(0, 4)).toEqual([
+      "t1",
+      "admin_1",
+      "owner-1",
+      "customer escalation",
+    ]);
+    expect(insertCall?.values).not.toContain(true);
+    expect(new Date(insertCall?.values[4] as string).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("writes a second admin_actions entry for impersonate-end, and ends any active impersonation_sessions row", async () => {
+    const { sql, calls } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ method: "POST", path: "/admin-tenants/t1/impersonate-end" }),
+      logger,
+    );
+    expect(result).toEqual({ status: 200, body: { ended: true } });
+    expect(
+      calls.some(
+        (c) =>
+          c.text.includes("insert into public.admin_actions") &&
+          JSON.stringify(c.values).includes("impersonate_end"),
+      ),
+    ).toBe(true);
+    expect(
+      calls.some(
+        (c) =>
+          c.text.includes("update public.impersonation_sessions") && c.text.includes("ended_at"),
+      ),
+    ).toBe(true);
+  });
+
+  describe("impersonate edit-mode toggle", () => {
+    it("requires AAL2", async () => {
+      const { sql, calls } = makeSql();
+      const result = await routeAdminRequest(
+        sql,
+        baseCtx({
+          method: "POST",
+          path: "/admin-tenants/t1/impersonate/edit-mode",
+          claims: { app_metadata: { platform_admin: true }, aal: "aal1" },
+          body: { enabled: true },
+        }),
+        logger,
+      );
+      expect(result).toEqual({ status: 403, body: { error: "aal2_required" } });
+      expect(calls.some((c) => c.text.includes("insert into public.admin_actions"))).toBe(false);
+    });
+
+    it("rejects a non-boolean enabled field", async () => {
+      const { sql } = makeSql();
+      const result = await routeAdminRequest(
+        sql,
+        baseCtx({
+          method: "POST",
+          path: "/admin-tenants/t1/impersonate/edit-mode",
+          claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
+          body: { enabled: "yes" },
+        }),
+        logger,
+      );
+      expect(result).toEqual({ status: 422, body: { error: "invalid_enabled" } });
+    });
+
+    it("returns 404 when the calling admin has no active impersonation session on this tenant", async () => {
+      const { sql } = makeSql();
+      const result = await routeAdminRequest(
+        sql,
+        baseCtx({
+          method: "POST",
+          path: "/admin-tenants/t1/impersonate/edit-mode",
+          claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
+          body: { enabled: true },
+        }),
+        logger,
+      );
+      expect(result).toEqual({ status: 404, body: { error: "no_active_impersonation_session" } });
+    });
+
+    it("flips edit_enabled and writes a second admin_actions audit entry", async () => {
+      const { sql, calls } = makeSql({
+        "select edit_enabled from public.impersonation_sessions": [{ edit_enabled: false }],
+      });
+      const result = await routeAdminRequest(
+        sql,
+        baseCtx({
+          method: "POST",
+          path: "/admin-tenants/t1/impersonate/edit-mode",
+          claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
+          body: { enabled: true },
+        }),
+        logger,
+      );
+      expect(result).toEqual({ status: 200, body: { edit_enabled: true } });
+      expect(
+        calls.some((c) => c.text.includes("update public.impersonation_sessions set edit_enabled")),
+      ).toBe(true);
+      const auditCall = calls.find(
+        (c) =>
+          c.text.includes("insert into public.admin_actions") &&
+          JSON.stringify(c.values).includes("impersonate_edit_mode_change"),
+      );
+      expect(auditCall).toBeDefined();
     });
   });
 });
@@ -417,6 +578,263 @@ describe("routeAdminRequest — alerts group", () => {
       logger,
     );
     expect(result.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Alert-rule editor (FRONTEND_AUDIT.md M2 — was a `toast("coming soon")`
+// stub with no `adminAlertThresholdSchema` persistence anywhere).
+// ---------------------------------------------------------------------
+describe("routeAdminRequest — alert rules editor", () => {
+  it("returns an empty list when no admin_alert_rules row exists yet", async () => {
+    const { sql } = makeSql();
+    const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-alerts/rules" }), logger);
+    expect(result).toEqual({ status: 200, body: { rules: [] } });
+  });
+
+  it("returns the stored rules", async () => {
+    const { sql } = makeSql({
+      "from public.platform_settings where key": [
+        {
+          value: {
+            rules: [
+              {
+                id: "r1",
+                metric: "negative_margin",
+                operator: "lt",
+                value: 0,
+                enabled: true,
+                channel: "email",
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-alerts/rules" }), logger);
+    expect(result.status).toBe(200);
+    expect((result.body as { rules: unknown[] }).rules).toHaveLength(1);
+  });
+
+  it("rejects an invalid new rule (never silently no-ops, returns 422)", async () => {
+    const { sql } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-alerts/rules",
+        body: {
+          metric: "not_a_real_metric",
+          operator: "gt",
+          value: 1,
+          enabled: true,
+          channel: "email",
+        },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(422);
+  });
+
+  it("creates a new rule with a generated id and writes admin_actions", async () => {
+    const { sql, calls } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-alerts/rules",
+        body: {
+          metric: "usage_spike",
+          operator: "gte",
+          value: 2,
+          enabled: true,
+          channel: "dashboard_only",
+        },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(201);
+    const rule = (result.body as { rule: { id: string; metric: string } }).rule;
+    expect(rule.metric).toBe("usage_spike");
+    expect(rule.id).toBeTruthy();
+    expect(
+      calls.some(
+        (c) =>
+          c.text.includes("insert into public.admin_actions") &&
+          JSON.stringify(c.values).includes("alert_rule_create"),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns 404 editing a rule id that doesn't exist", async () => {
+    const { sql } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ method: "PATCH", path: "/admin-alerts/rules/missing", body: { enabled: false } }),
+      logger,
+    );
+    expect(result.status).toBe(404);
+  });
+
+  it("edits an existing rule and writes a before/after admin_actions row", async () => {
+    const { sql, calls } = makeSql({
+      "from public.platform_settings where key": [
+        {
+          value: {
+            rules: [
+              {
+                id: "r1",
+                metric: "negative_margin",
+                operator: "lt",
+                value: 0,
+                enabled: true,
+                channel: "email",
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "PATCH",
+        path: "/admin-alerts/rules/r1",
+        body: { enabled: false },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    expect((result.body as { rule: { enabled: boolean } }).rule.enabled).toBe(false);
+    expect(
+      calls.some(
+        (c) =>
+          c.text.includes("insert into public.admin_actions") &&
+          JSON.stringify(c.values).includes("alert_rule_edit"),
+      ),
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Platform settings (FRONTEND_AUDIT.md H9 — was seeded with invented
+// constants, both saves 404'd against endpoints that didn't exist).
+// ---------------------------------------------------------------------
+describe("routeAdminRequest — platform settings group", () => {
+  it("loads the real referral + price-card rows, defaulting unset ones", async () => {
+    const { sql } = makeSql({
+      "key = any": [
+        { key: "referral_flat_amount_cents", value: { amount_cents: 15000 } },
+        { key: "referral_qualification_rule", value: { rule: "2nd paid month" } },
+        {
+          key: "price_card_auto",
+          value: { base_cents: 29900, included_minutes: 300, overage_cents: 45 },
+        },
+      ],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-platform-settings" }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    const body = result.body as {
+      referral: { flat_amount_cents: number; qualification_rule: string };
+      price_cards: Record<string, unknown>;
+    };
+    expect(body.referral).toEqual({
+      flat_amount_cents: 15000,
+      qualification_rule: "2nd paid month",
+    });
+    expect(body.price_cards["auto"]).toEqual({
+      base_cents: 29900,
+      included_minutes: 300,
+      overage_cents: 45,
+    });
+    expect(body.price_cards["generic"]).toBeNull();
+  });
+
+  it("rejects an invalid referral setting (never silently no-ops)", async () => {
+    const { sql } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "PATCH",
+        path: "/admin-platform-settings/referral",
+        body: { flat_amount_cents: -1, qualification_rule: "" },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(422);
+  });
+
+  it("saves a valid referral setting and writes a before/after admin_actions row", async () => {
+    const { sql, calls } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "PATCH",
+        path: "/admin-platform-settings/referral",
+        body: { flat_amount_cents: 20000, qualification_rule: "3rd paid month" },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    expect(
+      calls.some(
+        (c) =>
+          c.text.includes("insert into public.admin_actions") &&
+          JSON.stringify(c.values).includes("platform_settings_referral_edit"),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects an invalid price card (never silently no-ops)", async () => {
+    const { sql } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-platform-settings/pricing",
+        body: {
+          vertical: "not_a_vertical",
+          base_cents: 100,
+          included_minutes: 100,
+          overage_cents: 10,
+          effective_at: new Date().toISOString(),
+        },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(422);
+  });
+
+  it("saves a valid price card update and writes a before/after admin_actions row", async () => {
+    const { sql, calls } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-platform-settings/pricing",
+        body: {
+          vertical: "auto",
+          base_cents: 34900,
+          included_minutes: 350,
+          overage_cents: 40,
+          effective_at: new Date().toISOString(),
+        },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    expect((result.body as { vertical: string }).vertical).toBe("auto");
+    expect(
+      calls.some(
+        (c) =>
+          c.text.includes("insert into public.admin_actions") &&
+          JSON.stringify(c.values).includes("platform_settings_pricing_edit"),
+      ),
+    ).toBe(true);
   });
 });
 

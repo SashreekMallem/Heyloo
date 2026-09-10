@@ -11,6 +11,7 @@ import {
   CardTitle,
 } from "@heyloo/ui";
 import type { Metadata } from "next";
+import { setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 
 export const metadata: Metadata = {
@@ -34,7 +35,10 @@ const SECONDARY_FEATURES = [
 ];
 
 /** `/pricing` — the generic tier comparison only; the real price card never appears here (FRONTEND_SPEC.md §3.3). */
-export default function PricingPage() {
+export default async function PricingPage({ params }: { params: Promise<{ locale: string }> }) {
+  const { locale } = await params;
+  setRequestLocale(locale);
+
   return (
     <div className="mx-auto max-w-4xl px-4 py-16">
       <section className="text-center">

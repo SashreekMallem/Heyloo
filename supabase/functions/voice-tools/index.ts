@@ -10,8 +10,15 @@ import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { fallbackEnvelope, jsonResponse } from "../_shared/responses.ts";
 import { verifyRetellSignature } from "../_shared/retell-signature.ts";
+import { withTimeout } from "../_shared/timeout.ts";
 import { recordToolStat } from "../_shared/tool-stats.ts";
 import { dispatchTool, isKnownTool, validateEnvelope } from "./handler.ts";
+
+// Re-exported so `withTimeout`'s actual race/rejection/no-dangling-timer
+// behavior can be asserted from `_shared/timeout.test.ts` — this file itself
+// is excluded from tsconfig.json/Vitest (Deno entrypoint), see that test
+// file's coverage of the race this hot path relies on.
+export { withTimeout };
 
 const logger = createLogger({ fn: "voice-tools" });
 const RETELL_WEBHOOK_SIGNING_SECRET = requireEnv("RETELL_WEBHOOK_SIGNING_SECRET");
@@ -26,22 +33,12 @@ const PAYMENT_LINK_CANCEL_URL =
 const breaker = new ToolCircuitBreaker();
 
 const HARD_ABORT_MS = 1_500;
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("tool_call_timeout")), ms);
-    promise.then(
-      (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(timer);
-        reject(e);
-      },
-    );
-  });
-}
+// EDGE_AUDIT M2: comfortably under HARD_ABORT_MS so the DB itself kills a
+// hung query's server-side work at (or before) the same moment the caller
+// gets the fallback envelope — see `_shared/deno/db.ts`'s `getSql` docstring
+// for why this is a real, server-enforced GUC and not just another JS-level
+// race.
+const STATEMENT_TIMEOUT_MS = 1_200;
 
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
@@ -82,7 +79,7 @@ Deno.serve(async (req: Request) => {
     return jsonResponse(fallbackEnvelope());
   }
 
-  const sql = getSql();
+  const sql = getSql({ statementTimeoutMs: STATEMENT_TIMEOUT_MS });
   const startedAt = Date.now();
   let success = true;
   let errorType: string | undefined;

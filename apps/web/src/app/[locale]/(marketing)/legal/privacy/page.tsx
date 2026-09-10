@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
+import { setRequestLocale } from "next-intl/server";
 import { MDXRemote } from "next-mdx-remote/rsc";
 import { getLegalDoc } from "@/lib/content/legal";
 
 export const metadata: Metadata = { title: "Privacy Policy — Heyloo" };
 
-export default async function PrivacyPage() {
+export default async function PrivacyPage({ params }: { params: Promise<{ locale: string }> }) {
+  const { locale } = await params;
+  setRequestLocale(locale);
   const doc = await getLegalDoc("privacy");
   return (
     <div className="mx-auto max-w-2xl px-4 py-16">

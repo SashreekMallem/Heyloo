@@ -3,6 +3,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
+import { getTenantRealtimeChannelName } from "./channel";
 
 export type RealtimeConnectionStatus = "connecting" | "connected" | "reconnecting" | "offline";
 
@@ -19,10 +20,20 @@ interface BroadcastPayload {
 
 /**
  * `TenantRealtimeProvider` — subscribes to the tenant's single private
- * channel (`private-tenant-{tenant_id}`, `private: true`, RLS on
- * `realtime.messages` — SYSTEM_DESIGN §2 exact contract, FRONTEND_SPEC.md
- * §0.3/§9.6). Broadcast payload is minimal (`{table, op, id}`, never the
- * row itself); the handler invalidates the matching TanStack Query key.
+ * channel (`` `tenant:${tenant_id}` `` via {@link getTenantRealtimeChannelName},
+ * `private: true`, RLS on `realtime.messages` — SYSTEM_DESIGN §2 exact
+ * contract, FRONTEND_SPEC.md §0.3/§9.6). This topic string must stay
+ * byte-for-byte identical to `fn_broadcast_tenant_update()`'s
+ * `'tenant:' || tenant_id` and the `tenant_channel_broadcast_select` RLS
+ * policy's `'tenant:' || fn_jwt_tenant_id()` (docs/audit/E2E_FLOWS_AUDIT.md
+ * B3 — previously `private-tenant-${tenantId}`, which never matched either
+ * side and meant no broadcast was ever received). The handler invalidates
+ * the matching TanStack Query key using `payload.table` — a real field of
+ * `realtime.broadcast_changes()`'s payload (`topic, operation, table,
+ * schema, record, old_record`, confirmed against supabase/supabase's own
+ * `examples/prompts/use-realtime.md`, since supabase.com's hosted docs are
+ * egress-blocked in this environment — see docs/VERIFY.md), never the row
+ * itself.
  * Reconnect lifecycle: connecting → connected → reconnecting (exponential
  * backoff 1s/2s/4s/8s) → offline after `MAX_ATTEMPTS` failures. Broadcasts
  * are not durable/replayed — on reconnect, invalidate every active
@@ -51,7 +62,7 @@ export function TenantRealtimeProvider({
       if (disposed) return;
       setStatus(attemptRef.current === 0 ? "connecting" : "reconnecting");
 
-      channel = supabaseBrowserClient.channel(`private-tenant-${tenantId}`, {
+      channel = supabaseBrowserClient.channel(getTenantRealtimeChannelName(tenantId), {
         config: { private: true },
       });
 

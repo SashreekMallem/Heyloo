@@ -74,6 +74,41 @@ describe("createOrder", () => {
     expect(result).toEqual({ order_id: "order_1", confirmed: true, total_cents: 2160 });
   });
 
+  it("EDGE_AUDIT/E2E B4: addresses the adapter_push_queue entry to the tenant's real connected provider, never the old broken 'pos' literal", async () => {
+    const enqueueCalls: unknown[] = [];
+    const steps: Step[] = [
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings lookup
+      { rows: [{ dynamic_variable_overrides: {} }] }, // agent_configs overrides
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+      { rows: [{ id: "order_1" }] }, // order insert
+      { rows: [{ id: "msg_1" }] }, // confirmation message insert
+      // messages_outbound's own enqueue() call is a `pgmq.send` and is
+      // intercepted below, never consuming a step here — the next
+      // non-pgmq.send call is the adapter-push producer's connections list.
+      { rows: [{ provider: "square" }] }, // adapter-push producer: connected Square
+    ];
+    let i = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("pgmq.send")) {
+        enqueueCalls.push(values);
+        return Promise.resolve([]);
+      }
+      const step = steps[i];
+      i += 1;
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+    const result = await createOrder(sql, ctx, pickupArgs, logger);
+    expect(result).toMatchObject({ confirmed: true, order_id: "order_1" });
+    // one messages_outbound enqueue + one adapter push
+    expect(enqueueCalls).toHaveLength(2);
+    const adapterPushCall = enqueueCalls[1] as [string, string];
+    const pushMessage = JSON.parse(adapterPushCall[1]) as { adapter: string; entity_type: string };
+    expect(pushMessage.adapter).toBe("square");
+    expect(pushMessage.entity_type).toBe("order");
+  });
+
   it("declines a delivery order below the tenant's minimum, offering pickup", async () => {
     const sql = makeStepSql([
       { rows: [] },

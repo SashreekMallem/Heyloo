@@ -74,6 +74,16 @@ Deno.serve(async (req: Request) => {
       logger.error("worker_messages_outbound_error", { error: String(err), msg_id: row.msg_id });
       if (row.read_ct >= MAX_ATTEMPTS) {
         await moveToDeadLetter(sql, QUEUE_NAMES.messagesOutbound, row.msg_id, row.message);
+        // BACKEND_SPEC §9: "after 5 attempts, row status -> failed, moved to
+        // messages_outbound_dlq for manual admin review" — the DLQ move
+        // above only removes the pgmq message; the domain row itself must
+        // also flip to `failed` here, or an exhausted-retry message stays
+        // `status='queued'` forever with no admin-visible signal at all.
+        await sql`
+          update public.messages_outbound
+          set status = 'failed', error = ${String(err)}
+          where id = ${row.message.message_id} and status not in ('sent', 'delivered')
+        `;
         deadLettered += 1;
       }
       // else: leave in queue — becomes visible again after the visibility

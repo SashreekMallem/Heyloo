@@ -18,8 +18,8 @@ export type TenantRow = {
   name: string;
   slug: string;
   vertical:
-    | "auto_repair"
-    | "veterinary"
+    | "auto"
+    | "vet"
     | "legal"
     | "dental"
     | "real_estate"
@@ -586,6 +586,60 @@ export type AdminActionRow = {
   created_at: string;
 };
 
+/**
+ * T7 deep-integration adapter tables (supabase/migrations/20260907160000_
+ * t7_adapter_connections.sql) — added per docs/audit/FIX_REQUESTS.md's
+ * regeneration request (this file predated both tables). `provider` is
+ * left as `string` rather than a literal union since it changes across
+ * migrations (the 20260910100000 follow-up added `'airtable'`) and nothing
+ * in apps/web currently narrows on it beyond an equality filter.
+ */
+export type AdapterConnectionRow = {
+  id: string;
+  tenant_id: string;
+  provider: string;
+  status: "connected" | "disconnected" | "error";
+  auth_mode: "oauth2_authorization_code" | "oauth2_client_credentials" | "api_key";
+  access_token: Nullable<string>;
+  refresh_token: Nullable<string>;
+  expires_at: Nullable<string>;
+  provider_account_id: Nullable<string>;
+  metadata: Record<string, unknown>;
+  last_refreshed_at: Nullable<string>;
+  last_error: Nullable<string>;
+  disconnected_at: Nullable<string>;
+  connected_by: Nullable<string>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AdapterSyncStateRow = {
+  tenant_id: string;
+  provider: string;
+  entity_type: "booking" | "order";
+  entity_id: string;
+  external_id: Nullable<string>;
+  last_synced_at: Nullable<string>;
+  content_hash: Nullable<string>;
+  sync_conflict: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+/** Airtable-specific precedent table (20260907131200_supporting_tables.sql)
+ * that `adapter_sync_state` above later generalized to every T7 adapter —
+ * kept for whichever call site (if any) still reads it directly. */
+export type AirtableSyncStateRow = {
+  tenant_id: string;
+  entity_type: "booking" | "order";
+  entity_id: string;
+  airtable_record_id: Nullable<string>;
+  last_synced_at: Nullable<string>;
+  content_hash: Nullable<string>;
+  sync_conflict: boolean;
+  created_at: string;
+};
+
 /** Structural helper: every column is optional on insert (DB defaults fill the rest) except the ones a caller must always supply — good enough for this app's insert call sites without a second hand-transcribed shape per table. */
 export type InsertOf<Row> = { [K in keyof Row]?: Row[K] };
 export type UpdateOf<Row> = { [K in keyof Row]?: Row[K] };
@@ -643,6 +697,9 @@ export type Database = {
       cost_events: Tbl<CostEventRow>;
       revenue_events: Tbl<RevenueEventRow>;
       admin_actions: Tbl<AdminActionRow>;
+      adapter_connections: Tbl<AdapterConnectionRow>;
+      adapter_sync_state: Tbl<AdapterSyncStateRow>;
+      airtable_sync_state: Tbl<AirtableSyncStateRow>;
     };
     Views: {
       v_tenant_margin: { Row: Record<string, unknown>; Relationships: [] };
@@ -650,11 +707,29 @@ export type Database = {
       v_usage_alerts: { Row: Record<string, unknown>; Relationships: [] };
       v_referral_pnl: { Row: Record<string, unknown>; Relationships: [] };
     };
-    // Required by postgrest-js's `GenericSchema` — this app calls every RPC
-    // through an edge-function Route Handler proxy (packages/adapters/*
-    // provider isolation, CLAUDE.md Rule 2), never `supabase.rpc()`
-    // directly, so this stays empty rather than hand-transcribing function
-    // signatures nothing calls.
-    Functions: Record<string, never>;
+    // This app calls almost every RPC through an edge-function Route
+    // Handler proxy (packages/adapters/* provider isolation, CLAUDE.md Rule
+    // 2), never `supabase.rpc()` directly — these two are the documented
+    // exception: `pgmq` isn't exposed over PostgREST (supabase/config.toml
+    // `[api] schemas` is `public`/`graphql_public` only), so a tenant
+    // dashboard action that needs to enqueue a queue message has no edge
+    // function to proxy through and calls these directly instead
+    // (docs/audit/FIX_REQUESTS.md). Both no-op server-side on a
+    // tenant_id mismatch rather than raising.
+    Functions: {
+      fn_enqueue_adapter_push: {
+        Args: {
+          p_tenant_id: string;
+          p_adapter: string;
+          p_entity_type: string;
+          p_entity_id: string;
+        };
+        Returns: undefined;
+      };
+      fn_enqueue_message_outbound: {
+        Args: { p_message_id: string };
+        Returns: undefined;
+      };
+    };
   };
 };

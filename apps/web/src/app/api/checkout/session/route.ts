@@ -1,55 +1,88 @@
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { callEdgeFunction } from "@/lib/edge-functions";
+import { decodeSignupDraft, SIGNUP_DRAFT_COOKIE } from "@/lib/signup/draft-cookie";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
+import { buildApiCheckoutRequest } from "./build-request";
 
 export const runtime = "nodejs";
 
-interface CheckoutSessionResponse {
-  url?: string;
+interface ApiCheckoutResponse {
+  tenant_id?: string;
+  checkout_url?: string;
   error?: string;
 }
 
 /**
- * `POST /api/checkout/session` (FRONTEND_STACK.md/API_AND_FLOWS.md §Checkout
- * Session) — creates the Stripe Checkout Session and returns its hosted
- * URL for redirect. Proxies to an edge function rather than importing the
- * `stripe` SDK here (CLAUDE.md Rule 2 — provider SDKs only in
- * `packages/adapters/*`, none of which is `apps/web`).
+ * `POST /api/checkout/session` (signup step 4, FRONTEND_SPEC.md §4.4):
+ * proxies to the REAL `api-checkout` edge function, which owns tenant
+ * creation (see that function's handler.ts docstring — BACKEND_SPEC's
+ * intended "provisioning saga creates the tenant row" ordering conflicts
+ * with `webhooks-stripe`/`api-provision`'s already-built assumption that a
+ * `tenants` row exists by `checkout.session.completed`, so `api-checkout`
+ * is the one that creates it; the separate `/api/signup/create-tenant`
+ * Route Handler that used to also create a `tenants` row has been removed
+ * — E2E_FLOWS_AUDIT B1).
  *
- * VERIFY (docs/VERIFY.md): assumes an `api-checkout-session` edge function
- * (billing wave, not yet observed in `supabase/functions/`) matching
- * `POST /v1/checkout/sessions` semantics from API_AND_FLOWS.md — confirm
- * the exact function name/path once that wave lands.
+ * Every identity-bearing field (vertical, business_name, email) is derived
+ * from the signed, server-verified signup draft cookie and the caller's own
+ * authenticated session — never trusted from the client-supplied request
+ * body (FRONTEND_AUDIT "checkout tenant_id trust gap": there is no
+ * tenant_id in this contract at all for a caller to spoof).
+ *
+ * VERIFY (docs/VERIFY.md): `api-checkout` has no annual/monthly billing
+ * toggle yet (`CheckoutRequestSchema` doesn't accept one, and
+ * `createSubscriptionCheckoutSession` only ever creates the monthly-priced
+ * session) — an `annual` flag collected earlier in the wizard is accepted
+ * here for forward compatibility but currently has no effect; tracked in
+ * docs/BUILD_NOTES.md, out of this cluster's assigned scope.
  */
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerComponentClient();
   const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  const {
     data: { session },
   } = await supabase.auth.getSession();
-  if (!session) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
+  if (!user?.email || !session)
+    return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
+
+  const cookieStore = await cookies();
+  const draft = decodeSignupDraft(cookieStore.get(SIGNUP_DRAFT_COOKIE.name)?.value);
+  if (!draft) return NextResponse.json({ error: "missing_draft" }, { status: 400 });
 
   let json: unknown;
   try {
     json = await request.json();
   } catch {
-    return NextResponse.json({ error: "invalid_json" }, { status: 400 });
+    json = {};
   }
-  const body = json as { tenant_id?: string; annual?: boolean };
-  if (!body.tenant_id) return NextResponse.json({ error: "missing_tenant_id" }, { status: 422 });
+  const timezone =
+    typeof (json as { timezone?: unknown }).timezone === "string"
+      ? (json as { timezone: string }).timezone
+      : undefined;
 
-  const { status, body: result } = await callEdgeFunction<CheckoutSessionResponse>(
-    "api-checkout-session",
-    {
-      method: "POST",
-      accessToken: session.access_token,
-      body: {
-        tenant_id: body.tenant_id,
-        annual: body.annual === true,
-        success_url_base: `${new URL(request.url).origin}/signup/provisioning`,
-        cancel_url: `${new URL(request.url).origin}/signup/plan?cancelled=true`,
-      },
-    },
-  );
+  const { status, body: result } = await callEdgeFunction<ApiCheckoutResponse>("api-checkout", {
+    method: "POST",
+    accessToken: session.access_token,
+    body: buildApiCheckoutRequest(draft, user.email, timezone),
+  });
 
-  return NextResponse.json(result, { status });
+  if (status !== 200 || !result.checkout_url) {
+    return NextResponse.json(
+      { error: result.error ?? "checkout_failed" },
+      { status: status || 502 },
+    );
+  }
+
+  // The tenant + owner membership rows now exist (created service-role,
+  // inside api-checkout) but this browser session's own JWT was minted
+  // before they did — refresh so the Custom Access Token Hook mints a
+  // fresh tenant_id/role claim before the redirect back from Stripe lands
+  // on a page that needs it (FRONTEND_SPEC.md §0.1's "one claim source").
+  await supabase.auth.refreshSession();
+  cookieStore.delete(SIGNUP_DRAFT_COOKIE.name);
+
+  return NextResponse.json({ url: result.checkout_url });
 }

@@ -11,6 +11,41 @@
  * failure, so CI blocks the merge per CLAUDE.md Rule 2 ("the CI cross-tenant
  * probe must stay green").
  *
+ * Also probes every admin-only VIEW (v_tenant_margin, v_call_cost_vs_
+ * billed, v_usage_alerts, v_referral_pnl) as both anon and an authenticated
+ * tenant member, asserting neither ever gets a 2xx response carrying rows
+ * back (DB_AUDIT.md DB-B1 — a view without `security_invoker` silently
+ * bypasses the underlying tables' RLS, which base-table probing alone can
+ * never catch since it never queries the view itself).
+ *
+ * Also probes the bookings/orders WRITE-path RLS hardening (DB_AUDIT.md
+ * DB-H1, fixed in supabase/migrations/20260910090000_view_security_and_
+ * write_rls_hardening.sql): as an authenticated member of tenant A, attempts
+ * an INSERT (and, separately, an UPDATE of an existing tenant-A row) whose
+ * own `tenant_id` is genuinely tenant A's but whose `resource_id`/
+ * `offering_id`/`customer_id` (or, for orders, an `items[].offering_id`)
+ * points at a row actually owned by tenant B. `tenant_id = fn_jwt_tenant_id()`
+ * alone can never catch this — it only constrains the row's own tenant_id
+ * column — so this exercises the EXISTS-based WITH CHECK ownership guards
+ * added by that migration specifically, which the SELECT-only probing above
+ * cannot reach. Every case must be rejected (a non-2xx status); a 2xx
+ * response is a DB-H1 regression.
+ *
+ * Also probes the impersonation server-enforced boundary (repair task:
+ * "Impersonation end-to-end ... read-only/edit toggle enforced",
+ * supabase/migrations/20260910110000_impersonation_claim.sql): seeds a real
+ * `impersonation_sessions` row (`edit_enabled: false`) for tenant A's own
+ * seeded user, re-authenticates as that user (a fresh password grant so
+ * `custom_access_token_hook` actually runs again and stamps the new
+ * `impersonated_by`/`impersonation_edit_enabled` claims), and attempts a
+ * bookings INSERT — this must be REJECTED even though the session's
+ * tenant_id/role claims are otherwise perfectly valid for that tenant, since
+ * this is exactly the case FRONTEND_AUDIT.md's original gap named ("the
+ * impersonated session carries the same claims as the owner's normal
+ * login"). Then flips `edit_enabled` to true, re-authenticates again, and
+ * the identical write must now be ACCEPTED — proving the RLS check reads
+ * the live claim rather than always denying impersonated sessions outright.
+ *
  * Deliberately dependency-free: uses only Node's built-in `fetch` against
  * PostgREST + GoTrue's HTTP APIs (both exposed by `supabase start`), no
  * @supabase/supabase-js — this script lives under scripts/ (T1's exclusive
@@ -38,6 +73,7 @@ interface TenantFixture {
   tenantId: string;
   userId: string;
   email: string;
+  password: string;
   accessToken: string;
 }
 
@@ -171,13 +207,35 @@ async function createTenantFixture(vertical: string, slug: string): Promise<Tena
     );
   }
 
-  return { tenantId, userId, email, accessToken };
+  return { tenantId, userId, email, password, accessToken };
+}
+
+/** Fresh password grant for a fixture already created by createTenantFixture
+ * — used by the impersonation probe to force `custom_access_token_hook` to
+ * re-run and pick up an `impersonation_sessions` change made in between. */
+async function reSignIn(fixture: TenantFixture): Promise<string> {
+  const signIn = await restRequest("/auth/v1/token?grant_type=password", {
+    method: "POST",
+    apikey: PUBLISHABLE_KEY,
+    bearer: PUBLISHABLE_KEY,
+    body: { email: fixture.email, password: fixture.password },
+  });
+  if (signIn.status >= 300) {
+    throw new Error(
+      `Re-sign-in failed for ${fixture.email} (${signIn.status}): ${JSON.stringify(signIn.json)}`,
+    );
+  }
+  const accessToken = (signIn.json as { access_token?: string }).access_token;
+  if (!accessToken) {
+    throw new Error(`Re-sign-in response for ${fixture.email} had no access_token`);
+  }
+  return accessToken;
 }
 
 function cryptoRandomPassword(): string {
   const bytes = new Uint8Array(24);
   globalThis.crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("") + "Aa1!";
+  return `${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}Aa1!`;
 }
 
 // Every table whose SELECT policy scopes on tenant_id = fn_jwt_tenant_id()
@@ -296,7 +354,30 @@ function tenantScopedTables(): TenantScopedTable[] {
   ];
 }
 
-async function seedTenant(tenant: TenantFixture): Promise<void> {
+// Additional ids fetched after seeding, used only by the DB-H1 write-path
+// probes below (probeWriteRejected / writeProbeCases) to build cross-tenant
+// resource_id/offering_id/customer_id references. Every field is required —
+// seedTenant throws if any expected row is missing rather than letting a
+// write probe silently no-op against an empty/undefined id.
+interface WriteProbeFixture {
+  resourceId: string;
+  offeringId: string;
+  customerId: string;
+  bookingId: string;
+  orderId: string;
+}
+
+type SeededTenant = TenantFixture & WriteProbeFixture;
+
+async function fetchOneId(table: string, tenantId: string): Promise<string | null> {
+  const { json } = await restRequest(
+    `/rest/v1/${table}?tenant_id=eq.${tenantId}&select=id&limit=1`,
+    { apikey: SERVICE_KEY, bearer: SERVICE_KEY },
+  );
+  return Array.isArray(json) && json.length > 0 ? (json[0] as { id: string }).id : null;
+}
+
+async function seedTenant(tenant: TenantFixture): Promise<WriteProbeFixture> {
   for (const spec of tenantScopedTables()) {
     // A short random suffix keeps unique columns (e164, retell_call_id, ...)
     // collision-free across the two fixtures and across repeated CI runs.
@@ -306,11 +387,7 @@ async function seedTenant(tenant: TenantFixture): Promise<void> {
 
   // customer_addresses and waitlist_entries need a customer_id FK — fetch
   // the customer row just seeded above via the service client.
-  const { json } = await restRequest(
-    `/rest/v1/customers?tenant_id=eq.${tenant.tenantId}&select=id&limit=1`,
-    { apikey: SERVICE_KEY, bearer: SERVICE_KEY },
-  );
-  const customerId = Array.isArray(json) && json.length > 0 ? (json[0] as { id: string }).id : null;
+  const customerId = await fetchOneId("customers", tenant.tenantId);
   if (customerId) {
     await serviceInsert("customer_addresses", {
       tenant_id: tenant.tenantId,
@@ -325,14 +402,9 @@ async function seedTenant(tenant: TenantFixture): Promise<void> {
   }
 
   // resources row -> a bookings row needs resource_id.
-  const resResp = await restRequest(
-    `/rest/v1/resources?tenant_id=eq.${tenant.tenantId}&select=id&limit=1`,
-    { apikey: SERVICE_KEY, bearer: SERVICE_KEY },
-  );
-  const resourceId =
-    Array.isArray(resResp.json) && resResp.json.length > 0
-      ? (resResp.json[0] as { id: string }).id
-      : null;
+  const resourceId = await fetchOneId("resources", tenant.tenantId);
+  let bookingId: string | null = null;
+  let orderId: string | null = null;
   if (resourceId) {
     await serviceInsert("bookings", {
       tenant_id: tenant.tenantId,
@@ -348,7 +420,55 @@ async function seedTenant(tenant: TenantFixture): Promise<void> {
       total_cents: 100,
       idempotency_key: `probe-${tenant.tenantId}`,
     });
+    bookingId = await fetchOneId("bookings", tenant.tenantId);
+    orderId = await fetchOneId("orders", tenant.tenantId);
   }
+
+  // offerings is already seeded once per tenant via tenantScopedTables()
+  // above (DB_AUDIT.md DB-H1 needs a real cross-tenant offering_id to probe
+  // with, both directly on bookings and embedded in orders.items[]).
+  const offeringId = await fetchOneId("offerings", tenant.tenantId);
+
+  if (!resourceId || !offeringId || !customerId || !bookingId || !orderId) {
+    throw new Error(
+      `seedTenant(${tenant.tenantId}) could not resolve every DB-H1 write-probe fixture id ` +
+        `(resourceId=${resourceId}, offeringId=${offeringId}, customerId=${customerId}, ` +
+        `bookingId=${bookingId}, orderId=${orderId})`,
+    );
+  }
+
+  return { resourceId, offeringId, customerId, bookingId, orderId };
+}
+
+// DB_AUDIT.md DB-B1: these four views previously leaked every tenant's
+// revenue/cost/margin/referral-commission data to anon and authenticated
+// (owner-privileges view bypassing the underlying tables' RLS entirely —
+// see supabase/migrations/20260910090000_view_security_and_write_rls_
+// hardening.sql). Admin-cockpit-only: neither anon nor an authenticated
+// tenant member should ever get a 2xx response carrying rows back, however
+// many rows exist in the underlying tables — a rejected query (401/403,
+// the expected post-fix shape since these views are now revoked from both
+// roles entirely) or an empty 2xx are both acceptable; only a 2xx with rows
+// is a regression of DB-B1.
+const ADMIN_ONLY_VIEWS = [
+  "v_tenant_margin",
+  "v_call_cost_vs_billed",
+  "v_usage_alerts",
+  "v_referral_pnl",
+];
+
+async function probeViewLeak(
+  roleLabel: string,
+  apikey: string,
+  bearer: string,
+  view: string,
+): Promise<string | null> {
+  const { status, json } = await restRequest(`/rest/v1/${view}?select=*`, { apikey, bearer });
+  if (status >= 300) return null;
+  if (Array.isArray(json) && json.length > 0) {
+    return `LEAK: ${roleLabel} read ${json.length} row(s) from admin-only view "${view}" (DB_AUDIT.md DB-B1 regression)`;
+  }
+  return null;
 }
 
 async function probeAsUser(
@@ -371,6 +491,237 @@ async function probeAsUser(
   return null;
 }
 
+// DB_AUDIT.md DB-H1 write-path probes (supabase/migrations/20260910090000_
+// view_security_and_write_rls_hardening.sql). Each case is issued as the
+// ATTACKER tenant's own authenticated user, with the row's own tenant_id set
+// correctly to the attacker's tenant — the only cross-tenant thing in the
+// request body is a resource_id/offering_id/customer_id/items[].offering_id
+// that resolves to a row owned by the VICTIM tenant. Every case must be
+// rejected; a 2xx response means the WITH CHECK ownership guard regressed.
+interface WriteProbeCase {
+  label: string;
+  method: "POST" | "PATCH";
+  path: (attacker: SeededTenant) => string;
+  body: (attacker: SeededTenant, victim: SeededTenant) => Record<string, unknown>;
+}
+
+function writeProbeCases(): WriteProbeCase[] {
+  return [
+    {
+      label: "bookings insert: resource_id points at victim tenant",
+      method: "POST",
+      path: () => "/rest/v1/bookings",
+      body: (attacker, victim) => ({
+        tenant_id: attacker.tenantId,
+        resource_id: victim.resourceId,
+        start_at: "2026-02-01T10:00:00Z",
+        end_at: "2026-02-01T11:00:00Z",
+      }),
+    },
+    {
+      label: "bookings insert: offering_id points at victim tenant",
+      method: "POST",
+      path: () => "/rest/v1/bookings",
+      body: (attacker, victim) => ({
+        tenant_id: attacker.tenantId,
+        resource_id: attacker.resourceId,
+        offering_id: victim.offeringId,
+        start_at: "2026-02-01T12:00:00Z",
+        end_at: "2026-02-01T13:00:00Z",
+      }),
+    },
+    {
+      label: "bookings insert: customer_id points at victim tenant",
+      method: "POST",
+      path: () => "/rest/v1/bookings",
+      body: (attacker, victim) => ({
+        tenant_id: attacker.tenantId,
+        resource_id: attacker.resourceId,
+        customer_id: victim.customerId,
+        start_at: "2026-02-01T14:00:00Z",
+        end_at: "2026-02-01T15:00:00Z",
+      }),
+    },
+    {
+      label: "orders insert: customer_id points at victim tenant",
+      method: "POST",
+      path: () => "/rest/v1/orders",
+      body: (attacker, victim) => ({
+        tenant_id: attacker.tenantId,
+        customer_id: victim.customerId,
+        items: [{ name: "probe", qty: 1 }],
+        fulfillment_type: "pickup",
+        subtotal_cents: 100,
+        total_cents: 100,
+        idempotency_key: `write-probe-customer-${attacker.tenantId}`,
+      }),
+    },
+    {
+      label: "orders insert: items[].offering_id points at victim tenant",
+      method: "POST",
+      path: () => "/rest/v1/orders",
+      body: (attacker, victim) => ({
+        tenant_id: attacker.tenantId,
+        items: [{ offering_id: victim.offeringId, name: "probe", qty: 1 }],
+        fulfillment_type: "pickup",
+        subtotal_cents: 100,
+        total_cents: 100,
+        idempotency_key: `write-probe-offering-${attacker.tenantId}`,
+      }),
+    },
+    {
+      label: "bookings update: repoints resource_id at victim tenant",
+      method: "PATCH",
+      path: (attacker) => `/rest/v1/bookings?id=eq.${attacker.bookingId}`,
+      body: (_attacker, victim) => ({ resource_id: victim.resourceId }),
+    },
+    {
+      label: "bookings update: repoints offering_id at victim tenant",
+      method: "PATCH",
+      path: (attacker) => `/rest/v1/bookings?id=eq.${attacker.bookingId}`,
+      body: (_attacker, victim) => ({ offering_id: victim.offeringId }),
+    },
+    {
+      label: "bookings update: repoints customer_id at victim tenant",
+      method: "PATCH",
+      path: (attacker) => `/rest/v1/bookings?id=eq.${attacker.bookingId}`,
+      body: (_attacker, victim) => ({ customer_id: victim.customerId }),
+    },
+    {
+      label: "orders update: repoints customer_id at victim tenant",
+      method: "PATCH",
+      path: (attacker) => `/rest/v1/orders?id=eq.${attacker.orderId}`,
+      body: (_attacker, victim) => ({ customer_id: victim.customerId }),
+    },
+    {
+      label: "orders update: repoints items[].offering_id at victim tenant",
+      method: "PATCH",
+      path: (attacker) => `/rest/v1/orders?id=eq.${attacker.orderId}`,
+      body: (_attacker, victim) => ({
+        items: [{ offering_id: victim.offeringId, name: "probe", qty: 1 }],
+      }),
+    },
+  ];
+}
+
+async function probeWriteRejected(
+  attacker: SeededTenant,
+  victim: SeededTenant,
+  testCase: WriteProbeCase,
+): Promise<string | null> {
+  const { status, json } = await restRequest(testCase.path(attacker), {
+    method: testCase.method,
+    apikey: PUBLISHABLE_KEY,
+    bearer: attacker.accessToken,
+    body: testCase.body(attacker, victim),
+    extraHeaders: { Prefer: "return=minimal" },
+  });
+  if (status >= 200 && status < 300) {
+    return (
+      `DB-H1 REGRESSION: tenant ${attacker.tenantId} ${testCase.method} "${testCase.label}" ` +
+      `(victim tenant ${victim.tenantId}) was ACCEPTED (status ${status}) — the WITH CHECK ` +
+      `ownership guard failed to reject a cross-tenant reference. Response: ${JSON.stringify(json)}`
+    );
+  }
+  return null;
+}
+
+// Impersonation server-enforced boundary (see this file's header comment).
+// `adminUserId` only needs to satisfy impersonation_sessions.admin_user_id's
+// FK to auth.users — the OTHER seeded tenant's own user id is a convenient
+// already-existing real user, not otherwise meaningful to this probe.
+async function probeImpersonationEnforcement(
+  tenant: SeededTenant,
+  adminUserId: string,
+): Promise<string[]> {
+  const failures: string[] = [];
+  const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+
+  await serviceInsert("impersonation_sessions", {
+    tenant_id: tenant.tenantId,
+    admin_user_id: adminUserId,
+    target_user_id: tenant.userId,
+    edit_enabled: false,
+    reason: "ci-probe",
+    expires_at: expiresAt,
+  });
+
+  const readOnlyToken = await reSignIn(tenant);
+  const readOnlyAttempt = await restRequest("/rest/v1/bookings", {
+    method: "POST",
+    apikey: PUBLISHABLE_KEY,
+    bearer: readOnlyToken,
+    body: {
+      tenant_id: tenant.tenantId,
+      resource_id: tenant.resourceId,
+      start_at: "2026-03-01T10:00:00Z",
+      end_at: "2026-03-01T11:00:00Z",
+    },
+    extraHeaders: { Prefer: "return=minimal" },
+  });
+  if (readOnlyAttempt.status >= 200 && readOnlyAttempt.status < 300) {
+    failures.push(
+      `IMPERSONATION REGRESSION: a read-only impersonated session for tenant ${tenant.tenantId} ` +
+        `was able to INSERT a booking (status ${readOnlyAttempt.status}) — the ` +
+        `"not fn_jwt_is_impersonating() or fn_jwt_impersonation_edit_enabled()" WITH CHECK guard failed.`,
+    );
+  }
+
+  const editEnable = await restRequest(
+    `/rest/v1/impersonation_sessions?tenant_id=eq.${tenant.tenantId}&admin_user_id=eq.${adminUserId}&ended_at=is.null`,
+    {
+      method: "PATCH",
+      apikey: SERVICE_KEY,
+      bearer: SERVICE_KEY,
+      body: { edit_enabled: true },
+      extraHeaders: { Prefer: "return=minimal" },
+    },
+  );
+  if (editEnable.status >= 300) {
+    throw new Error(
+      `Failed to flip edit_enabled=true on the CI probe's impersonation_sessions row ` +
+        `(${editEnable.status}): ${JSON.stringify(editEnable.json)}`,
+    );
+  }
+
+  const editEnabledToken = await reSignIn(tenant);
+  const editEnabledAttempt = await restRequest("/rest/v1/bookings", {
+    method: "POST",
+    apikey: PUBLISHABLE_KEY,
+    bearer: editEnabledToken,
+    body: {
+      tenant_id: tenant.tenantId,
+      resource_id: tenant.resourceId,
+      start_at: "2026-03-01T12:00:00Z",
+      end_at: "2026-03-01T13:00:00Z",
+    },
+    extraHeaders: { Prefer: "return=minimal" },
+  });
+  if (editEnabledAttempt.status < 200 || editEnabledAttempt.status >= 300) {
+    failures.push(
+      `IMPERSONATION REGRESSION: an edit-enabled impersonated session for tenant ${tenant.tenantId} ` +
+        `was REJECTED inserting a booking (status ${editEnabledAttempt.status}): ` +
+        `${JSON.stringify(editEnabledAttempt.json)}`,
+    );
+  }
+
+  // Tidy up so this fixture's session can't outlive the CI run in spirit,
+  // even though the local `supabase start` database is thrown away after —
+  // mirrors what the real impersonate-end route does.
+  await restRequest(
+    `/rest/v1/impersonation_sessions?tenant_id=eq.${tenant.tenantId}&admin_user_id=eq.${adminUserId}&ended_at=is.null`,
+    {
+      method: "PATCH",
+      apikey: SERVICE_KEY,
+      bearer: SERVICE_KEY,
+      body: { ended_at: new Date().toISOString() },
+      extraHeaders: { Prefer: "return=minimal" },
+    },
+  );
+
+  return failures;
+}
+
 async function main(): Promise<void> {
   console.log(`RLS cross-tenant probe against ${SUPABASE_URL}`);
 
@@ -380,8 +731,10 @@ async function main(): Promise<void> {
   ]);
   console.log(`Created fixtures: tenant A=${tenantA.tenantId}, tenant B=${tenantB.tenantId}`);
 
-  await seedTenant(tenantA);
-  await seedTenant(tenantB);
+  const seedFixtureA = await seedTenant(tenantA);
+  const seedFixtureB = await seedTenant(tenantB);
+  const seededTenantA: SeededTenant = { ...tenantA, ...seedFixtureA };
+  const seededTenantB: SeededTenant = { ...tenantB, ...seedFixtureB };
   console.log("Seeded one row per tenant-scoped table for both tenants.");
 
   const failures: string[] = [];
@@ -414,6 +767,42 @@ async function main(): Promise<void> {
   const tB = await tenantsTableCheck(tenantB, tenantA);
   if (tB) failures.push(tB);
 
+  // DB_AUDIT.md DB-H1 — write-path WITH CHECK ownership guards on
+  // bookings/orders (see writeProbeCases()/probeWriteRejected() above).
+  const writeCases = writeProbeCases();
+  for (const testCase of writeCases) {
+    const aWritesB = await probeWriteRejected(seededTenantA, seededTenantB, testCase);
+    if (aWritesB) failures.push(aWritesB);
+    const bWritesA = await probeWriteRejected(seededTenantB, seededTenantA, testCase);
+    if (bWritesA) failures.push(bWritesA);
+  }
+
+  // Impersonation server-enforced boundary (see this file's header comment).
+  const impersonationFailures = await probeImpersonationEnforcement(
+    seededTenantA,
+    seededTenantB.userId,
+  );
+  failures.push(...impersonationFailures);
+
+  for (const view of ADMIN_ONLY_VIEWS) {
+    // anon: no session at all — the publishable key used as both apikey
+    // and bearer, exactly what an unauthenticated request with only the
+    // public key on the page looks like.
+    const anonLeak = await probeViewLeak("anon", PUBLISHABLE_KEY, PUBLISHABLE_KEY, view);
+    if (anonLeak) failures.push(anonLeak);
+    // authenticated: a real signed-in tenant member's own session — these
+    // views are admin-cockpit-only, so even a tenant reading back its own
+    // margin/cost data would be wrong (BACKEND_SPEC §5 margin secrecy),
+    // let alone another tenant's.
+    const authLeak = await probeViewLeak(
+      `authenticated tenant ${tenantA.tenantId}`,
+      PUBLISHABLE_KEY,
+      tenantA.accessToken,
+      view,
+    );
+    if (authLeak) failures.push(authLeak);
+  }
+
   if (failures.length > 0) {
     console.error(`\nRLS CROSS-TENANT PROBE FAILED — ${failures.length} leak(s):`);
     for (const f of failures) console.error(`  - ${f}`);
@@ -421,7 +810,10 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `\nRLS cross-tenant probe PASSED — ${tables.length + 1} tables checked both directions, 0 rows leaked.`,
+    `\nRLS cross-tenant probe PASSED — ${tables.length + 1} tables checked both directions, ` +
+      `${ADMIN_ONLY_VIEWS.length} admin-only views checked as anon + authenticated, ` +
+      `${writeCases.length} DB-H1 write-path cases checked both directions, 0 rows leaked, ` +
+      `0 cross-tenant writes accepted, impersonation read-only/edit-enabled boundary enforced.`,
   );
 }
 

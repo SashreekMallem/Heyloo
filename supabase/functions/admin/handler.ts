@@ -24,6 +24,12 @@ import type { SupabaseAdminFetch } from "../_shared/providers/supabase-admin.ts"
 import { generateMagicLink, getUserEmailById } from "../_shared/providers/supabase-admin.ts";
 import { renderTemplate } from "../_shared/templates.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
+import {
+  AdminAlertThresholdSchema,
+  AdminReferralSettingSchema,
+  PlatformPricingTableSchema,
+  VERTICALS,
+} from "./schemas.ts";
 
 /**
  * `/admin-*` single-function internal router (BACKEND_SPEC §7.7 —
@@ -169,14 +175,83 @@ async function handleTenants(
     return { status: 200, body: { tenant: after } };
   }
 
-  if (ctx.method === "POST" && tenantId && parts[2] === "impersonate") {
+  if (ctx.method === "POST" && tenantId && parts[2] === "impersonate" && parts[3] === "edit-mode") {
+    // "Enable edits" toggle (FRONTEND_SPEC.md §7.2's "explicit 'Enable
+    // edits' toggle... logs a second entry") — flips
+    // `impersonation_sessions.edit_enabled` for the CALLING admin's own
+    // active session on this tenant; `custom_access_token_hook` picks up
+    // the new value on the impersonated tab's next token refresh (the JWT
+    // is short-lived, so this is bounded, not instantaneous — the same
+    // tradeoff every claims-based authorization change on Supabase has).
     if (!isAal2(ctx.claims)) {
       return { status: 403, body: { error: "aal2_required" } };
     }
+    if (!ctx.adminUserId) return { status: 403, body: { error: "forbidden" } };
+
+    const body = (ctx.body ?? {}) as { enabled?: boolean };
+    if (typeof body.enabled !== "boolean") {
+      return { status: 422, body: { error: "invalid_enabled" } };
+    }
+
+    const before = (
+      await sql<{ edit_enabled: boolean }>`
+        select edit_enabled from public.impersonation_sessions
+        where tenant_id = ${tenantId} and admin_user_id = ${ctx.adminUserId}
+          and ended_at is null and expires_at > now()
+        order by created_at desc limit 1
+      `
+    )[0];
+    if (!before) return { status: 404, body: { error: "no_active_impersonation_session" } };
+
+    await sql`
+      update public.impersonation_sessions set edit_enabled = ${body.enabled}
+      where tenant_id = ${tenantId} and admin_user_id = ${ctx.adminUserId}
+        and ended_at is null and expires_at > now()
+    `;
+
+    await writeAdminAction(sql, {
+      adminUserId: ctx.adminUserId,
+      action: "impersonate_edit_mode_change",
+      targetType: "tenant",
+      targetId: tenantId,
+      before: { edit_enabled: before.edit_enabled },
+      after: { edit_enabled: body.enabled },
+      ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+      ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+    });
+    return { status: 200, body: { edit_enabled: body.enabled } };
+  }
+
+  if (ctx.method === "POST" && tenantId && parts[2] === "impersonate" && parts[3] === undefined) {
+    if (!isAal2(ctx.claims)) {
+      return { status: 403, body: { error: "aal2_required" } };
+    }
+    if (!ctx.adminUserId) return { status: 403, body: { error: "forbidden" } };
+    // `adminImpersonateSchema` (FRONTEND_SPEC.md §7.2) requires a non-empty
+    // `reason` — the audit row below is written with it BEFORE the session
+    // is granted, so even an aborted/rejected attempt is logged with why.
+    const reason = (ctx.body as { reason?: string } | null)?.reason?.trim();
+    if (!reason) return { status: 422, body: { error: "reason_required" } };
+
     const tenantRows = await sql<{
       id: string;
     }>`select id from public.tenants where id = ${tenantId} and deleted_at is null`;
     if (!tenantRows[0]) return { status: 404, body: { error: "tenant_not_found" } };
+
+    // 30-minute timebox (FRONTEND_SPEC.md §7.2's "e.g. 30 min"). Recorded in
+    // the audit row, handed to the client for `ImpersonationBanner`'s
+    // countdown, AND persisted below as `impersonation_sessions.expires_at`
+    // — `custom_access_token_hook` (20260910110000_impersonation_claim.sql)
+    // joins that row to stamp `impersonated_by`/`impersonation_edit_enabled`
+    // into every token this session mints/refreshes, and every tenant-write
+    // RLS policy requires `not fn_jwt_is_impersonating() or
+    // fn_jwt_impersonation_edit_enabled()` — a genuine server-enforced
+    // boundary, not just a display countdown. "End impersonation" in the
+    // banner still calls `supabase.auth.signOut()` client-side (a real
+    // sign-out of that real session) AND `impersonate-end` below sets
+    // `ended_at` so the hook stops issuing the claim even if sign-out never
+    // reaches the server.
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
 
     if (ctx.adminUserId) {
       await writeAdminAction(sql, {
@@ -184,6 +259,7 @@ async function handleTenants(
         action: "impersonate_start",
         targetType: "tenant",
         targetId: tenantId,
+        after: { reason, expires_at: expiresAt },
         ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
         ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
       });
@@ -191,6 +267,7 @@ async function handleTenants(
     logger.warn("admin_impersonation_started", {
       admin_user_id: ctx.adminUserId,
       tenant_id: tenantId,
+      reason,
     });
 
     if (!deps.supabaseAdmin) {
@@ -225,14 +302,99 @@ async function handleTenants(
     if (!link.ok || !link.actionLink) {
       return { status: 502, body: { error: "impersonation_link_mint_failed" } };
     }
-    return { status: 200, body: { impersonation_link: link.actionLink, tenant_id: tenantId } };
+
+    // The row `custom_access_token_hook` joins against to stamp
+    // `impersonated_by`/`impersonation_edit_enabled` onto every token this
+    // impersonated session mints or refreshes (20260910110000_impersonation_
+    // claim.sql) — read-only (`edit_enabled` defaults false) until the
+    // "Enable edits" toggle above flips it. Inserted only after the mint
+    // itself succeeds, so a failed mint never leaves an orphaned session row
+    // a real token could later match.
+    await sql`
+      insert into public.impersonation_sessions
+        (tenant_id, admin_user_id, target_user_id, edit_enabled, reason, expires_at)
+      values (${tenantId}, ${ctx.adminUserId}, ${ownerUserId}, false, ${reason}, ${expiresAt})
+    `;
+
+    return {
+      status: 200,
+      body: {
+        impersonation_link: link.actionLink,
+        tenant_id: tenantId,
+        expires_at: expiresAt,
+      },
+    };
+  }
+
+  if (ctx.method === "POST" && tenantId && parts[2] === "impersonate-end") {
+    // Second audit entry (FRONTEND_SPEC.md §7.2 pattern — an explicit
+    // "Enable edits" toggle logs a second entry; ending the session is the
+    // same idea). Also sets `impersonation_sessions.ended_at` for every
+    // still-active session this admin holds on this tenant, so
+    // `custom_access_token_hook` stops issuing the claim on the next
+    // mint/refresh regardless of whether the impersonated tab's client-side
+    // `supabase.auth.signOut()` (the real session teardown) ever reaches it.
+    if (ctx.adminUserId) {
+      await sql`
+        update public.impersonation_sessions set ended_at = now()
+        where tenant_id = ${tenantId} and admin_user_id = ${ctx.adminUserId} and ended_at is null
+      `;
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "impersonate_end",
+        targetType: "tenant",
+        targetId: tenantId,
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return { status: 200, body: { ended: true } };
   }
 
   return { status: 404, body: { error: "not_found" } };
 }
 
+const ALERT_RULES_SETTINGS_KEY = "admin_alert_rules";
+
+interface StoredAlertRule {
+  id: string;
+  metric: string;
+  operator: string;
+  value: number;
+  enabled: boolean;
+  channel: string;
+}
+
+async function readAlertRules(sql: SqlClient): Promise<StoredAlertRule[]> {
+  const rows = await sql<{ value: { rules?: StoredAlertRule[] } }>`
+    select value from public.platform_settings where key = ${ALERT_RULES_SETTINGS_KEY}
+  `;
+  return rows[0]?.value.rules ?? [];
+}
+
+async function writeAlertRules(sql: SqlClient, rules: StoredAlertRule[]): Promise<void> {
+  await sql`
+    insert into public.platform_settings (key, value)
+    values (${ALERT_RULES_SETTINGS_KEY}, ${JSON.stringify({ rules })}::jsonb)
+    on conflict (key) do update set value = excluded.value, updated_at = now()
+  `;
+}
+
+/**
+ * `/admin-alerts` (BACKEND_SPEC §7.7) — fired-alert list/ack (existing),
+ * plus the alert-RULE editor (FRONTEND_AUDIT.md M2 — `/cockpit/alerts`'
+ * rule create/edit was a `toast("coming soon")` stub). There is no
+ * dedicated rule-definition table (`public.alerts` is fired-instance rows
+ * only, confirmed by grep across every migration — `job-alert-evaluation`'s
+ * own comment says thresholds are "not yet defined" in `platform_settings`),
+ * so rules are stored as a single `platform_settings` row
+ * (`admin_alert_rules`, `{ rules: StoredAlertRule[] }`) — that table is
+ * exactly "Admin-editable key/value store" per its own table comment, so
+ * this needs no new migration. Each rule gets a generated `id` so PATCH can
+ * address one element of the array.
+ */
 async function handleAlerts(sql: SqlClient, ctx: AdminRequestContext): Promise<AdminResponse> {
-  const parts = segments(ctx.path); // ["admin-alerts", ":id"?, "ack"?]
+  const parts = segments(ctx.path); // ["admin-alerts", "rules"?, ":id"?, "ack"?]
   const alertId = parts[1];
 
   if (ctx.method === "GET" && !alertId) {
@@ -251,6 +413,226 @@ async function handleAlerts(sql: SqlClient, ctx: AdminRequestContext): Promise<A
     `;
     if (!rows[0]) return { status: 404, body: { error: "alert_not_found_or_already_acked" } };
     return { status: 200, body: { acked: true } };
+  }
+
+  if (parts[1] === "rules" && ctx.method === "GET" && !parts[2]) {
+    return { status: 200, body: { rules: await readAlertRules(sql) } };
+  }
+
+  if (parts[1] === "rules" && ctx.method === "POST" && !parts[2]) {
+    const parsed = AdminAlertThresholdSchema.safeParse(ctx.body);
+    if (!parsed.success)
+      return { status: 422, body: { error: "invalid_rule", issues: parsed.error.issues } };
+
+    const before = await readAlertRules(sql);
+    const rule: StoredAlertRule = { id: crypto.randomUUID(), ...parsed.data };
+    const after = [...before, rule];
+    await writeAlertRules(sql, after);
+
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "alert_rule_create",
+        targetType: "other",
+        targetId: rule.id,
+        after: rule,
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return { status: 201, body: { rule } };
+  }
+
+  if (parts[1] === "rules" && parts[2] && ctx.method === "PATCH" && !parts[3]) {
+    const ruleId = parts[2];
+    const parsed = AdminAlertThresholdSchema.partial().safeParse(ctx.body);
+    if (!parsed.success)
+      return { status: 422, body: { error: "invalid_rule", issues: parsed.error.issues } };
+
+    const before = await readAlertRules(sql);
+    const existing = before.find((r) => r.id === ruleId);
+    if (!existing) return { status: 404, body: { error: "rule_not_found" } };
+
+    const updated: StoredAlertRule = {
+      id: existing.id,
+      metric: parsed.data.metric ?? existing.metric,
+      operator: parsed.data.operator ?? existing.operator,
+      value: parsed.data.value ?? existing.value,
+      enabled: parsed.data.enabled ?? existing.enabled,
+      channel: parsed.data.channel ?? existing.channel,
+    };
+    const after = before.map((r) => (r.id === ruleId ? updated : r));
+    await writeAlertRules(sql, after);
+
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "alert_rule_edit",
+        targetType: "other",
+        targetId: ruleId,
+        before: existing,
+        after: updated,
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return { status: 200, body: { rule: updated } };
+  }
+
+  if (parts[1] === "rules" && parts[2] && ctx.method === "DELETE" && !parts[3]) {
+    const ruleId = parts[2];
+    const before = await readAlertRules(sql);
+    const existing = before.find((r) => r.id === ruleId);
+    if (!existing) return { status: 404, body: { error: "rule_not_found" } };
+    await writeAlertRules(
+      sql,
+      before.filter((r) => r.id !== ruleId),
+    );
+
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "alert_rule_delete",
+        targetType: "other",
+        targetId: ruleId,
+        before: existing,
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return { status: 200, body: { deleted: true } };
+  }
+
+  return { status: 404, body: { error: "not_found" } };
+}
+
+/**
+ * `/admin-platform-settings` (BACKEND_SPEC §7.7, FRONTEND_AUDIT.md H9 —
+ * `/cockpit/settings` was seeded with invented constants and both Save
+ * actions 404'd). Reads/writes the real `platform_settings` rows.
+ *
+ * The pricing POST updates `price_card_<vertical>` IN PLACE — the same key
+ * `job-billing-cycle` and `v_usage_alerts`/`v_call_cost_vs_billed` already
+ * join against (confirmed: none of them key off `tenants.price_version`
+ * today) — rather than writing a separately-versioned key that the real
+ * read path would never see. `platformPricingTableSchema`'s own doc
+ * comment says this "writes a NEW price_version, never mutates one"; a
+ * fuller versioned-price-history system isn't built anywhere in this
+ * codebase yet, so building one here would be a redesign outside this
+ * task's scope (CLAUDE.md Rule 4) — the full before/after is still
+ * captured immutably in `admin_actions` (this is the audit-trail guarantee
+ * the "never mutates" language is really protecting), and the gap is
+ * flagged in docs/BUILD_NOTES.md.
+ */
+async function handlePlatformSettings(
+  sql: SqlClient,
+  ctx: AdminRequestContext,
+): Promise<AdminResponse> {
+  const parts = segments(ctx.path); // ["admin-platform-settings", "referral"|"pricing"?]
+
+  if (ctx.method === "GET" && !parts[1]) {
+    const rows = await sql<{ key: string; value: Record<string, unknown> }>`
+      select key, value from public.platform_settings
+      where key = any(${[
+        "referral_flat_amount_cents",
+        "referral_qualification_rule",
+        ...VERTICALS.map((v) => `price_card_${v}`),
+      ]})
+    `;
+    const byKey = new Map(rows.map((r) => [r.key, r.value]));
+    return {
+      status: 200,
+      body: {
+        referral: {
+          flat_amount_cents:
+            (byKey.get("referral_flat_amount_cents") as { amount_cents?: number })?.amount_cents ??
+            0,
+          qualification_rule:
+            (byKey.get("referral_qualification_rule") as { rule?: string })?.rule ?? "",
+        },
+        price_cards: Object.fromEntries(
+          VERTICALS.map((v) => [v, byKey.get(`price_card_${v}`) ?? null]),
+        ),
+      },
+    };
+  }
+
+  if (ctx.method === "PATCH" && parts[1] === "referral") {
+    const parsed = AdminReferralSettingSchema.safeParse(ctx.body);
+    if (!parsed.success) {
+      return {
+        status: 422,
+        body: { error: "invalid_referral_setting", issues: parsed.error.issues },
+      };
+    }
+
+    const beforeRows = await sql<{ key: string; value: Record<string, unknown> }>`
+      select key, value from public.platform_settings
+      where key in ('referral_flat_amount_cents', 'referral_qualification_rule')
+    `;
+    const before = Object.fromEntries(beforeRows.map((r) => [r.key, r.value]));
+
+    await sql`
+      insert into public.platform_settings (key, value)
+      values ('referral_flat_amount_cents', ${JSON.stringify({ amount_cents: parsed.data.flat_amount_cents })}::jsonb)
+      on conflict (key) do update set value = excluded.value, updated_by = ${ctx.adminUserId}, updated_at = now()
+    `;
+    await sql`
+      insert into public.platform_settings (key, value)
+      values ('referral_qualification_rule', ${JSON.stringify({ rule: parsed.data.qualification_rule })}::jsonb)
+      on conflict (key) do update set value = excluded.value, updated_by = ${ctx.adminUserId}, updated_at = now()
+    `;
+
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "platform_settings_referral_edit",
+        targetType: "other",
+        before,
+        after: parsed.data,
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return { status: 200, body: { referral: parsed.data } };
+  }
+
+  if (ctx.method === "POST" && parts[1] === "pricing") {
+    const parsed = PlatformPricingTableSchema.safeParse(ctx.body);
+    if (!parsed.success) {
+      return { status: 422, body: { error: "invalid_price_card", issues: parsed.error.issues } };
+    }
+    const key = `price_card_${parsed.data.vertical}`;
+    const beforeRows = await sql<{ value: Record<string, unknown> }>`
+      select value from public.platform_settings where key = ${key}
+    `;
+    const before = beforeRows[0]?.value ?? null;
+
+    const value = {
+      base_cents: parsed.data.base_cents,
+      included_minutes: parsed.data.included_minutes,
+      overage_cents: parsed.data.overage_cents,
+      effective_at: parsed.data.effective_at,
+    };
+    await sql`
+      insert into public.platform_settings (key, value, updated_by)
+      values (${key}, ${JSON.stringify(value)}::jsonb, ${ctx.adminUserId})
+      on conflict (key) do update set value = excluded.value, updated_by = excluded.updated_by, updated_at = now()
+    `;
+
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "platform_settings_pricing_edit",
+        targetType: "other",
+        targetId: parsed.data.vertical,
+        before,
+        after: value,
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return { status: 200, body: { vertical: parsed.data.vertical, price_card: value } };
   }
 
   return { status: 404, body: { error: "not_found" } };
@@ -1117,6 +1499,7 @@ export async function routeAdminRequest(
   const [first] = segments(ctx.path);
   if (first === "admin-tenants") return handleTenants(sql, ctx, logger, deps);
   if (first === "admin-alerts") return handleAlerts(sql, ctx);
+  if (first === "admin-platform-settings") return handlePlatformSettings(sql, ctx);
   if (first === "admin-cockpit") return handleCockpit(sql, ctx);
   if (first === "admin-config-lab") return handleConfigLab(sql, ctx);
   if (first === "admin-referrals") return handleReferrals(sql, ctx);

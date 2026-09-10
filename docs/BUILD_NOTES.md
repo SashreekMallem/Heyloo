@@ -2675,3 +2675,1163 @@ platform_settings rows); 52 tables, RLS on all; auth Custom Access Token
 hook enabled → `public.custom_access_token_hook`; all 27 edge functions
 ACTIVE; 8 function secrets set (4 generated internal secrets + 4 derived
 webhook/function URLs). Owner-side remainder tracked in LAUNCH_STATUS.
+
+## Cluster B — Signup → checkout → provisioning → forwarding fix wave (2026-09-10)
+
+Fixed EDGE_AUDIT B1/B2/H3, E2E_FLOWS_AUDIT B1/B2/H1 (referral clawback),
+and FRONTEND_AUDIT's checkout tenant_id trust gap, per that pass's own
+named fixes.
+
+- **`webhooks-stripe`** (`handler.ts`/`index.ts`): `checkout.session
+  .completed` now actually invokes `/api-provision`'s internal-secret path
+  (`x-internal-secret` + `PROVISION_INTERNAL_SECRET`, header/body names
+  matching `api-provision/index.ts`'s own parsing exactly) after the tenant
+  activates, skipping the call entirely once `provisioning_runs.publish_agent
+  = 'succeeded'`. An invocation failure (network error or non-2xx/409)
+  writes a `provisioning_runs` row (`step='tenant_finalize', status=
+  'failed'`) + a `critical` `alerts` row rather than silently dropping —
+  the saga's own per-step failures already self-record via its existing
+  `recordStep`, this only covers the case where the HTTP call itself never
+  reached the saga.
+
+  REPAIR (2026-09-10): that invocation was itself unreachable over real
+  HTTP — `invokeProvisioning`'s `fetch` sent only `content-type` and
+  `x-internal-secret`, no `Authorization` header, but `config.toml` sets
+  `[functions.api-provision] verify_jwt = true`, and Supabase's platform
+  gateway rejects any `verify_jwt = true` function call with a missing/
+  invalid `Authorization: Bearer <jwt>` with 401 BEFORE the function code
+  (and its own `x-internal-secret` bypass) ever runs — `scripts/e2e-
+  backend.ts`'s own `callFunction` comment independently documents this
+  same platform requirement. Fixed by extracting the call into `webhooks-
+  stripe/invoke-provisioning.ts`'s `createInvokeProvisioning`, which now
+  sends `authorization: Bearer ${SB_SECRET_KEY}` (the same service-role
+  token/env-var name `worker-recording-fetch` and `job-retention-sweep`
+  already use for their own internal calls) ALONGSIDE the existing
+  `x-internal-secret` header — the bearer token clears the platform gate,
+  `x-internal-secret` remains the in-function tenant-trust check per
+  `api-provision/index.ts`'s own comment. `config.toml`'s `verify_jwt =
+  true` on `api-provision` was kept as-is (did not take the alternative
+  `verify_jwt = false` fix), so `docs/DEPLOY.md`'s `verify_jwt` table is
+  unchanged. Regression coverage: `invoke-provisioning.test.ts` asserts the
+  real `fetch` call's headers include both `authorization` and
+  `x-internal-secret` (previously only the mocked-`invokeProvisioning`
+  contract in `handler.test.ts` was tested, which could not have caught a
+  missing-header bug in the real HTTP call).
+
+  Added `charge.refunded`/`charge.dispute.created`
+  handling: reverses the referred tenant's `referrals.status` and every
+  non-clawed-back `commission_events` row to `'clawed_back'`, and reverses
+  `referral_partners.ytd_payout_cents` when a clawed-back commission had
+  already been marked `'paid'` (SYSTEM_DESIGN §6/§10 G34's documented
+  clawback rule). `charge.dispute.created`'s Dispute object has no
+  `customer` field (STRIPE-VERIFY-1, docs/VERIFY.md) — resolved via the
+  `payment_processing_events.stripe_charge_id -> tenant_id` mapping
+  `charge.succeeded` already writes, not a live Stripe API fetch.
+- **`api-provision`** (`handler.ts`/`index.ts`): `compileTemplate` is no
+  longer a stub. `index.ts` now loads the tenant's active `agent_templates`
+  row for its vertical and runs it through the SAME real compiler
+  `admin/handler.ts`'s template-publish route already uses in production
+  (`_shared/compiler/template-compiler.ts` — a lean, deliberately-
+  duplicated port of `packages/adapters/retell/src/compiler/*`, not a new
+  stand-in; see that module's own docstring for why Deno can't import the
+  Node-only `packages/adapters/retell`/`packages/templates` workspace
+  packages directly without a bundling step neither task adds — the exact
+  same constraint T3 already documented, applied here rather than
+  reinvented). The saga's `agent_compile` step now HARD-FAILS (never calls
+  Retell, records `provisioning_runs.error='disclosure_gate_failed'`) when
+  the compiled flow's first turn doesn't contain the tenant's
+  `disclosure_line` verbatim — closing EDGE_AUDIT B2 exactly as that
+  finding's own suggested fix describes. On success it now runs the real
+  two-step Retell protocol (`create-conversation-flow`/`create-retell-llm`
+  -> `create-agent` referencing that flow via `response_engine`) instead of
+  passing a placeholder object straight to `create-agent`. `packages/
+  adapters/retell`/`packages/templates` themselves were NOT touched — no
+  export was missing, this cluster's task text's "prefer existing exports"
+  condition was satisfied by the compiler module T3/T4 already shipped.
+- **`apps/web` checkout/signup**: per BACKEND_SPEC's own already-documented
+  resolution (`api-checkout/handler.ts`'s docstring — `webhooks-stripe`/
+  `api-provision` both assume a `tenants` row exists by
+  `checkout.session.completed`), `api-checkout` is the one function that
+  creates the `tenants`+owner-`memberships` rows; the duplicate
+  `/api/signup/create-tenant` Route Handler (which created its own
+  `tenants` row via a service-role client, bypassing `api-checkout`
+  entirely) has been DELETED. `/api/checkout/session` now proxies to the
+  real `api-checkout` edge function (not the nonexistent
+  `api-checkout-session` the old code called) with exactly the body
+  `CheckoutRequestSchema` parses (`vertical`, `business_name`, `email`,
+  `timezone?`) — every field server-derived (signed draft cookie +
+  authenticated session), never a client-supplied `tenant_id` (there is no
+  `tenant_id` in this contract at all now, closing the FRONTEND_AUDIT
+  trust-gap finding more completely than asserting equality would have).
+  `account-step-client.tsx` and the `tests/e2e/signup-checkout.spec.ts`
+  smoke test were updated to match (one fewer network hop). The pure
+  request-builder lives in `build-request.ts` (not `route.ts` itself) so it
+  can be unit-tested without pulling in `server-only`-guarded runtime code
+  under Vitest's jsdom environment.
+- **Found and NOT fixed (out of this cluster's ownership, filed in
+  `docs/audit/FIX_REQUESTS.md`)**: `packages/supabase-client/src/
+  vertical-mapping.ts`'s `VERTICAL_TO_DB_VALUE`/`DB_VALUE_TO_VERTICAL` maps
+  the canonical `Vertical` short form to a LONG form (`"auto_repair"`,
+  `"veterinary"`) that no longer matches the live `tenants.vertical` check
+  constraint (`supabase/migrations/20260907130100_tenancy.sql` — short form
+  only, `'auto'`/`'vet'`/...). The deleted `create-tenant` route used this
+  stale mapping (an already-shipped, now-moot bug since that route no
+  longer exists); the new checkout route deliberately does NOT use it,
+  passing `draft.business_type` straight through since it's already the
+  short form both `CheckoutRequestSchema` and the live constraint expect.
+  No other call site was found using this mapping, but the package itself
+  is out of this cluster's ownership to correct or delete.
+- **Also hardened** (small, same-pattern fix, not separately audited):
+  `/api/phone/forwarding-test` now asserts the caller's own JWT claims
+  `tenant_id` against the request body's `tenant_id` before proxying to
+  `forwarding-verify` (that edge function already enforced this
+  server-side, so this is defense-in-depth consistency with the checkout
+  fix above, not a closed vulnerability).
+
+**Tests:** `supabase/functions` — 430/430 passing (whole-workspace run),
+including new coverage for the provisioning-invoke path, the disclosure
+hard-fail, the real two-step Retell flow-then-agent creation, and the
+referral clawback (qualified/paid/already-clawed-back/no-referral cases).
+`apps/web` — new `build-request.test.ts` (seam contract test for the
+checkout body shape) + existing suite, 8/8 passing; `tsc -b` clean.
+
+## Fix wave — Cluster C (realtime + dashboard/admin truthfulness)
+
+Scope: docs/audit/E2E_FLOWS_AUDIT.md B3 (realtime topic mismatch) and the
+FRONTEND_AUDIT.md findings assigned to this cluster (H2/H3 Overview+Billing
+fabricated numbers, H7 Refer&Earn fabricated funnel, H6 Airtable stub, H8
+impersonation decorative, H9 admin Platform Settings stub, M2 admin
+alert-rule editor stub).
+
+**What was built**
+
+- **Realtime channel fix (E2E B3).** `apps/web/src/lib/realtime/channel.ts`
+  now exports `getTenantRealtimeChannelName(tenantId)` → `` `tenant:${tenantId}` ``
+  — the exact string `fn_broadcast_tenant_update()` and the
+  `tenant_channel_broadcast_select` RLS policy both already used. The
+  provider (`tenant-realtime-provider.tsx`) previously subscribed to
+  `` `private-tenant-${tenantId}` ``, which never matched either side — no
+  dashboard client ever received a broadcast for any table/tenant. Fixed;
+  unit test asserts the helper's output equals the SQL literal format.
+  `payload.table` field access was already correct against
+  `realtime.broadcast_changes()`'s real payload shape (`table`/`operation`/
+  `schema`/`record`/`old_record`) — confirmed via `supabase/supabase`'s own
+  `examples/prompts/use-realtime.md` on GitHub, since `supabase.com`'s
+  hosted docs are egress-blocked in this environment (Rule 1.2; logged in
+  `docs/VERIFY.md`).
+- **Overview/Billing fabricated numbers (H2/H3).** New authenticated Route
+  Handler `apps/web/src/app/api/platform-settings/tenant-plan/route.ts`
+  reads the CALLER'S OWN tenant's `vertical` (never a client-supplied
+  value) then that vertical's `price_card_<vertical>` + the platform-wide
+  `usage_alert_thresholds` via the service-role client (`platform_settings`
+  is admin-only RLS, so a tenant member can't read it directly). Overview's
+  `minutesIncluded`/`spamDeflected` and Billing's `included`/usage-alert
+  section now read this + a real `call_logs.classification = 'spam_robocall'`
+  count instead of the literal `300`/`0` constants.
+  - **Usage-alert toggles (H3):** no per-tenant persistence column exists
+    for `alert_80_enabled`/`alert_100_enabled` (grepped every migration —
+    zero hits; only the platform-wide `usage_alert_thresholds` key and the
+    already-admin-settable `tenants.usage_hard_cap_minutes` exist). Per
+    H3's own stated fallback ("remove the interactive switches and show the
+    platform default as read-only text... don't ship a control that
+    silently does nothing"), the toggles are now read-only text reflecting
+    the real platform thresholds + the tenant's real hard-cap state.
+    Per-tenant persisted toggle columns are requested from the DB cluster
+    in `docs/audit/FIX_REQUESTS.md` as a follow-up, not built here (adding
+    new `tenants` columns is a migration, outside this cluster's
+    ownership).
+- **Refer & Earn funnel (H7).** `api/tenant/refer/ensure-link/route.ts` now
+  also returns real `signups`/`qualified`/`paid` counts (queried from
+  `referrals` scoped to the tenant's own `referral_partners` row, same
+  pattern the partner portal's `/portal/page.tsx` already used one file
+  away) and an `approaching_w9_threshold` flag (80% of the $600 1099-NEC
+  threshold, mirroring this app's own 80%-of-threshold convention) with a
+  banner on the tenant refer page. Pure funnel/threshold math extracted to
+  `funnel.ts` for unit testing (`funnel.test.ts`).
+- **Airtable delivery (H6).** New route group
+  `apps/web/src/app/api/tenant/delivery/airtable/{connect,callback,disconnect,status,sync-now}`
+  implements a real OAuth2+PKCE flow against Airtable's documented
+  endpoints (`airtable.com/oauth2/v1/{authorize,token}`) — state/verifier
+  in a short-lived signed cookie (`shared.ts`, same signing pattern as
+  `lib/signup/draft-cookie.ts`), a Zod boundary validator on the token
+  response (airtable.com is egress-blocked here too; shape reconstructed
+  from third-party write-ups per Rule 1.2, logged in `docs/VERIFY.md`), and
+  a real popup + `postMessage` with a fixed-origin check on the delivery
+  page. **Known incomplete, by design, not by oversight:**
+  1. `adapter_connections.provider`'s CHECK constraint doesn't include
+     `'airtable'` yet — the callback's upsert will fail (honestly, via
+     `popupResultHtml({ok:false,...})`, never a fake success) until that
+     migration lands (requested in FIX_REQUESTS.md).
+  2. "Sync now" enqueues via `rpc/fn_enqueue_adapter_push`, which doesn't
+     exist yet either (no `pgmq` schema exposure through PostgREST) —
+     requested as a small `security definer` wrapper, plus a
+     `pushToAirtable` branch in `worker-adapter-push`'s `ADAPTER_PUSHERS`
+     (cluster E's file) to actually consume it. Both 501 honestly today.
+  3. Multi-base picker UI is not built — auto-connects to the first base
+     Airtable returns; flagged here rather than half-built.
+  4. Provider-side token revoke on disconnect is not implemented — no
+     documented Airtable revoke endpoint was reachable to confirm (clearing
+     our own stored token is still real; logged in `docs/VERIFY.md`).
+  `packages/supabase-client/src/database.types.ts` (generated, not owned
+  by this cluster) predates `adapter_connections`/`airtable_sync_state` —
+  a narrow, documented `untypedTable`/`untypedRpc` cast in `shared.ts` is
+  the boundary until that's regenerated (requested in FIX_REQUESTS.md).
+- **Impersonation end-to-end (H8).** `admin/handler.ts`'s
+  `POST /admin-tenants/:id/impersonate` now requires a non-empty `reason`
+  (`adminImpersonateSchema`, 422 without one) and returns a 30-minute
+  `expires_at` alongside the real minted magic link; a new
+  `POST /admin-tenants/:id/impersonate-end` writes the second audit entry
+  the spec's "Enable edits" pattern implies. The admin tenant-detail page
+  opens the magic link in a NEW tab (never navigating the admin's own
+  cockpit session away) and stashes display state in `localStorage`
+  (`apps/web/src/lib/impersonation/state.ts` — same-origin-shared across
+  tabs) for the new `/dashboard` tab to read
+  (`use-impersonation-banner.tsx`). **Known limitation, flagged rather than
+  faked:** this is real audit logging + a real independent session (never
+  simulated), but "read-only-by-default, edit-mode enforced server-side"
+  is NOT yet server-enforced — that needs an `impersonated_by`/
+  `impersonation_edit_enabled` JWT claim from `custom_access_token_hook`
+  checked by the tenant write RLS policies, a migration outside this
+  cluster's ownership (requested in FIX_REQUESTS.md). `ImpersonationBanner`
+  mount in the `(tenant)` layout is requested from cluster D with the exact
+  import/prop contract (FIX_REQUESTS.md) since that file isn't in this
+  cluster's ownership.
+- **Admin Platform Settings (H9).** New `admin-platform-settings` route
+  group in `admin/handler.ts`: `GET` loads the real `referral_flat_amount_cents`/
+  `referral_qualification_rule`/`price_card_<vertical>` rows (never an
+  invented default); `PATCH .../referral` and `POST .../pricing` validate
+  with the same shape as `adminReferralSettingSchema`/
+  `platformPricingTableSchema` (re-declared locally in `schemas.ts` — Deno
+  can't import the Node `@heyloo/canonical-types` package directly, same
+  constraint `api-adapter-connect/schema.ts` already documents) and write
+  real `platform_settings` rows + an `admin_actions` before/after audit
+  row. **Scope decision:** the pricing schema's own comment says saving
+  "writes a NEW price_version, never mutates one" — no versioned-price-key
+  system exists anywhere in this codebase (`job-billing-cycle` only ever
+  reads the unversioned `price_card_<vertical>` key, confirmed by reading
+  it), so building one here would be a redesign outside this task (Rule
+  4). The pricing POST updates that same key in place; the full
+  before/after is preserved immutably in `admin_actions` instead, which is
+  the audit-trail guarantee the schema comment is really protecting. The
+  frontend page (`cockpit/settings/page.tsx`) now seeds every field from
+  this real GET response — never a hardcoded `useState` default — via a
+  `key`-remounted sub-component per vertical rather than an effect (avoids
+  a `setState`-in-effect render cascade the lint rule correctly flags).
+- **Admin alert-rule editor (M2).** No rule-definition table exists
+  anywhere (`public.alerts` is fired-instance rows only, confirmed by grep;
+  `job-alert-evaluation`'s own comment says thresholds are "not yet
+  defined" in `platform_settings`) — `AlertRule`'s actual shape
+  (`packages/ui/src/custom/alert-rule-row.tsx`) confirms rules, not fired
+  alerts, is what `/cockpit/alerts` is meant to CRUD. Also found: the page
+  was pointed at the wrong resource entirely (`admin-alerts`, the
+  fired-alert list, not a rules endpoint) — a deeper break than the audit's
+  "edit is a stub" framing alone suggested. New `admin-alerts/rules`
+  GET/POST/PATCH/DELETE group stores rules as a single `platform_settings`
+  row (`admin_alert_rules`, `{rules: [...]}`, each with a generated `id`) —
+  that table is exactly "Admin-editable key/value store" per its own
+  comment, so no migration is needed. Frontend now points at the right
+  resource and has a real create/edit `Dialog` using
+  `adminAlertThresholdSchema`.
+- **Loading/error/empty states:** Billing and admin Platform Settings now
+  use `DataState` (previously bare `useQuery` + local `useState` defaults);
+  Overview/Refer/Alerts already did.
+
+**Cross-cluster requests filed** (docs/audit/FIX_REQUESTS.md, all under
+"Requesting cluster: C"): `adapter_connections.provider` CHECK constraint
+add `'airtable'`; a `public.fn_enqueue_adapter_push` PostgREST-exposed RPC
+wrapper around `pgmq.send('adapter_push_queue', ...)`; regenerate
+`packages/supabase-client/src/database.types.ts`; a `pushToAirtable` branch
+in `worker-adapter-push`'s `ADAPTER_PUSHERS`; an optional `redirectTo` param
+on `_shared/providers/supabase-admin.ts`'s `generateMagicLink`; per-tenant
+`alert_80_enabled`/`alert_100_enabled` columns (or confirm the read-only
+platform-default display is the intended final design instead); the
+`impersonated_by`/`impersonation_edit_enabled` JWT claim + RLS policy work
+for true server-enforced impersonation edit-mode; the `ImpersonationBanner`
+mount in the `(tenant)` layout with the `useImpersonationBanner` contract;
+Airtable OAuth env vars (`AIRTABLE_OAUTH_CLIENT_ID`/`_CLIENT_SECRET`/
+`_REDIRECT_URI`/`AIRTABLE_OAUTH_STATE_SECRET`) for `.env.example`.
+
+**Tests:** `apps/web` — 41/41 passing (10 test files, including new
+`channel.test.ts`, `funnel.test.ts`, `shared.test.ts`, `state.test.ts`),
+`tsc -b` clean, `eslint .` clean except pre-existing findings in files this
+cluster doesn't own (`agent/vertical-details/page.tsx` unescaped entities —
+another cluster's in-progress work). `supabase/functions` — `admin/
+handler.test.ts` 52/52 passing (added ~20 new cases for platform-settings/
+alert-rules/impersonation), `tsc --noEmit` clean.
+
+## Fix wave — Cluster D (tenant screens + bookings UI, 2026-09-10)
+
+Scope: MASTER_SPEC.md §3.10 (the frontend patch pack — 100% missing per
+FRONTEND_AUDIT.md), FRONTEND_AUDIT.md Finding H4 (no Reschedule UI despite
+a working backend), E2E_FLOWS_AUDIT.md Flow 5 (no dashboard surface for
+orders/payment links).
+
+**What was built**
+
+- **Vertical details tab** (`dashboard/agent/vertical-details/page.tsx`,
+  new `AgentSettingsTabs` entry). Renders `verticalDetailsSchema`'s fields
+  conditionally per `tenants.vertical` (dental/vet/auto/legal/motel/
+  restaurant each get their own MASTER_SPEC §3.5 fields;
+  `cancellation_policy` for every vertical), plus reminders/review toggles
+  + `review_url` + `avg_transaction_value_cents`
+  (`reminderReviewSettingsSchema`). Both schemas already existed, unused,
+  exactly as FRONTEND_AUDIT.md's Finding H2 described — this cluster wired
+  them up rather than re-deriving them. Two new Route Handlers
+  (`api/tenant/agent/vertical-details`, `api/tenant/settings/reminders-review`)
+  do the schema validation server-side (unlike the other agent-settings
+  tabs, which only validate client-side) — these fields feed the live
+  voice agent directly, so a bad value reaching
+  `agent_configs.dynamic_variable_overrides` unvalidated is a live-call
+  risk, not a cosmetic one.
+- **Bookings Reschedule (H4).** The booking PATCH route
+  (`api/tenant/bookings/[id]/route.ts`) already handled reschedule
+  end-to-end but had no UI trigger and no dedicated tests. Added: a
+  Reschedule button opening a slot-picker sourced from
+  `availability_slots` (same table + `is_available` filter the voice
+  backend reads, so the dashboard can't offer a double-book any more than
+  the phone agent can), wired to the existing `bookingRescheduleSchema`
+  (`{booking_id, new_slot_id}` — the route now validates against it and
+  looks up the slot server-side rather than trusting client-supplied
+  start/end timestamps, a tightening beyond what existed before). Also
+  fixed two real template-key bugs found in the same file while wiring
+  this up: `confirm` sent `template_key: "booking_confirmed"`, which
+  doesn't exist in `supabase/functions/_shared/templates.ts`'s enum (only
+  `"booking_confirmation"` does) — an empty-body SMS every time a booking
+  was confirmed from the dashboard; `reschedule` had no matching template
+  case at all and hit the same empty-body default. Both now use
+  `"booking_confirmation"` with a real `{start_local}` payload (tenant-
+  timezone-formatted via `tenants.timezone`).
+- **Payment status + resend** (booking Sheet + new Orders detail page).
+  Reads `payment_links` scoped to the booking/order; a "Resend link"
+  button proxies to an edge function (`api-payment-link-resend`) that
+  doesn't exist yet — same "frontend built against a documented contract,
+  backend pending" pattern as the existing `api-checkout-session`/
+  `api-billing-portal` entries in docs/VERIFY.md (a Stripe Checkout
+  Session's own `url` isn't re-fetchable and the session expires, so a
+  real resend has to mint a fresh one — provider-touching work that has to
+  live in an edge function per CLAUDE.md Rule 2, not a Route Handler).
+  Requested in docs/audit/FIX_REQUESTS.md with the exact contract this
+  cluster's Route Handler already calls.
+- **Waitlist section** under Bookings (`waitlist_entries`, RLS-readable/
+  writable directly by tenant staff) — active entries with a "Remove"
+  action, backed by a new tenant-scoped `api/tenant/waitlist/[id]` PATCH
+  Route Handler (validated status enum) rather than a raw client write, so
+  the mutation is testable and matches this cluster's other Route Handler
+  patterns.
+- **Messages** (new `dashboard/messages/**` + `api/tenant/messages/[phone]`).
+  Per-phone-number thread view merging `messages_inbound` +
+  `messages_outbound` (channel `sms`), STOP/opt-out status visible and
+  reply disabled when opted out, reply form (`messageReplySchema`'s `body`
+  field, reused rather than re-declared) posting through a service-role
+  Route Handler (`messages_outbound` has no tenant client-write RLS policy
+  — matches the existing pattern in `bookings/[id]/route.ts`'s
+  notification insert). `messages_outbound` stores only
+  `template_key`/`payload`, never a rendered body (BACKEND_SPEC §10.2 —
+  rendered server-side at send time) — reproducing the exact customer-
+  visible SMS text client-side would mean duplicating
+  `_shared/templates.ts`'s renderer with no drift guard (the same
+  maintenance-debt shape already flagged for the template-compiler
+  duplication in docs/VERIFY.md), so outbound bubbles show a neutral
+  system-label for templated sends and the real verbatim text only for an
+  owner's own reply (`describeOutboundMessage`,
+  `apps/web/src/lib/messages/outbound-preview.ts`, unit-tested). No
+  broadcast trigger exists on `messages_inbound` yet (confirmed by grep,
+  independently already flagged in E2E_FLOWS_AUDIT.md §3.3) — polls every
+  15s as an honest interim rather than claiming realtime that isn't there;
+  requested the trigger in docs/audit/FIX_REQUESTS.md. Also requested the
+  one-case `"owner_reply"` template addition (currently falls to the
+  `default: {body: ""}` case — an empty SMS — and, independently, the
+  `fn_enqueue_message_outbound` RPC every `messages_outbound` insert from
+  `apps/web` needs to ever actually leave `status: 'queued'`, since
+  PostgREST has no `pgmq` schema access. **Scope note:** that queueing gap
+  is pre-existing, not introduced here — `bookings/[id]/route.ts`'s
+  booking-notification insert had the identical gap before this cluster
+  touched the file; fixing it needs a migration outside this cluster's
+  ownership, so it's requested rather than silently left as a dead insert.
+- **Orders** (new `dashboard/orders/**` + `api/tenant/orders/[id]`). List
+  (paginated, status-filtered, joined to `payment_links` for a payment-
+  status column) + detail (items/totals/fulfillment/delivery address,
+  status-transition buttons, payment-link resend) — `orders`/`payment_links`
+  had zero frontend references anywhere before this (E2E_FLOWS_AUDIT.md
+  Flow 5).
+- **Nav + shell:** added Messages/Orders/Integrations to
+  `AppSidebarNav`/`MobileTabBar` (Integrations links to
+  `/dashboard/integrations`, built by a different cluster in this same
+  fix wave — linked per this cluster's own task brief, not built here).
+  Mounted `ImpersonationBanner` in `TenantShellClient` using cluster C's
+  `useImpersonationBanner(tenantId)` hook/contract (found already posted
+  in docs/audit/FIX_REQUESTS.md and already built at
+  `apps/web/src/lib/impersonation/`) — this cluster's own earlier
+  speculative cookie-based contract was written, then discarded in favor
+  of the real one once found, per this task's own instruction to check
+  FIX_REQUESTS.md late in the work.
+- **Realtime:** no new plumbing needed — `bookings`/`orders` already have
+  a broadcast trigger (`fn_broadcast_tenant_update`) and this cluster's
+  query keys (`useTenantQuery(tenantId, "bookings"/"orders", ...)`) already
+  match what `TenantRealtimeProvider` invalidates on, so those two pages
+  get realtime refetch for free. `messages_inbound`/`payment_links`/
+  `waitlist_entries` don't broadcast yet (see above) — those poll instead
+  of claiming a live channel that isn't wired.
+
+**Cross-cluster requests filed** (docs/audit/FIX_REQUESTS.md, all under
+"Requesting cluster: D"): the `api-payment-link-resend` edge function; the
+`public.fn_enqueue_message_outbound` RPC wrapper around
+`pgmq.send('messages_outbound_queue', ...)`; a broadcast trigger on
+`messages_inbound`; the `"owner_reply"` template case in
+`_shared/templates.ts`; fixing `TenantRow.vertical`'s stale long-form union
+in `packages/supabase-client/src/database.types.ts` (same root cause as
+cluster B's `vertical-mapping.ts` finding); a "Message this customer" link
+on the customers detail page (outside this cluster's ownership).
+
+**Tests:** `apps/web` — added `route.test.ts` for every new/modified Route
+Handler (`bookings/[id]`, `waitlist/[id]`, `orders/[id]`,
+`payment-links/[id]/resend`, `messages/[phone]`) covering auth/tenant-
+scoping plus the reschedule/409-conflict path, `tstzrange.test.ts` and
+`outbound-preview.test.ts` for the two new pure-function utilities — 53/53
+passing (13 test files). `tsc -b --pretty` clean, `eslint .` clean (only
+pre-existing warnings in files this cluster doesn't own).
+
+## Fix wave — Cluster E (voice tools, workers, failover, adapter security, 2026-09-10)
+
+Fixed EDGE_AUDIT B1/H1/H2/M1/M2, E2E_FLOWS_AUDIT B4 (producer side), and
+DB_AUDIT DB-H2, plus two standing FIX_REQUESTS.md items directed at this
+cluster's exclusive `_shared/**`/`worker-adapter-push/**` ownership.
+
+- **B1 (`create_booking` cross-tenant hole):** `voice-tools/tools/
+  create_booking.ts` now verifies `args.resource_id` (and `args.offering_id`
+  when present) belong to the caller's own `tenant_id` and are `active`
+  before ever inserting — same `select ... where tenant_id = ctx.tenantId`
+  pattern already used by every sibling tool. New result reasons
+  `resource_not_found`/`offering_not_found`; tests cover both rejections.
+- **M1 (`send_sms_confirmation` cross-tenant reference):** same pattern
+  applied to `args.booking_id`/`args.order_id` in `voice-tools/tools/
+  send_sms_confirmation.ts` before either is used in the idempotency
+  soft-check or the write — new reasons `booking_not_found`/
+  `order_not_found`. This tool had no test file at all before this fix;
+  added `send_sms_confirmation.test.ts` covering both ownership checks,
+  idempotent replay, and the A2P verified/pending_verification branches.
+- **E2E B4 (adapter push producer, both halves):** new
+  `_shared/adapter-push.ts` (`enqueueAdapterPush`) — looks up the tenant's
+  actually-connected `adapter_connections` rows and enqueues one
+  `adapter_push_queue` message per connected adapter that supports the
+  given entity type, addressed by the REAL provider name (`square`,
+  `shopmonkey`, `ezyvet`, `google_calendar`, `airtable`) rather than either
+  never enqueueing at all (every booking tool, before this fix) or the
+  literal `adapter: "pos"` `create_order.ts` used to send, which matched no
+  key in `worker-adapter-push`'s `ADAPTER_PUSHERS` map and silently
+  dead-ended at `adapter_push_not_implemented` for every single order push
+  ever sent. Wired into `create_booking`/`update_booking`/`cancel_booking`
+  (entity_type `"booking"`, on create/reschedule/cancel respectively) and
+  fixed in `create_order` (entity_type `"order"`). A dedicated
+  producer<->consumer contract test (`_shared/adapter-push.test.ts`)
+  imports the real `ADAPTER_PUSHERS` map and asserts every provider the
+  producer can address has a registered pusher, plus a field-name contract
+  check on the enqueued message shape.
+  - **Known, disclosed scope limit (not redesigned per this task's "producer
+    side" framing and CLAUDE.md Rule 4 scope discipline):** every pusher in
+    `worker-adapter-push/handler.ts` still only implements a CREATE call to
+    the external provider — there is no per-adapter UPDATE/CANCEL API call
+    yet. A reschedule/cancel push therefore still calls the provider's
+    create endpoint against the booking's current (possibly now-cancelled)
+    state rather than truly updating/cancelling the external object. This
+    is a real, pre-existing architectural gap in the CONSUMER (not
+    introduced by this fix — the consumer had zero real bookings flowing
+    through it before this wave), left for a follow-up task rather than a
+    from-scratch redesign of all four providers' update/cancel semantics
+    under this task's budget. Tracked here explicitly rather than silently
+    implied as complete.
+- **H1 (`worker-messages-outbound` swallowed every provider failure):**
+  `processOutboundMessage` now distinguishes a genuinely PERMANENT provider
+  rejection (Twilio error codes 21211/21614/21408/21610 — invalid/
+  unreachable "To" number, region-not-enabled, opt-out; Resend `name`
+  `validation_error`/`invalid_to_address`/`invalid_from_address`/
+  `missing_required_field`) — marked `status='failed'` immediately, same as
+  before — from a TRANSIENT one (any other non-2xx/failure shape, e.g. a
+  5xx or network blip), which now THROWS so `index.ts`'s existing
+  catch/`moveToDeadLetter`/pgmq-retry path actually engages, matching
+  BACKEND_SPEC §9's 5-attempt-then-DLQ contract. Pre-flight validation
+  failures this worker detects itself before ever contacting a provider
+  (`no_sending_number`, `no_recipient_email`, an unimplemented channel)
+  are unchanged — no provider was called, so there is nothing to retry.
+  Also fixed a second, closely-related gap: `index.ts`'s dead-letter branch
+  moved the pgmq message off the queue but never flipped the
+  `messages_outbound` row's own `status` to `failed`, so an
+  attempts-exhausted message sat at `status='queued'` forever with no
+  admin-visible signal — now set alongside the DLQ move.
+- **H2 (`job-retell-health-failover` restore was a no-op):**
+  `failoverNumbers` now snapshots each Twilio number's CURRENT `VoiceUrl`
+  (a new `getIncomingPhoneNumber` GET call in `_shared/providers/
+  twilio.ts`) before overwriting it, storing the map in `platform_settings`
+  (key `retell_health_failover_voice_url_snapshot` — this task's ownership
+  excludes `supabase/migrations/**`, so no new column/table). `restoreNumbers`
+  now really calls `updateIncomingPhoneNumberVoiceUrl` back to each number's
+  snapshotted original value — idempotent (a successfully-restored number
+  is removed from the persisted snapshot, so a repeat recovery cycle is a
+  no-op for it; a Twilio-call failure keeps it in the snapshot for the next
+  cycle to retry) and never fabricates a "guessed" VoiceUrl for a number
+  this job couldn't snapshot (logged instead). "Audit log" here means the
+  same structured `logger.error`/`.info` calls this file already used for
+  the trigger direction — a dedicated DB audit table would need a migration
+  outside this task's ownership; flagged, not silently skipped.
+- **M2 (hot-path pool exhaustion on a hung query):** `_shared/deno/db.ts`'s
+  `getSql` now accepts an optional `statementTimeoutMs`, passed as a
+  Postgres `connection` startup parameter (`statement_timeout`) —
+  VERIFY-confirmed against postgres.js's own README
+  (`raw.githubusercontent.com/porsager/postgres/v3.4.9/README.md`, GitHub
+  raw content reachable even though `docs.twilio.com`-class doc sites
+  aren't) rather than assumed. `voice-tools/index.ts` passes `1200`ms
+  (comfortably under its own 1.5s JS-level hard-abort), so a hung query is
+  killed SERVER-SIDE by Postgres itself and its connection freed back to
+  the 5-slot pool, not just abandoned client-side while it keeps running.
+  Every other caller of `getSql()` omits this and keeps unbounded queries —
+  a blanket timeout would also cap legitimate longer-running job/worker
+  scans that have no hot-path budget.
+
+  **Update (verified-by-test, not just doc-citation):** `voice-tools/index.ts`
+  and `_shared/deno/db.ts` are still Deno-only entrypoints excluded from this
+  package's `tsconfig.json`/Vitest, but the two pieces of logic that actually
+  matter are no longer trapped inside them:
+  - `withTimeout` (the JS-level hard-abort race) is extracted into
+    `_shared/timeout.ts` (plain, Deno-global-free — only `setTimeout`/
+    `clearTimeout`), re-exported from `voice-tools/index.ts` unchanged.
+    `_shared/timeout.test.ts` uses Vitest fake timers to assert: the
+    fast-settling branch wins the race and clears its timer; a still-pending
+    promise at `ms` rejects with `Error("tool_call_timeout")`; and no timer
+    is left dangling (`vi.getTimerCount() === 0`) after either branch, or
+    the timeout branch, settles.
+  - The `statement_timeout` connection-option object is built by the new
+    pure `_shared/db-options.ts#buildConnectionOptions`, which `db.ts`'s
+    `getSql` now calls instead of inlining the object (and `getSql` also
+    takes an optional injectable `postgres` factory, defaulting to the real
+    npm import). `_shared/db-options.test.ts` asserts
+    `buildConnectionOptions({ statementTimeoutMs: 1200 })` produces
+    `connection: { statement_timeout: 1200 }` and that calling it with `{}`
+    or `undefined` omits the `connection` key entirely (every non-voice-tools
+    caller keeps unbounded behavior). Note: the value is a `number`, not the
+    `String(...)` this entry originally described — postgres.js's own
+    installed `ConnectionParameters` type (`node_modules/postgres/types/
+    index.d.ts` at pinned v3.4.9) declares `statement_timeout: number`, and
+    its `StartupMessage()` (`src/connection.js`) builds the wire value by
+    plain string concatenation, which coerces a number identically — a
+    type-only correction, no behavior change, since a string blew up
+    TypeScript's `exactOptionalPropertyTypes` check once this became
+    real, typechecked code instead of Deno-glue tsc never saw.
+  - The actual "cancels the underlying query so the pool cannot be
+    exhausted" claim — the one thing no mocked unit test can demonstrate —
+    is now pinned against a REAL Postgres server by
+    `_shared/statement-timeout-check.ts`, run as a new step in the
+    `migrations-check` CI job (`.github/workflows/ci.yml`, which already
+    spins up a local Postgres via `supabase start` for this job) right after
+    `supabase db lint`: it connects with
+    `connection: { statement_timeout: 500 }`, issues `select pg_sleep(2)`,
+    asserts the rejection is Postgres SQLSTATE `57014` (`query_canceled`)
+    in well under the full 2s sleep, then issues `select 1` on the SAME
+    client afterward to confirm the connection/pool slot is still usable —
+    not just abandoned or left broken. Manually verified against a real
+    local Postgres 16 instance during this fix: canceled in ~523ms, `select
+    1` succeeded immediately after. `postgres` (pinned `3.4.9`, matching
+    `deno.json`'s import map) is now a real devDependency of
+    `supabase/functions/package.json` so this script resolves it via
+    ordinary Node module resolution — the CI job installs it with a
+    `--filter @heyloo/edge-functions...`-scoped `pnpm install
+    --frozen-lockfile` (not a full-workspace install) before running it.
+- **DB-H2 (adapter tokens stored plaintext):** `_shared/crypto.ts` gained
+  `encryptSecret`/`decryptSecret` — AES-256-GCM via Web Crypto
+  (`crypto.subtle`, already this file's only dependency), versioned
+  `v1:<iv>:<ciphertext>` format, keyed by a new `ADAPTER_TOKEN_ENCRYPTION_KEY`
+  secret (documented in `.env.example`). `decryptSecret` tolerates a value
+  with no recognized version prefix by returning it unchanged, so every
+  `adapter_connections` row written before this fix (plaintext) keeps
+  working with no backfill migration required. `api-adapter-connect`
+  encrypts both `access_token`/`refresh_token` before every insert/update;
+  `worker-adapter-push` decrypts on every read (`loadConnection`) and
+  re-encrypts a refreshed access token before writing it back
+  (`markConnectionRefreshed`). Round-trip/legacy-tolerance/wrong-key/
+  malformed-value unit tests added to `_shared/crypto.test.ts`; both
+  writer/reader test files updated to assert ciphertext (never plaintext)
+  is what actually reaches the DB.
+- **Standing FIX_REQUESTS.md items implemented (this cluster's exclusive
+  `_shared/**`/`worker-adapter-push/**`/`.env.example` ownership):** added
+  the `"owner_reply"` verbatim-passthrough case to `_shared/templates.ts`'s
+  `renderTemplate` (requested by cluster D, blocking its Messages-thread
+  reply feature); added a real `pushToAirtable` branch (+ new
+  `_shared/providers/airtable.ts`, one-way push, VERIFY-flagged like every
+  other egress-blocked provider file in this directory) to
+  `worker-adapter-push/handler.ts`'s `ADAPTER_PUSHERS` map (requested by
+  cluster C) — depends on cluster A's still-pending migration adding
+  `'airtable'` to `adapter_connections.provider`'s CHECK constraint (already
+  filed, not re-filed here) and on the Airtable connect flow's
+  `adapter_connections.metadata` carrying `{baseId, tableIdOrName}`; added
+  an optional `redirectTo` param to `_shared/providers/supabase-admin.ts`'s
+  `generateMagicLink` (forwarded as `options.redirect_to`, requested by
+  cluster C for the admin impersonation route's deep-link — backward
+  compatible, new `supabase-admin.test.ts` covers both branches); appended
+  the `.env.example` `VOICE_TOOLS_WEBHOOK_URL` comment to note its second
+  consumer (requested by cluster B) and added the four
+  `AIRTABLE_OAUTH_*` variables cluster C's Airtable connect flow needs
+  (requested by cluster C) — both `.env.example`-only, no code change.
+  Not implemented: the new `api-payment-link-resend` function (cluster D)
+  and the `job-retention-sweep` function (cluster A) — neither matches any
+  pattern in this cluster's explicit ownership list (not `api-adapter-
+  connect`, not a `worker-*`/named `job-*` function), so left for whichever
+  cluster actually owns `supabase/functions`' remaining `api-*`/`job-*`
+  surface, per this task's own scope-discipline instruction.
+
+**Cross-cluster requests filed** (docs/audit/FIX_REQUESTS.md, both under
+"Requesting cluster: E"): `apps/web`'s Airtable OAuth connect/callback
+route should also call the new `encryptSecret` before writing
+`access_token`/`refresh_token` (DB-H2 is only fully closed once every
+writer of this column encrypts, and that route is outside this cluster's
+ownership); an informational note on the new Airtable pusher's
+dependencies (migration + connection metadata shape) for whoever owns
+that flow.
+
+**Tests:** `supabase/functions` (Vitest) — every touched/new file has a
+matching `.test.ts`; ran the full scoped suite after each change and again
+at the end: **all passing, no regressions** (`_shared/crypto.test.ts`,
+`_shared/templates.test.ts`, `_shared/adapter-push.test.ts` (new),
+`voice-tools/tools/{create_booking,update_booking,cancel_booking,
+create_order,send_sms_confirmation}.test.ts`,
+`worker-messages-outbound/handler.test.ts`,
+`job-retell-health-failover/handler.test.ts`,
+`worker-adapter-push/handler.test.ts`, `api-adapter-connect/
+handler.test.ts`). `tsc -p supabase/functions/tsconfig.json --noEmit`
+clean.
+
+## CLUSTER-F — Referral payout webhook, churn/retention loop, integrations UI (2026-09-10)
+
+**Scope:** E2E_FLOWS_AUDIT Flow 7 (PayPal payout consumer), Flow 10 (churn/
+retention, entirely unbuilt — H3), Flow 9/10 (no adapter-connect UI).
+
+**What was built**
+
+- `supabase/functions/webhooks-paypal/` (new): verifies PayPal's webhook
+  signature via a live `/v1/notifications/verify-webhook-signature` call
+  (fail closed on any missing header/secret or a non-`SUCCESS` result —
+  `signature.ts`), dedups through the existing `webhook_events` table
+  (`_shared/webhook-dedup.ts`, reused unmodified), then on
+  `PAYMENT.PAYOUTS-ITEM.*` events (`handler.ts`) matches the event back to
+  one `referral_payouts` row via `(paypal_batch_id, referral_partner_id)` —
+  no new column needed, since `job-referral-payouts` already sends exactly
+  one PayPal payout item per partner per batch with `sender_item_id:
+  referral_partner_id`. `SUCCEEDED` flips `referral_payouts` to
+  `'completed'`, `commission_events` to `'paid'`, the matching `referrals`
+  row to `'paid'`, and bumps `referral_partners.ytd_payout_cents`;
+  `FAILED`/`DENIED`/`BLOCKED`/`CANCELED` and `RETURNED`/`REFUNDED` flip
+  `referral_payouts` to `'failed'`/`'returned'` and revert
+  `commission_events` back to `'accrued'` for next cycle's retry, plus an
+  `alerts` row for finance visibility; `UNCLAIMED`/`ONHOLD` are logged as
+  still in-flight with no state change. `job-referral-payouts/handler.ts`'s
+  stale "no /webhooks-paypal function exists yet" docstring updated to
+  point at this file.
+- **`DECIDE` (schema gap, needs a migration this cluster cannot apply):**
+  `referral_payouts.status`'s CHECK constraint is `('pending','sent',
+  'failed')` — this handler writes `'completed'`/`'returned'` too, per the
+  task brief's literal "sent → completed/failed/returned" and to
+  distinguish a confirmed payment from returned funds for finance. An
+  additive migration widening that constraint is filed in
+  `docs/audit/FIX_REQUESTS.md` for the DB-owning cluster; until it lands, a
+  live `'completed'`/`'returned'` write is REJECTED by Postgres (a loud,
+  visible failure — never a silently-wrong status).
+- `supabase/functions/job-churn-scoring/` (new, BACKEND_SPEC §8 "Churn
+  scoring", `0 6 * * *`): recomputes a per-tenant churn-risk score (0-100)
+  from three normalized signals — trailing-7-day usage trend vs. the prior
+  7 days (`usage_daily`), open/pending `support_requests` in the trailing
+  30 days, and `billing_invoices` that went `past_due` in the trailing 180
+  days — weighted 0.40/0.25/0.35 and upserted into `churn_scores`. An
+  already `paused`/`canceled` tenant scores 100 outright. Weights/ceilings
+  are this build's reasoned defaults (BACKEND_SPEC §8 names the three
+  signal categories, not a formula) — tune once real churn outcomes exist.
+- `supabase/functions/job-value-email/` (new, BACKEND_SPEC §8 "Weekly value
+  emails", `0 14 * * 1`): for every `status = 'active'` tenant, computes
+  calls-answered and bookings-captured in the trailing 7 days and
+  `avg_transaction_value_cents × bookings_captured` as `value_saved_cents`/
+  `value_saved_display` ("$525"-style), then inserts+enqueues a
+  `messages_outbound` row (`template_key: 'weekly_value_summary'`) via the
+  existing pgmq pipeline — same "job enqueues, worker sends" shape every
+  other job in this codebase uses. **`DECIDE`** (no persisted per-tenant
+  email-notification-preference exists anywhere in this codebase —
+  `packages/canonical-types/src/schemas/delivery-preferences.ts`'s
+  `email_enabled`/`notification_email` schema has ZERO persistence call
+  sites, confirmed by repo-wide grep): "respects notification prefs" is
+  implemented as the one real, already-enforced gate available —
+  `status = 'active'` only, recipient resolved via the same owner-
+  membership pattern `webhooks-stripe`'s `invoice.payment_failed` handler
+  already uses. If/when a real per-tenant email-opt-out is added, gate on
+  it here too.
+- `supabase/functions/job-offboarding/` (new, SYSTEM_DESIGN §9/G7
+  "guaranteed number port-out SLA"; Flow 8 steps 2/4 — the narrower slice
+  this task's brief actually asked for, not the full data-export-bundle
+  flow, see below): releases phone numbers for `paused`/`canceled` tenants
+  (Retell `delete-phone-number` un-import first, then Twilio
+  `IncomingPhoneNumbers` release, matching Flow 8 step 2's own ordering so
+  no in-flight call is orphaned), then archives (`tenants.deleted_at`) a
+  tenant once it has no remaining active phone number. **`DECIDE`**: no
+  exact port-out grace-period day count is specified anywhere in the specs,
+  and `tenants` has no `canceled_at`/`paused_at` timestamp — this build uses
+  `tenants.updated_at` as a conservative proxy (a canceled/paused tenant
+  touched again for an unrelated reason only ever DELAYS release, never
+  releases early — the safe direction for a guaranteed port-out window)
+  and a 30-day window (matching `tenants.retention_days`'s own BIPA-aware
+  default order of magnitude). A `tenants.canceled_at` column would be the
+  more-correct fix — requested from the DB-owning cluster in
+  `docs/audit/FIX_REQUESTS.md`, informational/non-blocking. **Out of this
+  task's scope** (per this cluster's literal brief — "release numbers ...
+  archive per retention", not the fuller Flow 8): the data-export-bundle-
+  via-signed-URL-email step. Flagged here as a real follow-up gap, not
+  built as a partial/fake version of it.
+- `supabase/functions/job-retention-sweep/` (new — closes the exact gap
+  `docs/audit/FIX_REQUESTS.md` already had filed against this function
+  name): for every `call_logs` row with a recording older than that
+  tenant's OWN `tenants.retention_days`, bulk-deletes the Storage object(s)
+  (`recordings/{tenant}/{call}.wav`[`_stereo`]) via the Storage REST API's
+  `{prefixes}` bulk-delete, then nulls both recording-URL columns. Batched
+  (200/run, oldest first) so one run's duration is bounded; a backlog
+  spills into the next day's run rather than blocking.
+- `apps/web/src/app/[locale]/(tenant)/dashboard/integrations/**` + `apps/
+  web/src/app/api/tenant/integrations/**` (new — E2E_FLOWS_AUDIT Flow 9/10:
+  "no 'Connect <adapter>' UI in the tenant dashboard at all"; the nav entry
+  for `/dashboard/integrations` already existed in
+  `tenant-shell-client.tsx`, unused until this page). Lists Square/Google
+  Calendar/Shopmonkey/ezyVet (the four adapters `api-adapter-connect`
+  actually supports) with real connect (OAuth popup for Square/Google,
+  inline paste-key form for Shopmonkey/ezyVet)/reconnect/disconnect/status/
+  last-refreshed/error-surface, all proxied through the REAL
+  `api-adapter-connect` edge function contract — no fake success path.
+  Airtable is a separate one-way delivery integration with its own existing
+  page (`/dashboard/delivery`) and is deliberately not duplicated here.
+  Each OAuth provider gets its OWN callback path
+  (`callback/square`, `callback/google_calendar`) rather than a shared
+  `?provider=` query param, since each already has its own registered
+  `*_OAUTH_REDIRECT_URI` env var and OAuth redirect query-param
+  passthrough is not a safe cross-provider assumption.
+
+**Cross-cluster requests filed** (`docs/audit/FIX_REQUESTS.md`, all under
+"Requesting cluster: F"): (1) an additive migration widening
+`referral_payouts.status`'s CHECK constraint to include `'completed'`/
+`'returned'`; (2) cron mappings for the four new jobs (name → slug →
+schedule) for whichever cluster owns `supabase/migrations`' cron-scheduling
+migration; (3) an informational note that a real `tenants.canceled_at`/
+`paused_at` column would let `job-offboarding` key off the actual state-
+change time instead of the `updated_at` proxy.
+
+**Tests:** every new function/route has a matching `.test.ts` (49 new
+tests across `job-churn-scoring`, `job-value-email`, `job-offboarding`,
+`job-retention-sweep`, `webhooks-paypal` in `supabase/functions`; 27 new
+tests across the `api/tenant/integrations/**` routes in `apps/web`).
+`tsc -p supabase/functions/tsconfig.json --noEmit` and `pnpm --filter
+@heyloo/web typecheck` both clean for every file this cluster touched (a
+pre-existing, unrelated `_shared/crypto.ts` typecheck error from another
+in-progress cluster, and one pre-existing unrelated failing test in
+`voice-tools/tools/create_order.test.ts`, were both left untouched per this
+task's own instructions). `biome check` clean.
+
+## Integrator — cross-cluster FIX_REQUESTS pass
+
+Applied every actionable bullet in `docs/audit/FIX_REQUESTS.md` left open
+after seven parallel fix clusters finished (many were already picked up by
+a later cluster before this pass ran — e.g. the `owner_reply` template
+case, `generateMagicLink`'s `redirectTo`, the `VOICE_TOOLS_WEBHOOK_URL`/
+Airtable-OAuth `.env.example` lines, the `ImpersonationBanner` mount, and
+`worker-adapter-push`'s `pushToAirtable` branch were all already applied
+and needed no further action here).
+
+**New additive migrations** (`supabase/migrations/`, all following
+existing precedent files' own patterns, none editing an applied
+migration):
+- `20260910100000_adapter_connections_airtable_provider.sql` — adds
+  `'airtable'` to both `adapter_connections.provider` and
+  `adapter_sync_state.provider`'s CHECK constraints (looked up the real
+  auto-generated constraint name via `pg_constraint` rather than guessing).
+- `20260910100100_fn_enqueue_adapter_push.sql` — the requested
+  `public.fn_enqueue_adapter_push(...)` PostgREST RPC wrapping
+  `pgmq.send('adapter_push_queue', ...)`, tenant-scoped (no-op on a
+  `p_tenant_id` mismatch), granted to `authenticated`.
+- `20260910100200_fn_enqueue_message_outbound.sql` — same shape for
+  `public.fn_enqueue_message_outbound(p_message_id uuid)` /
+  `messages_outbound_queue`, tenant-scoped by joining the message row's own
+  `tenant_id` against the caller's JWT.
+- `20260910100300_broadcast_messages_inbound.sql` — adds
+  `trg_broadcast_messages_inbound`, same shape as the existing
+  `trg_broadcast_call_logs`/`_bookings`/`_orders`/`_support_requests`.
+- `20260910100400_referral_payouts_terminal_statuses.sql` — widens
+  `referral_payouts.status`'s CHECK constraint to add `'completed'`/
+  `'returned'` (constraint name looked up via `pg_constraint`, same
+  caution as the request itself flagged).
+- `20260910100500_new_job_cron_schedules.sql` — the four outstanding
+  `cron.schedule` entries (`job-churn-scoring` `0 6 * * *`,
+  `job-value-email` `0 14 * * 1`, `job-offboarding` `45 5 * * *`,
+  `job-retention-sweep` `0 5 * * *`), reusing
+  `20260910093000_queues_and_scheduled_jobs.sql`'s own
+  `fn_cron_upsert(...)`/Vault-secret guard structure verbatim. All four
+  functions were already deployed (`supabase/config.toml`,
+  `verify_jwt = false`) by the time this pass ran — only the cron mapping
+  was missing.
+
+**Small glue edits:**
+- `packages/supabase-client/src/database.types.ts` — fixed
+  `TenantRow.vertical`'s stale long-form union (`auto_repair`/`veterinary`)
+  to the real short-form CHECK constraint (`auto`/`vet`, matching
+  `@heyloo/canonical-types`' `Vertical`); added the missing
+  `AdapterConnectionRow`/`AdapterSyncStateRow`/`AirtableSyncStateRow` table
+  types + `Database.public.Tables` entries; added `fn_enqueue_adapter_push`/
+  `fn_enqueue_message_outbound` to `Database.public.Functions` (previously
+  intentionally empty — these two are the documented exception to "every
+  RPC goes through an edge-function proxy", since `pgmq` isn't exposed over
+  PostgREST).
+- `packages/supabase-client/src/vertical-mapping.ts` — same root cause as
+  above; turned `VERTICAL_TO_DB_VALUE`/`DB_VALUE_TO_VERTICAL` into identity
+  maps (kept, not deleted, so no import site needs to change) now that both
+  sides agree on the short-form spelling.
+- `apps/web/src/components/tenant/customer-detail-client.tsx` — added a
+  "Message this customer" link next to the phone number, linking to
+  `/dashboard/messages/{phone}` (same pattern already used on the
+  bookings/orders detail views).
+- `apps/web/src/app/api/tenant/delivery/airtable/callback/route.ts` +new
+  `apps/web/src/lib/crypto/adapter-token.ts` — the callback route now
+  encrypts `access_token`/`refresh_token` with AES-256-GCM
+  (`ADAPTER_TOKEN_ENCRYPTION_KEY`) before the `adapter_connections` upsert,
+  failing closed (501) if the key isn't configured, closing DB-H2 for the
+  one writer of that table cluster E's own fix couldn't reach.
+  `adapter-token.ts` is a deliberate duplicate of
+  `supabase/functions/_shared/crypto.ts`'s `encryptSecret` (same versioned
+  `v1:<iv>:<ciphertext>` format `worker-adapter-push`'s `decryptSecret`
+  already reads) rather than a cross-project import — `apps/web` (Next.js,
+  `moduleResolution: "bundler"`) and `supabase/functions` (Deno, separately
+  built) are different compilation units in this repo, so this matches the
+  existing build-boundary separation instead of fighting it. `.env.example`
+  comment updated to note this second consumer.
+
+**Left as informational, not implemented** (both explicitly filed as
+design decisions, not small patches — CLAUDE.md Rule 4: flag, don't
+redesign):
+- Per-tenant `alert_80_enabled`/`alert_100_enabled` columns on `tenants`
+  vs. keeping the platform-wide-default-only design — no schema change
+  made; `apps/web`'s Billing page already shows the real platform-wide
+  thresholds as read-only text, which this pass treats as the current
+  final design pending an explicit product decision to add per-tenant
+  overrides.
+- The `impersonated_by`/`impersonation_edit_enabled` JWT-claim + RLS design
+  for server-enforced impersonation edit-mode — still display-only
+  (`apps/web/src/lib/impersonation/`), not an RLS boundary. Genuinely needs
+  a schema+auth-model decision (which claim-minting mechanism, which RLS
+  policies join against it) before a migration can be written; not
+  redesigned here.
+- The Airtable connect flow's `adapter_connections.metadata` still stores
+  `{ base_name }` rather than the `{ baseId, tableIdOrName }` shape
+  `worker-adapter-push`'s `pushToAirtable` branch expects (filed
+  informationally by cluster E, "not a blocking ask" — a multi-base/table
+  picker UI is its own follow-up, already flagged in this file's earlier
+  T-cluster entries). `pushToAirtable`'s `adapter_push_missing_metadata`
+  guard will keep firing for real Airtable pushes until that picker UI
+  exists; left untouched here since it's a UI feature, not a glue edit.
+
+**Not re-filed** (already-standing requests this pass's migrations now
+satisfy, so no new FIX_REQUESTS bullet needed): the `airtable_sync_state`/
+`adapter_connections` regeneration bullet and the `fn_enqueue_adapter_push`
+bullet are both closed by the migrations/type changes above.
+
+## Repair — Impersonation server-enforced read-only/edit boundary
+
+Closed the gap docs/audit/FIX_REQUESTS.md flagged as "a genuine schema+auth-
+model decision, not a small patch": the impersonated session previously
+carried the same `app_metadata` claims as the tenant owner's normal login,
+so the banner's read-only/edit-mode split was display-only, never RLS-
+enforced. Added `supabase/migrations/20260910110000_impersonation_claim.sql`
+(new `impersonation_sessions` table, `fn_jwt_is_impersonating()`/
+`fn_jwt_impersonation_edit_enabled()` helpers, a `custom_access_token_hook`
+update that joins the table, and every tenant-write RLS policy tightened to
+require `not fn_jwt_is_impersonating() or fn_jwt_impersonation_edit_enabled()`),
+plus `supabase/functions/admin/handler.ts`'s impersonate route now inserting
+that row at mint time, a new `POST .../impersonate/edit-mode` route, and
+impersonate-end setting `ended_at`. `docs/VERIFY.md` (VERIFY-IMPERSONATION-1/2)
+logs the two Rule-1 items `supabase.com` being unreachable left unconfirmed
+against live docs.
+
+Discovered gap, documented rather than silently worked around (Rule 4):
+`apps/web/src/lib/impersonation/use-impersonation-banner.tsx`'s "Enable
+edits" toggle (like the pre-existing `impersonate-end` call next to it)
+calls `/api/admin/admin-tenants/{id}/impersonate/edit-mode` from the
+IMPERSONATED tab. That proxy (`apps/web/src/app/api/admin/[...path]/route.ts`,
+not owned by this task) requires the CALLING request's own session cookie to
+carry `platform_admin`. Because `@supabase/ssr` stores the session in a
+single per-domain cookie (not per-tab), opening the impersonation magic link
+in a new tab overwrites that cookie for the whole browser — so a request
+made from within the impersonated tab authenticates as the tenant owner, not
+the admin, and this call will 403 in practice. The toggle therefore only
+flips its local/displayed `editMode` on an actual 200 response (never
+optimistically) so the UI never claims edits are enabled when the server
+never agreed — but the toggle itself may consistently fail until that proxy
+gains a second, non-`platform_admin` authorization path (e.g. trusting the
+caller's own `impersonated_by` claim, which only a genuine active
+`impersonation_sessions` row can produce). Filed as a FIX_REQUESTS.md bullet
+for whichever cluster owns that proxy route; not fixed here since it needs
+either a shared-file edit outside this task's ownership or a new dedicated
+edge function, either of which is a bigger design call than this repair's
+scope.
+
+## Repair — DB-H1 write-path RLS: CI coverage gap
+
+`docs/audit/DB_AUDIT.md` DB-H1 (bookings/orders WITH CHECK ownership
+guards on `resource_id`/`offering_id`/`customer_id`, fixed in
+`supabase/migrations/20260910090000_view_security_and_write_rls_
+hardening.sql`) had a correct fix but zero automated coverage —
+`scripts/ci/rls-cross-tenant-probe.ts` only ever issued SELECTs (leak
+probing) and seeded bookings/orders via the service-role client, which
+bypasses RLS entirely and so could never exercise a WITH CHECK clause.
+
+Fixed by extending that same script (no new CI job needed — it already
+runs after `supabase start` applies every migration, see
+`.github/workflows/ci.yml`): `seedTenant()` now also fetches and returns
+each tenant's seeded `resourceId`/`offeringId`/`customerId`/`bookingId`/
+`orderId` (throwing if any is missing, rather than silently skipping), and
+a new `writeProbeCases()`/`probeWriteRejected()` pair issues, as each
+tenant's real authenticated user (never the service-role client), 10
+cross-tenant INSERT/UPDATE attempts against `bookings`/`orders` — own
+`tenant_id` correct, but `resource_id`/`offering_id`/`customer_id` (or an
+`items[].offering_id`) pointed at the OTHER seeded tenant's row — asserting
+every one is rejected (non-2xx). Run both directions (A-attacks-B and
+B-attacks-A), wired into the same `failures`/exit-code path as the
+existing leak checks, so a regression (a re-added permissive policy, a
+typo dropping one of the four EXISTS clauses) now fails CI per CLAUDE.md
+Rule 2. No migration SQL changed — the fix itself was already correct.
+
+## Repair — frontend truthfulness claim, remaining Airtable defects (2026-09-10)
+
+Two hop-level defects survived an earlier fix wave (docs/audit/FIX_REQUESTS.md's
+cluster C/E Airtable bullets already landed the CHECK-constraint migration,
+`fn_enqueue_adapter_push`, and the `pushToAirtable` worker branch — this
+repair closed the two remaining truthfulness gaps against that already-real
+plumbing):
+
+1. `apps/web/src/app/api/admin/[...path]/route.ts` → `supabase/functions/admin/index.ts`
+   proxy-vs-slug contract: already fixed by a parallel repair pass before this
+   task ran (verified by reading both files + the passing
+   `route.test.ts`/`handler.test.ts`); no action needed here beyond
+   confirming it and logging the confirmation in `docs/VERIFY.md`
+   (VERIFY-REPAIR-1).
+2. Airtable push metadata: `apps/web/src/app/api/tenant/delivery/airtable/callback/route.ts`
+   now populates `adapter_connections.metadata.baseId`/`.tableIdOrName` (the
+   base auto-picked as before per item 3 below; the table now auto-picked as
+   the base's first table via Airtable's Meta API "list tables" endpoint,
+   `airtableTablesUrl` in `shared.ts`) — previously `worker-adapter-push`'s
+   `pushToAirtable` always no-oped via `adapter_push_missing_metadata`
+   because neither key was ever written. Docs/BUILD_NOTES.md item 3
+   (multi-base picker) above still stands as-is — bases are still
+   auto-picked, not user-chosen; the NEW auto-pick is the table within
+   whichever base was already auto-picked. A real table-picker UI (letting
+   the tenant choose instead of auto-picking the first table) remains an
+   equivalent follow-up, same reasoning as the existing base-picker gap.
+3. Airtable sync-log table split: `apps/web/src/app/api/tenant/delivery/airtable/status/route.ts`
+   read `public.airtable_sync_state` while the worker's `recordSyncSuccess`
+   (shared by every T7 adapter) writes `public.adapter_sync_state` — a real
+   push success never surfaced in the dashboard. Fixed by pointing the
+   status route at `adapter_sync_state` filtered `provider = 'airtable'`
+   (the writer's actual table), rather than special-casing the writer to
+   target the Airtable-only table — keeps every adapter's push-bookkeeping
+   on one code path. No migration needed: `adapter_sync_state`'s `provider`
+   CHECK constraint and RLS select policy already cover `'airtable'`
+   (confirmed by reading `20260910100000_adapter_connections_airtable_
+   provider.sql` and `20260907160000_t7_adapter_connections.sql` directly).
+   `public.airtable_sync_state` is now write-orphaned; left in place rather
+   than dropped (dropping a table is a bigger, unrequested change).
+
+See `docs/VERIFY.md`'s "Repair task — admin cockpit proxy contract +
+Airtable sync truthfulness" section for the full verification trail,
+including the new AIRTABLE-VERIFY-2 entry for the Meta API tables-list
+shape.
+
+## FIX-1 — Integrator pass over the audit fix wave (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Integrated the large parallel fix wave (Clusters B-G plus the repair tasks
+above: realtime/dashboard truthfulness, impersonation server-enforced
+boundary, DB-H1 write-path RLS CI coverage, admin cockpit proxy contract +
+Airtable truthfulness) — ran every gate, fixed what the gates and a
+cross-check against `docs/audit/FIX_REQUESTS.md` turned up, and cleared
+`FIX_REQUESTS.md` of everything confirmed already applied.
+
+**Cluster: lint hygiene (biome).** `npx biome check --write` on every
+changed/new path found two real, mechanical categories, both now clean
+repo-wide (`biome check .` — 0 errors, 36 pre-existing unrelated warnings
+in files this wave never touched):
+- 11 new/changed test files built a "thenable mock" query-builder object
+  (an established convention already covered by a
+  `// biome-ignore lint/suspicious/noThenProperty` comment in one sibling
+  test file) but were missing that same ignore comment, so
+  `lint/suspicious/noThenProperty` fired as an error on each. Added the
+  identical ignore comment to all 11 (`apps/web/src/lib/auth/require-
+  {tenant,partner}-session.test.ts`, and the `route.test.ts` files under
+  `api/tenant/{waitlist,settings/reminders-review,payment-links/[id]/
+  resend,orders,messages/[phone],calls/export,agent/vertical-details,
+  bookings/[id],delivery/airtable/status}`).
+- Several safe mechanical suggestions (`lint/complexity/useOptionalChain`,
+  `lint/style/useTemplate`) applied via `--write --unsafe` after manually
+  confirming each rewrite is behavior-identical (empty-string/undefined
+  `key?.trim()` vs. `key && key.trim()`; `!slot?.is_available` vs.
+  `!slot || !slot.is_available`; a template-literal password-suffix
+  concat) — `apps/web/src/app/[locale]/(tenant)/dashboard/agent/vertical-
+  details/page.tsx`, `api/tenant/bookings/[id]/route.ts` (+ its and four
+  siblings' `.test.ts`), `scripts/ci/rls-cross-tenant-probe.ts`.
+- `vertical-details/page.tsx`'s `useEffect` carried a stale
+  `// eslint-disable-next-line react-hooks/exhaustive-deps` (a no-op under
+  this repo's actual Biome+ESLint toolchain — Biome doesn't read ESLint
+  disable comments, and the deps array was genuinely non-exhaustive per
+  BOTH linters, which disagreed on which exact dependency to add — Biome's
+  suggested fix wanted `.reset` alone, ESLint's `react-hooks/exhaustive-
+  deps` wanted the whole `detailsForm`/`reminderForm` objects). Resolved
+  by depending on the full `detailsForm`/`reminderForm` objects (react-
+  hook-form's returned object is stable across renders per its own docs,
+  so this is behavior-identical to the narrower fix, and satisfies both
+  linters at once) rather than adding a biome-ignore that would have gone
+  stale the moment the dependency array became exhaustive.
+
+**Cluster: `fn_enqueue_message_outbound` JWT/tenant-identity mismatch
+(verifier item, MASTER_SPEC §3.10 tab).** `supabase/migrations/20260910
+100200_fn_enqueue_message_outbound.sql` no-ops the enqueue whenever the
+message row's `tenant_id` doesn't equal `public.fn_jwt_tenant_id()` (reads
+`request.jwt.claims -> app_metadata ->> tenant_id`). Both of its only two
+real call sites — `apps/web/src/app/api/tenant/bookings/[id]/route.ts`'s
+confirm/reschedule/cancel notification insert, and `api/tenant/messages/
+[phone]/route.ts`'s reply-send — call it through
+`createSupabaseServiceRoleServerClient()`, i.e. the Postgres `service_role`
+JWT, which carries no `app_metadata.tenant_id` claim at all. The own-tenant
+check therefore always compared against `NULL`, always no-op'd, and every
+one of these SMS sends sat at `messages_outbound.status: 'queued'` forever
+with zero indication anything was wrong (the route itself always returned
+`{ok: true, sms_queued: true}` since the INSERT succeeded — only the
+enqueue silently failed).
+
+Picked Option A (make the function service-role-aware, matching how
+service-role callers work everywhere else in this schema — CLAUDE.md Rule
+2's own "service_role has BYPASSRLS... every service_role-using edge
+function must still explicitly filter by a verified tenant_id in its own
+query" convention) over Option B (change the two call sites to stop using
+service-role) because both call sites already verify the caller's own
+session `tenant_id` (via `claimsFromUser`/`requireTenantSession`-equivalent
+checks earlier in each route) and stamp that verified value onto the
+`messages_outbound` row themselves before ever calling this RPC — a
+`service_role` caller reaching this function is therefore already
+tenant-verified upstream, exactly the trust boundary every other
+service-role code path in this codebase relies on. Editing the migration
+in place (rather than a new additive one) was safe here specifically
+because `docs/LAUNCH_STATUS.md`'s DEPLOY-1 record shows only 22 migrations
+were applied to the live project on 2026-09-09, and this file is dated
+2026-09-10 (one of the 9 post-deploy migrations) — never applied anywhere,
+so "never edit an applied migration" doesn't cover it.
+
+Fix: `fn_enqueue_message_outbound` now reads `current_setting('request.jwt
+.claims', true)::jsonb ->> 'role'`; a `service_role` caller only needs
+`p_message_id` to resolve to *some* `messages_outbound` row (no tenant
+comparison — there is no tenant claim to compare against), while an
+`authenticated` caller still gets the original strict `tenant_id =
+fn_jwt_tenant_id()` match. Also added an explicit `grant execute ... to
+service_role` (previously only `authenticated`) for clarity, even though
+default PostgreSQL function-execute privileges likely already covered it
+(no schema-wide `revoke`/`alter default privileges` found anywhere in this
+migration set).
+
+Verified directly (no Docker/`supabase start` available in this
+environment — see the reproducibility harness below) by seeding a tenant +
+a `messages_outbound` row, swapping in a logging `pgmq.send` stub, and
+calling the function three times with `set_config('request.jwt.claims',
+..., false)` set to (1) `{"role":"service_role"}`, (2) `{"role":
+"authenticated", "app_metadata":{"tenant_id":"<wrong-tenant>"}}`, (3)
+`{"role":"authenticated","app_metadata":{"tenant_id":"<right-tenant>"}}`.
+Confirmed exactly 2 of the 3 calls actually enqueued (service_role +
+matching-tenant), and the mismatched-tenant authenticated call silently
+no-op'd exactly as designed — the fix closes the real gap without opening
+a cross-tenant leak.
+
+**Cluster: `docs/audit/FIX_REQUESTS.md` cross-check.** Verified every
+bullet filed by Clusters B-G and the repair tasks against the current
+tree; all but six are now confirmed applied and were removed from that
+file (full confirmation, one line per bullet):
+job-retention-sweep function + its cron entry both exist;
+`vertical-mapping.ts` is now an identity map matching the real short-form
+`tenants.vertical` CHECK constraint; `.env.example`'s `VOICE_TOOLS_
+WEBHOOK_URL` comment documents its second consumer;
+`20260910100000_adapter_connections_airtable_provider.sql` adds
+`'airtable'` to the CHECK constraint; `20260910100100_fn_enqueue_adapter_
+push.sql` exists; `worker-adapter-push`'s `ADAPTER_PUSHERS` map has a real
+`pushToAirtable` branch; `database.types.ts` now types
+`adapter_connections`/`airtable_sync_state`/`fn_enqueue_adapter_push`
+(`apps/web/src/app/api/tenant/delivery/airtable/shared.ts`'s
+`untypedTable`/`untypedRpc` helpers had a stale docstring claiming
+otherwise — corrected in place; kept the helpers themselves since swapping
+every call site to the now-typed client directly is a separate, low-risk
+mechanical follow-up, not folded into this bug-fix pass);
+`supabase-admin.ts`'s `generateMagicLink` takes `redirectTo`;
+`20260910110000_impersonation_claim.sql` exists and is wired into
+`custom_access_token_hook` + RLS; `ImpersonationBanner` is mounted in
+`tenant-shell-client.tsx`; `.env.example` has the four `AIRTABLE_OAUTH_*`
+vars; `20260910100200_fn_enqueue_message_outbound.sql` exists (see above
+for its bug); `20260910100300_broadcast_messages_inbound.sql` adds the
+trigger; `templates.ts` has an `"owner_reply"` case;
+`api-payment-link-resend` exists; `TenantRow["vertical"]` is short-form;
+`customer-detail-client.tsx` has the "Message this customer" link;
+`airtable/callback/route.ts` encrypts tokens via `encryptSecret`;
+`20260910100400_referral_payouts_terminal_statuses.sql` widens the CHECK
+constraint; `20260910100500_new_job_cron_schedules.sql` schedules all four
+of `job-churn-scoring`/`job-value-email`/`job-offboarding`/`job-retention-
+sweep`.
+
+Six bullets are genuinely still open and stayed in `FIX_REQUESTS.md`
+(unchanged in substance, condensed for the removals above): BIPA
+retention-window default (blocked on counsel, not code), per-tenant
+usage-alert-prefs columns (blocked on a product decision — `docs/BUILD_
+NOTES.md`'s Cluster C entry already treats the platform-wide-only design
+as current-final pending that decision), Airtable two-way sync,
+`tenants.canceled_at`/`paused_at`, the decorative `outreach_send_queue`
+pgmq queue with no producer/consumer, and the admin-cockpit-proxy
+impersonation edit-mode 403 (a real bug, but its fix spans both `apps/web`'s
+proxy AND `admin/handler.ts`'s own AAL2/`adminUserId` JWT-claims parsing —
+a genuine cross-service auth-model change, not something to redesign
+inside an unrelated integration pass per CLAUDE.md Rule 4).
+
+**Gates run this pass** (all green): `npx biome check --write` on every
+changed path, then `biome check .` repo-wide (0 errors); `pnpm -w
+typecheck` (18/18 packages); `pnpm run lint` (biome + per-package eslint,
+0 errors); `pnpm -w test` (all packages — edge-functions 72 files/563
+tests, ui 4 files/15 tests, web 30 files/134 tests, all green); `apps/web`
+production build (`next build`, all 98 static pages + every dynamic route
+compiled clean); `node --experimental-strip-types scripts/ci/verify-jwt-
+guard.ts` (34 functions checked, PASSED).
+
+**Migrations reproducible-from-zero** — verified in a throwaway local-
+Postgres harness (same no-Docker constraint as every prior pass in this
+environment; this session's local Postgres 16 cluster, not `supabase
+start`): stubbed `auth`/`storage`/`realtime`/`cron`/`pgmq` schemas (tables/
+functions only the DDL itself needs — `auth.users`, `auth.uid()`/`.role()`/
+`.jwt()`, `storage.buckets`, `realtime.messages` + a no-op
+`broadcast_changes`, `cron.job` + `.schedule`/`.unschedule`, `pgmq.create`/
+`.send`/`.list_queues`) and the `supabase_auth_admin`/`authenticated`/
+`anon`/`service_role` roles, stripped only the three `create extension`
+lines for `pg_cron`/`pgmq`/`pg_net` (genuinely unavailable outside a
+Supabase-hosted Postgres — every downstream use of them is already guarded
+by a `pg_extension` existence check per the existing `DO` blocks, so this
+matches real behavior on a Supabase host with those extensions present,
+just skipping the guarded blocks instead of running them). All 31 real
+migration files applied verbatim, in order, from an empty database with
+zero errors, followed by `supabase/seed/seed.sql` (also zero errors).
+Harness and scratch SQL were session-only, never committed.
+
+**Not runnable in this environment (documented, not silently skipped):**
+`scripts/ci/rls-cross-tenant-probe.ts` and `scripts/ci/cron-queues-check.ts`
+both require a live GoTrue+PostgREST stack (`supabase start`, which needs
+Docker) — this sandbox's Docker daemon is unreachable
+(`/var/run/docker.sock` doesn't exist), same constraint every prior pass
+in this repo's history has hit and disclosed. Both scripts were read in
+full and are unchanged in logic from the prior pass that already covers
+the impersonation read-only/edit-mode RLS boundary end to end (real GoTrue
+signup, real `custom_access_token_hook` re-run, real cross-tenant
+INSERT/UPDATE attempts) — reviewed, not executed here. This is also the
+"remaining: test" state for the impersonation-lifecycle verifier item:
+the RLS-level end-to-end coverage already exists in
+`rls-cross-tenant-probe.ts` and the route-level coverage already exists in
+`supabase/functions/admin/handler.test.ts` (start/end/edit-mode-toggle, all
+passing under `pnpm test`), but neither has ever actually been executed
+against a live Postgres+GoTrue+PostgREST stack in any build agent's
+sandbox used across this entire project — it stays reviewed-but-
+unexecuted until someone runs it somewhere with Docker available, same
+disclosure `docs/LAUNCH_STATUS.md` already carries for the Playwright e2e
+specs.

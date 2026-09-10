@@ -31,6 +31,7 @@ const MAX_ATTEMPTS = 6; // BACKEND_SPEC §9
 // skip, matching CLAUDE.md Rule 2's "missing secret = reject").
 const DEPS: AdapterPushDeps = {
   fetchImpl: fetch,
+  tokenEncryptionKey: requireEnv("ADAPTER_TOKEN_ENCRYPTION_KEY"),
   square: {
     clientId: optionalEnv("SQUARE_CLIENT_ID") ?? "",
     clientSecret: optionalEnv("SQUARE_CLIENT_SECRET") ?? "",

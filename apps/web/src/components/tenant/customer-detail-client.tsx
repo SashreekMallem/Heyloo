@@ -12,6 +12,7 @@ import {
   StatusBadge,
   Textarea,
 } from "@heyloo/ui";
+import Link from "next/link";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -58,7 +59,15 @@ export function CustomerDetailClient({ customer }: { customer: CustomerDetailDat
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold">{customer.name ?? "Unknown customer"}</h1>
-          <p className="text-sm text-muted-foreground">{customer.phone}</p>
+          <div className="flex items-center gap-2">
+            <p className="text-sm text-muted-foreground">{customer.phone}</p>
+            <Link
+              href={`/dashboard/messages/${encodeURIComponent(customer.phone)}`}
+              className="text-sm text-primary underline underline-offset-2"
+            >
+              Message this customer
+            </Link>
+          </div>
         </div>
         <SegmentBadge segment={customer.segment} />
       </div>
