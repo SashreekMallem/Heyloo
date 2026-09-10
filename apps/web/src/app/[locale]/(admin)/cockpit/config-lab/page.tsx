@@ -81,8 +81,8 @@ export default function ConfigLabPage() {
             onChange={(e) => setName(e.target.value)}
           />
           <Select value={vertical} onValueChange={setVertical}>
-            <SelectTrigger>
-              <SelectValue />
+            <SelectTrigger aria-label="Vertical">
+              <SelectValue placeholder="Vertical" />
             </SelectTrigger>
             <SelectContent>
               {VERTICALS.map((v) => (
@@ -93,8 +93,8 @@ export default function ConfigLabPage() {
             </SelectContent>
           </Select>
           <Select value={llmTier} onValueChange={setLlmTier}>
-            <SelectTrigger>
-              <SelectValue />
+            <SelectTrigger aria-label="LLM tier">
+              <SelectValue placeholder="LLM tier" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="economy">LLM: Economy</SelectItem>
@@ -103,8 +103,8 @@ export default function ConfigLabPage() {
             </SelectContent>
           </Select>
           <Select value={voiceTier} onValueChange={setVoiceTier}>
-            <SelectTrigger>
-              <SelectValue />
+            <SelectTrigger aria-label="Voice tier">
+              <SelectValue placeholder="Voice tier" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="economy">Voice: Economy</SelectItem>

@@ -270,9 +270,9 @@ export default function OfferingsSetupPage() {
                     <TableHead>Name</TableHead>
                     <TableHead>Category</TableHead>
                     <TableHead>Price</TableHead>
-                    <TableHead>Duration</TableHead>
+                    <TableHead className="whitespace-nowrap">Duration</TableHead>
                     <TableHead>Allergens</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
+                    <TableHead className="whitespace-nowrap text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -283,7 +283,7 @@ export default function OfferingsSetupPage() {
                       <TableCell>
                         {offering.price_cents != null ? formatCentsUSD(offering.price_cents) : "—"}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="whitespace-nowrap">
                         {offering.duration_minutes ? `${offering.duration_minutes}m` : "—"}
                       </TableCell>
                       <TableCell>
@@ -299,7 +299,7 @@ export default function OfferingsSetupPage() {
                           "—"
                         )}
                       </TableCell>
-                      <TableCell className="text-right">
+                      <TableCell className="whitespace-nowrap text-right">
                         <Button
                           variant="ghost"
                           size="sm"

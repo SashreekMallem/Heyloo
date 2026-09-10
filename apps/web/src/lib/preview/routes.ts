@@ -248,6 +248,10 @@ export const PREVIEW_ROUTES: PreviewRoute[] = [
   },
   {
     url: "/preview/dashboard/agent",
+    // The real page at this URL is just a redirect to .../greeting (no
+    // content of its own) — the mirror itself now redirects there too
+    // (see its own file), so this href still resolves to real content,
+    // just via one extra hop instead of duplicating another route's href.
     href: "/preview/dashboard/agent",
     area: "Tenant dashboard",
     label: "Agent",

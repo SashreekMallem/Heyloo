@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Card, CardContent, Progress } from "@heyloo/ui";
+import { Button, Card, CardContent, Progress, Skeleton } from "@heyloo/ui";
 import { Check, ChevronRight, X } from "lucide-react";
 import { useState } from "react";
 import type { SetupProgressResponse } from "@/app/api/tenant/setup-progress/route";
@@ -50,8 +50,31 @@ export function SetupProgressPanel({ tenantId }: { tenantId: string }) {
     },
   );
 
-  if (!query.data || dismissed) return null;
-  const { steps, requiredDone, requiredTotal, complete } = query.data;
+  if (dismissed) return null;
+
+  // Loading skeleton while the real request is in flight — never a blank gap
+  // before the first response lands.
+  if (query.isPending) {
+    return (
+      <Card>
+        <CardContent className="space-y-4 pt-6">
+          <Skeleton className="h-4 w-48" />
+          <Skeleton className="h-2 w-full" />
+          <Skeleton className="h-14 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // Defensive shape guard: never trust `query.data` is the real
+  // `SetupProgressResponse` shape at runtime — a non-2xx error path, a
+  // network layer that mangles the body, or (in UI Preview Mode) a mock
+  // fetch fallback that doesn't match this route's real response can all
+  // hand back an object with no `steps` array. Rendering nothing here is
+  // always safe; `steps.map` on anything but a real array is not.
+  const data = query.data;
+  if (query.isError || !data || !Array.isArray(data.steps)) return null;
+  const { steps, requiredDone, requiredTotal, complete } = data;
 
   function dismiss() {
     try {
@@ -62,7 +85,9 @@ export function SetupProgressPanel({ tenantId }: { tenantId: string }) {
     setDismissed(true);
   }
 
-  const pct = requiredTotal === 0 ? 100 : Math.round((requiredDone / requiredTotal) * 100);
+  const total = Number(requiredTotal) || 0;
+  const done = Number(requiredDone) || 0;
+  const pct = total === 0 ? 100 : Math.round((done / total) * 100);
 
   return (
     <Card>
@@ -73,7 +98,7 @@ export function SetupProgressPanel({ tenantId }: { tenantId: string }) {
               {complete ? "You're all set up" : "Finish setting up your agent"}
             </h2>
             <p className="text-xs text-muted-foreground">
-              {requiredDone} of {requiredTotal} steps complete
+              {done} of {total} steps complete
             </p>
           </div>
           {complete && (

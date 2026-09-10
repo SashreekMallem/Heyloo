@@ -10,11 +10,21 @@ interface TenantRow {
   id: string;
   name: string;
   vertical: string;
-  plan_code: string;
+  plan_code?: string | null;
   status: string;
-  mrr_cents: number;
-  margin_pct: number;
+  mrr_cents?: number | null;
+  margin_pct?: number | null;
   created_at: string;
+}
+
+// The `admin` edge function's list route responds `{ tenants: [...] }`
+// (`supabase/functions/admin/handler.ts`'s `handleTenants`), not `{ rows }`
+// — reading `data.rows` unguarded left this table blank/crashing in
+// production even though every other field on the row was fine (design
+// review round 2, admin-partner cluster; see docs/BUILD_NOTES.md for the
+// wider pattern across other cockpit list endpoints).
+function tenantRows(data: { tenants?: TenantRow[]; rows?: TenantRow[] }): TenantRow[] {
+  return data.tenants ?? data.rows ?? [];
 }
 
 const columns: ColumnDef<TenantRow, unknown>[] = [
@@ -55,7 +65,11 @@ const columns: ColumnDef<TenantRow, unknown>[] = [
 
 export default function TenantsListPage() {
   const router = useRouter();
-  const query = useAdminQuery<{ rows: TenantRow[] }>("tenants", [], "admin-tenants");
+  const query = useAdminQuery<{ tenants?: TenantRow[]; rows?: TenantRow[] }>(
+    "tenants",
+    [],
+    "admin-tenants",
+  );
 
   return (
     <div className="space-y-6">
@@ -65,11 +79,11 @@ export default function TenantsListPage() {
       />
       <DataState
         query={query}
-        empty={{ title: "No tenants yet" }}
+        empty={{ title: "No tenants yet", isEmpty: (d) => tenantRows(d).length === 0 }}
         render={(data) => (
           <DataTable
             columns={columns}
-            data={data.rows}
+            data={tenantRows(data)}
             onRowClick={(row) => router.push(`/cockpit/tenants/${row.id}`)}
           />
         )}

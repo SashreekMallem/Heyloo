@@ -68,25 +68,61 @@ export default function ReferPage() {
                 <CardTitle className="text-base">Your referral link</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <code className="flex-1 truncate rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
-                    {link}
-                  </code>
-                  <Button
-                    size="icon"
-                    variant="outline"
-                    onClick={() => {
-                      void navigator.clipboard?.writeText(link);
-                      toast.success("Link copied");
-                    }}
-                    aria-label="Copy referral link"
-                  >
-                    <Copy className="size-4" />
-                  </Button>
-                </div>
+                {link ? (
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 truncate rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+                      {link}
+                    </code>
+                    <Button
+                      size="icon"
+                      variant="outline"
+                      onClick={() => {
+                        void navigator.clipboard?.writeText(link);
+                        toast.success("Link copied");
+                      }}
+                      aria-label="Copy referral link"
+                    >
+                      <Copy className="size-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  // A real placeholder, never a blank input — link generation
+                  // failed or hasn't finished; refetch is the recovery path.
+                  <div className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">
+                    We couldn&apos;t generate your link just yet.{" "}
+                    <button
+                      type="button"
+                      className="font-medium text-foreground underline"
+                      onClick={() => void query.refetch()}
+                    >
+                      Try again
+                    </button>
+                  </div>
+                )}
                 <p className="text-sm text-muted-foreground">
                   Earn a referral bonus after a business you refer completes their 2nd paid month.
                 </p>
+                {/* Explicit numeric labels alongside the chart — the bar chart
+                   alone can look blank at all-zero values, so the funnel
+                   tiles must always show a real number. */}
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  {(
+                    [
+                      { label: "Clicks", count: 0 },
+                      { label: "Signups", count: data.funnel.signups },
+                      { label: "Qualified", count: data.funnel.qualified },
+                      { label: "Paid", count: data.funnel.paid },
+                    ] as const
+                  ).map((stage) => (
+                    <div
+                      key={stage.label}
+                      className="rounded-lg border border-border px-3 py-2 text-center"
+                    >
+                      <p className="text-lg font-semibold tabular-nums">{stage.count}</p>
+                      <p className="text-xs text-muted-foreground">{stage.label}</p>
+                    </div>
+                  ))}
+                </div>
                 <FunnelChart
                   stages={[
                     { label: "Clicks", count: 0 },

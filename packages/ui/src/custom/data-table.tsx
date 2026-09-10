@@ -105,7 +105,32 @@ export function DataTable<TData>({
         </div>
       )}
 
-      <div className={cn("overflow-x-auto", renderMobileCard ? "hidden lg:block" : undefined)}>
+      {/*
+       * CSS-only "scroll shadow" (round-2 admin-partner design review,
+       * minor) — the inner `overflow-x-auto` wrapper clips wide tables with
+       * no visual cue that there's more to scroll to. Two solid fade layers
+       * (`background-attachment: local`, so they scroll WITH the content
+       * and only cover the edge columns) sit over two radial-gradient
+       * shadows (`background-attachment: scroll`, fixed to the viewport,
+       * so they only show while there's unscrolled content on that side).
+       * `rgba(0,0,0,...)` is a soft vignette in both themes, not a themed
+       * fill, so it needs no color-token lookup.
+       */}
+      <div
+        className={cn("overflow-x-auto", renderMobileCard ? "hidden lg:block" : undefined)}
+        style={{
+          backgroundImage: [
+            "linear-gradient(to right, var(--color-card), var(--color-card))",
+            "linear-gradient(to left, var(--color-card), var(--color-card))",
+            "radial-gradient(farthest-side at 0 50%, rgba(0,0,0,.18), rgba(0,0,0,0))",
+            "radial-gradient(farthest-side at 100% 50%, rgba(0,0,0,.18), rgba(0,0,0,0))",
+          ].join(", "),
+          backgroundPosition: "left, right, left, right",
+          backgroundRepeat: "no-repeat",
+          backgroundSize: "20px 100%, 20px 100%, 10px 100%, 10px 100%",
+          backgroundAttachment: "local, local, scroll, scroll",
+        }}
+      >
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (

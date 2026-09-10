@@ -58,6 +58,7 @@ function TermsForm({
   initial,
   onSave,
   onClear,
+  ratePlaceholder = "None",
 }: {
   title: string;
   initial: {
@@ -71,6 +72,7 @@ function TermsForm({
     duration_months: number | null;
   }) => Promise<void>;
   onClear?: () => Promise<void>;
+  ratePlaceholder?: string;
 }) {
   const [ratePct, setRatePct] = useState(
     initial.rate_bps != null ? String(initial.rate_bps / 100) : "",
@@ -110,7 +112,7 @@ function TermsForm({
               id={`${title}-rate`}
               type="number"
               step="0.01"
-              placeholder="No recurring commission"
+              placeholder={ratePlaceholder}
               value={ratePct}
               onChange={(e) => setRatePct(e.target.value)}
             />
@@ -249,6 +251,7 @@ export default function AdminPartnerDetailPage({ params }: { params: Promise<{ i
                       }
                       onSave={(terms) => saveOverride(v, terms)}
                       onClear={existing ? () => clearOverride(v) : undefined}
+                      ratePlaceholder="Inherit"
                     />
                   );
                 })}

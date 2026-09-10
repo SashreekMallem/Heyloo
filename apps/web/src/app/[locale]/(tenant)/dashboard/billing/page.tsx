@@ -67,7 +67,7 @@ export default function BillingPage() {
           .maybeSingle(),
         fetch("/api/platform-settings/tenant-plan"),
       ]);
-      const used = (data ?? []).reduce((sum, r) => sum + Number(r.billable_minutes), 0);
+      const used = (data ?? []).reduce((sum, r) => sum + (Number(r.billable_minutes ?? 0) || 0), 0);
       const plan = planRes.ok ? ((await planRes.json()) as TenantPlanResponse) : null;
       return {
         used,

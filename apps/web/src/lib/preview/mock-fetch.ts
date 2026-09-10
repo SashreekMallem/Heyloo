@@ -32,7 +32,7 @@
  * `fetch`.
  */
 
-import { API_FIXTURES, TABLE_FIXTURES } from "./fixtures";
+import { API_FIXTURE_MATCHERS, API_FIXTURES, TABLE_FIXTURES } from "./fixtures";
 
 const SUPABASE_PATH_MARKERS = ["/rest/v1/", "/auth/v1/", "/storage/v1/"];
 
@@ -64,6 +64,20 @@ const PLACEHOLDER_NAMES = [
   "Morgan Ellis",
 ];
 
+// Columns known to be a jsonb ARRAY on the real schema but with no
+// hand-authored fixture on every table that has them — the generic
+// fallback below must hand these back as `[]`, never a string, or any
+// page that does `column.map(...)` on an unlisted table crashes exactly
+// like `hours_exceptions` did (round-3 tenant design review, blocker).
+const KNOWN_ARRAY_COLUMNS = new Set([
+  "hours_exceptions",
+  "transcript",
+  "state_trace",
+  "items",
+  "allergies",
+  "extracted_entities",
+]);
+
 /** Best-effort synthesis for a column this table has no hand-authored fixture for — never `undefined` for a requested column, so a page can't crash on a missing field, just look a bit generic. */
 function synthesizeValue(column: string, index: number, table: string): unknown {
   if (column === "id") return `${table}-${index + 1}`;
@@ -72,13 +86,24 @@ function synthesizeValue(column: string, index: number, table: string): unknown 
   if (column.endsWith("_at") || column === "created_at" || column === "updated_at") {
     return new Date(Date.now() - index * 86_400_000).toISOString();
   }
+  // A bare `date` column (Postgres `date`, not `timestamptz`) is compared
+  // against `YYYY-MM-DD` strings (`.gte("date", ...)`, `row.date === today`)
+  // by real callers (usage_daily) — a generic "Sample date" string never
+  // matches those comparisons and silently zeroes out anything derived
+  // from it, so give it a real calendar date instead.
+  if (column === "date") {
+    return new Date(Date.now() - index * 86_400_000).toISOString().slice(0, 10);
+  }
+  if (KNOWN_ARRAY_COLUMNS.has(column)) return [];
   if (column.endsWith("_cents") || column === "amount") return 1500 + index * 750;
   if (
     column.startsWith("is_") ||
     column.startsWith("has_") ||
     column.endsWith("_flag") ||
     column.endsWith("_verified") ||
-    column.endsWith("_enabled")
+    column.endsWith("_enabled") ||
+    column.endsWith("_opt_out") ||
+    column === "handled"
   ) {
     return index % 2 === 0;
   }
@@ -86,12 +111,32 @@ function synthesizeValue(column: string, index: number, table: string): unknown 
     return PLACEHOLDER_NAMES[index % PLACEHOLDER_NAMES.length];
   }
   if (column === "email") return `contact${index + 1}@example.com`;
-  if (column.includes("phone") || column === "e164") {
+  if (
+    column.includes("phone") ||
+    column === "e164" ||
+    column === "from_e164" ||
+    column === "to_e164" ||
+    column === "recipient" ||
+    column === "transfer_number"
+  ) {
     return `+1512555${String(2000 + index).padStart(4, "0")}`;
   }
   if (column.endsWith("_url")) return null;
   if (column.endsWith("_seconds") || column === "duration") return 30 + index * 15;
-  if (column === "count") return index + 1;
+  // Any other `*_minutes` / `*_calls` / `*_bookings` count-ish column —
+  // real callers do arithmetic (`Number(r.x ?? 0)`, sums, comparisons) on
+  // these, so a generic string silently coerces to `NaN`/0 everywhere
+  // instead of throwing, which is a much harder bug to notice than a
+  // crash (this is what left the Overview trend chart and Billing's usage
+  // meter looking blank, round-3 tenant design review, medium/low).
+  if (
+    column.endsWith("_minutes") ||
+    column.endsWith("_calls") ||
+    column.endsWith("_bookings") ||
+    column === "count"
+  ) {
+    return index + 1;
+  }
   return `Sample ${column.replace(/_/g, " ")}`;
 }
 
@@ -112,20 +157,96 @@ function parseSelectColumns(selectParam: string | null): string[] | null {
     .filter(Boolean);
 }
 
-function getRows(table: string, columns: string[] | null): Record<string, unknown>[] {
-  const hand = TABLE_FIXTURES[table];
-  if (hand) {
-    if (!columns) return hand;
-    return hand.map((row) => {
-      const picked: Record<string, unknown> = {};
-      columns.forEach((col, i) => {
-        picked[col] = col in row ? row[col] : synthesizeValue(col, i, table);
-      });
-      return picked;
-    });
+const RESERVED_QUERY_PARAMS = new Set([
+  "select",
+  "order",
+  "limit",
+  "offset",
+  "apikey",
+  "columns",
+  "on_conflict",
+]);
+
+/**
+ * Best-effort PostgREST filter application (`column=eq.value`,
+ * `column=in.(a,b)`, `column=neq.value`, `column=is.null`) — real fixture
+ * rows have real, matchable column values (e.g. `tenant_id` scoping), so
+ * honoring these narrows a list down correctly instead of always handing
+ * back the whole table.
+ *
+ * The one deliberate exception is `id`: every dynamic preview route
+ * (`/preview/dashboard/calls/[id]` etc., see `routes.ts`) uses the literal
+ * placeholder id `"demo"`, which never matches a real fixture row. A
+ * `.single()`/`.maybeSingle()` call on an `id=eq.demo` filter that matched
+ * zero rows would otherwise correctly resolve to "not found" — accurate
+ * for a real id, but not what a design review of a detail PAGE wants to
+ * see. So an `eq` filter on `id` that matches nothing is dropped rather
+ * than applied (the row set falls back to whatever the OTHER filters
+ * already narrowed it to, e.g. `tenant_id`), and the caller then caps the
+ * result to one row so `.maybeSingle()`'s client-side cardinality check
+ * (`isMaybeSingle` in `@supabase/postgrest-js`, which rejects >1 rows with
+ * PGRST116/406 rather than the `Accept` header trick `.single()` uses)
+ * never sees more than one row for what both callers intend as a
+ * single-record lookup.
+ */
+function applyFilters(
+  rows: Record<string, unknown>[],
+  searchParams: URLSearchParams,
+): { rows: Record<string, unknown>[]; idFilterDropped: boolean } {
+  let filtered = rows;
+  let idFilterDropped = false;
+  for (const [key, raw] of searchParams.entries()) {
+    if (RESERVED_QUERY_PARAMS.has(key)) continue;
+    const match = raw.match(/^(eq|neq|in|is)\.(.*)$/);
+    if (!match) continue;
+    const [, op, value] = match;
+    if (op === "eq") {
+      const decoded = decodeURIComponent(value ?? "");
+      const next = filtered.filter((row) => String(row[key]) === decoded);
+      if (next.length === 0 && key === "id") {
+        idFilterDropped = true;
+        continue;
+      }
+      filtered = next;
+    } else if (op === "neq") {
+      const decoded = decodeURIComponent(value ?? "");
+      filtered = filtered.filter((row) => String(row[key]) !== decoded);
+    } else if (op === "in") {
+      const values = (value ?? "")
+        .replace(/^\(|\)$/g, "")
+        .split(",")
+        .filter(Boolean)
+        .map((v) => decodeURIComponent(v.replace(/^"|"$/g, "")));
+      filtered = filtered.filter((row) => values.includes(String(row[key])));
+    } else if (op === "is" && value === "null") {
+      filtered = filtered.filter((row) => row[key] === null || row[key] === undefined);
+    }
   }
-  const cols = columns ?? DEFAULT_COLUMNS;
-  return Array.from({ length: SYNTHESIZED_ROW_COUNT }, (_, i) => synthesizeRow(table, cols, i));
+  if (idFilterDropped && filtered.length > 1) filtered = filtered.slice(0, 1);
+  return { rows: filtered, idFilterDropped };
+}
+
+function getRows(
+  table: string,
+  columns: string[] | null,
+  searchParams: URLSearchParams,
+): Record<string, unknown>[] {
+  const hand = TABLE_FIXTURES[table];
+  const base =
+    hand ??
+    Array.from({ length: SYNTHESIZED_ROW_COUNT }, (_, i) =>
+      synthesizeRow(table, columns ?? DEFAULT_COLUMNS, i),
+    );
+  const { rows: filtered } = applyFilters(base, searchParams);
+
+  if (!columns) return filtered;
+  return filtered.map((row, i) => {
+    const picked: Record<string, unknown> = {};
+    columns.forEach((col) => {
+      picked[col] = col in row ? row[col] : synthesizeValue(col, i, table);
+    });
+    return picked;
+  });
 }
 
 function mockSupabaseResponse(url: URL, method: string, headers: Headers): Response {
@@ -148,13 +269,15 @@ function mockSupabaseResponse(url: URL, method: string, headers: Headers): Respo
 
   if (method !== "GET" && method !== "HEAD") {
     if (prefer.includes("return=representation")) {
-      const row = getRows(table, columns)[0] ?? synthesizeRow(table, columns ?? DEFAULT_COLUMNS, 0);
+      const row =
+        getRows(table, columns, url.searchParams)[0] ??
+        synthesizeRow(table, columns ?? DEFAULT_COLUMNS, 0);
       return jsonResponse(wantsSingle ? row : [row], 201);
     }
     return new Response(null, { status: 204 });
   }
 
-  const rows = getRows(table, columns);
+  const rows = getRows(table, columns, url.searchParams);
 
   if (method === "HEAD") {
     return new Response(null, {
@@ -171,9 +294,19 @@ function mockSupabaseResponse(url: URL, method: string, headers: Headers): Respo
 }
 
 function mockAppApiResponse(url: URL, method: string): Response {
+  if (method === "GET" || method === "HEAD") {
+    const exact = API_FIXTURES[url.pathname];
+    if (exact !== undefined) return jsonResponse(exact);
+  }
+  // Dynamic `[id]` (and other non-exact-match) routes, and non-GET
+  // endpoints like the tenant refer-link POST — checked for every method,
+  // since `API_FIXTURES` above only ever answers a fixed-pathname GET.
+  for (const matcher of API_FIXTURE_MATCHERS) {
+    if (matcher.method !== "*" && matcher.method !== method) continue;
+    const match = url.pathname.match(matcher.pattern);
+    if (match) return jsonResponse(matcher.build(match));
+  }
   if (method !== "GET" && method !== "HEAD") return jsonResponse({ ok: true });
-  const exact = API_FIXTURES[url.pathname];
-  if (exact !== undefined) return jsonResponse(exact);
   // Generic, non-crashing default — most tenant/admin list endpoints
   // render an `EmptyState` off an empty `rows`/list array rather than
   // throwing, so an unmapped endpoint still screenshots cleanly.

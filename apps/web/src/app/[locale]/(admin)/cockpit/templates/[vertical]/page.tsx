@@ -7,6 +7,7 @@ import {
   CardHeader,
   CardTitle,
   DataState,
+  Label,
   PageHeader,
   type SimulationCaseResult,
   SimulationResultsPanel,
@@ -70,14 +71,26 @@ export default function TemplateEditorPage({ params }: { params: Promise<{ verti
               <CardTitle className="text-base">System prompt</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <Textarea
-                className="min-h-40"
-                defaultValue={data.system_prompt}
-                onChange={(e) => setSystemPrompt(e.target.value)}
-              />
-              <div>
-                <p className="mb-1 text-xs font-medium text-muted-foreground">States (JSON)</p>
+              <div className="space-y-1">
+                <Label htmlFor="template-system-prompt" className="sr-only">
+                  System prompt
+                </Label>
                 <Textarea
+                  id="template-system-prompt"
+                  className="min-h-40"
+                  defaultValue={data.system_prompt}
+                  onChange={(e) => setSystemPrompt(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label
+                  htmlFor="template-states-json"
+                  className="mb-1 text-xs font-medium text-muted-foreground"
+                >
+                  States (JSON)
+                </Label>
+                <Textarea
+                  id="template-states-json"
                   className="min-h-40 font-mono text-xs"
                   defaultValue={JSON.stringify(data.states, null, 2)}
                   onChange={(e) => setStatesJson(e.target.value)}

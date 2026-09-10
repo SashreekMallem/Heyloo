@@ -48,22 +48,28 @@ export type HoursEditorProps = {
 
 /** Weekly hours + holiday exceptions — Agent → Hours (FRONTEND_SPEC.md §1.3/§6.6). */
 export function HoursEditor({ hours, exceptions, onChange }: HoursEditorProps) {
+  // Defensive: a malformed/wrong-typed `exceptions` prop (e.g. from stale
+  // or hand-edited data) must never crash this screen — treat anything
+  // that isn't an array as "no exceptions" rather than calling array
+  // methods on it.
+  const safeExceptions = Array.isArray(exceptions) ? exceptions : [];
+
   function updateDay(day: keyof WeeklyHours, index: number, patch: Partial<DayHours>) {
     const next = {
       ...hours,
       [day]: hours[day].map((h, i) => (i === index ? { ...h, ...patch } : h)),
     };
-    onChange(next, exceptions);
+    onChange(next, safeExceptions);
   }
 
   function addException() {
-    onChange(hours, [...exceptions, { date: "", closed: true }]);
+    onChange(hours, [...safeExceptions, { date: "", closed: true }]);
   }
 
   function removeException(index: number) {
     onChange(
       hours,
-      exceptions.filter((_, i) => i !== index),
+      safeExceptions.filter((_, i) => i !== index),
     );
   }
 
@@ -116,10 +122,10 @@ export function HoursEditor({ hours, exceptions, onChange }: HoursEditorProps) {
             <Plus className="size-3.5" /> Add exception
           </Button>
         </div>
-        {exceptions.length === 0 && (
+        {safeExceptions.length === 0 && (
           <p className="text-sm text-muted-foreground">No exceptions added.</p>
         )}
-        {exceptions.map((exception, index) => (
+        {safeExceptions.map((exception, index) => (
           <div
             // biome-ignore lint/suspicious/noArrayIndexKey: new exceptions start with an empty date, so date isn't unique
             key={index}
@@ -130,7 +136,7 @@ export function HoursEditor({ hours, exceptions, onChange }: HoursEditorProps) {
               className="w-40"
               value={exception.date}
               onChange={(e) => {
-                const next = exceptions.map((ex, i) =>
+                const next = safeExceptions.map((ex, i) =>
                   i === index ? { ...ex, date: e.target.value } : ex,
                 );
                 onChange(hours, next);
@@ -142,7 +148,7 @@ export function HoursEditor({ hours, exceptions, onChange }: HoursEditorProps) {
               className="flex-1"
               value={exception.note ?? ""}
               onChange={(e) => {
-                const next = exceptions.map((ex, i) =>
+                const next = safeExceptions.map((ex, i) =>
                   i === index ? { ...ex, note: e.target.value } : ex,
                 );
                 onChange(hours, next);

@@ -12,7 +12,13 @@ const SEGMENT_META: Record<
   vip: { label: "VIP", variant: "default" },
 };
 
-/** VIP/Loyal/Returning/New (FRONTEND_SPEC.md §1.3) — segmentation itself is computed server-side (a Postgres view), never here. */
+/**
+ * VIP/Loyal/Returning/New (FRONTEND_SPEC.md §1.3) — segmentation itself is
+ * computed server-side (a Postgres view), never here. `segment` is typed as
+ * `CustomerSegment`, but nothing enforces that at runtime — a legacy row, a
+ * view change, or a null/unexpected value from the database must render a
+ * neutral badge instead of throwing.
+ */
 export function SegmentBadge({
   segment,
   className,
@@ -21,6 +27,13 @@ export function SegmentBadge({
   className?: string;
 }) {
   const meta = SEGMENT_META[segment];
+  if (!meta) {
+    return (
+      <Badge variant="outline" className={className}>
+        {typeof segment === "string" && segment ? segment : "Unknown"}
+      </Badge>
+    );
+  }
   return (
     <Badge variant={meta.variant} className={className}>
       {meta.label}

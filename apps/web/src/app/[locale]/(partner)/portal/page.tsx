@@ -8,6 +8,7 @@ import {
   PageHeader,
 } from "@heyloo/ui";
 import type { Metadata } from "next";
+import { ensurePartnerReferralLink } from "@/app/api/partner/_lib/ensure-referral-link";
 import { CopyLinkButton } from "@/components/partner/copy-link-button";
 import { requirePartnerSession } from "@/lib/auth/require-partner-session";
 
@@ -16,11 +17,12 @@ export const metadata: Metadata = { title: "Partner dashboard — Heyloo" };
 export default async function PartnerDashboardPage() {
   const { supabase, partner } = await requirePartnerSession("/portal");
 
-  const { data: link } = await supabase
-    .from("referral_links")
-    .select("code")
-    .eq("referral_partner_id", partner.id)
-    .maybeSingle();
+  // Find-or-create: a referral_partners row provisioned by an admin has no
+  // guarantee a referral_links row was ever created for it (the tenant
+  // self-referral flow had a find-or-create step; this one didn't), so a
+  // plain read here could show "Generating…" forever. Resolve it eagerly
+  // so the real link is present by first paint.
+  const code = await ensurePartnerReferralLink(partner.id);
 
   const { data: referrals } = await supabase
     .from("referrals")
@@ -59,9 +61,9 @@ export default async function PartnerDashboardPage() {
         </CardHeader>
         <CardContent className="flex items-center gap-2">
           <code className="flex-1 truncate rounded-md border border-border bg-muted/50 px-3 py-2 font-mono text-small">
-            {link ? `/signup?ref=${link.code}` : "Generating…"}
+            {code ? `/signup?ref=${code}` : "Link unavailable — try refreshing the page."}
           </code>
-          {link && <CopyLinkButton code={link.code} />}
+          {code && <CopyLinkButton code={code} />}
         </CardContent>
       </Card>
 

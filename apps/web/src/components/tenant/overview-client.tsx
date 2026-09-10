@@ -84,7 +84,7 @@ export function OverviewClient({
       return {
         callsToday: todayRow?.total_calls ?? 0,
         bookingsToday: todayRow?.total_bookings ?? 0,
-        minutesUsed: rows.reduce((sum, r) => sum + Number(r.billable_minutes), 0),
+        minutesUsed: rows.reduce((sum, r) => sum + (Number(r.billable_minutes ?? 0) || 0), 0),
         minutesIncluded: plan?.included_minutes ?? 0,
         spamDeflected: spamCount ?? 0,
         trend: rows.map((r) => ({ label: r.date.slice(5), value: r.total_calls })),

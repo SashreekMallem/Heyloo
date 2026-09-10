@@ -6874,3 +6874,564 @@ green); `apps/web` production build (`next build --webpack`, real
 TypeScript errors, all ~173 static/dynamic routes generated. `git status`
 carries no build output, `.env*`, `node_modules`, or screenshot/PNG
 artifacts.
+
+## ADMIN-R4 — round-4 admin/partner polish (design round-3 follow-up)
+
+Scope: `apps/web/src/app/[locale]/(admin)/**`, `(partner)/**`,
+`components/admin/**`, `components/partner/**`, `app/api/partner/**`
+(latter only for the referral-link issue below). Source: round-3
+admin-partner design review (score 85, `pass: false`) — journal
+`wf_67bb4e1a-864`, last `admin-partner` result — plus its `_axe.json`.
+
+**Axe criticals fixed** (confirmed by filtering `_axe.json` for
+`impact: "critical"` — exactly these two page/violation pairs, in both
+themes):
+- `cockpit/config-lab/page.tsx`: the three `Select` triggers (Vertical,
+  LLM tier, Voice tier) had no programmatic accessible name (`button-name`,
+  critical). Added `aria-label` on each `SelectTrigger` + a matching
+  `SelectValue placeholder` (belt-and-suspenders — root cause of Radix's
+  intermittent SelectValue-as-name failure wasn't isolated, but an
+  explicit `aria-label` never depends on mount timing).
+- `cockpit/templates/[vertical]/page.tsx`: "System prompt" and "States
+  (JSON)" were a `CardTitle`/`<p>` sitting near their `Textarea`s with no
+  `htmlFor`/`aria-labelledby` (`label`, critical). Added real
+  `<Label htmlFor>` for each (the System-prompt one `sr-only` since the
+  `CardTitle` above it already carries the visible heading; States (JSON)
+  keeps its existing visible caption, now as the `<Label>` itself).
+
+**Partner dashboard "Generating…" link — real bug, not just a stall**:
+`(partner)/portal/page.tsx` only ever *read* `referral_links` for the
+signed-in partner and rendered `"Generating…"` when none existed — no
+code path ever created one. The tenant self-referral flow
+(`api/tenant/refer/ensure-link/route.ts`) has a find-or-create step;
+the external-partner path (partner rows provisioned by an admin via
+`admin-referral-partners`) never got the equivalent, so any partner
+without a pre-existing `referral_links` row saw a permanently frozen
+placeholder — the round-3 review's "~14s stall" screenshot pair was very
+likely this (a partner/session with no row vs. one with a row already
+seeded), not a real timing hang; no polling/retry loop exists anywhere
+in the partner portal's client code (checked `copy-link-button.tsx` and
+the rest of `components/partner/**`).
+
+Fix: added `api/partner/_lib/ensure-referral-link.ts` (service-role
+find-or-create, same shape/constraint reliance —
+`referral_links_code_unique` — as the tenant version) and
+`api/partner/ensure-link/route.ts` (POST, for a future client-triggered
+regenerate). `portal/page.tsx` now calls the helper directly (function
+call, not an HTTP round-trip — service-role client stays server-only per
+its own doc comment) so a real link is present by first paint; the dead
+"Generating…" state can no longer be reached (missing-link now falls
+back to visible "Link unavailable — try refreshing the page." instead of
+an unbounded placeholder). Tests: `ensure-referral-link.test.ts` (4
+cases incl. the unique-code race fallback) and `ensure-link/route.test.ts`
+(4 cases: 401/403/200/500).
+
+**Mobile desktop-gate mislabeled under `/preview`** — real component bug,
+not preview-only: `AdminShellClient`'s `currentSectionLabel()` matched
+`usePathname()` against hardcoded `/cockpit/...` hrefs; the
+`(preview)/preview/cockpit/**` mirror tree re-exports the real
+`(admin)/layout.tsx` unmodified (confirmed), so it renders the identical
+`AdminShellClient` under a `/preview`-prefixed pathname, and the mobile
+"desktop-primary" gate always fell back to the generic sentence there.
+Fixed by stripping a leading `/preview` before matching. While in there,
+split the pure nav-config/matching logic out of the `"use client"`
+component into `admin-nav-sections.ts` (no `next-intl`/`next/navigation`
+import) so `currentSectionLabel` has a real unit test
+(`admin-nav-sections.test.ts`, 5 cases incl. both the real and
+`/preview`-mirrored forms of a detail route) — importing the previous
+single-file component in a test pulled in `next-intl`'s navigation
+factory, which fails to resolve in this sandbox (unrelated pre-existing
+environment issue, not worth fighting for one pure function).
+
+**Reviewed but left as-is** (out of this cluster's ownership or already
+filed): the preview-fetch-mock gap for `tenants/[id]`/`partners/[id]`/
+`support/[id]`/partner `customers` (owned by `lib/preview/**`, not this
+cluster, per the round-3 review's own note); missing per-route `<title>`
+on the `(preview)` mirror layouts (same); `MetricCard`'s bare `—` vs. the
+nicer `EmptyState` pattern (component lives in `packages/ui`, not owned
+here); the preview banner's landmark/contrast issue (already filed in
+`docs/audit/DESIGN_REQUESTS.md`, `packages/ui` token-level); the support
+list's blank Tenant/Priority columns (already filed, `lib/preview`
+fixture shape); the 768px sidebar staying full-width (cosmetic,
+"consider" not "fix" in the review, no existing collapse-breakpoint
+affordance to wire up without a `packages/ui` change).
+
+Read the three admin detail pages (`tenants/[id]`, `partners/[id]`,
+`support/[id]`) end-to-end for the review's "styling parity" ask — each
+already follows the shared `PageHeader`/`Card`/`Label htmlFor` pattern
+correctly (no unlabeled controls reachable outside a closed dialog, no
+crash-shaped bugs); the round-3 reviewer couldn't actually verify their
+rendered state at all (blocked by the same preview-fixture gap above),
+so there was no concrete parity defect in the real components to fix
+beyond the axe items already listed.
+
+Gates run (apps/web only, this cluster's scope): `tsc --noEmit` (repo-wide,
+clean), `eslint` on every touched/added file (clean), `vitest run` scoped
+to `api/partner/**`, `components/admin/**`, `(admin)/**`, `(partner)/**`,
+`components/partner/**` (4 files, 15/15 passing). Full-repo `vitest run`
+has 2 pre-existing failures in `(tenant)/dashboard/billing` and
+`components/tenant/setup-progress-panel` — both in files this cluster
+does not own and did not touch (a different concurrent agent's in-progress
+`(tenant)`/`packages/ui` changes were present in the working tree during
+this pass); not fixed here, flagging for the TENANT cluster.
+
+## TENANT-R4 (round-3 review majors)
+
+Fixed every major from the round-3 tenant design review
+(`.../subagents/workflows/wf_67bb4e1a-864/journal.jsonl`, last `surface:
+"tenant"` result) that lives in a real component, all with tests:
+
+- `components/tenant/setup-progress-panel.tsx` — was `steps.map(...)` on
+  whatever `query.data` happened to be, with no shape check; a malformed
+  or error response (not just the documented preview-mock gap) would
+  have crashed the single most important panel on the dashboard home.
+  Now: an explicit `query.isPending` loading skeleton, and a runtime
+  `Array.isArray(data.steps)` guard (plus `query.isError`) before ever
+  destructuring — anything that doesn't match `SetupProgressResponse`
+  renders nothing instead of throwing. `requiredDone`/`requiredTotal` are
+  also coerced through `Number(...) || 0` before the percentage divide.
+  Tests added for the malformed-shape and fetch-error paths.
+- `dashboard/team/page.tsx`, `dashboard/delivery/page.tsx`,
+  `dashboard/integrations/page.tsx` — each destructured one specific field
+  off its query response (`.members`, `.sync_log`, `.integrations`) with
+  no guard; any response that doesn't carry that exact field crashes on
+  `.length`/`.map` of `undefined`. Team now goes through `DataState` with
+  a `members` shape guard in `isEmpty`; Integrations' existing `DataState`
+  `isEmpty` now guards `Array.isArray(data.integrations)` before the
+  `.length` check it was doing unguarded; Delivery's sync-log panel now
+  reads `Array.isArray(airtableQuery.data?.sync_log) ? ... : []` instead
+  of asserting the field exists. Tests added for all three (empty/guarded
+  render + normal-data render).
+- `packages/ui/src/custom/segment-badge.tsx` — `SEGMENT_META[segment]`
+  with no fallback threw on any `segment` value outside the 4-member
+  enum; `customers/page.tsx` feeds it a Postgres-view column typed
+  `CustomerSegment` but never runtime-validated, so a legacy/null/future
+  value would crash the whole customers table, not just in preview mode.
+  Added a neutral `outline`-badge fallback (raw value, or "Unknown" for
+  empty/null) plus `segment-badge.test.tsx`. This file is outside this
+  cluster's `apps/web` ownership (packages/ui belongs to the design
+  system), but the review named this exact component/fix by path, the
+  change is a single isolated fallback branch, and leaving a known
+  page-crashing bug unfixed seemed worse than the ownership exception —
+  flagging here per Rule 4 rather than silently redesigning scope.
+- `packages/ui/src/custom/usage-meter.tsx` + `dashboard/billing/page.tsx`
+  — the billing usage card could render a literal `NaN` two ways: (1)
+  `billing/page.tsx`'s (and `overview-client.tsx`'s) `usage_daily` reduce
+  did `Number(r.billable_minutes)` with no null guard — `Number(null)` is
+  `0` but `Number(undefined)` is `NaN`, and a missing/null row poisoned
+  the whole sum; fixed with `Number(r.billable_minutes ?? 0) || 0` in
+  both places. (2) `UsageMeter` printed `"{used} of {included} minutes
+  used"` unconditionally — a 0/missing `included_minutes` (the common
+  case when the plan lookup hasn't resolved) always read as "N of 0",
+  which reads as broken/NaN-adjacent even once (1) is fixed. `UsageMeter`
+  now shows "Unlimited" when `included` is 0 but there's real usage, a
+  plain "0 of 0" when both are 0, and coerces every input through
+  `Number.isFinite` first so a non-finite prop can never reach the label.
+  Same out-of-ownership note as SegmentBadge above (named by path in the
+  review). Tests: `usage-meter.test.tsx` (packages/ui) plus
+  `dashboard/billing/page.test.tsx` (apps/web, exercises the real reduce
+  + component together).
+- `dashboard/refer/page.tsx` — the link `<code>` block rendered a
+  genuinely empty box when `data.code` was falsy (no placeholder), and
+  the funnel was only ever a bare bar chart with its numeric axis hidden
+  — at all-zero or near-zero values it reads as blank rather than as a
+  designed state. Added a real "couldn't generate your link — Try again"
+  placeholder (with a manual `refetch()`) for the missing-link case, and
+  an explicit numeric stat-tile row (Clicks/Signups/Qualified/Paid, each
+  always showing a real number) above the existing chart so the funnel
+  is never blank even when every stage is 0. `DataState`'s own pending
+  skeleton already covered the "show a skeleton while loading" ask — no
+  change needed there. Test added.
+- `dashboard/setup/offerings/page.tsx` — minor round-3 polish item: at
+  1024px the Duration column's text could push the Actions column out of
+  the table's scroll container. Added `whitespace-nowrap` to the
+  Duration/Actions header+cells so both stay a fixed, predictable width
+  regardless of content length.
+
+Left as-is (named "minor" in the round-3 review, not one of the assigned
+majors, and lives entirely inside a `packages/ui` component this cluster
+doesn't own): `HoursEditor`'s two-time-picker row wrapping awkwardly at
+exactly 768px (390/1024/1440 all lay out cleanly per the review).
+
+Gates run (apps/web + packages/ui, since two fixes above cross into
+`packages/ui`): `tsc -b --pretty` in both packages (clean); `vitest run`
+full-repo in `apps/web` (59 files / 264 tests passing) and in
+`packages/ui` (10 files / 33 tests passing, including the 2 new files);
+`eslint` on every touched/added `apps/web` file (clean after fixing one
+`testing-library/no-container` violation in the refer-page test).
+
+## PREVIEW-R4 — preview-harness completeness pass (round-3 review follow-up)
+
+Scope: `apps/web/src/lib/preview/**` and the `(preview)/preview/**` mirror
+tree only — per the round-3 tenant + admin-partner design reviews
+(`.../subagents/workflows/wf_67bb4e1a-864/journal.jsonl`, last `surface:
+"tenant"` / `"admin-partner"` results), every finding attributed to
+"preview infra, not this cluster's fix" now has a mirror fix here.
+
+- **`/api/tenant/**` fixtures** (`fixtures.ts`'s `API_FIXTURES`) — added
+  exact hand-shaped responses for `/api/tenant/setup-progress`,
+  `/api/tenant/team`, `/api/tenant/delivery/airtable/status`, and
+  `/api/tenant/integrations`, each matching the route's own exported
+  TS response interface (`SetupProgressResponse`, `TeamListResponse`,
+  `AirtableStatusResponse`, `IntegrationsListResponse`) rather than the
+  generic `{ rows: [] }` fallback these 4 client-side panels were
+  destructuring a specific field off of and crashing on. Since all 4 are
+  `"use client"` panels that `fetch()` their own `/api/tenant/**` route
+  from the browser, UI Preview Mode's fetch interceptor answers them
+  directly — the real Next.js Route Handler (and its Supabase reads)
+  never runs in preview, so only the route's RESPONSE SHAPE needed to be
+  right, not its internals.
+- **Detail-route `.maybeSingle()` cardinality bug** (`mock-fetch.ts`) —
+  root-caused exactly per the round-3 review: `.maybeSingle()` does NOT
+  set the `vnd.pgrst.object+json` Accept header (confirmed against the
+  installed `@supabase/postgrest-js@2.116.0` source — it fetches as a
+  list and enforces cardinality CLIENT-side via `isMaybeSingle`), so the
+  old mock's "ignore all filters, return the whole table" behavior handed
+  back all 8 `call_logs` rows for a single-record lookup, and
+  postgrest-js nulled the result out (>1 row). Added real PostgREST
+  filter parsing (`eq`/`neq`/`in`/`is.null`) in `mock-fetch.ts`'s new
+  `applyFilters`, with one deliberate exception: an `id=eq.<value>` filter
+  that matches nothing (every preview detail route uses the placeholder
+  id `"demo"`, never a real fixture id) is dropped rather than applied,
+  and the result is then capped to 1 row — so a real id still narrows
+  correctly, `tenant_id` scoping still narrows correctly, and the `"demo"`
+  placeholder still resolves to a real record instead of "not found".
+  Fixes `/dashboard/calls/[id]`, `/customers/[id]`, `/orders/[id]`,
+  `/support/[id]` in one place. Test coverage: new
+  `mock-fetch.test.ts` (11 tests: single-row-not-whole-table, real eq
+  match, `in()`, a genuinely-empty non-id filter stays empty, unfiltered
+  list unaffected, plus the `/api/**` fixtures below).
+- **Dynamic `/api/admin/**/[id]` fixtures** (`fixtures.ts`'s new
+  `API_FIXTURE_MATCHERS`, dispatched from `mock-fetch.ts`'s
+  `mockAppApiResponse`) — `API_FIXTURES` only ever exact-matched a fixed
+  GET pathname, so `/api/admin/admin-tenants/demo`,
+  `/api/admin/admin-referral-partners/demo`, and
+  `/api/admin/admin-support-requests/demo(/notes)` all fell through to
+  `{ rows: [] }`, rendering "Unnamed tenant" / "X not found" per the
+  review. Added a method+regex matcher list, checked after an exact-match
+  miss (and BEFORE the old "any non-GET returns `{ ok: true }`"
+  shortcut, so a POST-only route can have a real fixture too — used for
+  `/api/tenant/refer/ensure-link`, which was rendering a blank link/funnel
+  because it's POST and had no way into the old GET-only fixture map).
+  Each `build()` result matches what the calling PAGE destructures
+  (`TenantDetail` is a flat object; `admin-tenants/:id`'s REAL edge
+  function wraps it `{ tenant: {...} }` and doesn't even have
+  `mrr_cents`/`margin_pct`/`minutes_used` on `tenants` — a real page/API
+  contract mismatch, left as-is per this cluster's scope, worth an
+  admin-partner-cluster look).
+- **Fixture data gaps** (`fixtures.ts`) — `customers` rows now carry a
+  real `segment` (cycled through all 4 `CustomerSegment` enum values) and
+  `lifetime_value_cents` instead of `SegmentBadge` getting a synthesized,
+  non-enum placeholder string; `orders` rows now carry a real `items`
+  array, `fulfillment_type`, `delivery_address`, `customer_id` (matching
+  real `customers` fixture ids), `allergies`, `special_instructions` —
+  the synthesized default for an unmapped `items` column was the STRING
+  `"Sample items"`, which `order.items.map(...)` would throw on;
+  `support_requests` rows now carry `tenant_name`/`priority`/`updated_at`/
+  `body` (the admin ticket queue's Tenant/Priority columns were rendering
+  blank, per round-2 AND round-3); `referrals` rows now carry a real
+  `referred_tenant_id` pointing at an actual `tenants` fixture id (was
+  synthesizing to a non-existent `"referred_tenant-N"` id), fixing
+  `/portal/customers`' `tenants.select(...).in("id", tenantIds)` lookup
+  that was falling back to the literal word "Customer" for every row;
+  added a `support_request_notes` table and a `commission_events` row for
+  the two admin/partner detail pages that read them.
+- **Missing preview-mirror document titles** (63 mirror `page.tsx` files
+  under `(preview)/preview/**`, plus a new `preview/system/layout.tsx`) —
+  every mirror only ever `export { default } from "<real page>"`, which
+  drops that real page's `export const metadata`/`generateMetadata` even
+  when one exists, and MANY real tenant-dashboard pages (`team`, `refer`,
+  `delivery`, all of `agent/*`, `customers`, `billing`, `integrations`,
+  `support`, `setup*`, `bookings` — all `"use client"`) have no metadata
+  source at all in the real tree (confirmed: no sibling `layout.tsx`
+  either, unlike the admin cockpit's per-route-`layout.tsx` pattern) —
+  this is a genuine PRODUCTION accessibility gap (missing
+  `<title>`/WCAG 2.4.2) outside this cluster's ownership (real
+  `(tenant)/dashboard/**` page files); flagging here for whichever
+  cluster owns those files rather than editing them. In the meantime,
+  every registered `PREVIEW_ROUTES` mirror now gets its OWN explicit
+  `export const metadata` sourced from that route's `label` in
+  `routes.ts`, so every `/preview/**` tab has a real, distinct title
+  regardless of what the underlying real page does or doesn't export —
+  closes the axe `document-title` failures on ~29-30/30 sampled routes
+  from both the tenant and admin-partner round-3 reviews.
+- **Not-found handling** — mirrored the 3 real designed
+  `not-found.tsx` files that exist (`calls/[id]`, `customers/[id]`,
+  `support/[id]`) into their `(preview)` counterparts (Next only resolves
+  `not-found.tsx` from the route's OWN segment tree, so a real one 3
+  levels away in `(tenant)/**` never applied to `(preview)/preview/**`
+  without its own copy); also added `(preview)/not-found.tsx` — a
+  group-wide fallback for an unregistered `/preview/*` path — since there
+  was no `not-found.tsx` anywhere above the `(preview)` layout at all
+  (not even at the app root), so a stale/typo'd preview URL hit Next's
+  bare, unstyled default.
+- **New test coverage**: `routes.test.ts` — a filesystem-level check
+  (deliberately NOT a full module `import()`; several real pages
+  construct a Supabase client at module scope, which throws under plain
+  Vitest with no real env vars, and `next-intl`'s navigation helpers
+  don't resolve under Vitest either) that every `PREVIEW_ROUTES` entry
+  has (a) a mirror `page.tsx` on disk, (b) that mirror re-exports a
+  `default` FROM the exact `source` path the registry declares (not just
+  "exports something"), and (c) that declared `source` file actually
+  exists — 63 routes × that check, plus no-duplicate-url/href checks (65
+  tests total). `mock-fetch.test.ts` — 11 tests covering the filter
+  logic and the new/changed `/api/**` fixtures above.
+
+Left as-is (real, out-of-ownership issues surfaced but not fixed here,
+per CLAUDE.md Rule 4 — noted for the owning cluster):
+- Tenant client-dashboard pages with zero document-title source in the
+  real (non-preview) tree, listed above.
+- `admin-tenants/:id`'s real backend response shape (`{ tenant: {...} }`,
+  no margin/MRR columns) vs. what `TenantDetail`/the page destructures —
+  a real page/API contract gap, not a preview-fixture gap; this cluster's
+  fixture matches the PAGE per its own brief ("match what pages
+  destructure"), but the mismatch itself is admin-partner cluster's to
+  resolve.
+- `/cockpit/margin/customers/[tenantId]` and
+  `/cockpit/outreach/campaigns/[id]` detail routes were not in the
+  round-3 review's explicit list of broken dynamic routes (only
+  `tenants/[id]`, `partners/[id]`, `support/[id]` were) and still fall
+  through to the generic `{ rows: [] }` `/api/**` default — left
+  unmapped to stay in scope; can be added to `API_FIXTURE_MATCHERS` the
+  same way if a future review flags them.
+
+Gates run (apps/web only, per this cluster's scope): `tsc -b --pretty`
+(clean); `vitest run` full-repo (61 files / 340 tests passing, up from 59
+files / 264 tests — the 2 new preview test files account for the delta);
+`eslint` on every touched/added file (clean); `biome check` on every
+touched/added file (clean, ran `biome check --write` once to normalize
+formatting on 3 files).
+
+## repair2:admin-partner — round-2 design review, blockers/majors/cheap minors (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Fixed within this cluster's ownership ((admin)/**, (partner)/**,
+components/admin/**, components/partner/**, lib/preview/**, plus
+packages/ui for shared-component defects):
+
+- **Partners detail placeholder clipping (major)**: `TermsForm`'s
+  `Rate (%)` `<input type="number">` carried `placeholder="No recurring
+  commission"` on all 8 per-vertical cards — far too long for the field,
+  clipped mid-word at every viewport. Added a `ratePlaceholder` prop:
+  `"None"` on the default-terms card, `"Inherit"` on the 8 per-vertical
+  override cards (the "any field left blank inherits the default above"
+  helper text already explains what blank means there).
+- **Support ticket detail unnamed Select (major, axe critical)**: the
+  status `SelectTrigger` had no accessible name. Added
+  `aria-label="Ticket status"`, and — since the redundant `StatusBadge`
+  sitting next to it showed the same value in a different case
+  ("Open" vs. Select's "open") — dropped the badge and made the
+  `SelectTrigger` itself render capitalized, fixing the casing
+  inconsistency (minor, same finding cluster) in the same change.
+- **Tenants list MRR/Margin always "—" (major)**: root-caused, not
+  papered over. `supabase/functions/admin/handler.ts`'s real
+  `admin-tenants` LIST route responds `{ tenants: [...] }` (id/name/
+  vertical/status only — `mrr_cents`/`margin_pct` are not columns on
+  `public.tenants` anywhere, confirmed against every migration), not the
+  `{ rows: [...] }` the list page destructured — a real production
+  contract bug, not just a design defect (the page would have rendered
+  blank/crashed against the real backend, not just shown "—"). Backend
+  code is out of this cluster's file ownership, so the in-scope fix is
+  defensive: the list page now reads `data.tenants ?? data.rows ?? []`.
+  Money fields (`mrr_cents`/`margin_pct`) still aren't computed by the
+  real backend anywhere (list OR detail) — the detail page's convincing
+  numbers are an intentionally-fabricated preview fixture (see the
+  existing note above), not real. Rather than inventing more fake
+  financial figures to make the list page "match" the detail page, the
+  list preview fixture was updated to the same "fixture matches the
+  page" convention already used for the detail route, so review can see
+  the intended full design — flagged here again because **actually
+  computing MRR/margin (a join to billing/subscriptions data) is a real
+  backend feature gap, not a frontend fix, and remains open** for
+  whichever cluster owns `supabase/functions/admin/handler.ts` and the
+  `tenants` schema.
+  - Also surfaced by this same root-cause investigation: `support/page.tsx`
+    (`/cockpit/support`) and, unverified, the referral-partners list page
+    have the identical `{ rows }`-vs-`{ <resource>: [...] }` mismatch
+    against `handleSupportRequests`'s real `{ support_requests: [...] }`
+    response. Left unfixed — out of this round's explicit review
+    findings, and touching every cockpit list page was judged
+    scope-creep for a design-repair pass — but it's the same class of bug
+    and should get the same `data.<resource> ?? data.rows ?? []` guard.
+- **Outreach campaign detail / margin per-customer detail preview gaps
+  (moderate)**: neither `/api/admin/admin-outreach/campaigns/:id` nor
+  `/api/admin/admin-cockpit/per-customer-margin/:id` was in
+  `API_FIXTURE_MATCHERS` (flagged as a known gap in the prior round's
+  BUILD_NOTES entry above), so both fell through to the generic
+  `{ rows: [] }` default and rendered "Unnamed campaign" / an "Unknown"
+  badge. Added both matchers with realistic data.
+- **Portal payouts leaked fixture literal (moderate)**: `PREVIEW_PARTNER`
+  had no `payout_method`, so the generic table synthesizer produced the
+  literal string `"sample_payout_method"`, rendered verbatim as "Paid via
+  Sample Payout Method". Added `payout_method: "paypal"` to the fixture.
+- **`/preview/portal/disclosure` unreachable (moderate)**: the preview
+  mock `requirePartnerSession` hardcoded `acknowledged: true` for every
+  partner route — including the disclosure page's own route, whose real
+  page does `if (acknowledged) redirect("/portal")`. That made the
+  disclosure screen redirect itself away on every preview visit, despite
+  the mock's own comment claiming it would stay reachable. Fixed by
+  keying `acknowledged` off `nextPath !== "/portal/disclosure"` — every
+  other partner page still sees `acknowledged: true`.
+- **Outreach leads blank empty state (minor)**: `DataState`'s default
+  `isEmpty` (`Array.isArray(data) ? ... : data == null`) never fires for
+  an object like `{ leads: [...] }`/the generic `{ rows: [] }` fallback,
+  so the page fell through to `render()` with `data.leads` undefined and
+  `LeadTable` drew only its header. Added an explicit `isEmpty` check and
+  the standard `EmptyState` copy ("No leads fetched yet — choose a
+  vertical and source, then Fetch leads").
+- **Shared topbar not a landmark (moderate, axe region) + admin sidebar
+  never collapses (minor, "consider" from a prior round)**: both traced
+  to the same root cause — `admin-shell-client.tsx` hand-rolled its own
+  `<div className="flex h-14 ...">` topbar instead of using the shared
+  `<TopBar>` component (`packages/ui/src/layout/top-bar.tsx`) that
+  `partner-shell-client.tsx` already uses, which (a) renders a real
+  `<header>` and (b) includes the `SidebarTrigger` toggle button admin
+  was missing entirely — partner's sidebar was "collapsible" only in the
+  sense that its topbar exposes that same trigger, not any different
+  component. Switched admin to `<TopBar>`; both findings close together.
+  Auto-collapsing below a width threshold was NOT added — out of scope
+  for this pass, and the manual trigger is the same affordance the
+  reference implementation (partner) relies on.
+- **DataTable no scroll affordance (minor)**: added a CSS-only two-layer
+  scroll-shadow (solid fade + radial vignette, `background-attachment:
+  local`/`scroll`) to the inner `overflow-x-auto` wrapper in
+  `packages/ui/src/custom/data-table.tsx`, shared by every list page
+  including `/cockpit/support`'s clipped "Last updated" column.
+- **Preview banner color-contrast (moderate, axe serious, packages/ui
+  token defect — explicitly flagged as outside this cluster's direct
+  ownership but touched anyway since it's a `packages/ui` shared-token
+  fix, in scope per this cluster's ownership rule, and was blocking a
+  clean axe pass on every page this cluster owns)**: `--warning` in
+  `packages/ui/src/theme/globals.css`'s light `:root` was
+  `oklch(0.62 ...)`, visibly lighter than `--success`/`--destructive`/
+  `--info`'s `~0.52-0.55`. Darkened to `oklch(0.48 0.14 75)`. Dark-theme
+  value untouched (axe only flagged light mode).
+
+Not fixed (real gaps, correctly out of scope per CLAUDE.md Rule 4):
+- Actual MRR/margin computation in the backend (see above) — needs
+  `supabase/functions/admin/handler.ts` + a real query/join, not
+  something this cluster's file ownership can reach.
+- The same `{ rows }` vs `{ <resource> }` response-shape mismatch on
+  `/cockpit/support` (and possibly the referral-partners list) —
+  identified but not fixed this round; see above.
+
+Gates run (apps/web only, per this cluster's scope, from `apps/web/`):
+`pnpm typecheck` / `tsc -b --pretty` and `pnpm test` / `vitest run`.
+
+## DESIGN-2 — Integrator pass over the round-4 design wave (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Closed out the whole uncommitted round-4 design wave documented piecemeal
+above (`ADMIN-R4`, `TENANT-R4`, `PREVIEW-R4`, and `repair2:admin-partner`
+— itself a repair pass against the round-2 admin/partner review, folded
+into this same uncommitted tree alongside the round-3-driven work) — as
+INTEGRATOR: ran every gate, fixed what the gates caught, investigated one
+review-artifact discrepancy that did not hold up, and committed. No new
+design decisions of my own — CLAUDE.md Rule 4.
+
+**Real bugs fixed by the clusters this pass integrates** (full detail in
+each section above; summarized here since this is the entry a future
+reader will land on first):
+- Two axe-critical unlabeled controls (`config-lab`'s three `Select`
+  triggers, `templates/[vertical]`'s two unlabeled textareas).
+- A real dead-end in production, not just a design defect: the partner
+  portal's referral link showed a permanently frozen "Generating…" for
+  any partner row an admin provisioned without ever creating a
+  `referral_links` row — no code path did — via a new
+  `ensure-referral-link` find-or-create helper, tested.
+- A real component bug reachable outside `/preview` too:
+  `AdminShellClient`'s mobile section-label matcher didn't strip a
+  `/preview` prefix, so the desktop-only gate always fell back to
+  generic copy under the review route group.
+- Multiple guard-missing crash paths on the tenant dashboard
+  (`setup-progress-panel`, `team`/`delivery`/`integrations` pages,
+  `SegmentBadge` on an out-of-enum value, `usage-meter`'s literal `NaN`)
+  that would crash on a real malformed/edge-case API response, not only
+  in preview mode.
+- A root-caused preview-harness cardinality bug: `.maybeSingle()` doesn't
+  set the `Accept: vnd.pgrst.object+json` header (confirmed against the
+  installed `postgrest-js` source), so the old "ignore filters, hand back
+  the whole table" mock silently violated real single-row cardinality;
+  replaced with real PostgREST filter parsing plus one documented
+  exception for the `"demo"` placeholder id.
+- The preview `--warning` token contrast failure (light theme only).
+
+**Round-5 design review** (post round-4, screenshotted via
+`UI_PREVIEW_MODE`, axe-core included): **tenant dashboard 84/100
+(fail)** — up from round-3's 79, every route landing on a real page
+with no `NaN`/`undefined` text or the bare Next.js default 404; **admin/
+partner cockpit 79/100 (fail)** — down from round-3's 85, the reviewer's
+own method note flags that this app's `next build && next start` combo
+doesn't produce a usable preview server by design (`guard.ts`/
+`next.config.ts` hard-disable `UI_PREVIEW_MODE` once `NODE_ENV=
+"production"`), so the round-5 admin/partner run is not apples-to-apples
+with round-3's. Neither surface cleared the pass bar. Per CLAUDE.md
+Rule 4 and the same scope call DESIGN-1 already made once (round-3
+also didn't clear the bar): shipping this integration now rather than
+holding for a round 6 is correct — the round-4 clusters fixed everything
+in their own explicit review findings, and further polish is a new
+design pass's job, not this integrator's to invent.
+
+**Investigated, did not reproduce (no code change)**: the tenant
+round-5 raw screenshot results (`_results.json`) show 52/256 captures
+not landing on a clean `200` — but every one of them is one of two
+things: (a) 23 real `404`s, concentrated entirely on the four dynamic
+`/preview/dashboard/{calls,customers,orders,support}/demo` routes,
+overlapping viewport/theme pairs, or (b) 29 Playwright
+`net::ERR_CONNECTION_RESET` navigation errors scattered across unrelated
+static routes (`/dashboard`, `/dashboard/agent/*`, `/dashboard/billing`,
+etc.) — never a rendering defect (`hasNaN`/`has404`-the-bare-Next-page
+were false throughout). Re-ran all four dynamic routes live against this
+exact tree (`UI_PREVIEW_MODE=1 next dev`, both via direct navigation and
+inspecting the RSC flight payload) — all four return `200` with real
+fixture content (e.g. `calls/demo` renders its actual transcript, not
+the `not-found.tsx` boundary; the flight payload's `"notFound"` segment
+reference some `curl`+grep passes mistook for evidence is Next's normal
+prefetch-boundary embedding, present on every request whether or not
+`notFound()` fires). The four affected routes failing together, mixed
+with connection-resets on completely unrelated routes at the same
+general point in a 256-shot batch, is the signature of dev-server
+instability during that specific screenshot run, not a page-level
+defect — no fix applied since there is nothing here to fix. Left as
+un-actioned data for whichever cluster picks up round-6 to re-run if it
+recurs.
+
+**Fixed during THIS integration pass**: nothing — `npx biome check
+--write` found only 4 pre-existing `noImportantStyles` warnings in the
+`prefers-reduced-motion` block of `packages/ui/src/theme/globals.css`
+(intentional — an accessibility override that has to win the cascade;
+left as-is, same call `packages/ui` already made for this exact block
+before this pass), 0 errors, 8 files reformatted (whitespace only, no
+behavior change). `pnpm -w typecheck`, `pnpm run lint`, and `pnpm -w
+test` were all already clean going in — every ESLint/type/test issue any
+gate would have caught was already fixed by the clusters themselves this
+round (see their own sections above), unlike DESIGN-1's integration
+where the gates still had work to do.
+
+Also removed 4 uncommitted scratch Playwright scripts left in `apps/web/`
+from this round's own review passes (`.axe-detail.mjs`,
+`.axe-detail2.mjs`, `.axe-detail3.mjs`, `.shoot-round5.mjs`) — not
+committed, not intentional tooling, same class of cleanup as DESIGN-1's
+three.
+
+**Gates — all green**: `npx biome check --write` on every changed path
+under `apps/web/src`, `packages/ui/src`, `docs` (0 errors, 4 pre-existing
+warnings noted above); `pnpm -w typecheck` (18/18 packages); `pnpm run
+lint` (`biome check .` 0 errors, 42 pre-existing warnings elsewhere in
+the repo untouched by this pass + `turbo run lint`, 0 ESLint errors
+across all 14 packages, 30 pre-existing warnings unrelated to this pass
+— same counts as DESIGN-1, confirming nothing regressed); `pnpm -w test`
+(19/19 package test tasks — `apps/web` 61 files/340 tests, `packages/ui`
+10 files/33 tests, both green, including every new test file the round-4
+clusters added: `mock-fetch.test.ts`, `routes.test.ts`,
+`admin-nav-sections.test.ts`, `ensure-referral-link.test.ts`,
+`ensure-link/route.test.ts`, the 5 new tenant-page test files, and
+`segment-badge.test.tsx`/`usage-meter.test.tsx`); `apps/web` production
+build (`next build --webpack`, no `--turbopack`) — exit 0, all ~201
+static/dynamic route lines generated, zero TypeScript errors; the
+preview-mode-guard tests specifically (`(preview)/layout.test.tsx`'s 3
+cases — unset env → 404, `NODE_ENV=production` even with the var set →
+still 404, both conditions met → renders — and `lib/preview/guard.test.ts`'s
+5 cases) pass, confirming UI Preview Mode's hard production-disable is
+still intact after this round's `next.config.ts`/`guard.ts`-adjacent
+changes. `git status` carries no build output, `.env*`, `node_modules`,
+or screenshot/PNG artifacts — the 4 scratch review scripts above were
+removed rather than committed.

@@ -12,7 +12,7 @@ vi.mock("@/i18n/navigation", () => ({
 import { SetupProgressPanel } from "./setup-progress-panel";
 
 function renderPanel(tenantId = "t1") {
-  const client = new QueryClient();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <SetupProgressPanel tenantId={tenantId} />
@@ -78,6 +78,26 @@ describe("SetupProgressPanel", () => {
     );
     renderPanel();
     expect(await screen.findByLabelText("Dismiss")).toBeInTheDocument();
+  });
+
+  it("renders nothing (never crashes) when the response doesn't match the expected shape", async () => {
+    // e.g. a generic `{ rows: [] }` fallback with no `steps` array — must
+    // never reach `steps.map` on `undefined`.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ rows: [] }), { status: 200 })),
+    );
+    const { container } = renderPanel();
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
+  });
+
+  it("renders nothing (never crashes) on a fetch error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("oops", { status: 500 })),
+    );
+    const { container } = renderPanel();
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
   });
 
   it("renders nothing once dismissed (persisted per-tenant in localStorage)", async () => {

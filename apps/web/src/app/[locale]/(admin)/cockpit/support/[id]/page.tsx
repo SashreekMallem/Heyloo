@@ -11,7 +11,6 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  StatusBadge,
   Textarea,
 } from "@heyloo/ui";
 import { useQueryClient } from "@tanstack/react-query";
@@ -93,21 +92,18 @@ export default function AdminSupportTicketPage({ params }: { params: Promise<{ i
               </>
             }
             actions={
-              <>
-                <StatusBadge variant="ticket" value={data.ticket.status} />
-                <Select value={data.ticket.status} onValueChange={setStatus}>
-                  <SelectTrigger className="w-36">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {STATUSES.map((s) => (
-                      <SelectItem key={s} value={s} className="capitalize">
-                        {s}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </>
+              <Select value={data.ticket.status} onValueChange={setStatus}>
+                <SelectTrigger className="w-36 capitalize" aria-label="Ticket status">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STATUSES.map((s) => (
+                    <SelectItem key={s} value={s} className="capitalize">
+                      {s}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             }
           />
 

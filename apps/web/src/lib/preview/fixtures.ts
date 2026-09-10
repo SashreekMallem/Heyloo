@@ -36,6 +36,12 @@ export const PREVIEW_TENANT = {
   branding: { logo_url: null, primary_color: null, accent_color: null },
   manual_mode: false,
   manual_mode_enabled_at: null,
+  // Real column is a jsonb ARRAY — must stay `[]`, never fall through to
+  // the generic string synthesizer (that produced a non-array value that
+  // crashed `HoursEditor.exceptions.map`, round-3 tenant design review,
+  // blocker).
+  hours_exceptions: [] as { date: string; closed?: boolean; note?: string }[],
+  usage_hard_cap_minutes: 6000,
 };
 
 export const PREVIEW_TENANT_USER = {
@@ -59,6 +65,12 @@ export const PREVIEW_PARTNER = {
   w9_status: "verified" as const,
   ftc_acknowledged_at: daysAgoIso(40),
   ftc_acknowledged_version: CURRENT_FTC_POLICY_VERSION,
+  // `/portal/payouts` reads this straight through `.replace(/_/g, " ")`
+  // (title-cased in the UI) — left unset, the generic synthesizer produced
+  // the literal string "sample_payout_method", which rendered verbatim as
+  // "Paid via Sample Payout Method" (round-2 admin-partner design review,
+  // moderate). A real payout method value formats correctly.
+  payout_method: "paypal",
 };
 
 export const PREVIEW_PARTNER_USER = {
@@ -117,20 +129,52 @@ export const TABLE_FIXTURES: Record<string, Record<string, unknown>[]> = {
     },
   ],
 
+  // Real `date` column is a `date` (YYYY-MM-DD), and the overview/billing
+  // pages both compare it against `new Date().toISOString().slice(0, 10)`
+  // and do numeric arithmetic on `total_calls`/`billable_minutes` — the
+  // generic synthesizer produced literal strings like "Sample date" and
+  // "Sample total calls" for these (no column-name pattern matched), which
+  // never equalled "today" and coerced to `NaN`/0 everywhere, leaving the
+  // Overview trend chart and Billing's usage meter looking empty/blank
+  // even though nothing had crashed (round-3 tenant design review,
+  // medium + low).
+  usage_daily: Array.from({ length: 8 }, (_, i) => {
+    const day = 7 - i; // oldest first, day 0 = today
+    const calls = [6, 9, 5, 11, 8, 14, 10, 4][i] ?? 8;
+    return {
+      tenant_id: PREVIEW_TENANT_ID,
+      date: daysAgoIso(day).slice(0, 10),
+      total_calls: calls,
+      total_minutes: calls * 3,
+      billable_minutes: calls * 3,
+      total_bookings: Math.max(0, calls - 4),
+    };
+  }),
+
   call_logs: Array.from({ length: 8 }, (_, i) => ({
     id: `call-${i + 1}`,
     tenant_id: PREVIEW_TENANT_ID,
     classification: CALL_CLASSES[i % CALL_CLASSES.length],
+    // Real calls/[id]/page.tsx maps `t.speaker` (not `t.role`) into the
+    // turns it hands to `TranscriptViewer` — keep this key in sync with
+    // that shape (round-3 tenant design review, blocker: a `role` key here
+    // left every synthesized turn's `speaker` undefined and crashed
+    // `turn.speaker.toLowerCase()`).
     transcript: [
       {
-        role: "agent",
+        speaker: "agent",
         text: "Thanks for calling Golden Fork Bistro — this call may be recorded. How can I help?",
+        ts: 0,
       },
-      { role: "caller", text: "Hi, I'd like a table for four tonight around 7." },
-      { role: "agent", text: "I can do 7:15 for four — would that work?" },
-      { role: "caller", text: "Perfect, thank you." },
+      { speaker: "caller", text: "Hi, I'd like a table for four tonight around 7.", ts: 4 },
+      { speaker: "agent", text: "I can do 7:15 for four — would that work?", ts: 9 },
+      { speaker: "caller", text: "Perfect, thank you.", ts: 14 },
     ],
-    state_trace: [{ state: "greeting" }, { state: "collect_party_size" }, { state: "book" }],
+    state_trace: [
+      { state: "greeting", enteredAt: daysAgoIso(i, 9) },
+      { state: "collect_party_size", enteredAt: daysAgoIso(i, 9) },
+      { state: "book", enteredAt: daysAgoIso(i, 9) },
+    ],
     recording_url: null,
     stereo_recording_url: null,
     duration_seconds: 48 + i * 17,
@@ -145,6 +189,11 @@ export const TABLE_FIXTURES: Record<string, Record<string, unknown>[]> = {
     message_text: null,
     outcome: "booked",
     customer_phone: `+1512555${String(1000 + i).padStart(4, "0")}`,
+    // Real column tenant/customers/[id]/page.tsx joins recent calls on
+    // (`.eq("caller_number", customer.phone_e164)`) — kept identical to
+    // `customer_phone` above so that join actually resolves rows in preview.
+    caller_number: `+1512555${String(1000 + i).padStart(4, "0")}`,
+    started_at: daysAgoIso(i),
   })),
 
   customers: CUSTOMER_NAMES.map((name, i) => ({
@@ -153,7 +202,19 @@ export const TABLE_FIXTURES: Record<string, Record<string, unknown>[]> = {
     name,
     phone_e164: `+1512555${String(1000 + i).padStart(4, "0")}`,
     email: `${name.split(" ")[0]?.toLowerCase()}@example.com`,
+    // Real `CustomerSegment` enum values (packages/ui/src/custom/segment-badge.tsx)
+    // — cycled so preview shows every badge variant, never a synthesized
+    // placeholder string SegmentBadge doesn't recognize.
+    segment: (["new", "returning", "loyal", "vip"] as const)[i % 4],
+    lifetime_value_cents: 4500 + i * 3200,
+    metadata: {},
     consent: { sms: i % 2 === 0, call: true, captured_at: daysAgoIso(30 + i) },
+    // messages-list-client.tsx / message-thread-client.tsx select this
+    // directly — leaving it unset fell through to the generic synthesizer,
+    // which produced a truthy placeholder string and showed every
+    // customer's message thread as "Opted out" (round-3 tenant design
+    // review, adjacent to the "Sample from e164" low-severity finding).
+    sms_opt_out: false,
     created_at: daysAgoIso(90 - i * 4),
   })),
 
@@ -223,14 +284,22 @@ export const TABLE_FIXTURES: Record<string, Record<string, unknown>[]> = {
       id: "offering-1",
       tenant_id: PREVIEW_TENANT_ID,
       name: "Prix fixe dinner",
+      category: "Dinner menu",
+      duration_minutes: 90,
       price_cents: 6500,
+      resource_type_required: "table",
+      metadata: {},
       active: true,
     },
     {
       id: "offering-2",
       tenant_id: PREVIEW_TENANT_ID,
       name: "Wine pairing add-on",
+      category: "Add-ons",
+      duration_minutes: null,
       price_cents: 2500,
+      resource_type_required: null,
+      metadata: {},
       active: true,
     },
   ],
@@ -242,6 +311,10 @@ export const TABLE_FIXTURES: Record<string, Record<string, unknown>[]> = {
       greeting: "Thanks for calling Golden Fork Bistro — this call may be recorded for quality.",
       language: "en",
       manual_mode: false,
+      transfer_number: "+15125559876",
+      special_instructions:
+        "If a caller asks about private events or buyouts, take a message instead of quoting pricing.",
+      dynamic_variable_overrides: {},
     },
   ],
 
@@ -249,16 +322,33 @@ export const TABLE_FIXTURES: Record<string, Record<string, unknown>[]> = {
     {
       id: "support-1",
       tenant_id: PREVIEW_TENANT_ID,
+      tenant_name: PREVIEW_TENANT.name,
       subject: "Caller ID not showing our forwarded number",
+      body: "Since we turned on forwarding, callers see our Twilio number instead of our own. Can this be fixed?",
       status: "open",
+      priority: "high",
       created_at: daysAgoIso(2),
+      updated_at: daysAgoIso(1),
     },
     {
       id: "support-2",
       tenant_id: PREVIEW_TENANT_ID,
+      tenant_name: PREVIEW_TENANT.name,
       subject: "Add a second phone line",
+      body: "We're opening a second location and would like a second forwarded number on the same account.",
       status: "resolved",
+      priority: "normal",
       created_at: daysAgoIso(12),
+      updated_at: daysAgoIso(10),
+    },
+  ],
+
+  support_request_notes: [
+    {
+      id: "support-note-1",
+      support_request_id: "support-1",
+      body: "Escalated to the telephony team — checking the SIP trunk config.",
+      created_at: daysAgoIso(1),
     },
   ],
 
@@ -266,51 +356,126 @@ export const TABLE_FIXTURES: Record<string, Record<string, unknown>[]> = {
   referral_links: [
     { id: "reflink-1", referral_partner_id: PREVIEW_PARTNER_ID, code: "RIVERSIDE10" },
   ],
+  // `referred_tenant_id` points at real `tenants` fixture ids (not a
+  // synthesized "referred_tenant-N" guess) so /portal/customers' server-role
+  // `tenants` lookup (`.in("id", tenantIds)`) actually resolves a name
+  // instead of falling back to the literal "Customer" placeholder.
   referrals: [
     {
       id: "referral-1",
       referral_partner_id: PREVIEW_PARTNER_ID,
+      referred_tenant_id: PREVIEW_TENANT_ID,
       status: "paid",
+      qualified_at: daysAgoIso(45),
+      amount_cents_snapshot: 15000,
       created_at: daysAgoIso(50),
     },
     {
       id: "referral-2",
       referral_partner_id: PREVIEW_PARTNER_ID,
+      referred_tenant_id: "tenant-2",
       status: "qualified",
+      qualified_at: daysAgoIso(18),
+      amount_cents_snapshot: 9000,
       created_at: daysAgoIso(20),
     },
     {
       id: "referral-3",
       referral_partner_id: PREVIEW_PARTNER_ID,
+      referred_tenant_id: PREVIEW_TENANT_ID,
       status: "pending",
+      qualified_at: null,
+      amount_cents_snapshot: null,
       created_at: daysAgoIso(3),
     },
   ],
 
-  orders: Array.from({ length: 4 }, (_, i) => ({
-    id: `order-${i + 1}`,
-    tenant_id: PREVIEW_TENANT_ID,
-    status: ["received", "preparing", "ready", "completed"][i],
-    total_cents: 3200 + i * 850,
-    created_at: daysAgoIso(i),
-  })),
+  commission_events: [
+    {
+      id: "commission-1",
+      referral_id: "referral-1",
+      referral_partner_id: PREVIEW_PARTNER_ID,
+      period: daysAgoIso(30, 0).slice(0, 7),
+      base_cents: 15000,
+      rate_bps: 1000,
+      amount_cents: 1500,
+      status: "paid",
+    },
+  ],
 
+  orders: Array.from({ length: 4 }, (_, i) => {
+    const subtotal_cents = 9000 + i * 850;
+    const tax_cents = 743 + i * 70;
+    const tip_cents = 1500;
+    const delivery_fee_cents = i % 2 === 0 ? 0 : 499;
+    return {
+      id: `order-${i + 1}`,
+      tenant_id: PREVIEW_TENANT_ID,
+      status: ["received", "preparing", "ready", "completed"][i],
+      // Matches `customers` fixture ids exactly (not a synthesized "customer-N"
+      // guess) so the order-detail page's follow-up customer lookup resolves.
+      customer_id: `customer-${(i % CUSTOMER_NAMES.length) + 1}`,
+      items: [
+        {
+          offering_id: "offering-1",
+          name: "Prix fixe dinner",
+          qty: 1 + (i % 2),
+          unit_price_cents: 6500,
+        },
+        {
+          offering_id: "offering-2",
+          name: "Wine pairing add-on",
+          qty: 1,
+          unit_price_cents: 2500,
+          modifiers: i % 2 === 0 ? ["No red wine"] : [],
+        },
+      ],
+      fulfillment_type: i % 2 === 0 ? "pickup" : "delivery",
+      delivery_address:
+        i % 2 === 0
+          ? null
+          : { line1: "142 Riverside Dr", city: "Austin", state: "TX", zip: "78701" },
+      subtotal_cents,
+      tax_cents,
+      tip_cents,
+      delivery_fee_cents,
+      // Always the sum of the line items above — a founder reviewing their
+      // own order page notices a total that doesn't reconcile (round-3
+      // tenant design review, low).
+      total_cents: subtotal_cents + tax_cents + tip_cents + delivery_fee_cents,
+      allergies: i === 1 ? ["peanuts"] : [],
+      special_instructions: i === 2 ? "Please knock, don't ring the bell." : null,
+      created_at: daysAgoIso(i),
+    };
+  }),
+
+  // Column names match exactly what messages-list-client.tsx /
+  // message-thread-client.tsx select (`from_e164`, `recipient`,
+  // `template_key`/`payload`, `channel`, `handled`) — a mismatched shape
+  // here (e.g. the old `to_phone`/`from_phone`/`body`-only rows) falls
+  // through to mock-fetch.ts's generic synthesizer, which produced the
+  // literal placeholder string "Sample from e164" (round-3 tenant design
+  // review, low) and a truthy `sms_opt_out`-shaped fallback that showed
+  // every customer as opted out.
   messages_outbound: [
     {
       id: "msg-out-1",
       tenant_id: PREVIEW_TENANT_ID,
-      to_phone: "+15125551000",
-      body: "Your table is confirmed for 7:15pm tonight.",
+      recipient: "+15125551000",
+      channel: "sms",
+      template_key: "booking_confirmation",
+      payload: {},
       status: "delivered",
-      created_at: daysAgoIso(0),
+      created_at: daysAgoIso(1),
     },
   ],
   messages_inbound: [
     {
       id: "msg-in-1",
       tenant_id: PREVIEW_TENANT_ID,
-      from_phone: "+15125551000",
+      from_e164: "+15125551000",
       body: "Can we push to 7:30?",
+      handled: true,
       created_at: daysAgoIso(0),
     },
   ],
@@ -319,26 +484,448 @@ export const TABLE_FIXTURES: Record<string, Record<string, unknown>[]> = {
     {
       id: "member-1",
       tenant_id: PREVIEW_TENANT_ID,
+      user_id: PREVIEW_TENANT_USER.id,
       email: "owner@goldenforkbistro.example",
+      invited_email: "owner@goldenforkbistro.example",
       role: "owner",
+      accepted_at: daysAgoIso(90),
+      created_at: daysAgoIso(90),
     },
     {
       id: "member-2",
       tenant_id: PREVIEW_TENANT_ID,
+      user_id: "66666666-6666-4666-8666-666666666666",
       email: "manager@goldenforkbistro.example",
+      invited_email: "manager@goldenforkbistro.example",
       role: "admin",
+      accepted_at: daysAgoIso(60),
+      created_at: daysAgoIso(75),
+    },
+    {
+      id: "member-3",
+      tenant_id: PREVIEW_TENANT_ID,
+      user_id: "77777777-7777-4777-8777-777777777777",
+      email: null,
+      invited_email: "new-hire@goldenforkbistro.example",
+      role: "member",
+      accepted_at: null,
+      created_at: daysAgoIso(2),
     },
   ],
 };
 
 /**
  * Hand-mapped responses for the internal `/api/**` routes with the
- * highest screenshot value. Anything not listed here falls back to a
- * generic, non-crashing shape in `mock-fetch.ts` (usually `{ rows: [] }`,
- * which renders as a real `EmptyState`, not a broken page).
+ * highest screenshot value, keyed by exact pathname (query strings and
+ * HTTP method are ignored for these — every one of these routes is a plain
+ * GET). Anything not listed here falls back to a generic, non-crashing
+ * shape in `mock-fetch.ts` (usually `{ rows: [] }`, which renders as a real
+ * `EmptyState`, not a broken page) or to `API_FIXTURE_MATCHERS` below for
+ * dynamic `[id]` paths and non-GET methods.
  */
 export const API_FIXTURES: Record<string, unknown> = {
-  "/api/admin/admin-tenants": { rows: TABLE_FIXTURES["tenants"] },
+  // Overview + Billing both fall back to `?? 0` for `included_minutes`
+  // when this route resolves to the generic `{ rows: [] }` default, which
+  // is what produced Billing's "0 of 0 minutes used" placeholder (round-3
+  // tenant design review, medium/low — same root cause class as the
+  // missing `usage_daily` fixture above).
+  "/api/platform-settings/tenant-plan": {
+    vertical: "restaurant",
+    included_minutes: 300,
+    base_cents: 24900,
+    overage_cents: 35,
+    usage_alert_thresholds: { warn_pct: 0.8, critical_pct: 1.0 },
+  },
+
+  // Real `admin-tenants` list route (`supabase/functions/admin/handler.ts`)
+  // responds `{ tenants: [...] }`, and its `select id, name, vertical,
+  // status ...` never carries `plan_code`/`mrr_cents`/`margin_pct` (those
+  // aren't columns on `public.tenants` at all — see the `admin-tenants/:id`
+  // fixture below). The list PAGE still destructures those fields for its
+  // MRR/Margin columns per FRONTEND_SPEC.md's "margin cockpit" design, so —
+  // matching this file's existing "fixture matches the page" convention —
+  // this fixture layers them onto `TABLE_FIXTURES.tenants` rather than
+  // leaving every row blank (round-2 admin-partner design review, major:
+  // list page showed "—" for every row while the detail page's own,
+  // equally-fabricated fixture showed real numbers for the same tenant).
+  // The second tenant is left without figures on purpose — it's `trialing`,
+  // which realistically has no MRR yet — so the page's "—" fallback still
+  // gets exercised for a case where it's actually correct.
+  "/api/admin/admin-tenants": {
+    tenants: TABLE_FIXTURES["tenants"]?.map((t, i) =>
+      i === 0
+        ? { ...t, plan_code: "growth", mrr_cents: 24900, margin_pct: 62 }
+        : { ...t, plan_code: "trial", mrr_cents: null, margin_pct: null },
+    ),
+  },
   "/api/admin/admin-support-requests": { rows: TABLE_FIXTURES["support_requests"] },
   "/api/admin/admin-referral-partners": { rows: TABLE_FIXTURES["referral_partners"] },
+
+  // Every one of these is a "use client" tenant-dashboard panel that
+  // fetches its OWN `/api/tenant/**` route from the browser — UI Preview
+  // Mode's fetch interceptor answers that fetch directly (see
+  // `mock-fetch.ts`'s `isAppApiPath`), so the real Next.js Route Handler
+  // (and its Supabase/service-role reads) never runs in preview at all.
+  // These fixtures are hand-shaped to each route's own exported response
+  // interface, not to the underlying tables, per
+  // `docs/audit/DESIGN_REQUESTS.md` "cluster repair:tenant" /
+  // round-3 tenant + admin-partner design reviews.
+  "/api/tenant/setup-progress": {
+    steps: [
+      {
+        id: "paid",
+        label: "Add a payment method",
+        description: "Your plan needs an active subscription before calls can bill.",
+        href: "/dashboard/billing",
+        done: true,
+        optional: false,
+      },
+      {
+        id: "agent_provisioned",
+        label: "Publish your AI agent",
+        description: "Your assistant needs to be compiled and published at least once.",
+        href: "/dashboard/agent",
+        done: true,
+        optional: false,
+      },
+      {
+        id: "business_hours",
+        label: "Set your business hours",
+        description: "Callers hear accurate hours and after-hours handling.",
+        href: "/dashboard/agent/hours",
+        done: true,
+        optional: false,
+      },
+      {
+        id: "services",
+        label: "Add services or menu items",
+        description: "Your AI can only book or sell what's configured here.",
+        href: "/dashboard/setup/offerings",
+        done: true,
+        optional: false,
+      },
+      {
+        id: "policies_reviewed",
+        label: "Review your cancellation & booking policy",
+        description: "The agent reads this back to callers verbatim.",
+        href: "/dashboard/agent/vertical-details",
+        done: false,
+        optional: false,
+      },
+      {
+        id: "test_call",
+        label: "Test your agent",
+        description: "Run a test call and confirm the transcript and booking look right.",
+        href: "/dashboard/test-agent",
+        done: true,
+        optional: false,
+      },
+      {
+        id: "forwarding",
+        label: "Turn on call forwarding",
+        description: "Forward your real business line so live calls reach your agent.",
+        href: "/dashboard/phone-setup",
+        done: true,
+        optional: false,
+      },
+      {
+        id: "delivery_preferences",
+        label: "Set delivery preferences",
+        description: "Choose how you're notified of new bookings, orders, and messages.",
+        href: "/dashboard/delivery",
+        done: false,
+        optional: false,
+      },
+      {
+        id: "team_invited",
+        label: "Invite your team",
+        description: "Give teammates their own dashboard sign-in.",
+        href: "/dashboard/team",
+        done: true,
+        optional: true,
+      },
+      {
+        id: "a2p",
+        label: "Complete SMS registration (A2P 10DLC)",
+        description: "Required by carriers before booking/order text messages can send.",
+        href: "/dashboard/delivery",
+        done: false,
+        optional: false,
+      },
+      {
+        id: "integrations",
+        label: "Connect an integration (optional)",
+        description: "Sync bookings to your existing calendar, POS, or CRM.",
+        href: "/dashboard/integrations",
+        done: false,
+        optional: true,
+      },
+    ],
+    requiredTotal: 8,
+    requiredDone: 6,
+    complete: false,
+  },
+
+  "/api/tenant/team": {
+    members: [
+      {
+        id: "member-1",
+        role: "owner",
+        email: "owner@goldenforkbistro.example",
+        invited_email: "owner@goldenforkbistro.example",
+        accepted: true,
+        created_at: daysAgoIso(90),
+      },
+      {
+        id: "member-2",
+        role: "admin",
+        email: "manager@goldenforkbistro.example",
+        invited_email: "manager@goldenforkbistro.example",
+        accepted: true,
+        created_at: daysAgoIso(75),
+      },
+      {
+        id: "member-3",
+        role: "member",
+        email: null,
+        invited_email: "new-hire@goldenforkbistro.example",
+        accepted: false,
+        created_at: daysAgoIso(2),
+      },
+    ],
+  },
+
+  "/api/tenant/delivery/airtable/status": {
+    status: "connected",
+    base_name: "Golden Fork Bistro Ops",
+    last_synced_at: daysAgoIso(0, 6),
+    sync_log: [
+      {
+        entity_type: "booking",
+        entity_id: "booking-1",
+        last_synced_at: daysAgoIso(0, 6),
+        sync_conflict: false,
+      },
+      {
+        entity_type: "customer",
+        entity_id: "customer-1",
+        last_synced_at: daysAgoIso(1, 9),
+        sync_conflict: false,
+      },
+      {
+        entity_type: "order",
+        entity_id: "order-2",
+        last_synced_at: daysAgoIso(2, 14),
+        sync_conflict: true,
+      },
+    ],
+  },
+
+  "/api/tenant/integrations": {
+    integrations: [
+      {
+        provider: "square",
+        display_name: "Square",
+        status: "connected",
+        last_refreshed_at: daysAgoIso(0, 7),
+        last_error: null,
+        can_manage: true,
+      },
+      {
+        provider: "google_calendar",
+        display_name: "Google Calendar",
+        status: "connected",
+        last_refreshed_at: daysAgoIso(1, 8),
+        last_error: null,
+        can_manage: true,
+      },
+      {
+        provider: "shopmonkey",
+        display_name: "Shopmonkey",
+        status: "error",
+        last_refreshed_at: daysAgoIso(5, 11),
+        last_error: "Access token expired — reconnect required.",
+        can_manage: true,
+      },
+      {
+        provider: "ezyvet",
+        display_name: "ezyVet",
+        status: "disconnected",
+        last_refreshed_at: null,
+        last_error: null,
+        can_manage: true,
+      },
+    ],
+  },
 };
+
+/**
+ * Method-aware / dynamic-path `/api/**` fixtures — `API_FIXTURES` above
+ * only exact-matches a fixed GET pathname, which can't express a `[id]`
+ * detail route (`/api/admin/admin-tenants/demo`) or a POST-only endpoint
+ * (`/api/tenant/refer/ensure-link`). Matched in `mock-fetch.ts` after an
+ * `API_FIXTURES` miss, in array order, first match wins. Each `build`
+ * result is shaped to exactly what the calling page destructures (grepped
+ * from each page's `useAdminQuery`/`useQuery` call site), not to the real
+ * backend's own response envelope, which several of these deliberately
+ * differ from (e.g. `admin-tenants/:id` — see comment below).
+ */
+export interface ApiFixtureMatcher {
+  method: "GET" | "POST" | "PATCH" | "*";
+  pattern: RegExp;
+  build: (match: RegExpMatchArray) => unknown;
+}
+
+export const API_FIXTURE_MATCHERS: ApiFixtureMatcher[] = [
+  // `TenantDetail` (apps/web/.../cockpit/tenants/[id]/page.tsx) reads a
+  // FLAT object (`tenant.name`, `tenant.mrr_cents`, ...) straight off
+  // `query.data` — unlike the real `admin-tenants/:id` edge function,
+  // which wraps its row in `{ tenant: {...} }` and has no margin/MRR
+  // columns on `tenants` at all. Fixture matches the PAGE, per this
+  // cluster's brief.
+  {
+    method: "GET",
+    pattern: /^\/api\/admin\/admin-tenants\/([^/]+)$/,
+    build: () => ({
+      id: PREVIEW_TENANT_ID,
+      name: PREVIEW_TENANT.name,
+      status: PREVIEW_TENANT.status,
+      plan_code: "growth",
+      vertical: PREVIEW_TENANT.vertical,
+      mrr_cents: 24900,
+      margin_pct: 62,
+      minutes_used: 340,
+    }),
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/admin\/admin-referral-partners\/([^/]+)$/,
+    build: () => ({
+      partner: {
+        id: PREVIEW_PARTNER_ID,
+        name: PREVIEW_PARTNER.name,
+        email: "partner@riversidereferral.example",
+        rate_bps: 1000,
+        commission_base: "gross_profit",
+        duration_months: 12,
+      },
+      overrides: [
+        {
+          vertical: "restaurant",
+          rate_bps: 1200,
+          commission_base: "gross_profit",
+          duration_months: 12,
+        },
+      ],
+    }),
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/admin\/admin-support-requests\/([^/]+)\/notes$/,
+    build: () => ({ notes: TABLE_FIXTURES["support_request_notes"] }),
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/admin\/admin-support-requests\/([^/]+)$/,
+    build: () => {
+      const ticket = TABLE_FIXTURES["support_requests"]?.[0] as Record<string, unknown>;
+      return {
+        ticket: {
+          id: ticket?.["id"],
+          tenant_name: ticket?.["tenant_name"],
+          tenant_vertical: PREVIEW_TENANT.vertical,
+          subject: ticket?.["subject"],
+          body: ticket?.["body"],
+          status: ticket?.["status"],
+          priority: ticket?.["priority"],
+          created_at: ticket?.["created_at"],
+        },
+        notes: TABLE_FIXTURES["support_request_notes"]?.map((n) => ({
+          ...n,
+          author_id: PREVIEW_ADMIN_USER_ID,
+        })),
+      };
+    },
+  },
+  // `CampaignDetailPage` (cockpit/outreach/campaigns/[id]) — this dynamic
+  // route wasn't in `API_FIXTURE_MATCHERS`, so it fell through to the
+  // generic `{ rows: [] }` default below, which the page has no use for
+  // (it destructures `name`/`status`/`funnel`/`leads`, not `rows`) — every
+  // field read undefined, rendering "Unnamed campaign" / an "Unknown"
+  // status badge (round-2 admin-partner design review, moderate).
+  {
+    method: "GET",
+    pattern: /^\/api\/admin\/admin-outreach\/campaigns\/([^/]+)$/,
+    build: () => ({
+      name: "Spring Vet Clinics Outreach",
+      status: "active",
+      funnel: [
+        { label: "Sent", count: 480 },
+        { label: "Opened", count: 210 },
+        { label: "Replied", count: 34 },
+        { label: "Qualified", count: 12 },
+        { label: "Signed up", count: 4 },
+      ],
+      leads: [
+        {
+          id: "lead-1",
+          companyName: "Sunrise Animal Hospital",
+          contactName: "Dr. Priya Nair",
+          email: "priya@sunriseanimalhospital.example",
+          status: "replied",
+          suppressed: false,
+          isDuplicate: false,
+        },
+        {
+          id: "lead-2",
+          companyName: "Lakeside Vet Care",
+          contactName: "Tom Hendricks",
+          email: "tom@lakesidevet.example",
+          status: "sent",
+          suppressed: false,
+          isDuplicate: false,
+        },
+        {
+          id: "lead-3",
+          companyName: "Maple Street Animal Clinic",
+          contactName: null,
+          email: "hello@maplestreetanimal.example",
+          status: "suppressed",
+          suppressed: true,
+          isDuplicate: false,
+        },
+      ],
+    }),
+  },
+  // `TenantMarginDetailPage` (cockpit/margin/customers/[tenantId]) — same
+  // generic-fallback gap as the outreach campaign detail route above.
+  {
+    method: "GET",
+    pattern: /^\/api\/admin\/admin-cockpit\/per-customer-margin\/([^/]+)$/,
+    build: () => ({
+      calls: Array.from({ length: 5 }, (_, i) => ({
+        call_id: `call-${i + 1}`,
+        cost_cents: 180 + i * 12,
+        billed_cents: 250,
+        delta_cents: 250 - (180 + i * 12),
+      })),
+      suggestedAction:
+        "Cost per call is trending up — consider moving this tenant to the Growth plan.",
+    }),
+  },
+  // Tenant "refer & earn" find-or-create (Cluster H item 4) — POST-only,
+  // never a GET, so it can't live in the exact-match `API_FIXTURES` map
+  // above (whose entries are all read via GET).
+  {
+    method: "POST",
+    pattern: /^\/api\/tenant\/refer\/ensure-link$/,
+    build: () => ({
+      code: "RIVERSIDE10",
+      partner_id: PREVIEW_PARTNER_ID,
+      funnel: { signups: 3, qualified: 2, paid: 1 },
+      w9_status: "verified",
+      ytd_payout_cents: 15000,
+      approaching_w9_threshold: false,
+    }),
+  },
+];

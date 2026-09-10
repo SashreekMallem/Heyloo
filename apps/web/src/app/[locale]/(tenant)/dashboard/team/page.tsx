@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   CardContent,
+  DataState,
   Input,
   Label,
   PageHeader,
@@ -121,25 +122,31 @@ export default function TeamPage() {
 
       <Card>
         <CardContent className="pt-6">
-          {query.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-          {query.data && query.data.members.length === 0 && (
-            <p className="text-sm text-muted-foreground">No teammates yet.</p>
-          )}
-          {query.data && query.data.members.length > 0 && (
-            <ul className="divide-y divide-border">
-              {query.data.members.map((m) => (
-                <li key={m.id} className="flex items-center justify-between py-3">
-                  <div>
-                    <p className="text-sm font-medium">{m.email ?? m.invited_email ?? "—"}</p>
-                    {!m.accepted && (
-                      <p className="text-xs text-muted-foreground">Invited — not yet accepted</p>
-                    )}
-                  </div>
-                  <Badge variant={m.role === "owner" ? "default" : "outline"}>{m.role}</Badge>
-                </li>
-              ))}
-            </ul>
-          )}
+          <DataState
+            query={query}
+            empty={{
+              title: "No teammates yet",
+              description: "Invite one above to give them their own dashboard sign-in.",
+              // Never trust the response shape blindly — a non-matching payload
+              // (error fallback, stale cache, etc.) must read as empty, not crash.
+              isEmpty: (data) => !Array.isArray(data.members) || data.members.length === 0,
+            }}
+            render={(data) => (
+              <ul className="divide-y divide-border">
+                {data.members.map((m) => (
+                  <li key={m.id} className="flex items-center justify-between py-3">
+                    <div>
+                      <p className="text-sm font-medium">{m.email ?? m.invited_email ?? "—"}</p>
+                      {!m.accepted && (
+                        <p className="text-xs text-muted-foreground">Invited — not yet accepted</p>
+                      )}
+                    </div>
+                    <Badge variant={m.role === "owner" ? "default" : "outline"}>{m.role}</Badge>
+                  </li>
+                ))}
+              </ul>
+            )}
+          />
         </CardContent>
       </Card>
     </div>

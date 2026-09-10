@@ -1,5 +1,63 @@
 # Launch Status
 
+## Design: round-4 dashboard/admin polish, real-bug guards, preview harness (DESIGN-2, 2026-09-10)
+
+Integrated the uncommitted round-4 design wave (full per-cluster detail in
+`docs/BUILD_NOTES.md`'s `ADMIN-R4`/`TENANT-R4`/`PREVIEW-R4`/
+`repair2:admin-partner` sections) as the INTEGRATOR: ran every gate — all
+were already clean going in (every ESLint/type/test issue the gates would
+have caught was already fixed by the clusters themselves this round) — and
+committed. Real, crash-shaped bugs fixed this round, not just styling:
+partner portal's referral link permanently stuck on "Generating…" for any
+admin-provisioned partner (no create path existed); several tenant
+dashboard panels (`setup-progress-panel`, `team`, `delivery`,
+`integrations`, `SegmentBadge`, the billing usage meter) that would crash
+or show a literal `NaN` on a malformed/edge-case API response, not only in
+preview mode; two axe-critical unlabeled form controls; the admin shell's
+mobile nav-label matcher misreading `/preview`-prefixed paths; a
+root-caused `.maybeSingle()` cardinality bug in the preview mock (it
+doesn't set the `Accept` header real Supabase relies on, confirmed against
+the installed `postgrest-js` source) that had been silently violating
+single-row cardinality. Round-5 review: **tenant dashboard 84/100** (up
+from round-3's 79), **admin/partner cockpit 79/100** (round-3 was 85, but
+the round-5 run's own method note flags its `next build && next start`
+harness as not representative — `UI_PREVIEW_MODE` hard-disables itself
+once `NODE_ENV="production"`, by design). Neither surface cleared the pass
+bar — same documented scope call as DESIGN-1 (round-3 didn't clear it
+either): shipping now rather than holding for round 6, since round 4 fixed
+every finding in its own explicit review scope and further polish is a new
+design pass's job. One review-artifact discrepancy was investigated and
+did NOT reproduce: round-5's raw tenant screenshots show 52/256 non-`200`
+captures, but all trace to either real `404`s clustered on the four
+dynamic `/dashboard/{calls,customers,orders,support}/demo` routes or
+`net::ERR_CONNECTION_RESET` navigation errors on unrelated routes — live
+re-testing all four dynamic routes against this exact tree returns `200`
+with real content every time; the failure pattern (four unrelated routes
+failing together, interleaved with connection-resets elsewhere) is
+dev-server instability during that screenshot batch, not a code defect —
+see `docs/BUILD_NOTES.md`'s DESIGN-2 section for the full writeup.
+
+**Gates:** all green — `npx biome check --write` (0 errors on touched
+paths, 4 pre-existing intentional `!important` warnings in the
+reduced-motion block), `pnpm -w typecheck` (18/18), `pnpm run lint` (0
+errors), `pnpm -w test` (19/19 package test tasks, `apps/web` 61 files/340
+tests + `packages/ui` 10 files/33 tests, up from DESIGN-1's 238+23 — the
+round-4 clusters' new test files), `apps/web` production build (`next
+build --webpack`, exit 0, ~201 routes). The preview-mode-guard tests
+specifically (`(preview)/layout.test.tsx`, `lib/preview/guard.test.ts`)
+pass, confirming UI Preview Mode's hard production-disable survived this
+round's `next.config.ts`/`guard.ts`-adjacent changes. 4 uncommitted
+scratch review scripts (`.axe-detail*.mjs`, `.shoot-round5.mjs`) were
+removed rather than committed; no build output, `.env*`, or screenshot/PNG
+artifacts in the tree.
+
+**New secrets needed:** none.
+
+**Owner to-do, added by this pass:** none blocking. Non-blocking: a round
+6 design pass to close the remaining tenant-dashboard and admin/partner
+polish gaps the round-5 review flagged (see `docs/BUILD_NOTES.md`'s
+DESIGN-2 section) before either surface is treated as launch-final.
+
 ## Design: world-class UI system + marketing/dashboard/admin restyle (DESIGN-1, 2026-09-10)
 
 Integrated the uncommitted design wave (token system, typography,
@@ -239,6 +297,7 @@ consolidated version a launch decision actually needs.
 | 3 | T8 | Outreach engine (Apollo/Outscraper fetch, Claude personalize, Smartlead send, reply classification), admin outreach panel | 350 (cumulative) |
 | 4 | **T9 (this task)** | Sentry wiring (`_shared/sentry.ts` + `logger.ts`, env-gated), `docs/OPS_RUNBOOK.md`, `docs/DEPLOY.md`, CI completion (`e2e`/`repo-hygiene` jobs, clean-build assertion, actionlint-clean), 3 new Playwright specs + auth infrastructure, `scripts/e2e-backend.ts` | 397 (`supabase/functions` cumulative, +20 from this task) |
 | — | DESIGN-1 | Design token system + typography (`packages/ui/src/theme`), shared layout/custom components, lucide-only icon system, `UI_PREVIEW_MODE` review route group, full marketing/tenant/admin-partner restyle across 3 review rounds | 238 (`apps/web`) + 23 (`packages/ui`) |
+| — | DESIGN-2 | Round-4 dashboard/admin polish: real-bug guards (crash/`NaN` fixes, dead referral-link path, axe criticals), preview-harness `.maybeSingle()` cardinality fix + fixture completeness, round-5 review | 340 (`apps/web`) + 33 (`packages/ui`) |
 
 **Not yet done by any task** (real, not oversight): `packages/adapters/
 shopmonkey`/`ezyvet`/`google-calendar`/`square` and their webhook/two-way-

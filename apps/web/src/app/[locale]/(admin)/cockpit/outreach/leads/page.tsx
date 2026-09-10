@@ -80,7 +80,11 @@ export default function LeadsPage() {
       </div>
       <DataState
         query={query}
-        empty={{ title: "No leads yet" }}
+        empty={{
+          title: "No leads fetched yet",
+          description: "Choose a vertical and source, then Fetch leads.",
+          isEmpty: (d) => (d?.leads?.length ?? 0) === 0,
+        }}
         render={(data) => <LeadTable data={data.leads} />}
       />
     </div>

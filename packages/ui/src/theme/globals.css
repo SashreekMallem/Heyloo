@@ -235,7 +235,15 @@
   --destructive-foreground: oklch(0.99 0 0);
   --success: oklch(0.52 0.13 155);
   --success-foreground: oklch(0.99 0 0);
-  --warning: oklch(0.62 0.15 75);
+  /* Was oklch(0.62 ...) — too light for `text-warning` on `bg-warning/10`
+   * (axe color-contrast, serious, every light-mode page via the UI Preview
+   * Mode banner; round-2 admin-partner design review). Darkened to sit with
+   * `--success`/`--destructive`/`--info`'s lightness (~0.5-0.55), which
+   * already clear 4.5:1 for normal text; amber needs to go a touch darker
+   * than those for the same effect. `--warning-foreground` (used on a
+   * SOLID warning background, e.g. `Badge variant="warning"`) only gains
+   * contrast from this, since it's already near-black. */
+  --warning: oklch(0.48 0.14 75);
   --warning-foreground: oklch(0.16 0.02 75);
   --info: oklch(0.55 0.13 245);
   --info-foreground: oklch(0.99 0 0);

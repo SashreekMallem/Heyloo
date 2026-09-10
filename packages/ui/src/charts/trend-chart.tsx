@@ -29,9 +29,20 @@ export function TrendChart({
   height = 220,
   valueFormatter,
 }: TrendChartProps) {
+  // Coerce every value to a finite number — an upstream row with a
+  // wrong-typed/missing value (e.g. a non-numeric `value`) must never
+  // silently collapse Recharts' auto axis-domain calculation into the
+  // "two faint lines and nothing else" degenerate render (round-3 tenant
+  // design review, medium).
+  const safeData = data.map((point) => ({
+    ...point,
+    value: Number.isFinite(point.value) ? point.value : 0,
+  }));
+  const allZero = safeData.length === 0 || safeData.every((point) => point.value === 0);
+
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+      <AreaChart data={safeData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
         <defs>
           <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="5%" stopColor={color} stopOpacity={0.35} />
@@ -47,6 +58,13 @@ export function TrendChart({
           stroke="var(--color-muted-foreground)"
         />
         <YAxis
+          // At all-zero (or empty) data, Recharts' auto domain collapses to
+          // a single value and renders no visible ticks/baseline — force a
+          // real 0-4 domain so a flat baseline with labeled ticks always
+          // shows, matching the empty-but-labeled pattern used by
+          // `FunnelChart` for an all-zero referral funnel.
+          domain={allZero ? [0, 4] : ["auto", "auto"]}
+          allowDecimals={false}
           tickLine={false}
           axisLine={false}
           fontSize={12}

@@ -25,7 +25,7 @@ export function TranscriptViewer({ turns, activeTs, onSeek, className }: Transcr
   const filtered = useMemo(() => {
     if (!query.trim()) return turns;
     const needle = query.toLowerCase();
-    return turns.filter((turn) => turn.text.toLowerCase().includes(needle));
+    return turns.filter((turn) => (turn.text ?? "").toLowerCase().includes(needle));
   }, [turns, query]);
 
   return (
@@ -44,8 +44,9 @@ export function TranscriptViewer({ turns, activeTs, onSeek, className }: Transcr
           <p className="text-sm text-muted-foreground">No matching turns.</p>
         )}
         {filtered.map((turn, index) => {
+          const speaker = turn.speaker ?? "";
           const isCaller =
-            turn.speaker.toLowerCase().includes("caller") || turn.speaker.toLowerCase() === "user";
+            speaker.toLowerCase().includes("caller") || speaker.toLowerCase() === "user";
           const isActive = activeTs === turn.ts;
           return (
             <button

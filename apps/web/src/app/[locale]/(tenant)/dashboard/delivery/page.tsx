@@ -193,38 +193,47 @@ export default function DeliveryPage() {
         onSyncNow={() => void syncNowAirtable()}
       />
 
-      {airtableQuery.data && airtableQuery.data.sync_log.length > 0 && (
-        <div className="rounded-lg border border-border">
-          <button
-            type="button"
-            className="w-full px-3 py-2 text-left text-sm font-medium"
-            onClick={() => setSyncLogOpen((v) => !v)}
-          >
-            {syncLogOpen ? "Hide" : "Show"} sync log ({airtableQuery.data.sync_log.length})
-          </button>
-          {syncLogOpen && (
-            <ul className="divide-y divide-border border-t border-border text-sm">
-              {airtableQuery.data.sync_log.map((row) => (
-                <li
-                  key={`${row.entity_type}-${row.entity_id}`}
-                  className="flex items-center justify-between px-3 py-2"
-                >
-                  <span>
-                    {row.entity_type} {row.entity_id.slice(0, 8)}
-                  </span>
-                  <span className={row.sync_conflict ? "text-warning" : "text-muted-foreground"}>
-                    {row.sync_conflict
-                      ? "Conflict — edited in Airtable since last sync"
-                      : row.last_synced_at
-                        ? new Date(row.last_synced_at).toLocaleString()
-                        : "Not yet synced"}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
+      {(() => {
+        // Defensive: never assume the response matches AirtableStatusResponse
+        // at runtime — an error payload or a shape-mismatched fallback must
+        // never crash this panel.
+        const syncLog = Array.isArray(airtableQuery.data?.sync_log)
+          ? airtableQuery.data.sync_log
+          : [];
+        if (syncLog.length === 0) return null;
+        return (
+          <div className="rounded-lg border border-border">
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-sm font-medium"
+              onClick={() => setSyncLogOpen((v) => !v)}
+            >
+              {syncLogOpen ? "Hide" : "Show"} sync log ({syncLog.length})
+            </button>
+            {syncLogOpen && (
+              <ul className="divide-y divide-border border-t border-border text-sm">
+                {syncLog.map((row) => (
+                  <li
+                    key={`${row.entity_type}-${row.entity_id}`}
+                    className="flex items-center justify-between px-3 py-2"
+                  >
+                    <span>
+                      {row.entity_type} {row.entity_id.slice(0, 8)}
+                    </span>
+                    <span className={row.sync_conflict ? "text-warning" : "text-muted-foreground"}>
+                      {row.sync_conflict
+                        ? "Conflict — edited in Airtable since last sync"
+                        : row.last_synced_at
+                          ? new Date(row.last_synced_at).toLocaleString()
+                          : "Not yet synced"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

@@ -169,7 +169,10 @@ export default function IntegrationsPage() {
         empty={{
           title: "No integrations available",
           description: "Check back once integrations are configured for your business type.",
-          isEmpty: (data) => data.integrations.length === 0,
+          // Defensive: don't assume `integrations` is present — a response
+          // that doesn't match IntegrationsListResponse must read as empty,
+          // never throw.
+          isEmpty: (data) => !Array.isArray(data.integrations) || data.integrations.length === 0,
         }}
         loadingSkeleton={
           <div className="grid gap-4 sm:grid-cols-2">
