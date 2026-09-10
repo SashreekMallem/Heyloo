@@ -72,6 +72,37 @@ describe("installPreviewFetchMock — Supabase REST filter handling", () => {
     const body = (await res.json()) as unknown[];
     expect(body.length).toBeGreaterThan(1);
   });
+
+  it("the seeded messages/[phone] preview route's real phone number resolves the seeded thread (routes.ts href)", async () => {
+    // The messages detail route filters fixture rows by
+    // `from_e164`/`recipient`/`phone_e164` (not `id`), so it has no
+    // "unmatched placeholder id" fallback to lean on — `routes.ts`'s
+    // canonical href must point at the real seeded phone number
+    // (fixtures.ts's customer-1 / Priya Natarajan), or the page renders a
+    // blank thread (round-final tenant review, high).
+    const phone = "+15125551000";
+    const inbound = await fetch(
+      restUrl("messages_inbound", { select: "id,body", from_e164: `eq.${phone}` }),
+    );
+    const inboundBody = (await inbound.json()) as { id: string; body: string }[];
+    expect(inboundBody.length).toBeGreaterThan(0);
+
+    const outbound = await fetch(
+      restUrl("messages_outbound", {
+        select: "id,template_key",
+        channel: "eq.sms",
+        recipient: `eq.${phone}`,
+      }),
+    );
+    const outboundBody = (await outbound.json()) as { id: string }[];
+    expect(outboundBody.length).toBeGreaterThan(0);
+
+    const customer = await fetch(
+      restUrl("customers", { select: "name,sms_opt_out", phone_e164: `eq.${phone}` }),
+    );
+    const customerBody = (await customer.json()) as { name: string }[];
+    expect(customerBody[0]?.name).toBe("Priya Natarajan");
+  });
 });
 
 describe("installPreviewFetchMock — /api/** fixtures", () => {
@@ -109,9 +140,16 @@ describe("installPreviewFetchMock — /api/** fixtures", () => {
 
   it("GET /api/admin/admin-tenants/demo resolves a dynamic detail fixture (not the generic { rows: [] } fallback)", async () => {
     const res = await fetch("/api/admin/admin-tenants/demo");
-    const body = (await res.json()) as { name?: string; mrr_cents?: number };
-    expect(body.name).toBeTruthy();
-    expect(typeof body.mrr_cents).toBe("number");
+    // `{ tenant, metrics }` — matches the real `admin-tenants/:id` edge
+    // function's response shape (`supabase/functions/admin/handler.ts`),
+    // not a flat object (admin-partner design review round 5, major:
+    // page/API contract mismatch).
+    const body = (await res.json()) as {
+      tenant?: { name?: string };
+      metrics?: { mrr_cents?: number };
+    };
+    expect(body.tenant?.name).toBeTruthy();
+    expect(typeof body.metrics?.mrr_cents).toBe("number");
   });
 
   it("GET /api/admin/admin-support-requests/demo/notes resolves the notes sub-route distinctly from the ticket route", async () => {

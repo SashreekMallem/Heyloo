@@ -1,5 +1,53 @@
 # Launch Status
 
+## Design: round-6 shared-component fixes, tenant/admin polish, preview completeness (DESIGN-3, 2026-09-10)
+
+Integrated the uncommitted round-6 design wave (full per-cluster detail in
+`docs/BUILD_NOTES.md`'s `ADMIN+PREVIEW-R6`/`SHARED+TENANT-R6`/`DESIGN-3`
+sections) as INTEGRATOR: ran every gate, fixed the one real bug a gate
+caught, and committed. This round's fixes were mostly shared-component and
+cross-cutting: a `formatPhoneDisplay` helper promoted out of `PhoneInput`
+and wired into every customer-facing phone display; link-contrast and
+`Button` touch-target fixes across the tenant dashboard; a `--warning-
+foreground` AA-contrast fix on the solid warning badge background;
+`MetricCard`'s non-finite-value empty state; `CentsInput`/new `BpsInput`
+replacing raw number fields on Vertical Details; a real axe-critical fix
+on the Team page's unlabeled role `Select`; a real page/API contract bug
+on `/cockpit/tenants/[id]` (metrics were never returned, every tile showed
+`—`); axe `region`/`page-has-heading-one` fixes on the admin and partner
+shells; a 768px collapsed icon-rail nav; and a preview-harness fixture fix
+so the messages-detail preview route renders a real seeded thread instead
+of a blank one. The one bug this integration pass fixed itself (not
+attributable to any round-6 cluster): a hardcoded `expires_at` in a
+`worker-adapter-push` ezyVet test had quietly passed into the past by the
+time this pass ran, flipping a mocked call count and failing the test
+gate — pushed to a safe future date. Round-6/7 review: **admin/partner
+cockpit 90/100 (pass)** — up from round-5's 79, clearing the bar for the
+first time; **tenant dashboard 83/100 (fail)** — still short of the bar,
+needs at least one more focused round, same documented scope call as
+DESIGN-1/DESIGN-2 (ship what's ready now rather than hold for a later
+round).
+
+**Gates:** all green — `npx biome check --write` (0 errors on touched
+paths, same 4 pre-existing intentional `!important` warnings noted by
+DESIGN-1/DESIGN-2), `pnpm -w typecheck` (18/18), `pnpm run lint` (0
+errors), `pnpm -w test` (19/19 package test tasks, `apps/web` 63 files/351
+tests + `packages/ui` 17 files/73 tests, up from DESIGN-2's 340+33),
+`apps/web` production build (`next build --webpack`, exit 0). The
+preview-mode-guard tests (`lib/preview/guard.test.ts`) pass. No build
+output, `.env*`, or screenshot/PNG artifacts in the tree.
+
+**New secrets needed:** none.
+
+**Owner to-do, added by this pass:** none blocking. Non-blocking: a
+further tenant-dashboard-focused design round to clear its remaining
+83/100 findings (see `docs/BUILD_NOTES.md`'s `DESIGN-3` section); the
+`StatusBadge` "tenant" variant miscoloring invoice statuses on
+`dashboard/billing` (safe fallback today, real fix needs a dedicated
+`"invoice"` `StatusBadgeVariant` — `SHARED+TENANT-R6`); the
+`/cockpit/templates/[vertical]` route-by-vertical bug found but out of
+this round's ownership (`ADMIN+PREVIEW-R6`).
+
 ## Design: round-4 dashboard/admin polish, real-bug guards, preview harness (DESIGN-2, 2026-09-10)
 
 Integrated the uncommitted round-4 design wave (full per-cluster detail in
@@ -298,6 +346,7 @@ consolidated version a launch decision actually needs.
 | 4 | **T9 (this task)** | Sentry wiring (`_shared/sentry.ts` + `logger.ts`, env-gated), `docs/OPS_RUNBOOK.md`, `docs/DEPLOY.md`, CI completion (`e2e`/`repo-hygiene` jobs, clean-build assertion, actionlint-clean), 3 new Playwright specs + auth infrastructure, `scripts/e2e-backend.ts` | 397 (`supabase/functions` cumulative, +20 from this task) |
 | — | DESIGN-1 | Design token system + typography (`packages/ui/src/theme`), shared layout/custom components, lucide-only icon system, `UI_PREVIEW_MODE` review route group, full marketing/tenant/admin-partner restyle across 3 review rounds | 238 (`apps/web`) + 23 (`packages/ui`) |
 | — | DESIGN-2 | Round-4 dashboard/admin polish: real-bug guards (crash/`NaN` fixes, dead referral-link path, axe criticals), preview-harness `.maybeSingle()` cardinality fix + fixture completeness, round-5 review | 340 (`apps/web`) + 33 (`packages/ui`) |
+| — | DESIGN-3 | Round-6 shared-component fixes (`formatPhoneDisplay`, link-contrast, `--warning-foreground`, `BpsInput`), tenant/admin real-bug fixes (tenant-detail metrics contract, axe criticals), preview-harness completeness, round-6/7 review (admin/partner passes at 90) | 351 (`apps/web`) + 73 (`packages/ui`) |
 
 **Not yet done by any task** (real, not oversight): `packages/adapters/
 shopmonkey`/`ezyvet`/`google-calendar`/`square` and their webhook/two-way-

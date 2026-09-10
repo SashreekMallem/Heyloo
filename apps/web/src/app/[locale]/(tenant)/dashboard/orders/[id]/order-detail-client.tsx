@@ -8,6 +8,7 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  formatPhoneDisplay,
   PageHeader,
   Separator,
 } from "@heyloo/ui";
@@ -129,13 +130,18 @@ export function OrderDetailClient({ order }: { order: OrderDetailData }) {
           </p>
           <p>
             <span className="text-muted-foreground">Customer</span>{" "}
-            {order.customerName ?? order.customerPhone ?? "Unknown"}
+            {order.customerName ??
+              (order.customerPhone ? formatPhoneDisplay(order.customerPhone) : "Unknown")}
             {order.customerPhone && (
               <>
                 {" — "}
                 <Link
                   href={`/dashboard/messages/${encodeURIComponent(order.customerPhone)}`}
-                  className="text-primary underline underline-offset-2"
+                  // text-primary-hover, not text-primary: base accent-500
+                  // measures 3.57:1 for this normal-weight link, below WCAG
+                  // AA's 4.5:1 (axe color-contrast, round-final tenant
+                  // review). accent-600 clears AA in both themes.
+                  className="text-primary-hover underline underline-offset-2"
                 >
                   Message
                 </Link>

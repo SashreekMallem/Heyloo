@@ -378,7 +378,15 @@ export const PREVIEW_ROUTES: PreviewRoute[] = [
   },
   {
     url: "/preview/dashboard/messages/[phone]",
-    href: "/preview/dashboard/messages/demo",
+    // Unlike `[id]` routes (mock-fetch.ts forgives an unmatched `id=eq.demo`
+    // filter and falls back to whatever other filters — e.g. tenant_id —
+    // already narrowed to), this route filters fixture rows on
+    // `from_e164`/`recipient`/`phone_e164`, which have no such exemption —
+    // a literal "demo" phone matches zero seeded rows and the page falls
+    // back to a blank thread (round-final tenant review, high). Point
+    // straight at the real seeded conversation (customer-1 / Priya
+    // Natarajan, apps/web/src/lib/preview/fixtures.ts) instead.
+    href: "/preview/dashboard/messages/%2B15125551000",
     area: "Tenant dashboard",
     label: "Messages detail",
     source: "apps/web/src/app/[locale]/(tenant)/dashboard/messages/[phone]/page.tsx",

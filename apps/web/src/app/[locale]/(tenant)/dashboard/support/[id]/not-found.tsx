@@ -12,7 +12,7 @@ export default function TicketNotFound() {
       action={
         <Link
           href="/dashboard/support"
-          className="text-sm font-medium text-primary underline underline-offset-2"
+          className="text-sm font-medium text-primary-hover underline underline-offset-2"
         >
           Back to support
         </Link>

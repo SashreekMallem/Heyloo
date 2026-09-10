@@ -1,6 +1,6 @@
 "use client";
 
-import { Badge, DataState, PageHeader } from "@heyloo/ui";
+import { Badge, DataState, formatPhoneDisplay, PageHeader } from "@heyloo/ui";
 import { useRouter } from "@/i18n/navigation";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
 import { describeOutboundMessage } from "@/lib/messages/outbound-preview";
@@ -125,7 +125,7 @@ export function MessagesListClient({ tenantId }: { tenantId: string }) {
                 >
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium">
-                      {thread.customerName ?? thread.phone}
+                      {thread.customerName ?? formatPhoneDisplay(thread.phone)}
                     </p>
                     <p className="truncate text-xs text-muted-foreground">{thread.preview}</p>
                   </div>

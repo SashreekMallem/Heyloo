@@ -38,6 +38,23 @@ function rangeDays(preset: DateRangePreset): number {
   return preset === "today" ? 1 : preset === "7d" ? 7 : 30;
 }
 
+interface UsageDailyRow {
+  date: string;
+  total_calls: number | null;
+}
+
+/**
+ * `usage_daily` rows -> `TrendChart`'s `{ label, value }[]` shape. Exported
+ * so the adapter itself is unit-testable without rendering Recharts (which
+ * needs a real layout/ResizeObserver jsdom lacks) — the earlier inline
+ * `rows.map(...)` passed a possibly-null `total_calls` straight through,
+ * relying entirely on `TrendChart`'s own defensive coercion; this makes
+ * "every point is a finite number" the adapter's own contract.
+ */
+export function usageDailyToTrend(rows: UsageDailyRow[]): { label: string; value: number }[] {
+  return rows.map((r) => ({ label: r.date.slice(5), value: Number(r.total_calls ?? 0) }));
+}
+
 export function OverviewClient({
   tenantId,
   hasPhoneNumber,
@@ -87,7 +104,7 @@ export function OverviewClient({
         minutesUsed: rows.reduce((sum, r) => sum + (Number(r.billable_minutes ?? 0) || 0), 0),
         minutesIncluded: plan?.included_minutes ?? 0,
         spamDeflected: spamCount ?? 0,
-        trend: rows.map((r) => ({ label: r.date.slice(5), value: r.total_calls })),
+        trend: usageDailyToTrend(rows),
       };
     },
   );

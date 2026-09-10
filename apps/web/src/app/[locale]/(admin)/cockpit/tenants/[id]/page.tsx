@@ -33,14 +33,29 @@ interface TenantDetail {
   status: string;
   plan_code: string;
   vertical: string;
+}
+
+interface TenantMetrics {
   mrr_cents: number;
   margin_pct: number;
   minutes_used: number;
 }
 
+// The `admin` edge function's tenant-detail route responds
+// `{ tenant: {...}, metrics: {...} }` (`supabase/functions/admin/
+// handler.ts`'s `handleTenants` — `tenants` itself has no MRR/margin/
+// minutes columns, so those are computed server-side from
+// `v_tenant_margin`/`usage_daily`) — reading a flat `TenantDetail` off
+// `query.data` left every metric tile blank (admin-partner design review
+// round 5, major: page/API contract mismatch).
+interface TenantDetailResponse {
+  tenant: TenantDetail;
+  metrics: TenantMetrics;
+}
+
 export default function TenantDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const query = useAdminQuery<TenantDetail>("tenant-detail", [id], `admin-tenants/${id}`);
+  const query = useAdminQuery<TenantDetailResponse>("tenant-detail", [id], `admin-tenants/${id}`);
   const [impersonateOpen, setImpersonateOpen] = useState(false);
   const [suspendOpen, setSuspendOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -78,7 +93,7 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
     } = await supabaseBrowserClient.auth.getSession();
     startImpersonation({
       tenantId: id,
-      tenantName: query.data?.name ?? "this tenant",
+      tenantName: query.data?.tenant.name ?? "this tenant",
       adminEmail: adminSession?.user.email ?? "an admin",
       expiresAt: body.expires_at,
       editMode: false,
@@ -103,7 +118,7 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
       <DataState
         query={query}
         empty={{ title: "Tenant not found" }}
-        render={(tenant) => (
+        render={({ tenant, metrics }) => (
           <>
             <PageHeader
               title={tenant.name || "Unnamed tenant"}
@@ -120,9 +135,9 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
               }
             />
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <MetricCard label="MRR" value={tenant.mrr_cents} format="currency" />
-              <MetricCard label="Margin %" value={tenant.margin_pct} format="percent" />
-              <MetricCard label="Minutes used" value={tenant.minutes_used} format="number" />
+              <MetricCard label="MRR" value={metrics.mrr_cents} format="currency" />
+              <MetricCard label="Margin %" value={metrics.margin_pct} format="percent" />
+              <MetricCard label="Minutes used" value={metrics.minutes_used} format="number" />
             </div>
           </>
         )}

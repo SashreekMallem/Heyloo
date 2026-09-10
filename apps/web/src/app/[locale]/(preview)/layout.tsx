@@ -22,12 +22,25 @@ export default function PreviewLayout({ children }: { children: ReactNode }) {
   return (
     <>
       <PreviewClientBootstrap />
-      <div className="sticky top-0 z-(--z-banner) flex items-center justify-between gap-3 border-b border-warning/40 bg-warning/10 px-4 py-1.5 text-small text-warning">
+      {/*
+       * `role="region"` + `aria-label` — a bare `<div>` here sits outside
+       * every other landmark on the page (axe `region`), and
+       * `text-warning` on `bg-warning/10` (a colored-text-on-tint pairing)
+       * failed AA the same way the admin cockpit's "AAL2 verified" pill
+       * did — `text-foreground` for the label text (plus a `text-warning`
+       * icon-free bullet kept only on the border/background) stays AA
+       * regardless of how `--warning` itself gets re-tuned (admin-partner
+       * design review round 5).
+       */}
+      <section
+        aria-label="Preview mode notice"
+        className="sticky top-0 z-(--z-banner) flex items-center justify-between gap-3 border-b border-warning/40 bg-warning/10 px-4 py-1.5 text-small text-foreground"
+      >
         <span className="font-medium">UI Preview Mode — fixture data, no real auth or network</span>
         <a href="/preview" className="underline underline-offset-2">
           All preview routes
         </a>
-      </div>
+      </section>
       {children}
     </>
   );

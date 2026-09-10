@@ -5,6 +5,7 @@ import {
   type CustomerSegment,
   DataState,
   DataTable,
+  formatPhoneDisplay,
   Input,
   PageHeader,
   SegmentBadge,
@@ -27,7 +28,11 @@ interface CustomerRow {
 
 const columns: ColumnDef<CustomerRow, unknown>[] = [
   { accessorKey: "name", header: "Name", cell: ({ row }) => row.original.name ?? "Unknown" },
-  { accessorKey: "phone_e164", header: "Phone" },
+  {
+    accessorKey: "phone_e164",
+    header: "Phone",
+    cell: ({ row }) => formatPhoneDisplay(row.original.phone_e164),
+  },
   {
     accessorKey: "segment",
     header: "Segment",
@@ -95,7 +100,9 @@ export default function CustomersPage() {
             renderMobileCard={(row) => (
               <div className="rounded-lg border border-border p-3">
                 <p className="text-sm font-medium">{row.name ?? "Unknown"}</p>
-                <p className="text-xs text-muted-foreground">{row.phone_e164}</p>
+                <p className="text-xs text-muted-foreground">
+                  {formatPhoneDisplay(row.phone_e164)}
+                </p>
                 <div className="mt-1 flex items-center gap-1.5">
                   <SegmentBadge segment={row.segment} />
                   {(row.consent?.sms || row.consent?.call) && (

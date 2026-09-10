@@ -104,7 +104,10 @@ export default function TeamPage() {
             <div className="space-y-1">
               <Label>Role</Label>
               <Select value={role} onValueChange={(v) => setRole(v as "admin" | "member")}>
-                <SelectTrigger className="w-32">
+                {/* The visible <Label> above isn't wired to this Radix trigger via
+                    htmlFor/aria-labelledby, so it has no accessible name on its own
+                    (axe button-name, critical — round-final tenant review). */}
+                <SelectTrigger className="w-32" aria-label="Role">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

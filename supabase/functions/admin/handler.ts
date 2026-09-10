@@ -161,7 +161,37 @@ async function handleTenants(
     >`select * from public.tenants where id = ${tenantId}`;
     const tenant = rows[0];
     if (!tenant) return { status: 404, body: { error: "tenant_not_found" } };
-    return { status: 200, body: { tenant } };
+
+    // The tenants table itself carries no MRR/margin/usage columns — the
+    // cockpit tenant-detail page needs all three (admin-partner design
+    // review round 5: page destructured a flat `TenantDetail` the real
+    // response never carried). Compute them the same way the margin
+    // cockpit's per-customer route does (`v_tenant_margin`, current
+    // calendar month) plus a `usage_daily` rollup for minutes, rather than
+    // adding ad hoc denormalized columns to `tenants`.
+    const marginRows = await sql<{
+      revenue_cents: number;
+      cost_cents: number;
+      margin_cents: number;
+    }>`
+      select revenue_cents, cost_cents, margin_cents
+      from public.v_tenant_margin where tenant_id = ${tenantId}
+    `;
+    const margin = marginRows[0] ?? { revenue_cents: 0, cost_cents: 0, margin_cents: 0 };
+
+    const minutesRows = await sql<{ minutes_used: number }>`
+      select coalesce(sum(billable_minutes), 0)::numeric as minutes_used
+      from public.usage_daily
+      where tenant_id = ${tenantId} and date >= date_trunc('month', now())::date
+    `;
+
+    const metrics = {
+      mrr_cents: margin.revenue_cents,
+      margin_pct: margin.revenue_cents > 0 ? (margin.margin_cents / margin.revenue_cents) * 100 : 0,
+      minutes_used: Number(minutesRows[0]?.minutes_used ?? 0),
+    };
+
+    return { status: 200, body: { tenant, metrics } };
   }
 
   if (ctx.method === "PATCH" && tenantId && parts[2] === undefined) {

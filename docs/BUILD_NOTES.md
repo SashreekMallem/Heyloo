@@ -7435,3 +7435,265 @@ still intact after this round's `next.config.ts`/`guard.ts`-adjacent
 changes. `git status` carries no build output, `.env*`, `node_modules`,
 or screenshot/PNG artifacts — the 4 scratch review scripts above were
 removed rather than committed.
+
+## SHARED+TENANT-R6 (round 6, tenant + packages/ui cluster) — discovered gap, not fixed (scope discipline)
+
+`apps/web/src/app/[locale]/(tenant)/dashboard/billing/page.tsx`'s invoice
+table renders each row's `status` via `<StatusBadge variant="tenant"
+value={row.original.status} />`. `StatusBadgeVariant="tenant"`'s color map
+(`packages/ui/src/custom/status-badge.tsx`) is `trialing`/`active`/
+`past_due`/`paused`/`canceled` — TENANT lifecycle states, not invoice
+states (a real Stripe-style invoice status is closer to `open`/`paid`/
+`void`/`uncollectible`). An unmapped invoice status still renders safely
+(`StatusBadge`'s own fallback: `outline` variant, title-cased label) — not
+a crash, not FIX item 9's placeholder-string bug — just the wrong color
+semantics for whichever invoice statuses happen to collide with a TENANT_COLOR
+key (e.g. an invoice literally named `active` would render as a success/green
+pill, which reads as "this invoice is active," not obviously wrong but not
+quite right either). Left as-is per CLAUDE.md Rule 4 (this round's assigned
+scope is the crash/contrast/formatting/fixture fixes enumerated in the task,
+not a new `StatusBadge` variant); the round-6 tenant fixture's new
+`billing_invoices` rows use `"open"`/`"paid"` (realistic invoice statuses),
+which fall through to `StatusBadge`'s safe `outline` fallback today. A real
+fix would add an `"invoice"` `StatusBadgeVariant` with its own color map.
+
+## ADMIN+PREVIEW-R6 (round 6, admin+preview cluster) — design repair pass (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Scope: `apps/web/src/app/[locale]/(admin)/**`, `(partner)/**`,
+`components/admin/**`, `components/partner/**`, `lib/preview/**` (except
+the fixtures/mock-fetch/matchers/registry files carved out for the DS
+cluster), the `(preview)/**` mirrors, and `supabase/functions/admin/**`
+only for the tenants-detail response shape. Source: round-5 admin-partner
+design review (score 79, `pass: false`) — journal `wf_879719da-69e`, last
+`admin-partner` result.
+
+**Fixes**:
+- **"AAL2 verified" pill AA contrast** (major, all 25 cockpit routes):
+  `AdminShellClient`'s topbar pill used `text-success` on `bg-success/10`
+  — a colored-text-on-tint-of-itself pairing that measured 4.31:1 against
+  the 4.5:1 AA floor. Switched the label to `text-foreground` (kept only
+  the icon/border colored) — the same safe pattern `<Callout
+  variant="success">` already uses, so it stays AA independent of how the
+  tenant-dashboard cluster's own `--success`/`--warning` token retune (see
+  their round-5 finding on `Badge variant="warning"`) lands. Applied the
+  identical fix to the `(preview)` route group's "UI Preview Mode" banner,
+  which had the same `text-warning`-on-`bg-warning/10` pairing and the
+  same axe `region` gap (a bare `<div>` outside any landmark) — now a
+  `<section aria-label="Preview mode notice">`. Filed
+  `docs/audit/DESIGN_REQUESTS.md` asking `packages/ui` to promote this
+  into a real `<StatusPill>` component so future call sites stop
+  hand-deriving the same contrast pairing.
+- **axe `region` on all 25 cockpit routes** (moderate): `<AppSidebarNav>`'s
+  underlying `<Sidebar>` primitive (`packages/ui`) renders plain `<div>`s
+  with no landmark of its own, so the whole nav column sat outside any
+  landmark. Fixed at the call site (not in `packages/ui`) by wrapping it
+  in a real `<aside aria-label="…">` in both `AdminShellClient` and
+  `PartnerShellClient` (the partner portal has the identical underlying
+  gap even though round 5's axe pass didn't happen to flag it there).
+- **768px sidebar collapse** (moderate): added `admin-icon-rail.tsx`, a
+  local icon-only `<aside>` (built from the same `NavSection` config
+  `<AppSidebarNav>` takes) shown only in the 768–1023px range
+  (`md:block lg:hidden`), with the full labeled nav taking over at
+  `lg:block`. `packages/ui`'s `<Sidebar>` has no built-in collapsed/icon
+  mode yet — real prop requested in `docs/audit/DESIGN_REQUESTS.md`; this
+  local fallback ships the actual fix now per the task brief.
+- **`/cockpit/tenants` 768px column clipping** (moderate): added
+  `renderMobileCard` (MRR/Margin %, matching the `/cockpit/partners`
+  pattern) so the DataTable collapses to stacked cards below `lg` instead
+  of clipping its rightmost columns.
+- **`/cockpit/tenants/[id]` page/API contract mismatch** (major, real bug
+  — not preview-only): the page destructured a flat `TenantDetail`
+  (`tenant.mrr_cents`, `tenant.margin_pct`, `tenant.minutes_used`) but
+  `public.tenants` has no such columns and the edge function's GET-by-id
+  route only ever returned `{ tenant: {...raw row} }` — every metric tile
+  silently rendered `—`/`0` in production. Fixed for real in
+  `supabase/functions/admin/handler.ts`'s `handleTenants`: the detail
+  route now also queries `v_tenant_margin` (current-month revenue/cost/
+  margin, same view the margin cockpit's per-customer route already reads)
+  and sums `usage_daily.billable_minutes` for the current month, returning
+  `{ tenant, metrics: { mrr_cents, margin_pct, minutes_used } }`. Updated
+  the page to match, added 2 new edge-function tests (populated + all-zero
+  cases — 75/75 `supabase/functions/admin` tests green,
+  `tsc -p tsconfig.json` clean) and aligned both the `admin-tenants/:id`
+  preview fixture matcher and its `mock-fetch.test.ts` assertion to the
+  new shape.
+- **`/cockpit/templates/[vertical]` empty textareas** (major, preview-only):
+  no `API_FIXTURE_MATCHERS` entry existed for `admin-templates/:vertical`,
+  so the System-prompt/States(JSON) `Textarea`s' `defaultValue` was always
+  `undefined` and rendered empty (the real edge-function route itself
+  already returns real compiled content — see the separate real-bug note
+  below). Added a matcher returning a representative, non-empty compiled
+  template (hand-authored per this file's own convention, not imported
+  from `@heyloo/templates` — `apps/web` has no dependency on that
+  package) for whichever `:vertical` the review clicks into.
+- **`/portal/disclosure` missing `<h1>`** (moderate, axe
+  `page-has-heading-one`): `<FTCDisclosureGate>`'s "FTC disclosure
+  requirement" heading is a `CardTitle` (`packages/ui`'s `Card` renders it
+  as a `<div>`, not an `<hN>`), and nothing else on the page has a heading
+  at all. Added a `sr-only` page-level `<h1>Disclosure</h1>` in
+  `DisclosureGateClient` (kept screen-reader-only since a second *visible*
+  title above the gate's own card heading would just repeat it). Audited
+  every `(admin)`/`(partner)` `page.tsx` (grep for `<h1`/`<PageHeader>`,
+  which itself renders a real `<h1>`) — disclosure was the only page
+  missing one, and none have more than one.
+- **Preview harness**: verified the per-route mirror `<title>` and
+  `/api/partner/**` items from the task brief are already satisfied — all
+  25 cockpit + 6 portal preview mirrors already carry a
+  `metadata.title`; the partner customers page reads `referrals`/
+  `commission_events`/`tenants` straight off Supabase REST (no
+  `/api/partner/customers` route exists), and those `TABLE_FIXTURES` rows
+  are already populated with matching ids; `support_requests` fixture rows
+  already carry `tenant_name`/`priority` (the DESIGN_REQUESTS.md ask from
+  an earlier round was since resolved). No changes needed for any of
+  these — noted here rather than silently skipped.
+
+**Real bug found, not fixed (out of ownership)**: `TemplatesListPage`
+(`cockpit/templates/page.tsx`) routes to `/cockpit/templates/${row.vertical}`
+(a vertical *slug*, e.g. `"auto_repair"`), and `TemplateEditorPage` queries
+`admin-templates/${vertical}` — but `handleTemplates`'s GET-by-id branch
+(`supabase/functions/admin/handler.ts`) does
+`select * from public.agent_templates where id = ${templateId}`, and
+`agent_templates.id` is a real `uuid` primary key, `vertical` a separate
+`text` column (`unique (vertical, version)`, multiple rows per vertical
+across versions). In production this route either throws an
+`invalid input syntax for type uuid` error or 404s — it can never resolve
+by vertical. Not fixed here: `supabase/functions/admin/**` is scoped to
+this cluster ONLY for the tenants-detail response shape (CLAUDE.md Rule
+4); a real fix needs a `where vertical = $1 and is_active order by version
+desc limit 1`-shaped branch (or a dedicated `admin-templates/by-vertical/
+:vertical` route) added to `handleTemplates` by whichever cluster owns
+that file's other routes.
+
+**Gates**: `apps/web` — `npx tsc -b --pretty` clean; `npx vitest run` on
+this cluster's paths (`(admin)/**`, `(partner)/**`, `(preview)/**`,
+`components/admin/**`, `components/partner/**`, `lib/preview/**`) 91/91
+green; full-repo `npx vitest run` 349/350, the 1 failure
+(`(tenant)/dashboard/metadata.test.tsx`, a `next-intl`/`next/navigation`
+module-resolution timeout) reproduces intermittently on files this
+cluster never touched (confirmed across 3 runs, different test failing
+each time — `overview-client.test.ts` once, 2 different `metadata.test.tsx`
+cases another time, a timeout the third), consistent with node_modules/
+pnpm-store churn from concurrent work elsewhere in this shared tree, not
+a regression from this pass. `packages/ui` — `npx vitest run` 64/64 green
+(after rebuilding `packages/ui`'s `dist/` so `apps/web`'s `tsc -b` could
+see another cluster's new `formatPhoneDisplay` export; `packages/ui`'s own
+`tsc -b` has 7 pre-existing errors in `hours-editor.test.tsx`/
+`contrast.test.ts`, both mid-edit by the tenant-dashboard/packages-ui
+cluster, not this cluster's files). `npx biome check` clean (0 errors) on
+every file this cluster touched.
+
+## DESIGN-3 — Integrator pass over the round-6 design wave (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Closed out the uncommitted round-6 design wave (`ADMIN+PREVIEW-R6` above,
+plus the shared-component/tenant-dashboard cluster's own round-6 fixes,
+which landed in the tree without a matching `BUILD_NOTES.md` section of
+their own — folded into this entry since this is the reader's landing
+point either way) as INTEGRATOR: ran every gate, fixed the one real bug a
+gate caught, and committed. No new design decisions of my own —
+CLAUDE.md Rule 4.
+
+**Round-6/final shared-component fixes** (in the tree alongside
+`ADMIN+PREVIEW-R6`, not previously written up):
+- **`formatPhoneDisplay`** (`packages/ui/src/lib/format-phone.ts`, new,
+  exported from `@heyloo/ui`): the single "(XXX) XXX-XXXX" formatter
+  `PhoneInput` already had inline, promoted to a shared helper and wired
+  into every customer-facing phone-number display that previously showed
+  a raw E.164 string — calls feed/detail, customers list/detail, message
+  threads list/detail, bookings list/detail, order detail
+  (`CallFeedItem`, `calls-list-client`, `customer-detail-client`,
+  `customers/page`, `messages-list-client`, `message-thread-client`,
+  `bookings/page`, `order-detail-client`).
+- **Link contrast (`text-primary` → `text-primary-hover`)**: the base
+  `accent-500` link color measured 3.42-3.57:1 for normal-weight text —
+  below WCAG AA's 4.5:1 (axe `color-contrast`, round-final tenant
+  review) — across every "Message this customer"/"Back to …" link
+  (`Button`'s `link` variant, `customer-detail-client`, `bookings/page`,
+  `order-detail-client`, the 3 tenant `not-found.tsx` pages) and
+  `TranscriptViewer`'s caller-speaker label. `accent-600`
+  (`text-primary-hover`, the same token `bg-primary`'s hover state
+  already uses) clears AA in both themes without a new token.
+- **`Button`'s `default` size touch target**: 36px (`h-9`) measured under
+  the 44px mobile/tablet touch-target guidance at 390/768 (round-final
+  tenant review, medium) for the size backing nearly every primary CTA.
+  Now `h-11` below `lg` (1024px), `lg:h-9` at desktop/mouse widths.
+- **`MetricCard`'s non-finite value**: used to silently render a bare
+  `"—"`; now a real `<MinusCircle> No data` empty state matching the
+  rest of the app's `EmptyState` convention.
+- **`HoursEditor`'s open/close time pair**: `flex-wrap` could split the
+  "to" separator from its closing-time input onto its own line at 768px;
+  grouped both inputs in one `flex-nowrap` unit.
+- **`--warning-foreground`**: was near-black (`oklch(0.16 0.02 75)`),
+  measuring 2.93:1 against the *solid* `Badge variant="warning"`
+  background — below AA (round-5 tenant review, blocker). Since
+  `--warning-foreground` is consumed only on that one solid background
+  (every other `--warning` use is text-on-tint or a bare dot, unaffected),
+  flipped it to near-white (`oklch(0.99 0 0)`, ~6.5:1); dark theme was
+  already passing and is unchanged.
+- **`CentsInput`/new `BpsInput`** (`packages/ui/src/forms/bps-input.tsx`,
+  new) replace `vertical-details`'s raw `<Input type="number">` fields for
+  every dollar/percent value (late-cancellation fee, consult fee, deposit
+  amount, delivery fee/minimum, tax rate, avg transaction value) — an
+  owner no longer has to do cents-math or basis-point-math by hand, and
+  the labels drop their parenthetical "(cents)"/"(basis points)" hints
+  now that the controls are self-explanatory (round-final tenant review,
+  low).
+- **`team` page's role `<Select>`**: the visible `<Label>Role</Label>`
+  wasn't wired to the Radix trigger via `htmlFor`/`aria-labelledby`, so it
+  had no accessible name (axe `button-name`, critical). Added
+  `aria-label="Role"` directly on the `SelectTrigger`.
+- **`OverviewClient`'s trend adapter extracted** (`usageDailyToTrend`,
+  exported, unit-tested in the new `overview-client.test.tsx`): the old
+  inline `rows.map(...)` passed a possibly-null `total_calls` straight to
+  `TrendChart` relying entirely on its own defensive coercion; the
+  extracted adapter makes "every point is a finite number" its own
+  contract instead.
+- **Preview harness — `/preview/dashboard/messages/[phone]`**: unlike
+  `[id]` routes, `mock-fetch.ts` has no "unmatched filter, fall back to
+  whatever else narrowed the query" exemption for the phone-number
+  filters (`from_e164`/`recipient`/`phone_e164`) — a literal `"demo"`
+  phone matched zero seeded rows and the page silently rendered a blank
+  thread (round-final tenant review, high). Pointed the route straight at
+  the real seeded conversation (`+15125551000` / Priya Natarajan) instead.
+- `packages/ui/src/theme/contrast.test.ts` (new, real OKLCH→sRGB WCAG
+  contrast-ratio math, mirroring how browsers/axe-core resolve
+  `oklch()`) is the harness that caught the `--warning-foreground` and
+  link-contrast findings above and now guards them from regressing.
+
+**Real bug found and fixed by THIS integration pass** (not attributable
+to any round-6 cluster — a pre-existing test-fixture time bomb, not a
+design defect): `worker-adapter-push/handler.test.ts`'s ezyVet "finds an
+existing contact and creates the appointment" case hardcoded
+`CONNECTION_ROW.expires_at: "2026-09-10T20:00:00Z"` — a timestamp that
+was in the future when originally written but had already passed by the
+time this integration ran (today is 2026-09-10, past 20:00 UTC), so
+`shouldRefreshEzyVetAuth` now sees an expired token and the handler makes
+a 3rd (refresh) fetch call the test's `expect(call).toBe(2)` never
+accounted for. Out of this pass's design scope, but a real, unambiguous
+one-line fixture bug (not a design/architecture question) blocking the
+mandatory `pnpm -w test` gate for every future integrator until it
+naturally decays again — fixed by pushing the fixture to
+`"2099-01-01T00:00:00Z"` per CLAUDE.md Rule 4 (documented here rather
+than silently patched).
+
+**Round-6/7 design review scores** (post-integration, screenshotted via
+`UI_PREVIEW_MODE`, axe-core included): **tenant dashboard round 7: 83/100
+(fail)** — up from round-5's 84 baseline noise band, still short of the
+pass bar; **admin/partner cockpit round 6: 90/100 (pass)** — up from
+round-5's 79, clearing the bar for the first time this design track.
+Per CLAUDE.md Rule 4 and the same scope call DESIGN-1/DESIGN-2 already
+made: admin/partner is launch-ready on this metric; tenant dashboard
+needs at least one more focused round — not this integrator's to invent
+new findings for.
+
+**Gates — all green**: `npx biome check --write` on every changed path
+under `apps/web/src`, `packages/ui/src`, `supabase/functions` (0 errors,
+same 4 pre-existing `noImportantStyles` warnings in the
+`prefers-reduced-motion` block noted by DESIGN-1/DESIGN-2 — left as-is,
+same call made twice before); `pnpm -w typecheck` (18/18 packages);
+`pnpm run lint` (0 errors, pre-existing warnings elsewhere unchanged);
+`pnpm -w test` (19/19 package test tasks — `apps/web` 63 files/351
+tests, `packages/ui` 17 files/73 tests, `supabase/functions` all green
+after the ezyVet fixture-date fix above); `apps/web` production build
+(`next build --webpack`) — exit 0; the preview-mode-guard tests
+(`lib/preview/guard.test.ts`) pass. No PNG/scratch files or build output
+staged.

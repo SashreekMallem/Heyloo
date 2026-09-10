@@ -10,6 +10,7 @@ import {
   FormField,
   FormItem,
   FormMessage,
+  formatPhoneDisplay,
   PageHeader,
   Textarea,
 } from "@heyloo/ui";
@@ -130,8 +131,8 @@ export function MessageThreadClient({ tenantId, phone }: { tenantId: string; pho
         render={(data) => (
           <>
             <PageHeader
-              title={data.customerName ?? phone}
-              description={data.customerName ? phone : undefined}
+              title={data.customerName ?? formatPhoneDisplay(phone)}
+              description={data.customerName ? formatPhoneDisplay(phone) : undefined}
               actions={
                 data.smsOptOut ? <Badge variant="destructive">Opted out of texts</Badge> : undefined
               }

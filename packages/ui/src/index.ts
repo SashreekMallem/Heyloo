@@ -13,5 +13,6 @@ export * from "./custom/index.js";
 export * from "./forms/index.js";
 export * from "./icons/index.js";
 export * from "./layout/index.js";
+export * from "./lib/format-phone.js";
 export * from "./lib/utils.js";
 export * from "./primitives/index.js";

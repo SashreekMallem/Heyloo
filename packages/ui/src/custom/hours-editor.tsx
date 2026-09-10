@@ -92,7 +92,10 @@ export function HoursEditor({ hours, exceptions, onChange }: HoursEditorProps) {
                 </Label>
               </div>
               {!day.closed && (
-                <>
+                // Grouped so the pair wraps to the next line as one unit —
+                // otherwise flex-wrap can split the "to" from its closing
+                // time input (reproduced at 768px).
+                <div className="flex flex-nowrap items-center gap-2">
                   <Input
                     type="time"
                     className="w-32"
@@ -108,7 +111,7 @@ export function HoursEditor({ hours, exceptions, onChange }: HoursEditorProps) {
                     onChange={(e) => updateDay(key, 0, { close: e.target.value })}
                     aria-label={`${label} closing time`}
                   />
-                </>
+                </div>
               )}
             </div>
           );

@@ -240,11 +240,19 @@
    * Mode banner; round-2 admin-partner design review). Darkened to sit with
    * `--success`/`--destructive`/`--info`'s lightness (~0.5-0.55), which
    * already clear 4.5:1 for normal text; amber needs to go a touch darker
-   * than those for the same effect. `--warning-foreground` (used on a
-   * SOLID warning background, e.g. `Badge variant="warning"`) only gains
-   * contrast from this, since it's already near-black. */
+   * than those for the same effect. --warning is ONLY consumed as a TEXT
+   * color (text-warning) or a tinted background (bg-warning/10, bg-warning
+   * for tiny dots) elsewhere in the app — never as a SOLID pill background
+   * paired with --warning-foreground except `Badge variant="warning"`. */
   --warning: oklch(0.48 0.14 75);
-  --warning-foreground: oklch(0.16 0.02 75);
+  /* Near-black failed AA here: #120c04 text on the solid #8a4e00 warning
+   * badge background measured 2.93:1 (axe-core, required 4.5:1 — round-5
+   * tenant design review, blocker on Bookings/Overview/Support status
+   * pills). --warning-foreground is used ONLY on that solid background
+   * (never as text-on-tint, see above), so it can go near-white without
+   * touching the --warning darkening fix; near-white on #8a4e00 clears
+   * ~6.5:1. Dark theme's pairing already passed (~9.6:1) and is unchanged. */
+  --warning-foreground: oklch(0.99 0 0);
   --info: oklch(0.55 0.13 245);
   --info-foreground: oklch(0.99 0 0);
 

@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
   type CustomerSegment,
+  formatPhoneDisplay,
   PageHeader,
   SegmentBadge,
   StatusBadge,
@@ -88,10 +89,14 @@ export function CustomerDetailClient({ customer }: { customer: CustomerDetailDat
         title={customer.name ?? "Unknown customer"}
         description={
           <span className="flex items-center gap-2">
-            {customer.phone}
+            {formatPhoneDisplay(customer.phone)}
             <Link
               href={`/dashboard/messages/${encodeURIComponent(customer.phone)}`}
-              className="text-primary underline underline-offset-2"
+              // text-primary-hover, not text-primary: the base accent-500
+              // measures 3.42:1 for this normal-weight link text, below
+              // WCAG AA's 4.5:1 (axe color-contrast, round-final tenant
+              // review). accent-600 clears AA in both themes.
+              className="text-primary-hover underline underline-offset-2"
             >
               Message this customer
             </Link>

@@ -1,6 +1,7 @@
 "use client";
 
 import type { ChangeEvent, Ref } from "react";
+import { formatPhoneDisplay } from "../lib/format-phone.js";
 import { Input } from "../primitives/input.js";
 
 /** E.164 mask (FRONTEND_SPEC.md §1.1) — normalizes US/CA input to `+1XXXXXXXXXX` as the user types; displays the raw digits, reports E.164 upward. */
@@ -21,12 +22,6 @@ function toE164(input: string): string {
   return `+${digits}`;
 }
 
-function formatDisplay(e164: string): string {
-  const digits = e164.replace(/^\+1?/, "");
-  if (digits.length !== 10) return e164;
-  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
-}
-
 export function PhoneInput({ value, onChange, placeholder, disabled, id, ref }: PhoneInputProps) {
   function handleChange(e: ChangeEvent<HTMLInputElement>) {
     onChange(toE164(e.target.value));
@@ -38,7 +33,7 @@ export function PhoneInput({ value, onChange, placeholder, disabled, id, ref }: 
       id={id}
       type="tel"
       inputMode="tel"
-      value={value ? formatDisplay(value) : ""}
+      value={formatPhoneDisplay(value)}
       placeholder={placeholder ?? "(555) 123-4567"}
       disabled={disabled}
       onChange={handleChange}

@@ -2,11 +2,13 @@
 
 import { reminderReviewSettingsSchema, verticalDetailsSchema } from "@heyloo/canonical-types";
 import {
+  BpsInput,
   Button,
   Card,
   CardContent,
   CardHeader,
   CardTitle,
+  CentsInput,
   DataState,
   Form,
   FormControl,
@@ -266,17 +268,9 @@ function VerticalDetailsForm({
                   name="cancellation_policy.fee_cents"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Late-cancellation fee (cents, optional)</FormLabel>
+                      <FormLabel>Late-cancellation fee (optional)</FormLabel>
                       <FormControl>
-                        <Input
-                          type="number"
-                          value={field.value ?? ""}
-                          onChange={(e) =>
-                            field.onChange(
-                              e.target.value === "" ? undefined : Number(e.target.value),
-                            )
-                          }
-                        />
+                        <CentsInput value={field.value} onChange={field.onChange} />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -440,17 +434,9 @@ function VerticalDetailsForm({
                     name="consult_fee_cents"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Consultation fee (cents, optional)</FormLabel>
+                        <FormLabel>Consultation fee (optional)</FormLabel>
                         <FormControl>
-                          <Input
-                            type="number"
-                            value={field.value ?? ""}
-                            onChange={(e) =>
-                              field.onChange(
-                                e.target.value === "" ? undefined : Number(e.target.value),
-                              )
-                            }
-                          />
+                          <CentsInput value={field.value} onChange={field.onChange} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -483,17 +469,9 @@ function VerticalDetailsForm({
                       name="deposit_policy.amount_cents"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Deposit amount (cents, optional)</FormLabel>
+                          <FormLabel>Deposit amount (optional)</FormLabel>
                           <FormControl>
-                            <Input
-                              type="number"
-                              value={field.value ?? ""}
-                              onChange={(e) =>
-                                field.onChange(
-                                  e.target.value === "" ? undefined : Number(e.target.value),
-                                )
-                              }
-                            />
+                            <CentsInput value={field.value} onChange={field.onChange} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -587,17 +565,9 @@ function VerticalDetailsForm({
                       name="min_order_cents"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Minimum delivery order (cents)</FormLabel>
+                          <FormLabel>Minimum delivery order</FormLabel>
                           <FormControl>
-                            <Input
-                              type="number"
-                              value={field.value ?? ""}
-                              onChange={(e) =>
-                                field.onChange(
-                                  e.target.value === "" ? undefined : Number(e.target.value),
-                                )
-                              }
-                            />
+                            <CentsInput value={field.value} onChange={field.onChange} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -608,17 +578,9 @@ function VerticalDetailsForm({
                       name="delivery_fee_cents"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Delivery fee (cents)</FormLabel>
+                          <FormLabel>Delivery fee</FormLabel>
                           <FormControl>
-                            <Input
-                              type="number"
-                              value={field.value ?? ""}
-                              onChange={(e) =>
-                                field.onChange(
-                                  e.target.value === "" ? undefined : Number(e.target.value),
-                                )
-                              }
-                            />
+                            <CentsInput value={field.value} onChange={field.onChange} />
                           </FormControl>
                           <FormDescription>Leave blank for free delivery.</FormDescription>
                           <FormMessage />
@@ -630,19 +592,10 @@ function VerticalDetailsForm({
                       name="tax_rate_bps"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Sales tax rate (basis points)</FormLabel>
+                          <FormLabel>Sales tax rate</FormLabel>
                           <FormControl>
-                            <Input
-                              type="number"
-                              value={field.value ?? ""}
-                              onChange={(e) =>
-                                field.onChange(
-                                  e.target.value === "" ? undefined : Number(e.target.value),
-                                )
-                              }
-                            />
+                            <BpsInput value={field.value} onChange={field.onChange} />
                           </FormControl>
-                          <FormDescription>e.g. 825 for 8.25%.</FormDescription>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -758,12 +711,11 @@ function VerticalDetailsForm({
                 name="avg_transaction_value_cents"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Average transaction value (cents)</FormLabel>
+                    <FormLabel>Average transaction value</FormLabel>
                     <FormControl>
-                      <Input
-                        type="number"
-                        value={field.value ?? 0}
-                        onChange={(e) => field.onChange(Number(e.target.value))}
+                      <CentsInput
+                        value={field.value}
+                        onChange={(cents) => field.onChange(cents ?? 0)}
                       />
                     </FormControl>
                     <FormDescription>

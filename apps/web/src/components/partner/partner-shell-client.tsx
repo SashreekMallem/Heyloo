@@ -28,22 +28,28 @@ export function PartnerShellClient({
   return (
     <AppShell
       sidebar={
-        <AppSidebarNav
-          sections={SECTIONS}
-          activeHref={pathname}
-          header={
-            <span className="flex items-center gap-2 px-2 font-display text-small font-semibold tracking-tight">
-              <Handshake className="size-4 text-accent" aria-hidden="true" />
-              Partner Portal
-            </span>
-          }
-          renderLink={(item, isActive) => (
-            <Link href={item.href} data-active={isActive}>
-              {item.icon && <item.icon className="size-4" aria-hidden="true" />}
-              {item.label}
-            </Link>
-          )}
-        />
+        // Real `<aside>` landmark — `<AppSidebarNav>`'s underlying
+        // `Sidebar` primitive renders plain `<div>`s with no landmark of
+        // its own, the same gap the admin cockpit shell had (admin-partner
+        // design review round 5, moderate; see `AdminShellClient`).
+        <aside aria-label="Partner portal navigation">
+          <AppSidebarNav
+            sections={SECTIONS}
+            activeHref={pathname}
+            header={
+              <span className="flex items-center gap-2 px-2 font-display text-small font-semibold tracking-tight">
+                <Handshake className="size-4 text-accent" aria-hidden="true" />
+                Partner Portal
+              </span>
+            }
+            renderLink={(item, isActive) => (
+              <Link href={item.href} data-active={isActive}>
+                {item.icon && <item.icon className="size-4" aria-hidden="true" />}
+                {item.label}
+              </Link>
+            )}
+          />
+        </aside>
       }
       topBar={
         <TopBar>

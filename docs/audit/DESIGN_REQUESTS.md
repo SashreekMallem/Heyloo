@@ -288,3 +288,54 @@ shape) for `/api/tenant/setup-progress`, `/api/tenant/team`,
 ownership boundary — this pass's own `apps/web` typecheck/test gates don't
 cover the preview harness either way, so landing this is purely for the
 next design-review pass's benefit.
+
+## From cluster ADMIN+PREVIEW-R6 (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+**Target**: `packages/ui/src/primitives/sidebar.tsx` (`<Sidebar>`) —
+cluster: packages/ui/design-system, not admin+preview (`packages/ui/**` is
+outside this cluster's ownership).
+
+**Problem**: at the 768px breakpoint the admin cockpit's sidebar (and the
+partner portal's) still renders its full `w-64` labeled nav — the only
+states `<Sidebar>` has are "open at `w-64`" and "closed at `w-0`
+(fully hidden, `md:hidden`-gated mobile `Sheet` only)", with no in-between
+"collapsed to icons" state (admin-partner design review round 5,
+moderate). A local fallback (`apps/web/src/components/admin/
+admin-icon-rail.tsx`, a small icon-only `<aside>` built from the same
+`NavSection`/`NavItem` config `<AppSidebarNav>` takes, shown only in the
+768–1023px range via `md:block lg:hidden` / `lg:block`) ships the actual
+fix now, so this is a forward-looking ask, not a blocker.
+
+**Requested change**: give `<Sidebar>` a real collapsed/icon-rail mode —
+e.g. a `collapsible?: "icon" | "offcanvas"` prop (shadcn's own `sidebar`
+block names this pattern) that, when `"icon"` and the sidebar is
+`!open`, renders each `<SidebarMenuButton>`'s icon centered at a fixed
+narrow width instead of unmounting the whole rail — so every shell built
+on `<AppShell>`/`<AppSidebarNav>` picks up a real collapsed state for
+free instead of hand-rolling one per call site the way
+`admin-icon-rail.tsx` does today.
+
+**Target**: a new shared component, e.g. `packages/ui/src/custom/
+status-pill.tsx` — cluster: packages/ui/design-system, not admin+preview.
+
+**Problem**: two independent call sites hand-rolled the same "colored
+icon + colored-tint pill background" pattern with the *text* also colored
+(`text-success`/`text-warning` on `bg-success/10`/`bg-warning/10`) —
+`AdminShellClient`'s "AAL2 verified" badge and the `(preview)` route
+group's "UI Preview Mode" banner. Both failed WCAG AA (4.31:1 and,
+by the same token pairing, likely sub-4.5:1) because a mid-lightness
+brand color used as *text* on a *10%-opacity tint of itself* is a much
+harder contrast bar to clear than the same color used as an icon accent
+or a solid Badge fill — confirmed by this round's design review (major,
+reproduced on all 25 cockpit routes) and independently by the tenant
+dashboard cluster's own finding on the *solid* `Badge variant="warning"`
+pairing the same round. Both call sites in this pass were fixed locally
+by switching the text to `text-foreground` (keeping only the icon/border
+colored) — a safe, established pattern already used by `<Callout
+variant="success">`, but hand-copied rather than shared.
+
+**Requested change**: promote that `text-foreground` + colored-icon +
+colored-tint-background pattern into a real exported component (e.g.
+`<StatusPill tone="success" | "warning" | ...>`), so future inline status
+pills reuse a pre-verified-AA pairing instead of each call site
+re-deriving (or re-breaking) the same contrast math by hand.

@@ -1,4 +1,4 @@
-import { ArrowDownRight, ArrowUpRight } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, MinusCircle } from "lucide-react";
 import { cn } from "../lib/utils.js";
 import { Card, CardContent, CardHeader, CardTitle } from "../primitives/card.js";
 import { Skeleton } from "../primitives/skeleton.js";
@@ -15,7 +15,6 @@ export interface MetricCardProps {
 }
 
 function formatValue(value: number, format: MetricFormat): string {
-  if (!Number.isFinite(value)) return "—";
   switch (format) {
     case "currency":
       return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
@@ -35,6 +34,13 @@ function formatValue(value: number, format: MetricFormat): string {
 
 /** Single KPI tile with optional trend delta — overview, billing, cockpit, portal (FRONTEND_SPEC.md §1.3). */
 export function MetricCard({ label, value, delta, format, loading, className }: MetricCardProps) {
+  // A non-finite value (missing/NaN, e.g. a metric that hasn't been
+  // computed yet) used to fall through to a bare "—" from formatValue —
+  // inconsistent with the designed EmptyState used everywhere else in the
+  // app. Give it the same "this is intentional, not broken" treatment at
+  // tile scale instead.
+  const isEmpty = !loading && !Number.isFinite(value);
+
   return (
     <Card className={cn(className)}>
       <CardHeader className="pb-2">
@@ -43,6 +49,11 @@ export function MetricCard({ label, value, delta, format, loading, className }: 
       <CardContent>
         {loading ? (
           <Skeleton className="h-8 w-24" />
+        ) : isEmpty ? (
+          <div className="flex items-center gap-1.5 text-muted-foreground">
+            <MinusCircle className="size-4" aria-hidden="true" />
+            <span className="text-sm font-medium">No data</span>
+          </div>
         ) : (
           <div className="flex items-baseline gap-2">
             <span className="text-2xl font-semibold tabular-nums">

@@ -523,7 +523,7 @@ describe("pushToAdapter: ezyvet", () => {
     status: "connected",
     access_token: "token",
     refresh_token: null,
-    expires_at: "2026-09-10T20:00:00Z",
+    expires_at: "2099-01-01T00:00:00Z",
     provider_account_id: null,
     metadata: { baseUrl: "https://clinic.ezyvet.com/api/v1" },
   };

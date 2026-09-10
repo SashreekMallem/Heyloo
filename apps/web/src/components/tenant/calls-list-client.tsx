@@ -1,7 +1,7 @@
 "use client";
 
 import type { CallClassification } from "@heyloo/supabase-client";
-import { Badge, Button, DataTable, PageHeader, StatusBadge } from "@heyloo/ui";
+import { Badge, Button, DataTable, formatPhoneDisplay, PageHeader, StatusBadge } from "@heyloo/ui";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
 import { useRouter } from "@/i18n/navigation";
@@ -62,7 +62,8 @@ const columns: ColumnDef<CallRow, unknown>[] = [
   {
     accessorKey: "caller_number",
     header: "Customer",
-    cell: ({ row }) => row.original.caller_number ?? "Unknown",
+    cell: ({ row }) =>
+      row.original.caller_number ? formatPhoneDisplay(row.original.caller_number) : "Unknown",
   },
   {
     accessorKey: "classification",
@@ -168,7 +169,9 @@ export function CallsListClient({ tenantId }: { tenantId: string }) {
         renderMobileCard={(row) => (
           <div className="rounded-lg border border-border p-3">
             <div className="flex items-center gap-1.5">
-              <p className="text-sm font-medium">{row.caller_number ?? "Unknown"}</p>
+              <p className="text-sm font-medium">
+                {row.caller_number ? formatPhoneDisplay(row.caller_number) : "Unknown"}
+              </p>
               {row.urgency_flag && <Badge variant="destructive">Urgent</Badge>}
             </div>
             <p className="text-xs text-muted-foreground">

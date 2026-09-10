@@ -12,7 +12,7 @@ export default function CallNotFound() {
       action={
         <Link
           href="/dashboard/calls"
-          className="text-sm font-medium text-primary underline underline-offset-2"
+          className="text-sm font-medium text-primary-hover underline underline-offset-2"
         >
           Back to calls
         </Link>

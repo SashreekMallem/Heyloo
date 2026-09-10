@@ -1,6 +1,7 @@
 "use client";
 
 import { Phone } from "lucide-react";
+import { formatPhoneDisplay } from "../lib/format-phone.js";
 import { StatusBadge } from "./status-badge.js";
 
 export interface CallSummary {
@@ -29,7 +30,9 @@ export function CallFeedItem({ call, onClick }: CallFeedItemProps) {
           <Phone className="size-4" />
         </div>
         <div>
-          <p className="text-sm font-medium">{call.callerNumber ?? "Unknown number"}</p>
+          <p className="text-sm font-medium">
+            {call.callerNumber ? formatPhoneDisplay(call.callerNumber) : "Unknown number"}
+          </p>
           <p className="text-xs text-muted-foreground">
             {call.startedAt
               ? new Date(call.startedAt).toLocaleTimeString([], {

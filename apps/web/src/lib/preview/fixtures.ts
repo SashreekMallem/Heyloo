@@ -138,9 +138,12 @@ export const TABLE_FIXTURES: Record<string, Record<string, unknown>[]> = {
   // Overview trend chart and Billing's usage meter looking empty/blank
   // even though nothing had crashed (round-3 tenant design review,
   // medium + low).
-  usage_daily: Array.from({ length: 8 }, (_, i) => {
-    const day = 7 - i; // oldest first, day 0 = today
-    const calls = [6, 9, 5, 11, 8, 14, 10, 4][i] ?? 8;
+  // 14 days (not 8) so the Overview trend chart — and its "7d"/"30d" range
+  // pills — has real variation to show a reviewer, not just a single flat
+  // week (round-5/6 tenant design review).
+  usage_daily: Array.from({ length: 14 }, (_, i) => {
+    const day = 13 - i; // oldest first, day 0 = today
+    const calls = [4, 7, 6, 9, 5, 11, 8, 6, 9, 5, 11, 8, 14, 10][i] ?? 8;
     return {
       tenant_id: PREVIEW_TENANT_ID,
       date: daysAgoIso(day).slice(0, 10),
@@ -314,9 +317,44 @@ export const TABLE_FIXTURES: Record<string, Record<string, unknown>[]> = {
       transfer_number: "+15125559876",
       special_instructions:
         "If a caller asks about private events or buyouts, take a message instead of quoting pricing.",
-      dynamic_variable_overrides: {},
+      // Agent Settings -> AI Instructions reads manager_name/manager_phone/
+      // voicemail_message/parking_info/accessibility_notes out of this jsonb
+      // blob (aiInstructionsSchema) — left `{}` the tab rendered every one
+      // of those fields blank, which looks unfinished next to the rest of
+      // Agent Settings' realistic sample data (round-5/6 tenant design
+      // review).
+      dynamic_variable_overrides: {
+        voicemail_message:
+          "You've reached Golden Fork Bistro after hours. Leave your name and number and we'll call you back tomorrow.",
+        manager_name: "Priya Natarajan",
+        manager_phone: "+15125559876",
+        parking_info:
+          "Free lot parking behind the building, plus metered street parking on Main St.",
+        accessibility_notes:
+          "Step-free entrance on Main St.; two accessible tables near the host stand.",
+      },
     },
   ],
+
+  // Billing -> Invoices reads `period_start`/`period_end`/`total_cents`/
+  // `status` and renders the first two as a raw `${a} – ${b}` string — with
+  // no hand-authored fixture here, mock-fetch.ts's generic synthesizer (no
+  // "period_start"/"period_end" column-name pattern matches its `_at`
+  // check) produced the literal placeholder text "Sample period start –
+  // Sample period end" for every invoice row (round-5/6 tenant design
+  // review).
+  billing_invoices: Array.from({ length: 3 }, (_, i) => {
+    const periodStart = daysAgoIso(30 * (i + 1)).slice(0, 10);
+    const periodEnd = daysAgoIso(30 * i).slice(0, 10);
+    return {
+      id: `invoice-${i + 1}`,
+      tenant_id: PREVIEW_TENANT_ID,
+      period_start: periodStart,
+      period_end: periodEnd,
+      total_cents: 24900 + i * 350,
+      status: i === 0 ? "open" : "paid",
+    };
+  }),
 
   support_requests: [
     {
@@ -777,24 +815,30 @@ export interface ApiFixtureMatcher {
 }
 
 export const API_FIXTURE_MATCHERS: ApiFixtureMatcher[] = [
-  // `TenantDetail` (apps/web/.../cockpit/tenants/[id]/page.tsx) reads a
-  // FLAT object (`tenant.name`, `tenant.mrr_cents`, ...) straight off
-  // `query.data` — unlike the real `admin-tenants/:id` edge function,
-  // which wraps its row in `{ tenant: {...} }` and has no margin/MRR
-  // columns on `tenants` at all. Fixture matches the PAGE, per this
-  // cluster's brief.
+  // `TenantDetailPage` (apps/web/.../cockpit/tenants/[id]/page.tsx) reads
+  // `{ tenant, metrics }` — matching the real `admin-tenants/:id` edge
+  // function, which wraps the raw row in `tenant` and computes MRR/
+  // margin/minutes server-side (from `v_tenant_margin`/`usage_daily`,
+  // since `tenants` itself has no such columns) into a separate `metrics`
+  // object (admin-partner design review round 5, major: page/API contract
+  // mismatch — fixed for real in `supabase/functions/admin/handler.ts`,
+  // this fixture now mirrors that same shape).
   {
     method: "GET",
     pattern: /^\/api\/admin\/admin-tenants\/([^/]+)$/,
     build: () => ({
-      id: PREVIEW_TENANT_ID,
-      name: PREVIEW_TENANT.name,
-      status: PREVIEW_TENANT.status,
-      plan_code: "growth",
-      vertical: PREVIEW_TENANT.vertical,
-      mrr_cents: 24900,
-      margin_pct: 62,
-      minutes_used: 340,
+      tenant: {
+        id: PREVIEW_TENANT_ID,
+        name: PREVIEW_TENANT.name,
+        status: PREVIEW_TENANT.status,
+        plan_code: "growth",
+        vertical: PREVIEW_TENANT.vertical,
+      },
+      metrics: {
+        mrr_cents: 24900,
+        margin_pct: 62,
+        minutes_used: 340,
+      },
     }),
   },
   {
@@ -844,6 +888,62 @@ export const API_FIXTURE_MATCHERS: ApiFixtureMatcher[] = [
           ...n,
           author_id: PREVIEW_ADMIN_USER_ID,
         })),
+      };
+    },
+  },
+  // `TemplateEditorPage` (cockpit/templates/[vertical]) — same
+  // generic-fallback gap as the routes below: with no matcher, the "System
+  // prompt"/"States (JSON)" textareas' `defaultValue` was always
+  // `undefined`, rendering as empty with no indication anything was
+  // supposed to be there (admin-partner design review round 5, major).
+  // Content below is representative of the real compiled templates
+  // (`packages/templates/src/verticals/*.ts`, not imported directly — this
+  // package has no dependency on `@heyloo/templates` and fixtures here are
+  // hand-authored, matching the file's own convention) so every vertical
+  // renders a plausible, non-empty template rather than one hardcoded
+  // vertical's content leaking onto every other vertical's detail page.
+  {
+    method: "GET",
+    pattern: /^\/api\/admin\/admin-templates\/([^/]+)$/,
+    build: (match) => {
+      const vertical = decodeURIComponent(match[1] ?? "generic").replace(/_/g, " ");
+      return {
+        system_prompt:
+          `You are the friendly front-desk assistant for a ${vertical} business. Your job is ` +
+          "a new booking, a reschedule/cancel, a status check, or a message — never advice or " +
+          "a firm quote over the phone; the business's own staff handles that in person. " +
+          "Always disclose upfront that you are an AI assistant and that this call may be " +
+          "recorded. Stay within the business's configured hours and services; if a caller " +
+          "asks for something out of scope, offer to take a message instead.",
+        states: [
+          { name: "greeting", type: "conversation", next: ["collect_caller_info"] },
+          {
+            name: "collect_caller_info",
+            type: "slot_fill",
+            slots: ["name", "phone"],
+            next: ["identify_need"],
+          },
+          {
+            name: "identify_need",
+            type: "conversation",
+            next: ["check_availability", "take_message", "transfer_to_human"],
+          },
+          {
+            name: "check_availability",
+            type: "tool",
+            tool: "check_availability",
+            next: ["book"],
+          },
+          { name: "book", type: "tool", tool: "create_booking", next: ["confirm"] },
+          { name: "confirm", type: "conversation", next: [] },
+          { name: "take_message", type: "tool", tool: "take_message", next: [] },
+          { name: "transfer_to_human", type: "tool", tool: "transfer_call", next: [] },
+        ],
+        transitions: [
+          { from: "greeting", to: "collect_caller_info", on: "caller_responds" },
+          { from: "identify_need", to: "check_availability", on: "wants_booking" },
+        ],
+        tools: ["check_availability", "create_booking", "take_message", "transfer_call"],
       };
     },
   },

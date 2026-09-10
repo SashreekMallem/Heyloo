@@ -12,6 +12,7 @@ import {
   CardHeader,
   CardTitle,
   DataState,
+  formatPhoneDisplay,
   PageHeader,
   Sheet,
   SheetContent,
@@ -236,7 +237,9 @@ export default function BookingsPage() {
         const range = parseTstzrange(e.window);
         return {
           id: e.id,
-          customerName: customer?.name ?? customer?.phone_e164 ?? "Unknown customer",
+          customerName:
+            customer?.name ??
+            (customer?.phone_e164 ? formatPhoneDisplay(customer.phone_e164) : "Unknown customer"),
           windowStart: range?.start ?? null,
           createdAt: e.created_at,
         };
@@ -414,7 +417,7 @@ export default function BookingsPage() {
               {detailQuery.data?.customerPhone && (
                 <Link
                   href={`/dashboard/messages/${encodeURIComponent(detailQuery.data.customerPhone)}`}
-                  className="text-sm text-primary underline underline-offset-2"
+                  className="text-sm text-primary-hover underline underline-offset-2"
                 >
                   Message this customer
                 </Link>

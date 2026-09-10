@@ -14,10 +14,23 @@ export const buttonVariants = cva(
         outline: "border border-border bg-background hover:bg-secondary",
         secondary: "bg-secondary text-secondary-foreground hover:opacity-90",
         ghost: "hover:bg-secondary",
-        link: "text-primary underline-offset-4 hover:underline",
+        // text-primary-hover (not text-primary): at normal link weight/size
+        // on a light background, the base accent-500 measures 3.57:1 — below
+        // WCAG AA's 4.5:1 for normal text (axe color-contrast, round-final
+        // tenant review). accent-600 (the same token bg-primary's hover
+        // state already uses) clears AA in both themes (~4.99:1 light,
+        // ~7.73:1 dark) while staying the same hue.
+        link: "text-primary-hover underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-9 px-4 py-2",
+        // 44px (h-11) below the `lg` (1024px) breakpoint — the default size
+        // backs nearly every primary CTA across the app (Send invite, Save,
+        // Add resource/offering, Manage payment method, …), and at the
+        // stock 36px (h-9) it measured under the 44px touch-target
+        // guidance at mobile/tablet widths (390/768, round-final tenant
+        // review, medium). Desktop (>=1024px, mouse-driven) keeps the
+        // tighter 36px "premium restraint" sizing already reviewed there.
+        default: "h-11 px-4 py-2 lg:h-9",
         sm: "h-8 rounded-md px-3 text-xs",
         lg: "h-11 rounded-md px-6",
         icon: "size-9",

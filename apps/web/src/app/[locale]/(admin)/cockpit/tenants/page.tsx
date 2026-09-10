@@ -27,6 +27,10 @@ function tenantRows(data: { tenants?: TenantRow[]; rows?: TenantRow[] }): Tenant
   return data.tenants ?? data.rows ?? [];
 }
 
+function formatMargin(marginPct: number | null | undefined): string {
+  return marginPct != null ? `${marginPct.toFixed(1)}%` : "—";
+}
+
 const columns: ColumnDef<TenantRow, unknown>[] = [
   { accessorKey: "name", header: "Business" },
   {
@@ -55,10 +59,7 @@ const columns: ColumnDef<TenantRow, unknown>[] = [
     accessorKey: "margin_pct",
     header: "Margin %",
     cell: ({ row }) => (
-      <span className="tabular-nums">
-        {row.original.margin_pct?.toFixed(1) ?? "—"}
-        {row.original.margin_pct != null ? "%" : ""}
-      </span>
+      <span className="tabular-nums">{formatMargin(row.original.margin_pct)}</span>
     ),
   },
 ];
@@ -85,6 +86,22 @@ export default function TenantsListPage() {
             columns={columns}
             data={tenantRows(data)}
             onRowClick={(row) => router.push(`/cockpit/tenants/${row.id}`)}
+            renderMobileCard={(row) => (
+              <div className="rounded-lg border border-border p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-medium">{row.name}</p>
+                  <StatusBadge variant="tenant" value={row.status} />
+                </div>
+                <p className="text-xs capitalize text-muted-foreground">
+                  {row.vertical.replace(/_/g, " ")}
+                  {row.plan_code ? ` · ${row.plan_code}` : ""}
+                </p>
+                <div className="mt-2 flex items-center gap-4 text-xs tabular-nums">
+                  <span>MRR {row.mrr_cents != null ? formatCentsUSD(row.mrr_cents) : "—"}</span>
+                  <span>Margin {formatMargin(row.margin_pct)}</span>
+                </div>
+              </div>
+            )}
           />
         )}
       />

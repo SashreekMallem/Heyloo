@@ -63,6 +63,36 @@ describe("routeAdminRequest — tenants group", () => {
     expect((result.body as { tenants: unknown[] }).tenants).toHaveLength(1);
   });
 
+  it("returns { tenant, metrics } on GET /admin-tenants/:id, computing MRR/margin/minutes rather than reading them off `tenants`", async () => {
+    const { sql } = makeSql({
+      "select * from public.tenants where id": [
+        { id: "t1", name: "Acme", vertical: "auto", status: "active" },
+      ],
+      "from public.v_tenant_margin": [
+        { revenue_cents: 20000, cost_cents: 5000, margin_cents: 15000 },
+      ],
+      "from public.usage_daily": [{ minutes_used: 340 }],
+    });
+    const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-tenants/t1" }), logger);
+    expect(result.status).toBe(200);
+    const body = result.body as {
+      tenant: { id: string };
+      metrics: { mrr_cents: number; margin_pct: number; minutes_used: number };
+    };
+    expect(body.tenant.id).toBe("t1");
+    expect(body.metrics).toEqual({ mrr_cents: 20000, margin_pct: 75, minutes_used: 340 });
+  });
+
+  it("GET /admin-tenants/:id returns zeroed metrics (not a crash) when the tenant has no margin/usage rows yet", async () => {
+    const { sql } = makeSql({
+      "select * from public.tenants where id": [{ id: "t2", name: "New Co", status: "trialing" }],
+    });
+    const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-tenants/t2" }), logger);
+    expect(result.status).toBe(200);
+    const body = result.body as { metrics: { mrr_cents: number; margin_pct: number } };
+    expect(body.metrics).toEqual({ mrr_cents: 0, margin_pct: 0, minutes_used: 0 });
+  });
+
   it("patches allowed fields and writes an admin_actions audit row", async () => {
     const { sql, calls } = makeSql({
       "select * from public.tenants where id": [{ id: "t1", status: "trialing" }],
