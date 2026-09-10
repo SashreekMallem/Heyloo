@@ -9,16 +9,16 @@ export const metadata: Metadata = { title: "Create your account — Heyloo" };
 export default async function SignupAccountPage({
   searchParams,
 }: {
-  searchParams: Promise<{ annual?: string }>;
+  searchParams: Promise<{ annual?: string; white_glove?: string }>;
 }) {
   const cookieStore = await cookies();
   const draft = decodeSignupDraft(cookieStore.get(SIGNUP_DRAFT_COOKIE.name)?.value);
   if (!draft) redirect("/signup");
 
-  const { annual } = await searchParams;
+  const { annual, white_glove: whiteGlove } = await searchParams;
   return (
     <div className="px-4 py-16">
-      <AccountStepClient annual={annual === "1"} />
+      <AccountStepClient annual={annual === "1"} whiteGlove={whiteGlove === "1"} />
     </div>
   );
 }

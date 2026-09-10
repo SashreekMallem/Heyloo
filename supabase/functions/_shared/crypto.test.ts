@@ -4,6 +4,8 @@ import {
   encryptSecret,
   hmacSha1Base64,
   hmacSha256Hex,
+  randomOpaqueToken,
+  sha256Hex,
   timingSafeEqual,
   toHex,
 } from "./crypto.ts";
@@ -96,5 +98,37 @@ describe("encryptSecret / decryptSecret (DB-H2 adapter_connections token encrypt
     await expect(decryptSecret("v1:no-separator-here", TEST_KEY_B64)).rejects.toThrow(
       "adapter_token_ciphertext_malformed",
     );
+  });
+});
+
+describe("sha256Hex (api_tokens.token_hash / single-use intake tokens)", () => {
+  it("matches the well-known SHA-256 test vector for the empty string", async () => {
+    expect(await sha256Hex("")).toBe(
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+  });
+
+  it("is deterministic and sensitive to any input change", async () => {
+    const a = await sha256Hex("token-abc");
+    const b = await sha256Hex("token-abc");
+    const c = await sha256Hex("token-abd");
+    expect(a).toBe(b);
+    expect(a).not.toBe(c);
+  });
+});
+
+describe("randomOpaqueToken", () => {
+  it("returns a URL-safe string (no +, /, or = padding) with no two calls colliding", () => {
+    const a = randomOpaqueToken();
+    const b = randomOpaqueToken();
+    expect(a).not.toBe(b);
+    expect(a).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(a.length).toBeGreaterThan(30);
+  });
+
+  it("respects a custom byte length", () => {
+    const short = randomOpaqueToken(8);
+    const long = randomOpaqueToken(64);
+    expect(short.length).toBeLessThan(long.length);
   });
 });

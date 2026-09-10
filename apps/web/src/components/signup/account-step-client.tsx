@@ -22,7 +22,13 @@ import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
 const SIGNUP_STEPS = ["Business info", "Plan", "Account", "Payment", "Provisioning", "Phone setup"];
 
-export function AccountStepClient({ annual }: { annual: boolean }) {
+export function AccountStepClient({
+  annual,
+  whiteGlove,
+}: {
+  annual: boolean;
+  whiteGlove: boolean;
+}) {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -69,6 +75,7 @@ export function AccountStepClient({ annual }: { annual: boolean }) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         annual,
+        white_glove: whiteGlove,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       }),
     });

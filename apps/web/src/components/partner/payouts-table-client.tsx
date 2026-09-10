@@ -4,27 +4,34 @@ import { formatCentsUSD } from "@heyloo/canonical-types";
 import { DataTable, EmptyState } from "@heyloo/ui";
 import type { ColumnDef } from "@tanstack/react-table";
 
-interface PayoutRow {
+export interface PayoutRow {
   id: string;
-  amount_cents: number;
-  method: string;
+  total_cents: number;
+  period: string;
   status: string;
   created_at: string;
 }
 
 const columns: ColumnDef<PayoutRow, unknown>[] = [
   {
-    accessorKey: "created_at",
-    header: "Date",
-    cell: ({ row }) => new Date(row.original.created_at).toLocaleDateString(),
+    accessorKey: "period",
+    header: "Period",
+    cell: ({ row }) =>
+      new Date(row.original.period).toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "long",
+      }),
   },
   {
-    accessorKey: "amount_cents",
+    accessorKey: "total_cents",
     header: "Amount",
-    cell: ({ row }) => formatCentsUSD(row.original.amount_cents),
+    cell: ({ row }) => formatCentsUSD(row.original.total_cents),
   },
-  { accessorKey: "method", header: "Method" },
-  { accessorKey: "status", header: "Status" },
+  {
+    accessorKey: "status",
+    header: "Status",
+    cell: ({ row }) => <span className="capitalize">{row.original.status}</span>,
+  },
 ];
 
 export function PayoutsTableClient({ payouts }: { payouts: PayoutRow[] }) {

@@ -14,7 +14,10 @@
 
 import type { AgentState, AgentTemplate } from "@heyloo/canonical-types";
 import { DISCLOSURE_LINE } from "../shared/disclosure.js";
+import { withCallOutcomeExtraction } from "../shared/extraction.js";
+import { WARM_TRANSFER_FRAGMENT } from "../shared/fragments.js";
 import {
+  giveUpGlobalIntent,
   humanRequestGlobalIntent,
   safetyEmergencyGlobalIntent,
   solicitorGlobalIntent,
@@ -24,14 +27,100 @@ import { lookupCustomerTool, takeMessageTool, transferCallTool } from "../shared
 import {
   safetyEmergencyState,
   solicitorDeflectState,
+  takeMessageFallbackState,
   transferToHumanState,
 } from "../shared/utility-states.js";
+
+/**
+ * GAP_REGISTER.md §2 Legal item 3 — the shared `transferToHumanState()`
+ * only allows `transfer_call`, so the `human_request` global intent
+ * (`reachable_from: "any"`, wired below) could fire mid-intake — e.g. right
+ * after the caller names the opposing party in `conflict_check`, before
+ * `intake_complete` — and drop everything gathered so far, since
+ * `transfer_call` never touches `call_logs` and the state has no
+ * `take_message` fallback to fall back to. Legal has the most to lose from
+ * that (the conflict-check answer specifically), so it overrides the
+ * shared state with a legal-aware pair of states that always records an
+ * intake message BEFORE transferring, same as `takeMessageFallbackState()`'s
+ * "fold in whatever you already gathered" pattern.
+ *
+ * `zAgentTemplate`'s structural check forbids `transfer_call` sharing a
+ * state's `allowed_tools` with any other tool (it's only ever lowered as a
+ * state's SOLE tool by every compiler target — `agent-template.ts`), so
+ * this can't be one state that calls both. Split the same way
+ * `verticals/veterinary.ts`'s `emergency_referral` splits triage from the
+ * transfer itself: a `take_message`-only intake step (the global intent's
+ * actual target, `transfer_to_human`) that always transitions on to a
+ * dedicated `transfer_call`-only terminal state.
+ */
+function legalTransferToHumanStates(): AgentState[] {
+  const base = transferToHumanState();
+  return [
+    {
+      ...base,
+      id: "transfer_to_human",
+      name: "Transfer to human (record intake first)",
+      prompt_fragment:
+        "The caller wants a human. Before connecting them, first call take_message with " +
+        "whatever you've already gathered this call — name, phone, matter type, the opposing " +
+        "party for the conflict check, urgency, referral source, and a short summary of what " +
+        "they've described — using the same labeled-line format you always use for intake, " +
+        "even if it's incomplete. This is the only record of it once the transfer happens, so " +
+        "never skip it, even for a caller who wants to be connected immediately. Once " +
+        "take_message has been called, let the caller know you're connecting them now.",
+      allowed_tools: ["take_message"],
+      is_terminal: false,
+    },
+    {
+      id: "transfer_to_human_connect",
+      name: "Transfer to human (connect)",
+      prompt_fragment:
+        "The intake message has been recorded — now connect the caller. " +
+        WARM_TRANSFER_FRAGMENT +
+        " Use transfer_call.",
+      allowed_tools: ["transfer_call"],
+      is_terminal: true,
+    },
+  ];
+}
+
+/**
+ * GAP_REGISTER.md §2 Legal item 4: `matter_type`/`opposing_party`/
+ * `urgency`/`referral_source` have no typed destination on `take_message`
+ * today — `zTakeMessageRequest` (`@heyloo/canonical-types`) only has
+ * `caller_name`/`caller_phone`/`message_text`/`callback_window`, unlike
+ * `create_booking`'s typed `structured_payload` (`zLegalBookingPayload`,
+ * `booking-payloads.ts`, which already declares exactly these 5 fields —
+ * apparently anticipating a typed `structured_payload` on `take_message`
+ * too). Extending that schema is outside this cluster's ownership
+ * (`packages/canonical-types`, `packages/templates/src/shared/tools.ts`)
+ * — filed in `docs/audit/FIX_REQUESTS.md`. Until it lands, this fragment
+ * closes the gap the only way available from inside this cluster's
+ * ownership: instructing the model to compose `message_text` with fixed,
+ * labeled lines so every field is still recoverable (never silently
+ * dropped) even though it isn't yet a separate structured column.
+ */
+const STRUCTURED_INTAKE_CAPTURE_FRAGMENT =
+  "Whenever you call take_message — whether the intake finished normally or you're ending the " +
+  "call early — compose message_text as these exact labeled lines, one per line, using " +
+  '"not yet asked" for anything you never got to (never omit a label): "Matter type: ...", ' +
+  '"Opposing party (conflict check — needs human confirmation, never say it has already ' +
+  'cleared): ...", "Urgency: standard or urgent — ...", "Referral source: ...", followed by a ' +
+  "plain-language summary of what the caller described in open discovery. This keeps the " +
+  "conflict-check answer and everything else gathered recoverable even on an early exit. " +
+  "ALSO pass the same values on the structured_payload argument of that same take_message " +
+  'call: matter_type, opposing_party, referral_source, and urgency ("standard" or ' +
+  '"urgent"), using only whatever you actually gathered this call — omit a key entirely ' +
+  "rather than guessing. Never set conflict_check_cleared yourself; whether a conflict check " +
+  "has cleared is always decided by a human at the firm, never by you, so leave that key out " +
+  "even when you have the opposing party's name.";
 
 const SYSTEM_PROMPT = buildSystemPrompt(
   "You are an intake assistant for a law firm. Your job is to gather intake information " +
     "warmly and thoroughly so an attorney can follow up — not to practice law yourself. " +
     "This firm handles {{practice_areas}}; if a caller's matter is outside that list, say so " +
     "honestly and still offer to take a message.",
+  STRUCTURED_INTAKE_CAPTURE_FRAGMENT,
 );
 
 const NO_ADVICE_GUARDRAIL =
@@ -65,8 +154,12 @@ const rawStates: AgentState[] = [
   {
     id: "collect_name_phone",
     name: "Collect name + phone",
-    prompt_fragment: "Ask for the caller's full name, then their phone number, confirming each.",
-    allowed_tools: [],
+    prompt_fragment:
+      "Ask for the caller's full name, then their phone number, confirming each. You may call " +
+      "lookup_customer with the number they're calling from to check whether they're an " +
+      "existing client — if so, greet them as a returning client, but still complete the rest " +
+      "of intake in full (a prior relationship never skips the conflict check).",
+    allowed_tools: ["lookup_customer"],
   },
   {
     id: "matter_type",
@@ -75,6 +168,15 @@ const rawStates: AgentState[] = [
       "Ask what type of legal matter this is, guiding toward one of {{practice_areas}} if it " +
       "fits.",
     allowed_tools: [],
+    extraction: [
+      {
+        field: "matter_type",
+        type: "text",
+        description:
+          "The type of legal matter the caller described (e.g. one of the firm's configured " +
+          "practice areas, or their own words if it doesn't fit one).",
+      },
+    ],
   },
   {
     id: "conflict_check",
@@ -105,12 +207,30 @@ const rawStates: AgentState[] = [
       "situation, or an upcoming court date. Flag anything urgent for the attorney clearly in " +
       "the message.",
     allowed_tools: [],
+    extraction: [
+      {
+        field: "urgency",
+        type: "enum",
+        enum_values: ["standard", "urgent"],
+        description:
+          '"urgent" if the caller described anything time-sensitive — a statute-of-' +
+          "limitations concern, a custody situation, an upcoming court date, or similar — " +
+          '"standard" otherwise.',
+      },
+    ],
   },
   {
     id: "referral_source",
     name: "Referral source",
     prompt_fragment: "Ask how the caller heard about this firm.",
     allowed_tools: [],
+    extraction: [
+      {
+        field: "referral_source",
+        type: "text",
+        description: "How the caller said they heard about this firm.",
+      },
+    ],
   },
   {
     id: "intake_complete",
@@ -121,18 +241,24 @@ const rawStates: AgentState[] = [
     allowed_tools: ["take_message"],
     is_terminal: true,
   },
-  transferToHumanState(),
+  ...legalTransferToHumanStates(),
   solicitorDeflectState(),
   safetyEmergencyState(),
+  takeMessageFallbackState(),
 ];
 
 export const LEGAL_TEMPLATE: AgentTemplate = {
   vertical: "legal",
   compile_target: "multi_prompt",
   system_prompt: SYSTEM_PROMPT,
-  states: rawStates.map(withLegalGuardrail),
+  states: rawStates.map(withLegalGuardrail).map(withCallOutcomeExtraction),
   transitions: [
     { from: "greeting", to: "collect_name_phone", on: { intent: "explains_reason_for_calling" } },
+    {
+      from: "greeting",
+      to: "take_message_fallback",
+      on: { intent: "after_hours_or_wants_to_leave_a_message" },
+    },
     { from: "collect_name_phone", to: "matter_type", on: { intent: "name_phone_confirmed" } },
     { from: "matter_type", to: "conflict_check", on: { intent: "matter_type_identified" } },
     {
@@ -143,12 +269,18 @@ export const LEGAL_TEMPLATE: AgentTemplate = {
     { from: "open_discovery", to: "urgency", on: { intent: "discovery_complete" } },
     { from: "urgency", to: "referral_source", on: { intent: "urgency_recorded" } },
     { from: "referral_source", to: "intake_complete", on: { intent: "referral_source_recorded" } },
+    {
+      from: "transfer_to_human",
+      to: "transfer_to_human_connect",
+      on: { intent: "message_recorded" },
+    },
   ],
   global_intents: [
     safetyEmergencyGlobalIntent("safety_emergency"),
     humanRequestGlobalIntent("transfer_to_human"),
     solicitorGlobalIntent("solicitor_deflect"),
+    giveUpGlobalIntent("take_message_fallback"),
   ],
-  tools: [lookupCustomerTool(), takeMessageTool(), transferCallTool()],
+  tools: [lookupCustomerTool(), takeMessageTool("legal"), transferCallTool()],
   disclosure_line: DISCLOSURE_LINE,
 };

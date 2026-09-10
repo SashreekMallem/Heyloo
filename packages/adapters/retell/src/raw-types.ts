@@ -295,3 +295,20 @@ export const zRetellImportPhoneNumberResponse = z.looseObject({
   phone_number_pretty: z.string().optional(),
 });
 export type RetellImportPhoneNumberResponse = z.infer<typeof zRetellImportPhoneNumberResponse>;
+
+// ---------------------------------------------------------------------------
+// Outbound calls (GAP_REGISTER Cluster A item 6, `outbound.ts`).
+// RETELL-VERIFY: `POST /v2/create-phone-call` (note the `/v2` prefix —
+// confirmed via `retell-sdk`'s `Call.createPhoneCall`, distinct from
+// `/create-agent`'s unprefixed path used elsewhere in this package) takes
+// `{from_number, to_number, override_agent_id?, retell_llm_dynamic_
+// variables?, metadata?}` and returns a `PhoneCallResponse` — this codebase
+// only reads `call_id` from it, `.looseObject` since the real response
+// carries dozens more fields (transcript, cost, etc., irrelevant at the
+// moment the call is PLACED, before any of that exists).
+// ---------------------------------------------------------------------------
+
+export const zRetellCreatePhoneCallResponse = z.looseObject({
+  call_id: z.string().min(1),
+});
+export type RetellCreatePhoneCallResponse = z.infer<typeof zRetellCreatePhoneCallResponse>;

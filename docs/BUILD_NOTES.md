@@ -3835,3 +3835,2302 @@ sandbox used across this entire project — it stays reviewed-but-
 unexecuted until someone runs it somewhere with Docker available, same
 disclosure `docs/LAUNCH_STATUS.md` already carries for the Playwright e2e
 specs.
+
+## Cluster B — Dynamic-variable / per-vertical config pipeline (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Closed GAP_REGISTER.md §1.3 (`dynamic_variable_overrides` never forwarded
+past the base 5 keys) and §1.6 (schema drift between the tenant-facing
+Settings form and the template's `{{token}}` consumers) for auto, legal,
+motel, restaurant, vet — the per-vertical config gaps cited for those
+verticals in §2.
+
+**What was built**
+
+- `supabase/functions/voice-inbound/dynamic-variables.ts` (new): resolves
+  every vertical-specific `{{token}}` the compiled prompts reference
+  (`packages/templates/src/red-team/prompt-lint.ts`'s
+  `ALLOWED_DYNAMIC_VARIABLES` — the authoritative list, confirmed by
+  grepping every `packages/templates/src/verticals/*.ts` for `{{...}}`)
+  from `agent_configs.dynamic_variable_overrides`, each with a safe,
+  non-hallucinated default so a tenant who hasn't configured a field never
+  gets a literal `{{token}}`/silently-dropped key spoken on a live call —
+  e.g. motel's `rate_table` renders as an explicit "no rates on file — say
+  you'll need to check" when unset (reinforcing the rate-discipline
+  guardrail rather than inventing a number), legal's `consult_fee_text`
+  defaults to "an amount an attorney will confirm with you directly"
+  (never a fabricated dollar figure), auto's tow-partner defaults never
+  emit a fake phone number. `cancellation_policy_text` (the one universal
+  token, used by auto/dental/vet/motel/restaurant) is resolved for every
+  tenant regardless of vertical. Wired into
+  `supabase/functions/voice-inbound/handler.ts` (added `t.vertical` to the
+  existing single-JOIN query — no extra read — and spread the resolved
+  tokens into the `dynamic_variables` response).
+- Restaurant's `menu_text` is the one token that needs live data instead of
+  just formatting an override: `resolveMenuText` uses the tenant's
+  `menu_text` override string if set, else queries `public.offerings`
+  (indexed on `tenant_id` where `active`) and renders `name ($price); ...`
+  capped at 1500 chars. This is the one place this task added I/O to the
+  `/voice-inbound` hot path (SYSTEM_DESIGN §5 p95<300ms budget) — scoped so
+  it only fires for a restaurant tenant with NO menu_text override (the
+  common case, a configured override, stays zero-extra-query). A real fix
+  would precompute/cache the rendered menu (e.g. a trigger-maintained
+  column on `offerings` or `agent_configs`) so even the no-override case is
+  a single read — left as a follow-up since `supabase/migrations/**` isn't
+  in this task's ownership; noting here per CLAUDE.md Rule 4 rather than
+  adding a migration outside scope.
+- `supabase/functions/_shared/schemas/voice-inbound.ts`'s
+  `VoiceInboundDynamicVariablesSchema` extended with the 11 new token
+  fields (`cancellation_policy_text` required — always resolved;
+  `consult_fee_text`/`practice_areas`/`tow_partner_name`/
+  `tow_partner_phone`/`vehicle_makes_serviced`/`species_treated`/
+  `emergency_referral_name`/`emergency_referral_phone`/`rate_table`/
+  `deposit_policy_text`/`menu_text` optional — vertical-scoped).
+- `packages/canonical-types/src/schemas/vertical-details.ts`
+  (`verticalDetailsSchema`, the schema `apps/web`'s vertical-details save
+  route actually enforces): fixed motel's `deposit_policy`/`rate_table`
+  shape drift flagged in GAP_REGISTER §1.6 — was a dollars-valued
+  `Record<string, number>` rate table and a bare-string deposit policy;
+  now an array of `{room_type, nightly_rate_cents}` (integer cents) and a
+  structured `{required, amount_cents?, hold_window_hours?, text}` object,
+  matching `zMotelOverrides` in `packages/canonical-types/src/
+  agent-template.ts` exactly (that schema turned out to already be
+  correct — `verticalDetailsSchema` was the one that had drifted). Added
+  restaurant's `tax_rate_bps`/`prep_time_minutes`/`menu_text` fields
+  (`tax_rate_bps`/`delivery_radius_m`/`min_order_cents` are read directly
+  by `create_order.ts`, never spoken; `menu_text`/`prep_time_minutes`
+  matter to `voice-inbound`). New `packages/canonical-types/src/schemas/
+  vertical-details.test.ts` (no prior test coverage existed for this
+  schema at all).
+- `apps/web`'s Settings → Vertical details tab
+  (`.../dashboard/agent/vertical-details/page.tsx`): rebuilt the motel
+  rate-table editor (still a line-based `room type: nightly_rate_cents`
+  textarea, but now cents not dollars, matching the schema fix above) and
+  deposit-policy fields (required toggle, amount/hold-window/text); added
+  restaurant's tax-rate/prep-time number inputs and a menu-text-override
+  textarea. Confirmed auto (tow partner + vehicle makes), legal (practice
+  areas + consult fee), dental (insurances), and vet (species + emergency
+  referral) already had complete form branches from an earlier pass — no
+  changes needed there.
+
+**Decisions logged (CLAUDE.md Rule 4 — flagged, not silently redesigned)**
+
+- Did NOT create `packages/canonical-types/src/schemas/vertical-overrides.ts`
+  to move the `z*Overrides` schemas out of `agent-template.ts` (this
+  task's ownership note anticipated maybe needing to). Confirmed by grep
+  that `zDentalOverrides`/`zVetOverrides`/`zAutoOverrides`/
+  `zLegalOverrides`/`zMotelOverrides`/`zRestaurantOverrides`/
+  `dynamicVariableOverridesSchemaForVertical` are imported nowhere outside
+  `agent-template.ts`'s own test file — they're not wired into any save or
+  runtime-validation path today, so `verticalDetailsSchema` (this task's
+  own file) is the schema that actually gates what reaches
+  `agent_configs.dynamic_variable_overrides`, and `voice-inbound`'s new
+  resolver reads that same jsonb column directly rather than through
+  `z*Overrides`. Moving them mid-parallel-build risked a barrel-export
+  name collision with Cluster A's own edits for no functional gain — filed
+  the 3-field consistency gap (`tax_rate_bps`/`prep_time_minutes`/
+  `menu_text` missing from `zRestaurantOverrides`) as a `FIX_REQUESTS.md`
+  entry for Cluster A instead.
+- Did not touch `packages/canonical-types/src/schemas/ai-instructions.ts`
+  or its Settings → AI Instructions tab
+  (`.../dashboard/agent/instructions/page.tsx`), even though that schema
+  declares `prep_time_minutes`/`delivery_radius_miles`/
+  `delivery_minimum_cents` fields that look like they'd collide with this
+  task's restaurant fields on the same `agent_configs.
+  dynamic_variable_overrides` column (and use different units —
+  `_miles`/`_minutes_cents` vs. this task's `_m`/`_cents`). Read the page
+  component directly: none of those three fields are actually rendered in
+  that tab's form or sent by its `onSubmit` — they're currently
+  dead/unused declarations in that schema, not a live write-path conflict.
+  Neither file is in this task's ownership; noting the dead fields here in
+  case whoever owns `ai-instructions.ts` wants to remove them rather than
+  eventually wiring them up with the wrong units.
+- Real-estate and generic verticals get no new vertical-specific override
+  keys (per GAP_REGISTER §2, real_estate/generic don't reference any
+  `{{token}}` beyond the universal `cancellation_policy_text`, which this
+  task already resolves for every vertical) — real_estate's actual gaps
+  (no cancellation-policy fragment/reschedule-cancel path at all, GAP
+  §1.12) are template-authoring gaps in `packages/templates/src/verticals/
+  real-estate.ts`/`generic.ts`, Cluster F's ownership, not this pipeline
+  task's.
+
+**Tests added:** `supabase/functions/voice-inbound/dynamic-variables.test.ts`
+(new, pure-function coverage per resolver + `resolveMenuText`/
+`renderMenuFromOfferings`), `supabase/functions/voice-inbound/
+handler.test.ts` (extended — one simulation scenario per GAP_REGISTER §4
+Cluster B acceptance criteria: auto tow-referral, legal fee-guardrail,
+motel rate-quote-from-table, vet emergency-referral, restaurant
+menu-from-offerings/override, plus a cross-vertical isolation test and a
+"cancellation_policy_text always present" test). Restaurant's
+tax-computation scenario cited in that same acceptance-criteria list is
+already covered by the pre-existing `supabase/functions/voice-tools/
+tools/create_order.test.ts` (tax/delivery-radius/min-order are read and
+enforced in `create_order.ts`, not spoken by `voice-inbound` — confirmed,
+not re-tested here).
+
+**Gates run (scoped):** `pnpm --filter @heyloo/edge-functions test`
+(73 files / 590 tests, green), its `tsc -p tsconfig.json --noEmit`
+(clean), `pnpm --filter @heyloo/canonical-types test`/`typecheck` (10
+files / 134 tests, clean), `pnpm --filter @heyloo/web test`/`typecheck`
+(30 files / 134 tests, clean), `npx biome check --write` on every
+changed/new file (0 errors after applying its own formatting fixes).
+
+## Cluster A (GAP_REGISTER pass) — conversation engine
+
+Scope: GAP_REGISTER §1.1, §1.4, §1.5, §1.13, §3 items 1-5/7. Ownership:
+`packages/adapters/retell/src/{compiler/**,agents.ts,raw-types.ts,**/*.test.ts}`,
+`packages/canonical-types/src/{agent-template.ts,voice-provider.ts}`.
+
+**1. Post-call extraction lowering (§1.1).** New
+`packages/adapters/retell/src/compiler/extraction.ts`:
+`compilePostCallAnalysisData(template)` walks every state's `extraction[]`,
+dedupes by `field` name (first declaration wins — legal's
+`legal_advice_given`, compiled onto many states via
+`withLegalGuardrail`, is deliberately duplicated), and lowers to Retell's
+`post_call_analysis_data` shape (RETELL-VERIFY: confirmed this is an
+AGENT-level field, `AgentResponse.{String,Enum,Boolean,Number}
+AnalysisData`, NOT part of either flow-resource request body — a
+correction to the gap register's implicit assumption that it lived
+alongside `global_prompt`/`states`). Canonical `zExtractionField` gained an
+optional `description` (agent-template.ts, mine) — the compiler synthesizes
+one from the field name + owning state name when omitted, so `legal.ts`'s
+existing `{field, type}`-only declaration keeps compiling. Wired into all
+three compile targets via `compileRetellTemplate` (`compiler/index.ts`,
+now returns `CompiledAgentPayload.postCallAnalysisData`) and attached to
+`agents.ts`'s create/update-agent body (omitted entirely, not `[]`, when a
+template declares no extraction fields). `voice-events/handler.ts`'s
+`handleCallAnalyzed` already reads `custom_analysis_data["classification"/
+"outcome"/"follow_up_needed"/"legal_advice_given"/"emergency_detected"]` —
+exactly the field names this compiler emits (`field.field` verbatim) — so
+**no FIX_REQUEST was needed for that reader**. What IS still missing:
+vet/dental have no emergency/urgency extraction fields authored on their
+templates at all yet (only legal does) — filed in FIX_REQUESTS.md since
+`packages/templates` isn't this cluster's ownership; the compiler is ready
+for whenever that lands.
+
+**2. Function-node tool locking (§1.4).** `conversation-flow.ts` now
+compiles a single-tool, NON-START state to a Retell Function Node
+(`tool_id`, `tool_type: "local"`, `wait_for_result: true`,
+`speak_during_execution: true` on the node); the referenced tool also gets
+`speak_during_execution`/`speak_after_execution: true` set on its
+TOP-LEVEL definition. **Correction to the gap register's own fix text**:
+RETELL-VERIFY (confirmed via `retell-sdk`) found `speak_after_execution`
+does NOT exist on `FunctionNode` at all — it's a field on the TOOL
+definition (`CustomTool`), not the node; `FunctionNode` only re-exposes
+`speak_during_execution` as a node-level override. Implemented against the
+verified shape, not the gap register's assumed one (CLAUDE.md Rule 4). The
+START state is a documented, permanent exception — it ALWAYS stays a plain
+Conversation Node regardless of `allowed_tools` count, because (a) a
+Function Node's `instruction` is only conditionally spoken ("only used
+when speak_during_execution is true"), not the guaranteed first turn G1/G2
+needs, and (b) the disclosure publish gate (`disclosure-gate.ts`) only
+inspects a `type: "conversation"` start node. Verified this is a live
+no-op constraint, not a behavior change: the compiler-gate red-team test
+(`packages/templates/src/red-team/compiler-gate.test.ts`, imported
+read-only) still passes `disclosureVerified: true` for all 8 real
+templates after this change — none of them opens on a single-tool state.
+
+**3. Tool-result branching / "Logic Split" (§1.5).** Added
+`tool_result: {tool, variable, operator, value?}` to
+`zTransitionCondition` (agent-template.ts) — `TOOL_RESULT_COMPARATORS`
+mirrors Retell's real equation operators exactly. **Correction to the gap
+register's assumed mechanism**: RETELL-VERIFY found there is no separate
+"Logic Split" NODE TYPE distinct from `BranchNode` (which exists, but
+adds a node with no capability beyond what's already on every node's own
+`edges` array) — `ConversationNode`/`FunctionNode`/`BranchNode` all share
+byte-identical `Edge.{PromptCondition,EquationCondition}` shapes. A
+`tool_result`-typed transition therefore compiles to an EQUATION-typed
+edge (`{type:"equation", operator:"&&", equations:[{left:variable,
+operator,right:value}]}`) directly on the origin node — deterministic, not
+model-discretionary — rather than inserting a redundant `BranchNode` hop.
+Only wired into `conversation-flow.ts`: RETELL-VERIFY confirmed Retell
+LLM's `State.Edge` (multi_prompt) has NO equation/deterministic mechanism
+at all — a state transition there is structurally a model tool-call
+("transition_to_X"), always model-mediated — so `multi_prompt`/
+`single_prompt` continue falling back to `predicate` text for a
+`tool_result`-carrying transition (documented in `multi-prompt.ts`, no
+templates currently use `tool_result` so this is dormant, not exercised).
+No existing template used soft-prompt branching in a way this pass could
+safely auto-migrate without risking a live behavior change to a shipped
+template outside this cluster's ownership — flagged for whichever cluster
+owns `packages/templates/src/verticals/{restaurant,motel}.ts` to adopt
+`tool_result` on `slot_selected`/availability-gated transitions per
+GAP_REGISTER §1.5's specific examples (not filed as a FIX_REQUEST since
+it's a content change to a file this cluster doesn't own and no urgent
+correctness bug exists today — the soft-prompt version still works,
+just less deterministically).
+
+**4. transfer_call native wiring (§1.4 item 4).** `transferCallTool()`
+(the one reserved tool name every template uses, zero params,
+`tenant_config_only`) now compiles to Retell's REAL transfer mechanism in
+all three targets: a `TransferCallNode` (conversation_flow) or a native
+`TransferCallTool` (multi_prompt/single_prompt state or general tool) —
+never the generic custom-webhook `tools[]`/`general_tools[]` entry it
+silently fell into before. `transfer_destination.number` compiles to the
+literal `{{transfer_number}}` dynamic-variable placeholder (added to
+`zAgentDynamicVariables`, voice-provider.ts) rather than being baked in at
+publish time — deliberately: baking it in at publish time would require
+plumbing tenant config (`agent_configs.transfer_number`) through
+`CreateOrUpdateAgentInput`/`RetellProvider.createOrUpdateAgent`
+(`provider.ts`, outside this cluster's ownership) just to reach the
+compiler; using the SAME dynamic-variable mechanism every other piece of
+tenant config already uses (`manager_phone` etc.) needed no such plumbing
+and stays consistent with G6 ("resolved server-side from tenant config,
+never model/caller-influenced" — a dynamic variable is exactly that).
+**This is not yet end-to-end functional**: `voice-inbound/handler.ts`
+(Cluster B's `dynamic-variables.ts`) doesn't yet forward
+`agent_configs.transfer_number` as this dynamic variable — filed as a
+FIX_REQUEST (blocking for `transfer_call` to actually dial correctly, not
+a regression — it didn't work via the old custom-webhook path either).
+`RetellTransferOption` deliberately omits Retell's `agentic_warm_transfer`
+variant (RETELL-VERIFY via `sdk-contract.test.ts`: it requires a nested
+`agentic_transfer_config` object this compiler never constructs) — only
+`warm_transfer` is emitted, per SYSTEM_DESIGN §4.5's "warm transfers
+always carry a context summary".
+
+**5. Token/schema consistency + budget tests.** New
+`packages/adapters/retell/src/compiler/registry-consistency.test.ts`,
+importing `@heyloo/templates` READ-ONLY (added as a `devDependency` of
+`@heyloo/adapter-retell` — `packages/templates` already had the reverse
+dependency for its own red-team compiler-gate test, so this is a
+dev-only, test-time-only cycle; no runtime import cycle, no `tsconfig.json`
+project-reference added — `tsc -b` resolves it via the already-built
+`packages/templates/dist` like any other npm dependency). Confirmed via a
+real run: all 8 templates' `{{token}}` usage resolves cleanly against the
+union of `zAgentDynamicVariables` + that vertical's
+`dynamicVariableOverridesSchemaForVertical()` + `verticalDetailsSchema`
+(derived via a small, documented, TypeScript-checked suffix-mapping
+function over the real schemas' `.shape`, not a second hand-maintained
+allowlist). Budget test results (soft-reported via `console.warn`, hard
+ceiling at 2x SYSTEM_DESIGN's stated soft budget so a genuine runaway
+regression still fails): `real_estate` — 5 tools / 1022 words (barely
+over the 1000-word soft target, confirms the audit's "at the ceiling"
+finding almost exactly); `generic` — 6 tools / 969 words (one tool over
+the 5-tool soft budget — a NEW finding this pass surfaced, not previously
+in GAP_REGISTER). Both filed as informational FIX_REQUESTS for whichever
+cluster owns `packages/templates` vertical content to decide on trimming.
+
+**6. Outbound call support.** New `packages/adapters/retell/src/
+outbound.ts`: `createRetellOutboundCall(client, input)` — `POST
+/v2/create-phone-call` (RETELL-VERIFY: confirmed the `/v2` prefix via
+`retell-sdk`'s `Call.createPhoneCall`, distinct from this package's other,
+unprefixed endpoints). Fails CLOSED on a missing/blank
+`dynamicVariables.disclosure_line` (G1/G2) — an outbound call has no
+compiled-in first turn the way inbound templates do, so this function is
+the enforcement point instead of the compiler's disclosure gate. Added
+`CreateOutboundCallInput`/`Result` and an OPTIONAL `createOutboundCall`
+method + OPTIONAL `supportsOutboundCalls` capability flag to
+`VoiceProvider`/`ProviderCapabilities` (voice-provider.ts) — optional
+specifically so `provider.ts` (outside this cluster's file ownership for
+this pass) didn't need editing for the rest of this package to typecheck;
+wiring `RetellProvider.createOutboundCall` to delegate to `outbound.ts`
+and flipping `RETELL_CAPABILITIES.supportsOutboundCalls: true` is filed as
+a FIX_REQUEST.
+
+**Restaurant overrides gap closed in passing**: `zRestaurantOverrides`
+(agent-template.ts) was missing `menu_text`/`tax_rate_bps` even though
+`system-prompt.ts`/fragments compile in `{{menu_text}}` and
+`schemas/vertical-details.ts` (the tenant-facing form) already collects
+both — GAP_REGISTER §1.6's exact drift pattern, caught by this pass's own
+token-consistency test before it was even written against real templates.
+Fixed directly since `agent-template.ts` is this cluster's file, entire.
+
+**Gates run (scoped):** `pnpm --filter @heyloo/adapter-retell
+{typecheck,build,test}` (18 files / 140 tests, clean — includes
+`sdk-contract.test.ts`, the compile-time assignability check against the
+real `retell-sdk` types, updated for the new node/tool unions),
+`pnpm --filter @heyloo/canonical-types {typecheck,test}` (10 files / 134
+tests, clean), `pnpm --filter @heyloo/templates {typecheck,test}` (3
+files / 104 tests, clean — read-only consumer, confirms this pass didn't
+regress any of the 8 real templates' disclosure-gate/structural
+guarantees).
+
+## Cluster F (GAP_REGISTER pass) — per-vertical template authoring (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Scope: GAP_REGISTER §2 per-vertical template-level items (legal, real_estate,
+generic, vet, dental, motel, restaurant, auto), plus §1.12's reschedule/
+cancel + cancellation-policy coverage and the simulation-scenario/red-team
+extensions named in the Cluster F build-plan brief. Ownership:
+`packages/templates/src/{verticals/*.ts,shared/{fragments,utility-states,
+disclosure,global-intents,system-prompt}.ts,registry.ts,red-team/**,
+index.ts,scripts/**}` — everything in `packages/templates/**` EXCEPT
+`shared/tools.ts` (Cluster CD's file).
+
+**1. Legal — take_message fallback on every early-exit path (§2 Legal item
+3, BLOCKER).** Added a new shared `giveUpGlobalIntent()` builder
+(`shared/global-intents.ts`) — a `reachable_from: "any"` escape targeting
+`take_message_fallback`, the structural home for `GIVE_UP_LADDER_FRAGMENT`'s
+"move to a transfer or a take-message fallback" instruction, which
+previously had no state to route to on ANY template except via the two
+narrow existing edges (`greeting`/`check_time none_available`) other
+verticals already had. Wired into `legal.ts` (which previously had NO
+`take_message_fallback` state at all) alongside a `greeting ->
+take_message_fallback` transition matching sibling verticals. Also
+enhanced the shared `takeMessageFallbackState()` itself (`shared/
+utility-states.ts`) to instruct folding in whatever was already gathered
+earlier in the call — a small, universally-beneficial change since every
+conversation_flow/multi_prompt template uses this same builder.
+
+**2. Legal/real_estate — structured capture without a typed destination
+(§2 Legal item 4, §1.7).** `zLegalBookingPayload`/`zRealEstateBookingPayload`
+(`packages/canonical-types/src/booking-payloads.ts`, Cluster D's earlier
+work) already declare the right fields, but `take_message` (the only tool
+either vertical's non-booking exit path uses) has no `structured_payload`
+slot the way `create_booking` does. Filed in `docs/audit/FIX_REQUESTS.md`
+(not this cluster's file to change). Interim fix, inside this cluster's own
+ownership: both `legal.ts` and `real-estate.ts` now carry a
+`STRUCTURED_..._CAPTURE_FRAGMENT` instructing the model to compose
+`message_text` as fixed, labeled lines (`"Matter type: ..."`, `"Opposing
+party: ..."`, etc., with `"not yet asked"` for anything never reached) —
+recoverable by a human reading the message today, upgradeable to a real
+column the moment the FIX_REQUEST lands.
+
+**3. Legal — `lookup_customer` wired in (§2 Legal item 5).** Was declared
+in `tools[]` but never referenced by any state's `allowed_tools` — added to
+`collect_name_phone`, instructed as an optional returning-client check that
+never skips the conflict check.
+
+**4. Real estate — BLOCKER items 1/2/4/5: compile-target decision.** Moved
+`real-estate.ts` from `single_prompt` to `multi_prompt` (matching legal's
+existing compile target, and for the identical documented reason —
+SYSTEM_DESIGN §4.1's "open empathetic discovery a rigid graph would
+flatten"). The audit measured the old single_prompt version at 1,022
+words/5 tools, already at/over the single_prompt viability ceiling, BEFORE
+adding this pass's BLOCKER fixes: `manageBookingState()` +
+`updateBookingTool()`/`cancelBookingTool()` (reschedule/cancel didn't exist
+at all), `CANCELLATION_POLICY_READOUT_FRAGMENT`, and
+`sendSmsConfirmationTool()` for showing confirmations. Trimming existing
+qualification prose to make room would have meant cutting the exact
+buyer/seller/area/pre-approval/timeline/budget conversational coverage the
+vertical exists to collect, so `multi_prompt` was chosen instead — it has
+no single-prompt-sized word budget (each state's `state_prompt` is shown
+only when active) while keeping `qualification` as ONE open,
+model-mediated state rather than a field-by-field conversation_flow graph,
+preserving the "not an interrogation" design intent SYSTEM_DESIGN
+originally wrote this vertical around. Full rationale is also in
+`real-estate.ts`'s own docstring. Verified: `pnpm --filter @heyloo/templates
+test` and `pnpm --filter @heyloo/adapter-retell test` both green after the
+move (compiler-gate/registry-consistency tests included).
+
+**5. Real estate — item 3 NOT implemented (deliberately).** The "already
+working with another agent?" question is explicitly called out in
+GAP_REGISTER.md as "a spec-level gap, not just a template gap" (agency-
+representation disclosure norms vary by jurisdiction) — `zRealEstateBooking
+Payload.working_with_another_agent` (Cluster D) already has a typed field
+ready to receive an answer, but no wording was added asking the question,
+per CLAUDE.md Rule 4 (flag, don't redesign SYSTEM_DESIGN §4.3 unilaterally).
+Flagged here for whoever owns that spec section to decide.
+
+**6. Generic — BLOCKER item 3: reschedule/cancel + cancellation policy
+(§1.12).** Added `manageBookingState()` + `updateBookingTool()`/
+`cancelBookingTool()` + `CANCELLATION_POLICY_READOUT_FRAGMENT`, same as
+real_estate. Generic's own budget was already flagged over the soft
+threshold by Cluster A's finding (969 words/6 tools) before this addition;
+this pass's decision — DIFFERENT from real_estate's — is to KEEP
+`single_prompt` and accept the larger resulting overage rather than bump
+generic to a costlier compile tier. Reasoning: generic is deliberately the
+cheap/floor-priced vertical (SYSTEM_DESIGN §1's "$49-99 floor"
+positioning); moving it to `multi_prompt` raises its per-call LLM cost
+tier, a pricing decision this cluster is not positioned to make
+unilaterally, whereas a caller being structurally unable to reschedule or
+cancel an appointment is a harder functional gap than a soft, non-blocking
+word-budget warning (the budget test in `packages/adapters/retell/src/
+compiler/registry-consistency.test.ts` remains `console.warn`-only, never a
+hard CI failure, confirmed still green: `pnpm --filter @heyloo/adapter-retell
+test`, 138/138). Flagged in `docs/audit/FIX_REQUESTS.md` (updated the entry
+Cluster A filed) so a product/eng decision-maker can revisit whether
+generic needs its own slightly-pricier tier instead of absorbing the
+overage indefinitely.
+
+**7. Vet — lookup_customer expanded, structured payload, extraction
+(§2 Vet items 1-4).** `collect_owner_phone` now calls `lookup_customer`
+(previously only reachable via `manage_booking`) and `collect_pet_info`
+instructs confirming a known pet back instead of re-asking from scratch —
+closes the "repeat customer re-dictates everything" gap (§1.8) at the
+template level; the backend write-through of `customers.metadata.pets`
+remains Cluster C/D's (not filed as a new request — GAP_REGISTER.md §1.8
+already describes the exact fix, unclaimed). `confirm_booking` now passes
+`structured_payload` (pet_name/species/breed/age_years/visit_reason/
+symptom_or_routine — the exact `zVetBookingPayload` shape, Cluster D).
+`emergency_referral` now declares `extraction: [emergency_detected
+(boolean), urgency_flag (enum)]`, closing the FIX_REQUESTS.md item Cluster
+A filed against this cluster — lowered by Cluster A's already-built
+post-call-analysis pass with zero compiler change needed (verified via the
+full `packages/templates` test run). Item 4 (`check_time` needs a real
+offering/duration lookup by `symptom_or_routine`) needs a new tool/catalog
+this cluster can't invent without guessing an id — filed in
+`docs/audit/FIX_REQUESTS.md`. Item 5 (`registry.ts` key `"veterinary"` vs
+canonical slug `"vet"`) — see item 12 below.
+
+**8. Dental — extraction, offering/reason capture (§2 Dental items 1/3).**
+`pain_triage` now declares the same `emergency_detected`/`urgency_flag`
+extraction shape as vet's emergency state (closes the other half of the
+FIX_REQUESTS.md item Cluster A filed). `new_or_existing` now calls
+`lookup_customer`. `pain_triage` now also asks for the visit's reason in
+the caller's own words (cleaning, filling, broken tooth, check-up, etc.)
+and `confirm_booking` passes it as `structured_payload.reason_for_visit`
+(`zDentalBookingPayload`) — a real, achievable partial fix for "offering_id
+always null" using only fields that already exist, WITHOUT inventing a
+fake offering-picker tool (which would need real tenant-configured catalog
+data this cluster doesn't have, matching the "never invent a catalog"
+principle every other vertical's tool-discipline fragment already
+enforces) — the actual `offering_id` population needs the same
+`list_offerings`-style tool filed as a FIX_REQUEST for vet's item 4, above.
+Item 2 (secure DOB/insurance link) was already mentioned in the existing
+`confirm_booking` wording, kept and slightly extended — the actual
+hosted-form/SMS-template build is out of this cluster's scope (per the gap
+register's own note, "size it as its own build item"). Item 4's residual-
+PHI-if-volunteered-anyway concern: NOT addressed with a redaction
+mechanism this pass — GAP_REGISTER.md explicitly calls this "a real design
+decision needed, not silently redesigned." Flagging here per CLAUDE.md Rule
+4: if a caller volunteers DOB/insurance despite `PHI_DEFERRAL_FRAGMENT`'s
+instruction not to dwell on it, that PHI still exists in the raw
+transcript/recording today with no redaction step — whoever owns
+SYSTEM_DESIGN §4.3/the dental HIPAA posture should decide whether a
+post-call transcript-redaction pass is needed before this ships to a real
+dental tenant.
+
+**9. Motel — guest contact, room-type-aware availability, quoted-rate
+persistence (§2 Motel items 2/5/6, BLOCKER item 2 partially).** Added a new
+`collect_guest_contact` state (name + digit-by-digit phone read-back) —
+previously entirely missing; the reservation had no guest name/phone
+collection step at all, only a guest COUNT. `check_time` now instructs
+passing the chosen room type as `room_type` to `check_availability`
+(the SQL filter, `supabase/functions/voice-tools/tools/
+check_availability.ts`, already implements this per its own
+GAP_REGISTER-citing comment — confirmed by reading it this pass) — but the
+model-facing JSON-Schema for `check_availability`
+(`checkAvailabilityTool()`, `shared/tools.ts`, Cluster CD's file) doesn't
+declare `room_type` as a property yet, so the model has no slot to put it
+in structurally. Filed in `docs/audit/FIX_REQUESTS.md`; documented inline
+in `motel.ts`'s own top-of-file NOTE so the dependency is visible at the
+call site, not just in the fix-request log. `confirm_booking` now passes
+`structured_payload` with `room_type`/`quoted_rate_cents` (the exact rate
+quoted from `{{rate_table}}`, never re-derived)/`num_guests`
+(`zMotelBookingPayload`). Deposit-hold wording (item unlisted here) was
+already present via `{{deposit_policy_text}}` — no change needed, verified
+by reading `motel.ts` before editing.
+
+**10. Restaurant — allergy persistence, structured payload (§2 Restaurant
+item 2, BLOCKER, partially).** `zCreateOrderRequest` (canonical-types) and
+the runtime schema already have `allergies`/`special_instructions` (an
+earlier cluster's work), but — same drift pattern as motel's `room_type` —
+`createOrderTool()`'s model-facing JSON-Schema (`shared/tools.ts`, Cluster
+CD's file) doesn't declare either property. Filed in
+`docs/audit/FIX_REQUESTS.md`; `confirm_order`'s prompt now instructs
+passing both (an empty list for "no allergies", never omitted), ready for
+when the schema catches up — documented inline via a top-of-file NOTE in
+`restaurant.ts`, same pattern as motel's. "Delivery fee/minimum
+statements" and "order-ready expectation" (§2 Restaurant items also in this
+cluster's brief) were NOT added to the compiled prompt this pass: no
+dynamic-variable token resolves `prep_time_minutes`/a delivery-fee-or-
+minimum amount into speakable text today (confirmed by reading
+`supabase/functions/voice-inbound/dynamic-variables.ts` before deciding) —
+adding an unresolved `{{token}}` to a live template would recreate
+GAP_REGISTER.md §1.3's exact "literal placeholder spoken to the caller"
+bug that an earlier cluster already fixed everywhere else. Filed as a
+FIX_REQUEST instead of guessing (CLAUDE.md Rule 1).
+
+**11. Auto — repeat-customer skip, structured payload (§2 Auto items 2/4).**
+`collect_phone` now calls `lookup_customer`; `collect_vehicle` instructs
+confirming a known vehicle back instead of re-asking from scratch (same
+pattern as vet's pet info). `confirm_booking` now passes `structured_
+payload` with vehicle_year/vehicle_make/vehicle_model/symptom_category/
+drop_off_or_wait (`zAutoBookingPayload`).
+
+**12. `registry.ts` key rename `"veterinary"` -> `"vet"` (§2 Vet item 5).**
+Grepped the full repo first (not just `packages/templates`) for the string
+literal `"veterinary"`/`'veterinary'` before renaming: the only other
+in-repo hits were `scripts/setup-stripe.ts` (an unrelated Stripe product
+name string), `apps/web/src/content/marketing/verticals.ts` (an unrelated
+marketing-page slug), and a stale code comment in `apps/web` — none of
+them call `getTemplateDefinition`/read `TEMPLATE_REGISTRY` with this key,
+so the rename is safe today. Updated the two in-package references that
+DID use the old key (`red-team/structural.test.ts`,
+`red-team/injection-fixtures.ts`) in the same change. `VETERINARY_TEMPLATE`
+(the exported constant name) and the `verticals/veterinary.ts` filename are
+UNCHANGED — only the registry's own `key` field (`vertical` was already
+correctly `"vet"` on the template object itself).
+
+**13. Red-team suite: manage_booking hard-asserted, not skipped
+(build-plan acceptance criterion).** `structural.test.ts`'s identity-
+fallback test previously did `if (!manageState) continue` — silently
+passing for any template without one. Changed to: for every template that
+declares `create_booking`, assert `manage_booking` MUST exist (hard
+failure, not a skip) — this now holds for all 7 booking-capable verticals
+(auto, vet, dental, motel, restaurant, real_estate, generic) after this
+pass's real_estate/generic additions; legal is correctly excluded since it
+has no `create_booking` tool at all (a pure intake vertical with nothing to
+reschedule).
+
+**14. Simulation scenarios for every register scenario (build-plan
+requirement).** New `red-team/simulation-scenarios.ts` — the non-adversarial
+half of the batch-simulation seed corpus (`injection-fixtures.ts` already
+covered "injection"; this file adds happy_path, changes_mind,
+no_availability, out_of_radius, emergency, silence_voicemail, non_english,
+transfer, one or more scripted scenarios per applicable vertical or a `"*"`
+wildcard). Same non-goal as `injection-fixtures.ts` (documented in
+`README.md`, updated to reference the new file): this package does not call
+Retell itself — connecting either dataset to Retell's real batch-simulation
+API remains explicitly future work, out of this cluster's scope. Added a
+new `structural.test.ts` describe block asserting the dataset is
+well-formed (valid vertical keys, non-empty caller turns/expectations) and
+covers every required category, plus specific coverage assertions
+(every `check_availability`-capable vertical has a `no_availability`
+scenario via a specific fixture or the `"*"` wildcard; restaurant has an
+`out_of_radius` scenario).
+
+**Gates run (scoped, final):** `pnpm --filter @heyloo/templates
+{typecheck,test}` — 4 files / 134 tests, all green (includes Cluster CD's
+own `shared/tools.test.ts`, landed mid-pass, and `compiler-gate.test.ts` —
+the one test in this package that actually runs Cluster A's compiler
+against every changed template; real_estate's compile-target change and
+generic's/every waitlist-vertical's added tools all still pass the
+disclosure-gate check). Also ran, informationally, the downstream consumer
+`pnpm --filter @heyloo/adapter-retell {typecheck,test}` after rebuilding
+`packages/templates` (`pnpm --filter @heyloo/templates build`) — 18 files /
+138 tests, all green, confirming `registry-consistency.test.ts` (Cluster
+A's word/tool-budget check, `console.warn`-only) didn't hard-fail on
+real_estate's compile-target move or generic's added tools/state.
+
+**`join_waitlist` wiring (§1.2) — landed mid-pass.** `joinWaitlistTool()`
+was initially absent from `packages/templates/src/shared/tools.ts` (Cluster
+CD's file); re-checked near the end of this pass per the task brief's
+"check FIX_REQUESTS.md late in your work" instruction and found it had
+since landed. Closed the loop within this cluster's own ownership:
+`WAITLIST_OFFER_FRAGMENT` (`shared/fragments.ts`) now instructs calling
+`join_waitlist` with name/phone/preferred window instead of the
+`take_message`-with-a-`"Waitlist request:"`-prefix workaround, and every
+vertical that imports the fragment (auto-repair, vet, dental, restaurant,
+real_estate, generic — motel deliberately excluded, per its own
+`nearest_alternative` UX already noted in `structural.test.ts`) now
+declares `joinWaitlistTool()` in `tools[]` and adds `"join_waitlist"` to
+the relevant availability-checking state's `allowed_tools`. Verified with
+a full rebuild + both scoped test suites after the change (`pnpm --filter
+@heyloo/templates {typecheck,test}` — 4 files/134 tests green; `pnpm
+--filter @heyloo/templates build` then `pnpm --filter @heyloo/adapter-retell
+test` — 18 files/138 tests green).
+
+## Cluster CD — Tools, typed payloads, DB fields (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Closed GAP_REGISTER.md §1.2 (join_waitlist), §1.7 (typed structured_payload
+per vertical), §1.8 (customers.metadata vehicles/pets), §1.9 (tools.ts /
+voice-tools.ts schema drift), §1.10 (create_order consent), and the
+Restaurant/Motel per-vertical items cited in the task brief (allergies/
+special_instructions, delivery fee, party-size/table-capacity, room-type
+capacity, motel deposit hold + expiry, order-ready SMS, adapter
+update/cancel semantics).
+
+**Tools/canonical-types**
+
+- New `packages/canonical-types/src/booking-payloads.ts`: one loose
+  (never `.strict()`) Zod object per vertical (`zAutoBookingPayload` ...
+  `zRestaurantBookingPayload`), a `zBookingStructuredPayload` union, a
+  `zBookingStructuredPayloadFor(vertical)` selector, and
+  `BOOKING_STRUCTURED_PAYLOAD_PROPERTIES` (hand-maintained JSON-Schema
+  `properties` per vertical, kept in sync with the Zod shapes by a
+  dedicated parity test) — the model-facing authoring schema for
+  `create_booking`'s `structured_payload`. Deliberately never rejects an
+  incomplete/unexpected payload outright (hot-path graceful-fallback
+  discipline, CLAUDE.md Rule 2) — it's an authoring/typing aid, not a gate
+  that can fail a real booking.
+- `packages/canonical-types/src/tools.ts`: added `consent` to
+  `zCreateBookingRequest`, `verify` to `zUpdateBookingRequest`/
+  `zCancelBookingRequest`, `consent`/`allergies`/`special_instructions` to
+  `zCreateOrderRequest`, `delivery_fee_cents` to `zCreateOrderResult`'s
+  confirmed branch, `room_type` to `zCheckAvailabilityRequest`,
+  `structured_payload` (typed via `zBookingStructuredPayload`) to
+  `zTakeMessageRequest`, an `addresses` field to `zLookupCustomerResult`,
+  and new `zJoinWaitlistRequest`/`zJoinWaitlistResult` + a `join_waitlist`
+  entry in `TOOL_REQUEST_SCHEMAS`/`TOOL_NAMES` — closing GAP_REGISTER.md
+  §1.9's drift (these all already existed in the runtime-enforced
+  `_shared/schemas/voice-tools.ts` and were simply missing from the
+  model-facing/dashboard-facing canonical file).
+- Schema-drift fix (§1.9): Deno cannot import the Node/ESM
+  `@heyloo/canonical-types` package (confirmed constraint, same as
+  `admin/schemas.ts`'s own documented reason — adding it as a
+  `supabase/functions/package.json` devDependency was considered and
+  rejected as outside this file's ownership and unnecessary for a
+  test-only need), so true single-sourcing isn't available across the
+  Deno/Node boundary. Implemented the register's own documented fallback
+  instead: new `supabase/functions/_shared/schemas/voice-tools.test.ts`
+  hardcodes the canonical top-level key set per tool (a literal manifest,
+  commented as "keep in sync with tools.ts") and diffs it against each
+  runtime Zod schema's own `.shape` keys — a future edit to either file
+  that adds/removes a top-level arg key without updating both now fails
+  the scoped `@heyloo/edge-functions` test gate every change to this file
+  must already pass.
+- New `supabase/functions/voice-tools/tools/join_waitlist.ts`: mirrors
+  `create_booking.ts`'s race-proof/idempotent-insert shape exactly (never
+  check-then-insert — a unique-constraint violation on retry re-selects
+  and returns the existing row) with a locally-computed idempotency key
+  (`call_id:fnv1a(stableStringify(preferred_window))`, reusing
+  `_shared/idempotency.ts`'s already-exported `fnv1aHex`/`stableStringify`
+  rather than adding a new exported helper to that unowned file). Wired
+  into `voice-tools/handler.ts`'s dispatch table and
+  `packages/templates/src/shared/tools.ts`'s new `joinWaitlistTool()`.
+  Verified end-to-end (not just at the insert level): the pre-existing
+  `fn_notify_waitlist_on_cancellation` trigger
+  (`20260907131400_functions_triggers.sql`) and the SMS reply-YES
+  auto-book consumer (`webhooks-twilio-sms/handler.ts`) were already
+  built and waiting for a real producer — confirmed via the throwaway-
+  Postgres harness (below) that a `waitlist_entries` insert, an
+  `availability_slots`-freeing booking cancellation, and the resulting
+  `messages_outbound` row all chain correctly.
+- `packages/templates/src/shared/tools.ts`: `createBookingTool()` and the
+  new `takeMessageTool()` both accept an OPTIONAL second `vertical`
+  argument that surfaces `BOOKING_STRUCTURED_PAYLOAD_PROPERTIES[vertical]`
+  as the `structured_payload` JSON-Schema `properties` instead of a bare
+  `{type:"object"}` — left optional (defaulting to the old bare shape) so
+  none of the 7 existing `packages/templates/src/verticals/*.ts` call
+  sites needed editing (outside this cluster's ownership; confirmed
+  unchanged and still green via `pnpm --filter @heyloo/templates
+  {typecheck,test}`, including the full red-team `structural.test.ts`
+  suite across all 8 templates) — filed as a one-argument-per-file follow-
+  up in `docs/audit/FIX_REQUESTS.md` for Cluster F. Also fixed the two
+  requests Cluster F had already filed against this same file this pass
+  (`checkAvailabilityTool()`'s missing `room_type` property,
+  `createOrderTool()`'s missing `allergies`/`special_instructions`
+  properties) — both verticals/motel.ts and verticals/restaurant.ts were
+  already written expecting these fields to exist, confirmed by grep
+  before starting.
+
+**DB fields / typed payloads (`create_booking.ts`/`create_order.ts`)**
+
+- `create_booking.ts`: validates nothing beyond the existing Zod shape at
+  the boundary (per the booking-payloads.ts design note above) but now:
+  (a) merges a vehicle (auto) or pet (vet) entry extracted from
+  `structured_payload` into `customers.metadata.vehicles`/`.pets`,
+  deduped by exact-match against what's already on file, so
+  `lookup_customer.ts`'s pre-existing `vehicles`/`pets` read (previously
+  always empty) now actually returns something for a repeat caller; (b)
+  for `vertical === 'motel'` only (one extra query, scoped so every other
+  vertical's hot path pays nothing extra), reads `agent_configs.
+  dynamic_variable_overrides.deposit_policy` and inserts `status =
+  'scheduled'` with a `hold_expires_at` (`now() + hold_window_hours`,
+  default 24h) instead of `'confirmed'` when a deposit is required,
+  mirrors a valid `structured_payload.quoted_rate_cents` onto the new
+  `bookings.quoted_rate_cents` column; (c) writes
+  `call_logs.structured_booking_payload` (previously asked for by the
+  dashboard's "Linked booking" card but never written by anything) when
+  the call captured any structured data.
+  - **KNOWN LIMITATION, deliberately not fixed this pass:** the `bookings`
+    GIST exclusion constraint and `fn_invalidate_availability_on_booking`
+    only react to `status = 'confirmed'` — a `'scheduled'` deposit hold
+    does NOT yet block a second caller from being offered/confirming the
+    same slot at the DB level. Extending that shared constraint/trigger
+    (used by every vertical's booking path) mid-parallel-build was judged
+    too risky for this task's scope; flagged per CLAUDE.md Rule 4 rather
+    than silently redesigned. `webhooks-stripe/handler.ts` (not this
+    cluster's ownership) already flips a paid deposit's booking to
+    `'confirmed'` on the Stripe webhook — confirmed by reading it, not
+    modified.
+- `create_order.ts`: persists `consent` onto `customers.consent` (mirrors
+  `create_booking.ts`'s existing pattern, closing §1.10), persists
+  `allergies`/`special_instructions` onto new `orders` columns, computes
+  `delivery_fee_cents` from `agent_configs.dynamic_variable_overrides.
+  delivery_fee_cents` (read directly, same pattern as the pre-existing
+  `tax_rate_bps`/`min_order_cents`/`delivery_radius_m` reads) and includes
+  it in `total_cents` + the tool result, and writes
+  `call_logs.structured_booking_payload` when allergies/special
+  instructions were captured. Confirmed already-fixed by an earlier pass
+  before this one started (not re-done): the `adapter: "pos"` ->
+  `adapter: "square"` enqueue-key bug (§2 Restaurant item 5) —
+  `_shared/adapter-push.ts`'s `enqueueAdapterPush` already addresses by
+  real connected-provider name, verified by reading it and its own
+  contract test.
+- `check_availability.ts`: `room_type` (new, alongside `resource_type`)
+  and `party_size` now actually filter the SQL (previously accepted by
+  the request schema but never used — `party_size` for restaurant table-
+  capacity, GAP_REGISTER.md §2 Restaurant item 3; `room_type` for motel
+  room-tier availability, §2 Motel item 2) — one combined `resource_id in
+  (select ... where (all provided predicates ANDed))` subquery rather than
+  three separate OR-wrapped blocks, applied to both the primary-window and
+  nearest-alternative queries.
+- `take_message.ts`: added `structured_payload` support (merged into
+  `call_logs.structured_booking_payload` via jsonb `||`, never overwriting
+  what an earlier tool call in the same call already wrote) — a request
+  filed by Cluster F this same pass (legal/real_estate's message-fallback
+  path had no typed destination for conflict-check/buyer-seller data).
+- New migrations (prefix range `202609101[23]xxxx`, all additive, verified
+  reproducible-from-zero — see below):
+  `20260910120000_orders_delivery_allergies_columns.sql` (orders.allergies
+  text[]/special_instructions text/delivery_fee_cents int not null default
+  0), `20260910120500_bookings_quoted_rate_and_hold_expiry.sql`
+  (bookings.quoted_rate_cents int/hold_expires_at timestamptz),
+  `20260910121000_resources_room_type.sql` (resources.room_type text + a
+  partial index), `20260910121500_waitlist_entries_idempotency.sql`
+  (waitlist_entries.idempotency_key text + a unique (tenant_id,
+  idempotency_key) constraint — `join_waitlist.ts` needed this to exist to
+  be race-proof/idempotent the same way `create_booking.ts` is),
+  `20260910122000_motel_deposit_hold_expiry_cron.sql`
+  (`fn_expire_unpaid_deposit_holds()` + a `job-motel-deposit-hold-expiry`
+  cron entry via the existing `fn_cron_upsert` helper, every 15 minutes —
+  cancels any `status = 'scheduled'` booking past its `hold_expires_at`).
+
+**worker-adapter-push — Square/Google Calendar update/cancel semantics**
+
+FIX-1 had explicitly disclosed every adapter pusher was CREATE-only (a
+reschedule/cancel push still called the provider's create endpoint against
+the booking's current, possibly-cancelled state). Fixed for the two most
+tractable/best-documented providers within this pass's budget:
+
+- Added `loadSyncExternalId()` (queries `adapter_sync_state` by
+  `entity_id`, NOT by the push message's own `idempotency_key` — that key
+  differs per create/update/cancel by design, see each tool's own key
+  convention — so it's the only correct "have we already pushed this"
+  signal) and `BookingRow.status` (the `bookings.status` column, not
+  previously selected).
+- `pushToSquare`'s booking branch: an already-synced + non-cancelled
+  booking now `PUT /v2/bookings/{id}` updates (reschedule); an already-
+  synced + cancelled booking now `POST /v2/bookings/{id}/cancel`s; a
+  never-synced booking still takes the original CREATE path. Both new
+  calls need Square's `booking.version` (optimistic concurrency) first, so
+  added a `retrieveSquareBookingVersion()` (`GET /v2/bookings/{id}` — see
+  `docs/VERIFY.md` VERIFY-CD-1, the one part of this that couldn't be
+  independently WebFetch-confirmed and fails closed if wrong). Endpoints
+  themselves (`PUT`/`POST .../cancel`) were confirmed field-for-field via
+  WebFetch against developer.squareup.com (reachable this build, CLAUDE.md
+  Rule 1). Implemented as local functions in `worker-adapter-push/
+  handler.ts` itself (not added to `_shared/providers/square.ts`, outside
+  this cluster's ownership) reusing that file's already-exported
+  `SQUARE_BASE_URL`/`SquareFetch`.
+- `pushToGoogleCalendar`: same pattern — an already-synced event gets
+  `PATCH`ed (reschedule) or `DELETE`d (cancel) instead of re-`insert`ed;
+  a 404/410 on delete is treated as already-gone success. Endpoints
+  confirmed via WebFetch against developers.google.com (`docs/VERIFY.md`
+  VERIFY-CD-2, high confidence, standard REST paths). Local functions
+  reusing `_shared/providers/google-calendar.ts`'s already-exported
+  `GOOGLE_CALENDAR_BASE_URL`.
+- Cancelling/updating a booking that was NEVER pushed to a given adapter
+  (no `adapter_sync_state` row) is a harmless no-op for both providers —
+  never calls the provider, never fails the push.
+- **Not done this pass, still disclosed as open** (Shopmonkey/ezyVet/
+  Airtable bookings/orders): update/cancel semantics for these three
+  remain CREATE-only. Shopmonkey/ezyVet have no independently-confirmed
+  write-update API in this codebase's existing research; Airtable's
+  existing field mapping (`airtableFieldsForBooking`) has no status/
+  cancelled concept to PATCH toward without guessing a tenant's own base
+  schema. Scoped out rather than guessed, per CLAUDE.md Rule 1.
+- `packages/adapters/square/**` (in this cluster's ownership per the task
+  brief's "if the order push shape needs it") — NOT touched: confirmed by
+  grep that nothing outside its own test files imports it; the real
+  runtime push path is entirely `_shared/providers/square.ts` +
+  `worker-adapter-push/handler.ts`, so there was no order-push-shape need
+  to address there.
+
+**apps/web — order-ready SMS**
+
+`apps/web/src/app/api/tenant/orders/[id]/route.ts`: a `PATCH` transition
+INTO `status: 'ready'` (and only on a genuine transition — re-PATCHing an
+already-`'ready'` order is a no-op, no duplicate SMS) now sends a
+best-effort `order_ready` SMS, mirroring `.../bookings/[id]/route.ts`'s
+already-established pattern exactly (service-role `messages_outbound`
+insert + `fn_enqueue_message_outbound` RPC, since that table has no
+tenant write RLS policy; opted-out customers are skipped; a failed
+notification never fails the status-update response itself). Needs
+`_shared/templates.ts`'s `renderTemplate` to actually have an
+`'order_ready'` case to say something real — filed in
+`docs/audit/FIX_REQUESTS.md` (today it would send an empty-body SMS, same
+as the newly-reachable `'waitlist_slot_opened'` case).
+
+**Migrations verified reproducible-from-zero** — this session's local
+Postgres 16 (`service postgresql start`; no Docker daemon available, same
+constraint every prior pass in this repo has hit and disclosed). Built a
+throwaway stub for the Supabase-platform pieces (`auth`/`storage`/
+`realtime`/`cron`/`pgmq`/`vault`/`net` schemas + the `anon`/
+`authenticated`/`service_role`/`supabase_auth_admin` roles — session-only,
+never committed), applied all 37 real migration files verbatim in order
+against an empty database (stripping only the 3 `create extension` lines
+for `pg_cron`/`pgmq`/`pg_net`, genuinely unavailable outside a
+Supabase-hosted Postgres and already guarded by existence checks) — zero
+errors — followed by `supabase/seed/seed.sql`, also zero errors. Beyond
+the bare apply, functionally spot-checked: a motel booking insert with
+`status='scheduled'`/`quoted_rate_cents`/`hold_expires_at`; running
+`fn_expire_unpaid_deposit_holds()` against a backdated hold correctly
+cancels it (`cancel_reason = 'deposit_hold_expired'`); a delivery order
+insert with `delivery_fee_cents`/`allergies`/`special_instructions`; a
+`waitlist_entries` insert plus its own unique-constraint enforcement on a
+duplicate `idempotency_key`. `job-motel-deposit-hold-expiry` (like every
+other `pg_cron`-dependent job in this repo) doesn't actually register in
+this harness since `pg_cron` itself isn't installed — confirmed this
+matches the EXISTING jobs' behavior in the same harness (0 rows either
+way), not a regression specific to this migration.
+
+**Gates run (scoped):** `pnpm --filter @heyloo/edge-functions
+{test,typecheck}` (77 files / 638 tests, clean), `pnpm --filter
+@heyloo/canonical-types {test,typecheck}` (11 files / 159 tests, clean),
+`pnpm --filter @heyloo/templates {test,typecheck}` (4 files / 136 tests,
+clean — includes the full red-team `structural.test.ts` suite across all 8
+templates), `pnpm --filter @heyloo/web {test,typecheck}` (30 files / 137
+tests, clean). `npx biome check --write` on every file this cluster
+touched (0 errors after applying its own formatting fixes).
+
+**Decisions logged (CLAUDE.md Rule 4 — flagged, not silently redesigned)**
+
+- Did not extend the `bookings` GIST exclusion constraint /
+  `fn_invalidate_availability_on_booking` to also react to `status =
+  'scheduled'` (see the motel deposit-hold KNOWN LIMITATION above) — a
+  correct fix, but a shared-invariant change affecting every vertical's
+  booking path, judged too risky to land unreviewed mid-parallel-build.
+- Did not implement Shopmonkey/ezyVet/Airtable adapter update/cancel
+  semantics (see worker-adapter-push section above) — no independently
+  Rule-1-confirmed write-update API for the first two; no safe field
+  mapping to guess for Airtable's cancel case.
+- Did not add `@heyloo/canonical-types` as a devDependency of
+  `supabase/functions/package.json` to attempt a real cross-runtime
+  schema import for the §1.9 drift fix — Deno's inability to import that
+  Node/ESM package is the actual constraint (not a test-only limitation
+  a devDependency would route around, since the constraint is about the
+  DEPLOYED runtime, and a schema-parity test needs to guard what's
+  actually deployed) — used the hardcoded-manifest diff test instead, per
+  the register's own documented fallback option.
+- Did not touch `packages/adapters/square/**` (explicitly listed in this
+  cluster's ownership "if the order push shape needs it") — confirmed via
+  grep it has no real runtime call site, so there was nothing to change.
+
+**Cross-cutting fix (outside this cluster's file list, done anyway — see
+rationale):** `packages/supabase-client/src/database.types.ts` (the
+hand-maintained row types `apps/web` selects/inserts against, per that
+file's own header: "add a column here the day a page needs it") was
+missing every column this pass added (`bookings.quoted_rate_cents`/
+`.hold_expires_at`, `orders.allergies`/`.special_instructions`/
+`.delivery_fee_cents`, `resources.room_type`,
+`waitlist_entries.idempotency_key`) — caught live when a concurrently-
+running dashboard-surfacing pass's `bookings/page.tsx` started selecting
+`quoted_rate_cents` and Supabase's typed-query layer correctly rejected it
+as an unknown column (`SelectQueryError<"column 'quoted_rate_cents' does
+not exist...">`), which would have hard-failed `pnpm --filter @heyloo/web
+typecheck` for whichever cluster owns that page the moment both passes
+landed. Added the 8 new fields to `ResourceRow`/`BookingRow`/`OrderRow`/
+`WaitlistEntryRow` (source only — this package's own committed `dist/`
+build output, a pre-existing repo-hygiene issue this task didn't create
+or attempt to fix more broadly, needed `pnpm --filter
+@heyloo/supabase-client build` to pick the change up, since `apps/web`
+resolves this package's types via TS project-reference `dist/*.d.ts`, not
+its `src`). Verified `@heyloo/web`'s full `{test,typecheck}` green
+afterward. Not this cluster's exclusive ownership, but a strictly
+additive, mechanical transcription of columns this cluster's own
+migrations introduced — blocking every other cluster's dashboard work
+against those tables, not just a nice-to-have.
+
+## Cluster H — Onboarding, testing, growth UI (owner backlog)
+
+**What was built**
+
+1. **Setup-progress panel** — `apps/web/src/app/api/tenant/setup-progress/
+   route.ts` (new) computes 11 steps from real, currently-queryable state
+   (paid → `tenants.status`, agent provisioned → `agent_configs.
+   published_at`, business hours → `tenants.business_hours`, services →
+   `offerings`/`resources` counts, cancellation/booking policy reviewed →
+   `dynamic_variable_overrides.cancellation_policy.text`, test call done →
+   `call_logs.is_test_call`, forwarding verified → `phone_numbers.
+   forwarding_verified_at`, delivery/notification preferences →
+   `dynamic_variable_overrides.delivery`, team invited (optional) →
+   `memberships` count > 1, A2P → `tenants.a2p_status`, integration
+   (optional) → `adapter_connections`) — every step real, none fabricated.
+   `apps/web/src/components/tenant/setup-progress-panel.tsx` (new) renders
+   it on the dashboard home (wired into `overview-client.tsx`, this
+   cluster's file per its explicit "+ its components" ownership grant);
+   dismiss control only appears once every required step is done (the
+   panel itself always recomputes truthfully from the DB on load — see
+   that component's own doc comment for why dismissal is a localStorage
+   convenience, not a fabricated persistence layer, and
+   `docs/audit/FIX_REQUESTS.md` for the two steps — team invites, policy
+   review — that had to use a proxy signal or a null href rather than a
+   dedicated column/screen this cluster isn't allowed to add).
+2. **Test-your-agent** (`dashboard/test-agent/**`, new) — per-vertical
+   scripted scenarios (`components/tenant/test-agent-scenarios.ts`, one
+   cluster's own authored copy, not imported from `packages/templates`);
+   phone test is fully functional today (dial the tenant's already-
+   provisioned Heyloo number — works before forwarding is ever turned on
+   — poll `call_logs` for the resulting `is_test_call` row, show
+   transcript/summary/structured payload/message once it lands); web call
+   test degrades honestly (`api/tenant/test-agent/web-call/route.ts`
+   proxies to a NEW edge function, `api-tenant-test-call`, that doesn't
+   exist yet — provider isolation means it can't be built from
+   `apps/web`; filed in `docs/audit/FIX_REQUESTS.md` with a suggested
+   contract; the button shows "isn't available yet" rather than faking a
+   call). Also added a small, real "register your test phone number"
+   control on this page — `tenants.owner_test_phone` is the column
+   `voice-events/handler.ts` already keys `is_test_call` off of, and
+   nothing anywhere in `apps/web` previously let a tenant set it, which
+   would have made the phone test's own `is_test_call` detection silently
+   never fire for any tenant who hadn't already set that column some
+   other way. "Adjust instructions" links to `/dashboard/agent/
+   instructions`; "Turn on forwarding" only appears once a test call has
+   actually completed (`ended_at` not null), and links to `/dashboard/
+   phone-setup`.
+3. **Change-request tickets** — the tenant-side create/view/reply flow
+   (`dashboard/support/**`) was already fully built by a prior pass
+   (`support_requests`/`support_request_notes`, RLS already grants
+   `platform_admin` select+write+insert on both tables) — nothing to add
+   there. Built the missing half: an admin cockpit ticket queue
+   (`(admin)/cockpit/support/page.tsx` + `.../[id]/page.tsx`, new) with a
+   status-filter tab strip and a reply form. Backing API
+   (`api/admin/admin-support-requests/**`, new) is a direct-to-Postgres
+   Route Handler rather than a proxy to `supabase/functions/admin` — that
+   edge function (not owned by this cluster) literally lists
+   `admin-support-requests` in its own `NOT_YET_IMPLEMENTED_PREFIXES`
+   (501s). Same `platform_admin` claim + session check as `api/admin/
+   [...path]/route.ts`'s own proxy, `admin_actions` audit trail on every
+   status change/reply. Filed a consolidation-only (non-blocking) note in
+   `docs/audit/FIX_REQUESTS.md` for whoever owns that edge function.
+4. **Partner portal breakdown + admin partners page** — schema (`referral_
+   partners.rate_bps`/`.commission_base`/`.duration_months`,
+   `referral_partner_vertical_overrides`) already existed from this same
+   pass's Cluster G work (`20260910140000_referral_commission_recurring.
+   sql`) with zero admin-facing UI or write path anywhere. Built: admin
+   `(admin)/cockpit/partners/page.tsx` (list) + `.../[id]/page.tsx` (edit
+   default commission terms + one form per vertical override, clearable
+   back to "inherit"), backed by `api/admin/admin-referral-partners/**`
+   (new, same direct-to-Postgres + audit-trail pattern as the ticket
+   queue — that edge function has no route for this at all, not even in
+   its not-yet-implemented list). Partner-side:
+   `(partner)/portal/customers/page.tsx` (new) — a per-referred-tenant
+   monthly commission breakdown (period, base, rate, the partner's own
+   share, status), read through the partner's own RLS-bound session for
+   `commission_events`/`referrals` (both already RLS-scoped to
+   `fn_jwt_referral_partner_id()`) plus one service-role lookup — strictly
+   filtered to the tenant ids that session's own already-scoped
+   `referrals` query named — for the referred tenant's display name only
+   (`tenants` RLS has no partner-visibility policy at all).
+   Deliberately does NOT show tenant-level cost internals (BACKEND_SPEC
+   §5 margin secrecy is admin-cockpit-only) — "base" already reflects
+   whichever `commission_base` (gross-profit-net-of-cost, or revenue) an
+   admin configured for that partner/vertical.
+   - **Real bug fixed in the same area (not a new feature):**
+     `(partner)/portal/payouts/page.tsx` and `components/partner/
+     payouts-table-client.tsx` were selecting/rendering `amount_cents`/
+     `method`/`paid_at` — columns that do not exist on `referral_payouts`
+     at all (the real columns are `total_cents`/`period`/`status`,
+     confirmed by reading the migration directly; `@heyloo/supabase-
+     client`'s hand-maintained `ReferralPayoutRow` type had the wrong
+     shape too, which is presumably how this shipped without a type
+     error). This would have 400'd against the live schema for the first
+     real partner. Fixed to the real columns; payout method (constant per
+     partner) is now shown once above the table instead of a nonexistent
+     per-row field. Filed the type-fix request in
+     `docs/audit/FIX_REQUESTS.md`.
+5. **Pricing (setup fee / white-glove)** — new product surface, no prior
+   spec (logged here per CLAUDE.md Rule 4). Stored as a new `fees_
+   <vertical>` `platform_settings` key (mirrors the existing `price_card_
+   <vertical>` key's shape/pattern exactly), admin-editable via a new
+   "Fees" tab on `(admin)/cockpit/settings/page.tsx` (`api/admin/
+   admin-platform-settings/fees/route.ts`, new — same "literal route
+   shadows the `[...path]` catch-all" pattern as items 3/4 above, since
+   the edge function's `handlePlatformSettings` only knows `referral`/
+   `pricing`). `api/platform-settings/price-card/route.ts` (pre-existing,
+   this cluster's ownership per "signup price-card display") now also
+   returns `setup_fee_cents`/`white_glove_fee_cents`/`
+   white_glove_description`, each `null` unless the admin has explicitly
+   enabled it for that vertical (an amount can be configured ahead of
+   time without going live) — signup step 2's `PlanStepClient` renders
+   them as a small card under the existing `PriceCard` (that shared
+   component itself lives in `packages/ui`, not this cluster's ownership,
+   so left untouched — the fee summary is composed alongside it instead).
+   `/pricing` deliberately still never shows real per-vertical numbers
+   (`pricing/page.tsx`'s own pre-existing doc comment: "the real price
+   card never appears here, FRONTEND_SPEC.md §3.3") — added one generic,
+   number-free FAQ accordion item there instead ("Is there a setup fee?"),
+   respecting that already-documented design decision rather than
+   overriding it.
+
+**Decisions logged (CLAUDE.md Rule 4 — flagged, not silently redesigned)**
+
+- Every new `api/admin/**` route in items 3-5 above talks directly to
+  Postgres via the service-role client instead of proxying to `supabase/
+  functions/admin` — a deliberate deviation from the rest of that
+  directory's convention (a single edge function fielding every `admin-*`
+  path), made because that edge function's owner is a different cluster
+  and either explicitly hasn't built the route yet (ticket queue) or has
+  no route for it at all (partners, fees). Security posture is not
+  weakened by this (same `platform_admin` claim check as the proxy itself,
+  same `admin_actions` audit-trail shape) — flagged as an architectural
+  inconsistency for the edge function's owner to fold in later, not as a
+  security gap. See `docs/audit/FIX_REQUESTS.md`.
+- Did not build a team-invite feature (no screen anywhere in the app can
+  create one today, and doing so needs `supabase.auth.admin.
+  inviteUserByEmail` from a service-role context — a new edge function or
+  Route Handler plus a whole new settings page, outside this cluster's
+  named scope). The setup-progress panel's "Invite your team" step reads
+  real data (`memberships` count) but has `href: null` rather than a dead
+  link. Filed for the integrator to route to an owner.
+- Did not add a `tenants.policies_reviewed_at` column (this cluster owns
+  no `supabase/migrations/**` path) — the setup-progress panel's policy-
+  review step uses the closest real, already-collected signal instead
+  (`dynamic_variable_overrides.cancellation_policy.text` non-empty).
+  Honest proxy, not a fabricated flag; filed as a follow-up.
+- `owner_test_phone` (an existing, previously-unused `tenants` column)
+  now has a UI to set it, added directly on the test-agent page rather
+  than as a new "team/account settings" surface — scoped narrowly to what
+  this cluster's own phone-test detection needs, not built out as a
+  general account-settings feature.
+
+**Gates run (scoped):** `pnpm --filter @heyloo/web {typecheck,test}` — 48
+test files / 217 tests, clean; `npx biome check --write` on every file
+this cluster touched (0 errors after applying its own formatting fixes).
+
+## Cluster G — New backend capabilities (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+**What was built**
+
+1. **Recurring referral-partner commissions** (owner decision, binding —
+   no platform-wide hardcoded rate): `referral_partners` gains `rate_bps`
+   (nullable — null means no recurring commission), `commission_base`
+   (`'gross_profit'|'revenue'`, default `gross_profit`), `duration_months`
+   (nullable — null means lifetime); a new
+   `referral_partner_vertical_overrides` table lets any of the three be
+   overridden per vertical, falling back to the partner-level value when a
+   column there is null. `20260910140000_referral_commission_recurring.sql`
+   — a `fn_protect_referral_partner_commission_fields` BEFORE UPDATE
+   trigger pins these three columns to their prior value on any
+   non-platform-admin PostgREST write (the pre-existing
+   `referral_partners_update` RLS policy already lets a partner self-edit
+   `payout_method`/`paypal_email`, and RLS has no column-level granularity
+   within one policy) — verified directly against a live Postgres session
+   (`SET ROLE authenticated` + `request.jwt.claims`): a non-admin partner
+   session's `rate_bps` write is silently reverted while `paypal_email`
+   still saves; a service-role raw connection (no jwt claims set at all,
+   e.g. this cluster's own admin edge-function writes) is unaffected. New
+   `job-commission-accrual` (monthly, `0 6 1 * *`, two hours before
+   `job-referral-payouts`' existing `0 8 1 * *` batch) computes one
+   `commission_events` row per (referral, previous calendar month) from
+   that period's `billing_invoices` (paid), `cost_events`, and
+   `payment_processing_events` (Stripe fees) — `base_cents` is revenue
+   alone or revenue-minus-costs-and-fees per the effective
+   `commission_base`, `amount_cents = round(base_cents * rate_bps /
+   10000)` floored at 0, idempotent per period via a partial unique index
+   + a conflict-action `WHERE status = 'accrued'` guard so a late re-run
+   never silently changes an already-batched/paid amount. This is
+   ADDITIVE to the pre-existing one-time flat qualification bonus
+   (`fn_check_referral_qualification`/`referral_flat_amount_cents`,
+   period-less rows) — both share the same `commission_events.status =
+   'accrued'` pool `job-referral-payouts` already batches from, unchanged.
+   `webhooks-stripe`'s `charge.refunded` clawback now resolves the
+   refunded charge's invoice → `billing_invoices.period_start` and, when
+   resolvable, claws back ONLY that period's recurring accrual (the
+   referral itself stays active, still earning future months); an
+   unattributable refund or `charge.dispute.created` falls back to the
+   prior full-relationship clawback. Admin endpoints:
+   `PATCH /admin-referrals/partners/:id` (commission terms) and
+   `PUT /admin-referrals/partners/:id/vertical-overrides/:vertical`
+   (upsert an override), both audited via `admin_actions`. Partner-portal
+   per-customer monthly breakdown (revenue/costs/share) is exposed via
+   direct RLS-scoped reads of `commission_events`/`referrals` (both
+   already scoped to `fn_jwt_referral_partner_id()`) — no new edge-function
+   endpoint was built for this since "no tenant data" (BACKEND_SPEC
+   §11.2) rules out joining full `tenants` rows, and the existing
+   RLS-as-API pattern this codebase already uses for the referral
+   program covers it.
+
+2. **Real-estate lead callback**: new `lead_callback_requests` table
+   (consent record — exact checkbox text + timestamp + IP, never a bare
+   boolean) + `api-lead-callback` (server-to-server only, authenticated by
+   an `api_tokens` bearer token requiring a `leads:write` scope — the
+   endpoint is meant for a tenant's own web-form backend or CRM
+   integration, never a raw browser request). Refuses without consent
+   (schema-required, non-empty `consent_text`); enforces tenant quiet
+   hours (`isQuietHours`, same helper `job-reminder-scheduler` uses) —
+   defers rather than calling, writing `status: 'deferred_quiet_hours'`
+   with a computed `scheduled_for`; places the call via a new
+   `createPhoneCall` in `_shared/providers/retell.ts` (Deno-importable
+   `POST /v2/create-phone-call`, same confirmed shape as `packages/
+   adapters/retell/src/outbound.ts`'s already-written but not-yet-wired
+   implementation — VERIFY-10 covers this exact endpoint; reimplemented
+   here rather than consumed from that package because Deno cannot import
+   a pnpm workspace package, the same reason every other `_shared/
+   providers/*.ts` file in this codebase exists) with the same
+   disclosure-line fail-closed check (G1/G2); pre-inserts the `call_logs`
+   row itself with `direction: 'outbound'` (rather than relying on
+   `voice-events`' inbound-only `direction` hardcoding, which is out of
+   this cluster's ownership) so `call_started`/`call_ended`'s own
+   `ON CONFLICT DO NOTHING`/plain `UPDATE` never overwrite it. Filed a
+   FIX_REQUESTS entry for a future `job-lead-callback-retry` to drain
+   `deferred_quiet_hours` rows once quiet hours end (needs a new
+   function directory outside this pass's ownership grant).
+
+3. **Menu import**: `api-menu-import` — Anthropic vision (image/PDF
+   content blocks, confirmed live against platform.claude.com/docs
+   2026-09-10) or plain text extracts candidate offerings, never
+   auto-published. **Contract correction, mid-pass**: this cluster's own
+   task brief described a `tenant_id` + `source` (url/file) request
+   returning `{candidates}`, but `docs/audit/FIX_REQUESTS.md` (found
+   while implementing) showed Cluster E had already built and shipped a
+   real dashboard UI + proxy calling this exact function with `{raw_text:
+   string}` (JWT-derived tenant, no body tenant_id) and expecting
+   `{items: [...]}` in the precise `offeringWriteSchema` shape
+   (`name/category?/price_cents?/duration_minutes?/allergens?/
+   modifiers?`). Rebuilt against the REAL, already-connected contract as
+   primary (`raw_text` required-or-`source`), keeping the richer
+   PDF/photo/URL vision mode as an additive alternate for a future
+   upgraded client. Ownership-conflict/correction logged here per CLAUDE.md
+   Rule 4 rather than shipping a function nothing could actually call.
+
+4. **Dental intake**: same mid-pass contract correction as above —
+   `docs/audit/FIX_REQUESTS.md` showed Cluster E had already built a
+   public intake form page against `GET/POST /functions/v1/api-intake/
+   {token}` (a single function, token in the URL path, NOT a separate
+   `api-intake-submit` POST-only function as this cluster's own brief
+   named it). Deleted the originally-built `api-intake-submit` and
+   rebuilt as `api-intake` matching that contract exactly — GET returns
+   `{valid, tenant_name, patient_first_name, already_submitted}` or 404
+   (unknown/expired collapsed to one 404, matching the page's own
+   handling); POST always returns HTTP 200 with `{ok:true}` or
+   `{ok:false, error}` (never a non-2xx, since `supabase-js`'s
+   `functions.invoke()` would throw on one and the client reads
+   `data.ok`/`data.error` from a successful invoke) and uses the exact
+   field names the form sends (`date_of_birth`, `insurance_group_id`, not
+   this cluster's original `dob`/`insurance_group_number`). New
+   `intake_tokens` (opaque single-use token, only its sha256 hash stored;
+   `patient_first_name` snapshotted at issuance rather than joined live)
+   / `intake_submissions` (DOB/insurance AES-256-GCM-encrypted via a
+   dedicated `INTAKE_ENCRYPTION_KEY`, RLS-enabled with zero client-facing
+   policy — service-role/edge-function-only). Token issuance +
+   `dental_intake_link` SMS (`{APP_BASE_URL}/intake/{token}`) lives in
+   `_shared/dental-intake.ts`, ready to call — its one call site into
+   `create_booking.ts` needs Cluster CD to wire (filed as a precise
+   FIX_REQUESTS entry with the exact call shape, since `voice-tools/
+   tools/create_booking.ts` is not this cluster's file).
+
+5. **Setup fee / white-glove — contract correction, mid-pass**: this
+   cluster's own brief said "`platform_settings` price cards gain
+   `setup_fee_cents`/`white_glove_price_cents`" and a first pass did
+   exactly that plus a migration backfilling those keys onto
+   `price_card_<vertical>`. `docs/audit/FIX_REQUESTS.md` (found while
+   reviewing for cross-cluster contracts, same pass as the intake/menu
+   corrections above) showed Cluster H had, in the same parallel wave,
+   independently built and shipped a real admin "Fees" settings tab
+   reading/writing a SEPARATE `platform_settings.fees_<vertical>` key
+   with a different shape (`setup_fee_enabled`, `setup_fee_cents`,
+   `white_glove_enabled`, `white_glove_fee_cents`,
+   `white_glove_description` — each fee has its own `*_enabled` gate, so
+   an amount can be configured ahead of a go-live date). Deleted this
+   cluster's own migration (no DB change needed — the key doesn't need
+   pre-existing rows, Cluster H's route already defaults via
+   `DEFAULT_FEES` when absent) and rewired `api-checkout` to read
+   `fees_<vertical>` with Cluster H's exact shape instead — the two
+   features now actually connect. `zCheckoutRequestSchema` gained an
+   optional `white_glove: boolean` (opt-in add-on; `setup_fee` is
+   applied automatically whenever configured+enabled, `white_glove` only
+   when both configured+enabled AND requested) — both realized as
+   one-time Stripe Checkout `price_data` line items (subscription-mode
+   Checkout Sessions allow up to 20 one-time-Price line items alongside
+   the recurring ones, "on the initial invoice only" — confirmed live
+   against docs.stripe.com/api/checkout/sessions/create, 2026-09-10).
+
+   **CORRECTION (2026-09-10 REPAIR pass)**: the paragraph above describes
+   `api-checkout`/`CheckoutRequestSchema` accepting `white_glove` as if that
+   made the add-on end-to-end — it did not check that anything in the
+   shipped UI/API-proxy layer could actually PRODUCE that opt-in.
+   `apps/web/src/app/api/checkout/session/build-request.ts`'s
+   `buildApiCheckoutRequest` never had a `white_glove` parameter, so every
+   real checkout request always sent the schema's `.optional().default(false)`
+   regardless of what the tenant wanted or what the admin had configured —
+   the mandatory `setup_fee_cents` path worked (nothing opt-in about it),
+   but white-glove could never actually be charged through the shipped
+   product. Fixed this pass: `PlanStepClient`
+   (`apps/web/src/components/signup/plan-step-client.tsx`) now renders a
+   real `Checkbox` opt-in when `priceCard.white_glove_fee_cents != null`,
+   carrying the choice to `/signup/account` the same way `annual` already
+   is (`?white_glove=1` query param — chosen over threading it through the
+   signed pre-auth `SignupDraft` cookie, both to match the existing
+   precedent and because the fee amount itself isn't known until step 2's
+   price-card fetch, after the cookie is written in step 1);
+   `AccountStepClient` includes it as a plain boolean in the checkout POST
+   body; `route.ts` reads it and passes it into `buildApiCheckoutRequest`,
+   which now omits the `white_glove` key entirely when falsy (matching the
+   schema's own default and keeping the existing exact-body seam test
+   passing unmodified). Test coverage added in `build-request.test.ts`
+   (true and default/omitted cases) and `route.test.ts` (opt-in forwarded
+   to the edge function). See `docs/audit/vertical/GAP_REGISTER.md`'s
+   pricing entry and this pass's repair-agent report for the full trace.
+
+6. **Change-request tickets**: `support_requests`/`support_request_notes`
+   already existed (T3) with real tenant-write RLS — only the admin
+   read/triage/respond half was a `501` stub
+   (`NOT_YET_IMPLEMENTED_PREFIXES`). Built `handleSupportRequests` in
+   `admin/handler.ts`: list (optional `status` filter)/get-with-notes/
+   PATCH status+priority/POST a note (`visible_to_tenant` flag), each
+   mutation audited. **Found mid-pass** (same FIX_REQUESTS sweep as
+   above) that Cluster H had, in parallel, independently built the exact
+   same admin surface as direct-to-Postgres Next.js Route Handlers
+   (`apps/web/src/app/api/admin/admin-support-requests/**`) — confirmed
+   via Cluster H's own filed FIX_REQUESTS entry this is a known,
+   accepted duplication (Next.js resolves the literal route ahead of the
+   `[...path]` catch-all proxy, so neither path is ever reached by the
+   other; consolidation is optional future cleanup, not required for
+   correctness) — left both in place, acknowledged in that entry rather
+   than reverting this cluster's own edge-function work.
+
+7. **Impersonation cookie bug** (the one item in this brief NOT
+   discovered to already be covered elsewhere): `@supabase/ssr`'s
+   one-cookie-per-domain session storage means opening the admin's
+   impersonation magic link in a new tab overwrites that cookie for the
+   whole browser, so a subsequent request from either tab (the admin's
+   original tab, or the impersonated tab's own "Enable edits"/"End
+   impersonation" actions) can carry the TENANT OWNER's session instead
+   of the admin's. Fix (both `apps/web/src/app/api/admin/[...path]/
+   route.ts` and `admin/handler.ts`, the two files the pre-existing
+   FIX_REQUESTS entry said the fix needed to span): a request whose
+   session lacks `platform_admin` but DOES carry `impersonated_by`
+   (stampable only by `custom_access_token_hook` from a real, currently
+   active `impersonation_sessions` row — unforgeable by an ordinary
+   tenant login) is now trusted as an alternative identity source for
+   exactly two narrow, already tenant_id+admin_user_id-scoped routes
+   (`impersonate-end`, `impersonate/edit-mode`) — resolved via
+   `resolveImpersonationActor` in `admin/handler.ts`
+   (`impersonatedByClaim` helper added to `_shared/admin-auth.ts`); every
+   other admin route keeps the strict `platform_admin` gate unchanged.
+   AAL2 is not re-required on the `impersonated_by` path — the underlying
+   session was already AAL2-gated at `impersonate`-start time. Verified
+   with real unit tests covering the exact cookie-clobber scenario
+   (a token carrying `tenant_id`/`role: owner` + `impersonated_by`, no
+   `platform_admin`) on both the proxy and the edge function.
+
+**Cross-cluster contract corrections (CLAUDE.md Rule 4 — logged, not
+silently guessed):** three of this cluster's seven items (menu import,
+dental intake, setup fee/white-glove) were built once against this
+cluster's own task-brief description, THEN discovered — via a
+`docs/audit/FIX_REQUESTS.md` read partway through this pass, after
+already-built frontend/admin surfaces from Clusters E/H turned out to
+target a different concrete contract than the brief described — and
+rebuilt against the real, already-shipped, already-tested contract
+instead. Both API_AND_FLOWS-adjacent shapes are documented above and in
+the corresponding `docs/audit/FIX_REQUESTS.md` entries (marked
+`~~...~~ — APPLIED`). No functionality was lost — the richer
+PDF/photo/URL vision mode and the original `intake_forms`-shaped columns
+were preserved as additive/renamed rather than discarded.
+
+**Migrations added** (all additive, prefix range `20260910140[0-3]xx`
+per this cluster's reserved prefix): `20260910140000_referral_commission_
+recurring.sql`, `20260910140100_commission_accrual_cron_schedule.sql`,
+`20260910140200_lead_callback_requests.sql`,
+`20260910140300_dental_intake.sql`. Verified applying cleanly from a
+fresh Postgres in this sandbox (no Docker/`supabase start` available —
+same disclosed limitation and harness approach as T1: stub `auth`/
+`realtime`/`storage`/`vault`/`cron`/`net`/`pgmq` schemas, a
+verification-only trimmed copy of the extensions migration with
+`pg_cron`/`pgmq`/`pg_net` removed since those aren't installable on a
+bare Postgres) — every migration in the repo, in order, plus
+`supabase/seed/seed.sql`, applied with zero errors; the new
+column-protection trigger was additionally exercised directly at the SQL
+level (`SET ROLE authenticated` + `request.jwt.claims`), confirming a
+non-admin partner session's `rate_bps` write is reverted while
+`paypal_email` still saves, and a service-role raw connection is
+unaffected.
+
+**Gates run (scoped):** `pnpm --filter @heyloo/edge-functions {typecheck,
+test}` — 83 test files / 719 tests, clean; `pnpm --filter @heyloo/web exec
+vitest run src/app/api/admin` (the impersonation proxy fix) — 5 tests,
+clean.
+
+## Integrator — Wave-2 cross-cluster FIX_REQUESTS pass (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Applied every genuinely-open bullet in `docs/audit/FIX_REQUESTS.md` (as of
+this pass) across the seven wave-2 clusters' disjoint uncommitted edits.
+Bullets already marked `~~...~~ — APPLIED/RESOLVED/ACKNOWLEDGED` were
+verified in place and left as-is (no action needed): dental/vet
+`extraction[]`, generic.ts tool-count decision, restaurant
+menu_text/tax_rate_bps, shared/tools.ts room_type/allergies, api-intake,
+api-menu-import, the two acknowledged database.types.ts/admin-routes
+cross-references, and the heads-up about admin/partner shell-client files.
+
+**Applied this pass:**
+
+- `supabase/functions/voice-inbound/{dynamic-variables,handler}.ts` +
+  `_shared/schemas/voice-inbound.ts`: forward `agent_configs.transfer_number`
+  as a `transfer_number` dynamic variable (blocking for `transfer_call`).
+  Also added restaurant's `prep_time_text`/`delivery_terms_text` spoken
+  tokens (resolved, not yet referenced by `restaurant.ts`'s prompt — same
+  deliberate deferral Cluster F's own note already established for these).
+- `packages/adapters/retell/src/provider.ts`: wired
+  `RetellProvider.createOutboundCall` to `createRetellOutboundCall`
+  (`outbound.ts`) and set `RETELL_CAPABILITIES.supportsOutboundCalls: true`.
+- `packages/canonical-types/src/agent-template.ts` +
+  `schemas/vertical-details.ts`: added `delivery_fee_cents` to
+  `zRestaurantOverrides`/`verticalDetailsSchema` (parity with
+  `min_order_cents` et al.) + a Settings UI field
+  (`dashboard/agent/vertical-details/page.tsx`) — previously silently
+  defaulted to $0 with no way to configure it.
+- `packages/templates/src/verticals/*.ts` (7 files): every
+  `createBookingTool(...)` call site now passes its vertical slug (typed
+  `structured_payload` authoring hint); `legal.ts`/`real-estate.ts`'s
+  `takeMessageTool()` calls now pass their vertical slug too.
+- `supabase/functions/_shared/templates.ts`: added `order_ready` and
+  `waitlist_slot_opened` `TemplateKey`/`renderTemplate` cases — both paths
+  previously sent a decorative empty-body SMS.
+- New `list_offerings` voice tool (`supabase/functions/voice-tools/tools/
+  list_offerings.ts` + wiring in `handler.ts`/`_shared/schemas/voice-tools.ts`
+  + `packages/templates/src/shared/tools.ts`'s `listOfferingsTool()`),
+  wired into `dental.ts`'s `pain_triage` state and `veterinary.ts`'s
+  `symptom_or_routine` state so both can resolve a real `offering_id`
+  before `check_availability`/`create_booking` instead of leaving it null.
+- `supabase/functions/voice-tools/tools/create_booking.ts`: calls
+  `issueDentalIntakeToken()` after a successful dental booking insert
+  (best-effort, never blocks the booking) — new optional `CreateBookingDeps`
+  param (`{logger, appBaseUrl}`) threaded through `handler.ts`'s
+  `DispatchDeps.dentalIntake` and `index.ts`'s new `APP_BASE_URL` env read.
+- `packages/supabase-client/src/database.types.ts`: fixed
+  `ReferralPayoutRow` (was claiming `amount_cents/method/paid_at`, which
+  don't exist — real columns are `total_cents/period/paypal_batch_id/
+  status`, with the real widened status CHECK); added the three new
+  `referral_partners` commission fields, the `referral_partner_vertical_
+  overrides` and `commission_events` tables to the `Database` type (all
+  previously missing entirely). `BookingRow`/`OrderRow`/`ResourceRow`'s
+  flagged fields were already present — verified, no action needed.
+- New `supabase/functions/api-tenant-test-call/` (web-call half of
+  dashboard "test your agent" — the existing `apps/web` proxy was 503ing).
+- New `supabase/functions/job-lead-callback-retry/` + `_shared` extraction
+  of `attemptLeadCallbackCall`/`resolveTenantCallingConfig` out of
+  `api-lead-callback/handler.ts` (now exported, reused by the retry job
+  rather than duplicated) — drains `lead_callback_requests` rows stuck in
+  `deferred_quiet_hours`. Cron entry added in the new migration below.
+- New `supabase/functions/api-team-invite/` + `_shared/providers/
+  supabase-admin.ts`'s new `inviteUser()` (GoTrue `POST /auth/v1/invite`,
+  confirmed via `supabase/auth-js` source — response shape not
+  independently confirmed against a live instance, see `docs/VERIFY.md`
+  VERIFY-11) + a new `dashboard/team` page + `api/tenant/team{,/invite}`
+  Route Handlers + a `Team` nav entry. The setup-progress panel's "Invite
+  your team" step now links to a real page instead of `href: null`.
+- `supabase/migrations/20260910150000_tenants_policies_reviewed_at.sql`
+  (new column + backfill) + `api/tenant/agent/vertical-details`'s POST
+  handler now stamps it on every save with a non-empty
+  `cancellation_policy.text` — the setup-progress panel's "Policies
+  reviewed" step reads this precise timestamp instead of the old
+  configured-vs-reviewed-conflating proxy.
+- `supabase/migrations/20260910160000_wave2_cron.sql` (new, additive):
+  cron entry for `job-lead-callback-retry` (`*/15 * * * *`), using the
+  existing `fn_cron_upsert`/Vault-secret guard pattern verbatim.
+- `supabase/config.toml`: entries for the three new functions
+  (`job-lead-callback-retry`, `api-tenant-test-call`, `api-team-invite`).
+- `.env.example`: no new variables needed — every env var the new
+  functions read (`APP_BASE_URL`, `RETELL_API_KEY`, `SUPABASE_URL`,
+  `SB_SECRET_KEY`, `CRON_INVOKE_SECRET`) was already documented.
+
+**Structural issue found and fixed (not itself a filed FIX_REQUESTS
+bullet, discovered running the mandated `pnpm -w typecheck`):** Cluster
+A's uncommitted `packages/adapters/retell/src/compiler/
+registry-consistency.test.ts` (new this wave) imported `@heyloo/templates`'
+live `TEMPLATE_DEFINITIONS` to exercise the compiler against every real
+shipped template. That required adding `@heyloo/templates` as a
+devDependency of `@heyloo/adapter-retell` — but `@heyloo/templates`
+ALREADY depends on `@heyloo/adapter-retell` (its own `compiler-gate.test.ts`,
+via the public `RetellProvider.compileTemplate` — the correct, Rule-2-
+respecting direction). The two devDependencies together formed a genuine
+circular package dependency, which made `turbo run build`/`typecheck`
+refuse to run for the ENTIRE workspace (no valid topological order exists
+for a cycle) — not a type error, a hard stop before any package could be
+checked. Per CLAUDE.md Rule 4 (flag a gap, don't redesign under a
+different task's scope): reverted the new devDependency and rewrote
+`registry-consistency.test.ts` to scan three small LOCAL fixture templates
+(one per `compile_target`, each declaring `transfer_call`) instead of the
+live registry — same assertions, same coverage shape, just not scanning
+real shipped templates. The real finding that test run already surfaced
+against the live registry (real_estate/generic over their single_prompt
+soft budgets) is independently recorded in `docs/audit/FIX_REQUESTS.md`/
+this file's Cluster F entry and doesn't depend on this test continuing to
+scan real templates. Restoring live-registry coverage without the cycle
+(e.g. via `packages/templates`' existing `templates.build.json` versioned
+JSON artifact, read as plain data rather than a TS package import) is a
+real follow-up, not attempted here. Full detail in the rewritten test
+file's own top-of-file INTEGRATION NOTE.
+
+**Test fixture updates for FIX_REQUESTS-driven behavior changes:**
+`apps/web/src/app/api/tenant/agent/vertical-details/route.test.ts` (now
+asserts both the `agent_configs` and `tenants` update payloads) and
+`apps/web/src/app/api/tenant/setup-progress/route.test.ts` (fully-done
+fixture now includes `tenants.policies_reviewed_at`).
+
+**Not attempted, still open (see docs/audit/FIX_REQUESTS.md for full
+detail):**
+- `supabase/functions/webhooks-pos/handler.ts` Airtable two-way sync —
+  out of scope, no owner claimed it this pass either.
+- `outreach_send_queue`/`outreach_send_queue_dlq` decorative-pgmq
+  cleanup — needs whoever owns `job-outreach-personalize{,-collect}`'s
+  design, not an integrator-level call.
+- The impersonation cookie-clobber auth-model gap (`api/admin/[...path]/
+  route.ts` + `admin/handler.ts`) — a genuine two-service security-model
+  change, explicitly flagged as beyond integrator scope by its own
+  FIX_REQUESTS entry.
+- Admin `handler.ts` consolidation with Cluster H's parallel Route
+  Handlers — informational only, no action requested.
+
+**Gates run (full workspace):** `pnpm -w typecheck` — 18/18 packages
+green (previously hard-blocked by the cycle above). `pnpm -w test` —
+18/18 package test tasks green (`@heyloo/edge-functions`: 87 files/748
+tests; `@heyloo/web`: 48 files/217 tests; `@heyloo/adapter-retell`: 18
+files/128 tests; every other package's existing suite unchanged).
+Migrations: this sandbox has a real local Postgres 16 available this
+pass (`pg_lsclusters`) — every migration in the repo, in order (42
+files after the extensions one), applied cleanly from zero against it
+(stub `auth`/`storage`/`realtime`/`vault` schemas, a trimmed copy of
+`20260907130000_extensions_and_helpers.sql` with the `pg_cron`/`pgmq`/
+`pg_net` lines removed since those extensions aren't installable on a
+bare Postgres — same disclosed limitation prior clusters' passes used),
+followed by `supabase/seed/seed.sql`, both zero errors. Spot-checked the
+two new migrations' actual effects: `tenants.policies_reviewed_at`
+column present + a seeded tenant with a pre-existing
+`cancellation_policy.text` backfilled to a non-null timestamp;
+`20260910160000_wave2_cron.sql` correctly no-ops with a `NOTICE` (no
+`pg_cron`) rather than erroring; `referral_partners.{rate_bps,
+commission_base,duration_months}`, `referral_partner_vertical_overrides`,
+and `commission_events` all present with the exact shapes now reflected
+in `database.types.ts`.
+
+## 2026-09-10 — REPAIR: post-call `classification`/`outcome`/`follow_up_needed` extraction closed (distinct from the FIX-1-era vet/dental emergency/urgency gap above)
+
+The verifier's post-call-extraction claim (Engine: post-call extraction
+compiles into the Retell agent request and voice-events stores the
+returned fields) was **partial**: the compile → attach → store mechanism
+(`packages/adapters/retell/src/compiler/extraction.ts`'s
+`compilePostCallAnalysisData()`, `agents.ts`'s attach, `voice-events/
+handler.ts`'s `handleCallAnalyzed`) was real and correctly wired, but NO
+shipped template ever declared `classification`, `outcome`, or
+`follow_up_needed` as `extraction[]` fields — only `emergency_detected`/
+`urgency_flag` (vet/dental, item 7/8 above) and `legal_advice_given`
+(legal) existed anywhere. `motel.ts`/`restaurant.ts`/`auto-repair.ts`/
+`real-estate.ts`/`generic.ts` had zero extraction fields at all. This is a
+distinct gap from the emergency/urgency one already closed above — that
+FIX-1 pass never touched `classification`/`outcome`/`follow_up_needed`,
+and no later pass closed it either (confirmed by grep: no `docs/
+BUILD_NOTES.md` entry after item 7/8 ever mentions these three field
+names). `docs/VERIFY.md`'s row for this mapping stayed "Low — invented
+mapping, not sourced" the whole time.
+
+**Fix (this pass):**
+- New `packages/templates/src/shared/extraction.ts`: `withCallOutcomeExtraction()`,
+  the same per-state-splice pattern `legal.ts`'s `withLegalGuardrail`
+  already used, declaring `classification` (enum, full `CALL_CLASSIFICATIONS`
+  taxonomy from `@heyloo/canonical-types`), `outcome` (text), and
+  `follow_up_needed` (boolean) on every state. Every vertical template
+  (`veterinary`, `dental`, `motel`, `restaurant`, `auto-repair`,
+  `real-estate`, `generic`, `legal`) now maps its full `states[]` through
+  this — `voice-events/handler.ts` already read these three keys verbatim,
+  so no reader-side change was needed, exactly as `extraction.ts`'s own
+  compiler read `legal_advice_given`/`emergency_detected` with no reader
+  change for those.
+- Urgency/emergency signal extended beyond vet/dental (GAP_REGISTER intent
+  — "usable tenant-wide, not just vet/dental"): the shared
+  `safetyEmergencyState()` (`packages/templates/src/shared/utility-states.ts`,
+  wired into dental/legal/motel/restaurant/real_estate/generic) now
+  declares `emergency_detected` (boolean); auto-repair's own
+  `vehicleSafetyEmergencyState()` gets the same field. Deliberately just
+  this one boolean, not a duplicate `urgency_flag` enum: vet's
+  ("emergency"/"routine") and dental's own pre-existing
+  (`same_day`/"routine") `urgency_flag` fields used incompatible enum
+  vocabularies, and the compiler's `post_call_analysis_data` dedupes by
+  field NAME across the whole template (first declaration in `states[]`
+  wins) — a second, differently-voculated `urgency_flag` from the shared
+  state would be silently dropped wherever a template already declares its
+  own, which is exactly the kind of decorative-but-unread field this
+  repair pass exists to eliminate, not add more of. So `urgency_flag` was
+  DROPPED from vet's `emergency_referral` and dental's `pain_triage` (they
+  keep `emergency_detected`), and `call_logs.urgency_flag` is documented
+  (`voice-events/handler.ts`, inline comment) as derived solely from
+  `emergency_detected` — no behavior change for vet/dental (that field was
+  already discarded into the generic `extracted_entities` blob, never read
+  by name).
+- `packages/templates/src/red-team/structural.test.ts`: new
+  "every template declares classification/outcome/follow_up_needed on
+  every state" describe block (one `it` per template per state, following
+  the existing `legal_advice_given` pattern) plus a per-template check
+  that `classification`'s `enum_values` cover the real taxonomy — so this
+  can't silently regress the way it did the first time.
+- `docs/VERIFY.md`'s `custom_analysis_data` row upgraded Low → Medium: the
+  request-shape side (this codebase's compiled `post_call_analysis_data`
+  and every template's field declarations) is no longer an invented
+  mapping, it's real and test-asserted; what remains open is Retell's
+  RUNTIME behavior — whether Retell's own extractor actually returns
+  `custom_analysis_data` keyed by these exact names for a live call. This
+  repair pass could not make a live sandbox call (no remote/live
+  operations in scope), so that row stays open pending one.
+
+**Gates run:** `pnpm --filter @heyloo/templates typecheck` and `test`
+(237/237, up from 235 — two new structural assertions' worth of `it`s
+per template/state), `pnpm --filter @heyloo/adapter-retell typecheck` and
+`test` (128/128), `pnpm --filter @heyloo/edge-functions test` (87 files/
+748 tests, includes the pre-existing `voice-events/handler.test.ts`
+coverage for the `urgency_flag`-derived-from-`emergency_detected` path,
+unchanged behavior).
+
+## 2026-09-10 — REPAIR: vet emergency_referral's dropped transfer_call + the consistency test's synthetic-fixtures-only coverage
+
+Verifier claim "Engine: single-tool states compile to Retell Function
+Nodes; transfer_call compiles to the native transfer mechanism for every
+registered template; a consistency test fails on any prompt token without
+a schema key + form field" was **partial**. The compiler logic itself
+(`packages/adapters/retell/src/compiler/conversation-flow.ts:107-149`
+`buildNode()`, `multi-prompt.ts`, `single-prompt.ts`) was already correct.
+Two real hops were missing:
+
+1. **Live bug**: `packages/templates/src/verticals/veterinary.ts`'s
+   `emergency_referral` state declared `allowed_tools: ["take_message",
+   "transfer_call"]` — two tools. Per the compiler's own documented
+   contract, 2+ tools falls back to a plain `ConversationNode` with no
+   per-node tool-locking, and `transfer_call` is unconditionally excluded
+   from the flow's custom `tools[]` regardless of node type — so at this
+   state, the vet RED-FLAG EMERGENCY node, `transfer_call` was wired to
+   NOTHING (not a native `TransferCallNode`, not a custom tool). The
+   model could not invoke it there, even though the state's own prompt
+   promised "offer a warm transfer if this clinic can connect them
+   directly". (The global `human_request` intent's separate,
+   correctly-compiled `transfer_to_human` state meant callers weren't
+   fully stranded, but this state's own declared capability was dead.)
+
+2. **Test gap**: `packages/adapters/retell/src/compiler/
+   registry-consistency.test.ts` (both the transfer_call-native-wiring
+   check and the token/schema-consistency check) ran only against a
+   3-item hand-written `LOCAL_REGISTRY`, never `@heyloo/templates`' real
+   `TEMPLATE_DEFINITIONS` — the file's own INTEGRATION NOTE documented
+   this was reverted from live-registry scanning to avoid a circular
+   package dependency (`@heyloo/templates` depends on
+   `@heyloo/adapter-retell`, so adding the reverse import cycles).
+   Meanwhile `packages/templates/src/red-team/compiler-gate.test.ts` (the
+   only place that runs the real 8 templates through the real compiler)
+   deliberately asserts only `disclosureVerified`, never node shapes
+   (Rule 2 — `providerPayload` stays `unknown` outside the adapter
+   package). So nothing in CI ever verified, for any real template, that
+   single-tool states become Function Nodes or that transfer_call becomes
+   a native node — only against invented fixtures. And
+   `prompt-lint.ts`'s `ALLOWED_DYNAMIC_VARIABLES` was a second,
+   hand-maintained allowlist duplicating (not deriving from) the
+   schema-derived check already written in `registry-consistency.test.ts`.
+
+**Fix (this pass):**
+- `veterinary.ts`: split `emergency_referral` into a no-tool triage/offer
+  state plus two new dedicated single-tool terminal states —
+  `emergency_warm_transfer` (`allowed_tools: ["transfer_call"]`) and
+  `emergency_take_message` (`allowed_tools: ["take_message"]`) — wired by
+  two new transitions (`caller_wants_direct_transfer` /
+  `caller_declines_direct_transfer`). Both prompt-promised capabilities
+  are now actually reachable. `emergency_detected` extraction stays on the
+  parent `emergency_referral` state (extraction compiles to agent-level
+  `post_call_analysis_data` keyed by field name, not per-node — reaching
+  the parent state is what "emergency detected" means).
+- `packages/canonical-types/src/agent-template.ts`: `zAgentTemplate`'s
+  `.check()` now fails any state declaring `transfer_call` alongside
+  another tool (new exported `TRANSFER_CALL_TOOL_NAME` constant), naming
+  the offending state and tool list — this would have caught the vet bug
+  at template-authoring/insert time instead of shipping it silently.
+- `registry-consistency.test.ts`: resolved the circular-dependency note
+  by reading `@heyloo/templates`'s own build artifact
+  (`dist/templates.build.json`, already emitted by that package's `build`
+  script) directly off disk (`node:fs`, not a package import — no
+  package.json edge, no cycle), re-validated against `zAgentTemplate`.
+  Both existing describe blocks (transfer-call wiring, token/schema
+  consistency) and a new "single-tool states lock to a FunctionNode/
+  TransferCallNode" describe block (covering the top-line claim in full —
+  not just transfer_call) now run against `[...LOCAL_REGISTRY,
+  ...REAL_REGISTRY]`, i.e. the real 8 shipped templates plus the fast
+  synthetic fixtures. **Residual, flagged rather than fixed**: this is a
+  genuine cross-package build-order dependency (`@heyloo/templates` must
+  be built before this test file runs) that `turbo.json`'s default
+  `^build` graph does not guarantee for `@heyloo/adapter-retell#test`
+  (deliberately not made a package.json dependency, to avoid recreating
+  the cycle). `loadRealRegistry()` throws a clear, actionable error
+  rather than silently skipping if the artifact is missing. The durable
+  fix — a turbo task-level `"@heyloo/adapter-retell#test": {"dependsOn":
+  ["@heyloo/templates#build"]}` override — is a root `turbo.json` change
+  outside this file's ownership; filed to whichever cluster owns root
+  build orchestration.
+- `packages/templates/src/red-team/prompt-lint.ts`: `ALLOWED_DYNAMIC_VARIABLES`
+  is now computed from `@heyloo/canonical-types`' schemas
+  (`zAgentDynamicVariables` + every vertical's `z*Overrides` +
+  `verticalDetailsSchema`, via the same `derivedTokensForField` mapping
+  `registry-consistency.test.ts` already used) instead of a second
+  hand-maintained list, so a schema field rename/removal is caught here
+  automatically. New `prompt-lint.test.ts` covers the derivation directly.
+- `compiler-gate.test.ts` (packages/templates) intentionally left
+  untouched: extending it to inspect node shapes would require narrowing
+  `providerPayload` from `unknown` inside `packages/templates`, which
+  would violate Rule 2 (provider-specific shapes must stay inside
+  `packages/adapters/*`). The node-shape assertions instead live in
+  `registry-consistency.test.ts`, inside the adapter package, now against
+  the real registry — satisfying the same end-to-end coverage goal
+  without the Rule-2 violation.
+
+**Gates run:** `pnpm --filter @heyloo/canonical-types typecheck` and
+`test` (163/163, up from 161 — two new structural-validator tests),
+`pnpm --filter @heyloo/templates typecheck` and `test` (243/243, up from
+237 — new `prompt-lint.test.ts`), `pnpm --filter @heyloo/adapter-retell
+typecheck` and `test` (158/158, up from 128 — 30 new assertions from the
+real-registry scan plus the new single-tool-node-locking describe block),
+after rebuilding `@heyloo/canonical-types` → `@heyloo/adapter-retell` →
+`@heyloo/templates` in that order so `templates.build.json` reflects the
+vet fix.
+
+## 2026-09-10 — REPAIR: structured_payload/customer-metadata claim (voice tools) — validation was never wired, `addresses` was aspirational, schema parity was a hand-copy of a hand-copy
+
+Verifier claim "Tools/payloads: typed per-vertical `structured_payload`
+validated on `create_booking`/`create_order`; `customers.metadata`
+(vehicles/pets/addresses) written and returned by `lookup_customer`;
+`join_waitlist` writes `waitlist_entries` the SMS YES consumer picks up;
+canonical tool schemas and runtime schemas cannot drift" was **still
+broken** on 3 of its 4 parts (the `join_waitlist`↔SMS-YES chain was
+already real and untouched here).
+
+1. **`structured_payload` validation was dead code, not wired.**
+   `packages/canonical-types/src/booking-payloads.ts`'s
+   `zBookingStructuredPayloadFor(vertical)` was only ever used to build
+   the JSON-Schema authoring hint shown to the model
+   (`packages/templates/src/shared/tools.ts`) — `create_booking.ts` took
+   `args.structured_payload` (runtime-typed as a bare
+   `z.record(z.string(), z.unknown())`, deliberately loose per CLAUDE.md
+   Rule 2 hot-path discipline) and inserted it verbatim, with no call to
+   any per-vertical validator anywhere. Fix: new
+   `supabase/functions/_shared/schemas/booking-payloads.ts` — a
+   Deno-importable, field-for-field mirror of the canonical per-vertical
+   schemas (same documented Deno/Node-can't-share-a-package constraint as
+   `admin/schemas.ts` and this same file's own `extractMetadataMerge`) —
+   exposing `sanitizeBookingStructuredPayload(vertical, raw)`: a
+   per-field sanitize (unknown-schema fields pass through untouched,
+   known fields that fail their own validator are dropped) rather than a
+   hard `.parse()` gate, so one malformed field never fails a real
+   booking. `create_booking.ts` now calls it before building
+   `structuredPayload`. New regression test in `create_booking.test.ts`
+   posts `vehicle_year: "not_a_number"` + an invalid enum value alongside
+   a valid `vehicle_make` for an `auto` booking and asserts only
+   `vehicle_make` survives to the `bookings` insert.
+
+2. **`create_order` has no `structured_payload` field, by design —
+   documented rather than added.** Neither the canonical
+   (`zCreateOrderRequest`) nor runtime (`CreateOrderArgsSchema`) schema
+   ever declared one; `allergies`/`special_instructions` are already
+   separate typed top-level fields written straight to real `orders`
+   columns, and `booking-payloads.ts` has no per-vertical *order* shape
+   (its fields — `vehicle_year`, `pet_name`, `matter_type`, etc. — are
+   all booking-specific and vestigial for the one vertical that places
+   orders, restaurant). Per CLAUDE.md Rule 4 (append a documented
+   decision rather than redesign out-of-scope), decided NOT to add a
+   `structured_payload` field to `create_order`: it would duplicate
+   `allergies`/`special_instructions` with no real schema to validate
+   against. The original claim's "…validated on create_booking/
+   create_order" should be read as create_booking only.
+
+3. **`customers.metadata.addresses` was aspirational — implemented via
+   `customer_addresses` instead of the dead metadata key.** Nothing ever
+   wrote `metadata["addresses"]` (only `"vehicles"`/`"pets"`, in
+   `create_booking.ts`'s `extractMetadataMerge`), and
+   `customers.metadata`'s own column comment
+   (`20260907130400_customers.sql:31`) already says addresses there are
+   "superseded by `customer_addresses` for structured use" — that table
+   already exists and is already populated/read by `create_order.ts`'s
+   delivery-radius check. Fix: `lookup_customer.ts` now also queries
+   `customer_addresses` (tenant+customer scoped, default-first ordering)
+   and returns an `addresses` array the same optional-when-present way
+   `vehicles`/`pets` already work; `zLookupCustomerResult`'s existing
+   `addresses` field (`packages/canonical-types/src/tools.ts`) is now
+   real rather than dead. Two new `lookup_customer.test.ts` cases mirror
+   the existing vehicles/pets coverage (addresses present / addresses
+   absent).
+
+4. **Schema-parity test was diffing a hand-copy against a hand-copy.**
+   `supabase/functions/_shared/schemas/voice-tools.test.ts`'s
+   `CANONICAL_TOP_LEVEL_KEYS` was a third, manually maintained literal
+   that was never itself checked against
+   `packages/canonical-types/src/tools.ts` — it could drift from the
+   real canonical schema exactly like the thing it was meant to catch
+   drifting, and covered only 6 of 10 tools. Fix: added
+   `@heyloo/canonical-types` as a real `devDependency` of
+   `@heyloo/edge-functions` (`supabase/functions/package.json`,
+   `workspace:*` — this package's Vitest/Node test run, not its Deno
+   hot-path entrypoints, which still cannot and do not import it; the
+   `pnpm install`-created `node_modules/@heyloo/canonical-types` symlink
+   requires that package's `dist/` to be built, same as every other
+   workspace consumer). Rewrote `voice-tools.test.ts` to import the real
+   `z*Request` schemas from `@heyloo/canonical-types` and diff directly
+   against the runtime schemas for all 10 tools (up from 6): top-level
+   key-set parity (added/removed-field drift) AND per-field
+   required/optional parity (a field silently changing requiredness on
+   one side — a shape drift a pure key-set diff can't catch). Extending
+   coverage to the 4 previously-untested tools surfaced one real,
+   pre-existing drift: `send_payment_link`'s canonical `amount_cents` was
+   required (`zCents`) while the runtime schema — and the handler itself,
+   `send_payment_link.ts`, which explicitly falls back to the referenced
+   order's `total_cents` when `amount_cents` is omitted — treats it as
+   optional. Fixed the canonical schema (`amount_cents: zCents.optional()`)
+   to match the real, intentional handler behavior rather than loosening
+   the runtime schema to match a stricter-than-actual canonical one.
+
+**Gates run:** `pnpm --filter @heyloo/edge-functions typecheck` and
+`test` (765/765, up from 764 pre-existing on this branch — 2 new
+`lookup_customer.test.ts` cases, 1 new `create_booking.test.ts`
+regression case, `voice-tools.test.ts` parity rewritten in place),
+`pnpm --filter @heyloo/canonical-types typecheck` and `test` (163/163,
+unchanged count — `send_payment_link` optionality fix touched no
+existing assertion), `pnpm --filter @heyloo/templates test` (243/243,
+unaffected), after `pnpm --filter @heyloo/canonical-types build` to
+refresh `dist/` for the new workspace symlink.
+
+## REPAIR — Motel deposit-hold exclusivity (2026-09-10)
+
+Verifier status on the "motel deposit hold" claim was `partial`: every
+piece (room inventory, room-type/capacity-aware `check_availability`,
+`quoted_rate_cents`, `hold_expires_at` + 15-min cron expiry, deposit-policy
+config, Stripe confirm-on-pay) worked and was tested, but the hold did not
+actually *hold* the room — a `scheduled` deposit-hold booking was invisible
+to both DB-level race-proofing mechanisms (the `bookings` GIST exclusion
+constraint and the availability-invalidation trigger), both scoped to
+`status = 'confirmed'` only. This was a disclosed KNOWN LIMITATION in
+`create_booking.ts` and `20260910122000_motel_deposit_hold_expiry_cron.sql`,
+not a hidden bug — closed here.
+
+Fix: new migration `20260910170000_motel_hold_exclusion.sql` (never edits
+the applied `20260907130600_booking_core.sql` / `..._functions_triggers.sql`
+per CLAUDE.md Rule 2):
+
+1. A second, narrower partial GIST exclusion constraint on `public.bookings`
+   — `bookings_hold_exclusion`, scoped to
+   `where (status = 'scheduled' and hold_expires_at is not null)` — chosen
+   over widening the existing `status = 'confirmed'` constraint (approach
+   (a) in the gap's remediation note) after verifying every `status =
+   'scheduled'` write site in the repo (`create_booking.ts`'s motel
+   deposit-hold branch is the only one that ever sets `hold_expires_at`;
+   `webhooks-twilio-sms/handler.ts`'s waitlist auto-book and the dashboard
+   booking-edit route both always write `status = 'confirmed'` directly),
+   so approach (b) matches exactly the rows a deposit hold ever produces
+   and leaves every other vertical's booking path untouched.
+2. `fn_invalidate_availability_on_booking()` re-`create or replace`d to also
+   flip `availability_slots.is_available = false` for an inserted/updated
+   `scheduled` booking carrying a non-null `hold_expires_at` (so
+   `check_availability.ts`'s existing `is_available = true` filter stops
+   offering a held room), and flip it back to `true` when such a hold is
+   cancelled/no-showed (the cron expiry sweep hitting an unpaid hold),
+   mirroring the existing confirmed→cancelled/no_show branch.
+3. `create_booking.ts`'s existing `EXCLUSION_VIOLATION` (23P01) catch block
+   needed no code change — it already turns any exclusion-constraint hit
+   into `{confirmed: false, reason: "slot_taken"}`; the new constraint just
+   gives it a second, real trigger. Removed the KNOWN LIMITATION comment
+   block above the deposit-hold branch and replaced it with a description
+   of the now-real exclusivity mechanism.
+4. Removed the corresponding KNOWN LIMITATION paragraph from
+   `20260910122000_motel_deposit_hold_expiry_cron.sql`'s header comment.
+
+Tests added (no pgTAP/integration DB harness exists anywhere in this repo
+— pre-existing repo-wide pattern, not introduced here — so both are
+mock-`SqlClient` unit tests consistent with the rest of this suite):
+- `create_booking.test.ts`: a new case in the motel deposit-hold describe
+  block asserting a second `create_booking` call that collides with an
+  active hold (insert throws `23P01`, as `bookings_hold_exclusion` would
+  raise) is rejected `{confirmed: false, reason: "slot_taken"}` via the
+  existing catch path.
+- `check_availability.test.ts`: a case documenting that a resource whose
+  only slot is held (i.e. `is_available = false`, as the extended trigger
+  now guarantees) never appears in the tool's returned slots.
+
+**Gates run:** `pnpm --filter @heyloo/edge-functions test` (767/767, up
+from 765 — the 2 new cases above) and `typecheck` (pre-existing, unrelated
+failures in `voice-tools/handler.ts:86` unused `geocode` destructure and
+`voice-tools/tools/create_order.ts:287` `exactOptionalPropertyTypes`
+mismatch — neither file touched by this repair; noted, not fixed, per
+CLAUDE.md Rule 4 file-ownership scope).
+
+Files touched: `supabase/migrations/20260910170000_motel_hold_exclusion.sql`
+(new), `supabase/functions/voice-tools/tools/create_booking.ts`,
+`supabase/functions/voice-tools/tools/create_booking.test.ts`,
+`supabase/functions/voice-tools/tools/check_availability.test.ts`,
+`supabase/migrations/20260910122000_motel_deposit_hold_expiry_cron.sql`.
+
+## 2026-09-10 — REPAIR: dental same-day urgency criteria reconciled with emergency_detected (offering/intake-link paths reconfirmed correct)
+
+Verifier claim "Dental: same-day urgency flag flows from extraction to
+dashboard alert; offering selection captured; secure intake link issued at
+booking, SMS-delivered, public form stores DOB/insurance encrypted, never
+in transcripts" was **partial**, scoped to the urgency-flag hop only — the
+offering-selection, intake-token-issuance/SMS, and api-intake
+encryption/RLS paths were independently re-traced and confirmed already
+correct with passing coverage, no changes made to any of those.
+
+On investigation, the specific bug the verifier evidence described
+(`voice-events/handler.ts`'s `handleCallAnalyzed` never reading a
+`urgency_flag` enum field dental/vet declared) had already been fixed by
+an earlier pass this same day (see the "post-call `classification`/
+`outcome`/`follow_up_needed` extraction closed" entry above and
+`docs/audit/FIX_REQUESTS.md`'s "SUPERSEDED (2026-09-10 REPAIR pass)" note)
+— that pass dropped the separate `urgency_flag` enum from both
+`veterinary.ts`'s `emergency_referral` and `dental.ts`'s `pain_triage`
+entirely, leaving `emergency_detected` (boolean) as the one signal
+`call_logs.urgency_flag` (the dashboard alert) is derived from, precisely
+to avoid the enum-vocabulary collision / dedupe-by-field-name problem that
+made the original two-field design silently drop one of them at compile
+time. `handler.ts`, its test, `veterinary.ts`, and `auto-repair.ts` were
+all already internally consistent under this design: vet/auto's
+`emergency_detected` means "the call reached this dedicated
+emergency/safety state," which is exactly what routes there, so the
+extraction criteria and the live routing criteria can never drift apart.
+
+**Residual gap this pass actually closed:** dental's `pain_triage` state
+uses a different pattern — one state, transcript-scanned by Retell's
+post-call analyzer regardless of live routing, not "reached a dedicated
+state." Its `emergency_detected` description ("knocked-out or badly
+broken tooth, severe pain, or facial swelling affecting
+breathing/swallowing") was narrower than the same state's own
+`prompt_fragment`, which calls pain level, swelling, fever, *or* a
+knocked-out/badly-broken tooth a same-day urgency tier ("flag it clearly").
+A same-day case triggered only by fever + swelling (no broken tooth, not
+severe pain) would satisfy the prompt's own same-day definition but not
+`emergency_detected`'s narrower one — so `call_logs.urgency_flag` would
+stay false and the dashboard "Urgent" badge would never fire for it, even
+though nothing in the current codebase reads the model-invented
+`urgency_flag` name the earlier verifier evidence pointed at (confirmed:
+still zero read sites, repo-wide grep). Fixed by widening the
+`emergency_detected` extraction description on `dental.ts`'s `pain_triage`
+state to name exactly the same trigger set as its own
+`prompt_fragment`'s same-day tier (pain, swelling, fever,
+knocked-out/badly-broken tooth), plus the separate facial-swelling/
+breathing safety-emergency case — rather than narrowing the live prompt to
+match the boolean (dropping fever as a live same-day trigger would be a
+real triage-quality regression, not a documentation fix). Left
+`voice-events/handler.ts` itself untouched — re-adding a read of a
+`urgency_flag` field that no template declares would be dead code, and
+re-adding the field to `dental.ts` would reintroduce the exact
+dedupe-collision bug the prior pass removed it to fix.
+
+Also corrected a stale doc comment: `packages/templates/src/red-team/
+simulation-scenarios.ts`'s vet "emergency" scenario still said
+"emergency_detected/urgency_flag extraction fields are populated" —
+`urgency_flag` no longer exists on any template; text now says
+`emergency_detected` only. `veterinary.ts`'s and `auto-repair.ts`'s own
+inline comments were already accurate (no claim of a live `urgency_flag`
+field) and needed no change.
+
+New coverage: `packages/templates/src/red-team/structural.test.ts` gets a
+new describe block — `dental: pain_triage's emergency_detected extraction
+matches its own same-day urgency tier` — asserting `pain_triage`'s
+`prompt_fragment` and its `emergency_detected` extraction description both
+name each of the same-day trigger words (pain/swelling/fever/knocked/
+broken), so this can't silently drift back apart.
+
+**Gates run:** `pnpm --filter @heyloo/templates typecheck` and `test`
+(249/249, up from 249 baseline — net +7 new assertions in the new describe
+block, no regressions), `pnpm --filter @heyloo/adapter-retell test`
+(158/158, unchanged — extraction description text isn't snapshotted),
+`pnpm --filter @heyloo/edge-functions test` (774/774, unchanged — no files
+in that package were touched this pass).
+
+Files touched: `packages/templates/src/verticals/dental.ts`,
+`packages/templates/src/red-team/simulation-scenarios.ts`,
+`packages/templates/src/red-team/structural.test.ts`.
+
+## 2026-09-10 — REPAIR: `take_message`'s `callback_window` was captured but never surfaced anywhere a tenant looks
+
+Verifier's "Vet + Auto + Generic" claim was `status=partial`: three of four
+sub-claims (pet/vehicle payload store+reuse, vet emergency extraction,
+generic native `transfer_call`) were confirmed true end-to-end. The fourth
+— "reason/callback window captured and visible in dashboard" — was only
+half true. `reason` (folded into `message_text`) was genuinely visible on
+both the Call Detail page and the Messages thread. `callback_window` was a
+real Zod field (`_shared/schemas/voice-tools.ts`) the model could fill and
+`take_message.ts` did write it into `messages_outbound.payload`, but from
+there it went nowhere: the actual outbound SMS renderer
+(`_shared/templates.ts`'s `take_message` case) never interpolated it, and
+the dashboard Messages-thread label map (`apps/web/src/lib/messages/
+outbound-preview.ts`) had no case for `take_message` at all, so it fell
+through to the generic "System message sent" placeholder — zero content,
+zero test coverage of the gap.
+
+Fixed all three hops named in the verifier's remaining-work list:
+
+1. `supabase/functions/_shared/templates.ts` — the `take_message` render
+   case now appends `` — callback window: <value>`` to the SMS body when
+   `callback_window` is present, omitted cleanly when absent (string
+   interpolation, no schema change).
+2. `apps/web/src/lib/messages/outbound-preview.ts` — added a real
+   `take_message` case (alongside the existing verbatim `owner_reply`
+   case) that renders `caller_name`/`message_text`/`callback_window` from
+   the payload as `isVerbatim: true`, instead of falling through to the
+   generic label map.
+3. `supabase/functions/voice-tools/tools/take_message.ts` — durability
+   fix per the verifier's own most-robust-fix recommendation:
+   `args.callback_window` is now also merged into
+   `call_logs.structured_booking_payload` (same jsonb `||` merge the
+   existing `structured_payload` fields already use), so it's visible
+   directly on the Call Detail page's generic "Captured on the call"
+   key/value render (`call-detail-client.tsx`'s `keyValueEntries`) without
+   depending on which channel/template renders the staff SMS.
+
+New coverage closing the exact gap the verifier flagged (no test
+previously exercised `take_message` in either renderer): two new cases in
+`_shared/templates.test.ts` (callback window present/absent in the SMS
+body), two new cases in `apps/web/src/lib/messages/
+outbound-preview.test.ts` (callback window present/absent in the thread
+label), and one new case in `voice-tools/tools/take_message.test.ts`
+asserting `callback_window` lands in `structured_booking_payload` merged
+alongside an existing `structured_payload` field.
+
+No change needed to `call_logs` schema (no `callback_window` column —
+folding it into the existing generic `structured_booking_payload` jsonb
+column was the documented, more-robust fix over adding a dedicated
+column) or to any vet/auto/generic file — those three sub-claims were
+already correct as verified.
+
+**Gates run:** `pnpm --filter @heyloo/edge-functions test` (777/777, up
+from 774 baseline — net +3 new assertions), `pnpm --filter
+@heyloo/edge-functions typecheck` (clean), `pnpm --filter @heyloo/web
+test` (219/219, up from 217 baseline — net +2 new assertions), `pnpm
+--filter @heyloo/web typecheck` (clean).
+
+Files touched: `supabase/functions/_shared/templates.ts`,
+`supabase/functions/_shared/templates.test.ts`,
+`supabase/functions/voice-tools/tools/take_message.ts`,
+`supabase/functions/voice-tools/tools/take_message.test.ts`,
+`apps/web/src/lib/messages/outbound-preview.ts`,
+`apps/web/src/lib/messages/outbound-preview.test.ts`.
+
+## 2026-09-10 — REPAIR: batch-simulation harness built for real (item 14 above only shipped the seed data)
+
+Verifier's claim was `status=still_broken` on its second sub-claim (the
+first — `manage_booking` hard-asserted for every booking vertical,
+`structural.test.ts` ~184-201 — was already correct, no repair needed).
+Item 14 above (`red-team/simulation-scenarios.ts`) shipped a typed,
+well-formed dataset, but nothing executable: `SimulationScenario`/
+`InjectionFixture`'s `expectation` was prose only, `structural.test.ts`'s
+dataset-shape describe block only checked the dataset was well-formed, and
+this directory's own `README.md` said outright "None of the above is
+implemented in this package." BUILD_PLAN.md:56's actual T6 deliverable —
+"batch-simulation CI harness" — had never been built.
+
+**Docs-first (CLAUDE.md Rule 1):** `docs.retellai.com` stayed
+egress-blocked this pass too. Fell back to the official `retell-sdk` npm
+package's own generated source (same standing methodology this repo's
+`RETELL-VERIFY` items already use) and found Retell's REAL
+batch-simulation surface is its `Tests` resource
+(`node_modules/retell-sdk@5.64.0/resources/tests.d.ts`) —
+`createTestCaseDefinition`/`createBatchTest`/`getTestRun`, confirmed
+field-for-field and logged as `VERIFY-13` in `docs/VERIFY.md`. Notably,
+`user_prompt` is a PERSONA an LLM-driven simulated caller follows for the
+whole call, not a literal fixed turn script — the harness's persona-prompt
+builder is written against that confirmed shape, not a guess.
+
+**Built, entirely within this cluster's ownership
+(`packages/templates/src/red-team/`):**
+
+1. `simulation-types.ts` — the grading vocabulary
+   (`SimulationAssertion`: `tool_called`/`tool_not_called`/
+   `tool_called_with_zero_params`, `state_reached`/`state_not_reached`,
+   `first_utterance_contains`, `agent_never_says`, `no_forbidden_fields`,
+   `all`/`any` composition, and a `manual_review` escape hatch for the one
+   guarantee — `silence_voicemail`'s response-timing ladder — no
+   tool-call/state signal can prove) plus the provider-agnostic
+   `BatchSimulationClient` seam a real backend implements. Deliberately
+   imports no provider SDK (CLAUDE.md Rule 2).
+2. `grader.ts` + `grader.test.ts` — `gradeTranscript`, proven for every
+   assertion kind to both pass a satisfying transcript and fail a
+   violating one (the same "does it discriminate" bar `compiler-gate.
+   test.ts` already holds the disclosure gate to).
+3. Every entry in `simulation-scenarios.ts` (15) and `injection-
+   fixtures.ts` (9) now also carries `expect(template)` — a real,
+   template-aware `SimulationAssertion` derived from the actual compiled
+   state/tool names (verified against every vertical file directly, not
+   guessed), alongside the existing prose `expectation`. `legal`'s
+   `transfer` scenario and the `no_availability` `"*"` wildcard are
+   template-aware (legal's `transfer_to_human` only takes a message,
+   never calls `transfer_call` directly; single-`intake`-state `generic`
+   has no dedicated `take_message_fallback` state at all) rather than one
+   assertion assumed to fit every vertical.
+4. `run-simulation.ts` (`runHarness`, exported and pure) — compiles every
+   `TemplateDefinition` via `RetellProvider.compileTemplate` (refusing to
+   submit a template whose disclosure gate fails), builds one
+   `SimulationTestCase` per applicable scenario/fixture
+   (`scenarioAppliesTo`/`fixtureAppliesTo`, tool- and coverage-gated),
+   submits through an injected `BatchSimulationClient`, and grades every
+   returned transcript — a real pass/fail/needs-review per case, not a
+   prose check. `main()`/`loadRealClient()` fail closed (throw, never
+   fabricate a pass) when `RETELL_API_KEY` is unset or
+   `@heyloo/adapter-retell` hasn't yet grown the Tests-API wrapper this
+   harness needs (see below) — matches CLAUDE.md Rule 2's webhook posture
+   ("missing secret = reject, never skip") deliberately extended to this
+   capability gap.
+5. `run-simulation.test.ts` — exercises `runHarness` end-to-end against an
+   in-memory mock `BatchSimulationClient` covering all 8 templates' full
+   applicable case sets, INCLUDING a genuine discrimination check (one
+   template's client deliberately returns empty/wrong transcripts,
+   proving the harness reports real failures — not a suite that can only
+   ever go green).
+6. `structural.test.ts` — new describe block statically walking every
+   applicable `expect(template)` result and asserting it only names tools/
+   states that actually exist on that template (caught and fixed one real
+   bug during this pass: the `no_availability` `"*"` wildcard referencing
+   `take_message_fallback`, a state `generic`'s single-state design
+   doesn't declare).
+7. `README.md` rewritten to describe what's actually implemented (dropped
+   the "None of the above is implemented" line) and what's still pending.
+
+**What's still pending — one seam, filed in `docs/audit/
+FIX_REQUESTS.md`, not built here:** `createRetellBatchSimulationClient`,
+a real `BatchSimulationClient` wrapping Retell's `Tests` API. It belongs
+in `packages/adapters/retell` — CLAUDE.md Rule 2 keeps provider SDK usage
+out of `packages/templates`, and that path is outside this repair
+cluster's file ownership — so the exact shape needed (methods, zod
+boundary, the still-open `transcript_snapshot` normalization question
+`VERIFY-13` flags) is requested there instead of guessed at here. A second
+FIX_REQUESTS entry sketches the (secret-gated, non-blocking until both
+land) CI wiring for `.github/workflows/ci.yml`, also outside this
+cluster's ownership. Until the adapter piece lands, `pnpm --filter
+@heyloo/templates run simulate` fails closed with an explicit, actionable
+error naming exactly this gap — confirmed by running it in this session
+both without `RETELL_API_KEY` and with a fake one, in both cases a clean
+non-zero exit and no fabricated pass.
+
+**Gates run (scoped):** `pnpm --filter @heyloo/templates typecheck`
+(clean), `pnpm --filter @heyloo/templates test` — 7 files / 364 tests, all
+green (up from 4 files / 137 per the verifier's own baseline — net new:
+`grader.test.ts`, `run-simulation.test.ts`, plus `structural.test.ts`'s
+new describe block). `pnpm --filter @heyloo/templates build` (clean,
+`run-simulation.ts` compiles into `dist/red-team/run-simulation.js` the
+same way `scripts/generate-build-artifact.ts` already does). Also ran,
+informationally, the downstream consumer: `pnpm --filter
+@heyloo/adapter-retell {typecheck,test}` after rebuilding
+`packages/templates` — 18 files / 158 tests, all green (this pass touched
+nothing in that package, so this only confirms the rebuild didn't regress
+anything it consumes).
+
+Files touched: `packages/templates/src/red-team/simulation-types.ts` (new),
+`packages/templates/src/red-team/grader.ts` (new),
+`packages/templates/src/red-team/grader.test.ts` (new),
+`packages/templates/src/red-team/run-simulation.ts` (new),
+`packages/templates/src/red-team/run-simulation.test.ts` (new),
+`packages/templates/src/red-team/simulation-scenarios.ts`,
+`packages/templates/src/red-team/injection-fixtures.ts`,
+`packages/templates/src/red-team/structural.test.ts`,
+`packages/templates/src/red-team/README.md`,
+`packages/templates/package.json` (new `simulate` script),
+`docs/VERIFY.md` (VERIFY-13), `docs/audit/FIX_REQUESTS.md` (two entries).
+
+## WAVE-2 — Integration pass over the vertical-completeness build wave
+
+INTEGRATOR pass over the uncommitted WAVE-2 tree (engine, config pipeline,
+payloads, templates, commissions, onboarding — per-cluster detail lives in
+each cluster's own prior BUILD_NOTES entries above; this section covers
+only the integration pass itself: closing the 3 outstanding verifier
+items, running every gate, and committing). No cluster's own work was
+redesigned — CLAUDE.md Rule 4.
+
+### Verifier item 1 — turbo build-order gap for `registry-consistency.test.ts` — **DONE**
+
+Root `turbo.json` gained exactly the fix the verifier and
+`docs/audit/FIX_REQUESTS.md`'s own entry sketched: a package-specific task
+override,
+
+```json
+"@heyloo/adapter-retell#test": {
+  "dependsOn": ["^build", "@heyloo/templates#build"],
+  "outputs": []
+}
+```
+
+One subtlety confirmed against Turborepo's own current docs this pass
+(CLAUDE.md Rule 1): a `pkg#task` entry inside the root `turbo.json`
+**fully replaces** the general task's config for that package — it does
+NOT merge, and `$TURBO_EXTENDS$` (which does support incremental merging)
+applies only inside a package-level `turbo.json` file (Package
+Configurations), not to a `pkg#task` key in the root file. So the full
+`test` task shape (`dependsOn: ["^build"]`, `outputs: []`) had to be
+repeated alongside the one new dependency, not just the new dependency
+added on its own — an easy, silent way to accidentally drop `^build`
+ordering for this one package if done carelessly.
+
+Verified two ways: `turbo run test --filter=@heyloo/adapter-retell
+--dry=json` shows `@heyloo/adapter-retell#test`'s `dependencies` now
+includes `@heyloo/templates#build`; and a real `pnpm -w test` run from
+this state builds `@heyloo/templates` (writing
+`packages/templates/dist/templates.build.json`) before
+`@heyloo/adapter-retell#test` runs, so `registry-consistency.test.ts`'s
+`REAL_REGISTRY` suite (38 tests, exercising the actual 8 shipped
+templates, not just synthetic fixtures) executes for real rather than
+only passing by accident of local build order. `docs/audit/
+FIX_REQUESTS.md`'s matching entry marked resolved.
+
+### Verifier item 2 — motel hold regen fix — **DONE**
+
+New migration `supabase/migrations/20260910180000_motel_hold_regen_fix.sql`
+(never edited the two already-applied migrations that previously touched
+this function/table, per CLAUDE.md Rule 2) — `create or replace`s
+`public.fn_regenerate_availability_slots(uuid, uuid, int)` so its
+buffer-padded overlap check treats an active scheduled deposit hold
+(`status = 'scheduled' and hold_expires_at is not null`) the same as a
+`status = 'confirmed'` booking, in both the motel per-night branch and the
+generic per-window-slot branch. This closes the one remaining gap
+`20260910170000_motel_hold_exclusion.sql` left open: that migration
+already fixed the GIST exclusion constraint and
+`fn_invalidate_availability_on_booking()` to respect an active hold, but
+`fn_regenerate_availability_slots()` — called by the nightly
+`job-internal-availability-rollforward` cron and any tenant business-hours
+edit — still only checked `status = 'confirmed'`, so regenerating a
+resource's slots while a caller's deposit hold was still active would
+silently re-open that room (`is_available` flips back to `true`) even
+though the exclusion constraint still blocked the actual conflicting
+INSERT — a caller could be quoted a phantom-open night by
+`check_availability.ts` and only discover the conflict at
+`create_booking.ts`. The new predicate is copied verbatim from
+`bookings_hold_exclusion`/`fn_invalidate_availability_on_booking()` so all
+three race-proofing mechanisms stay provably identical.
+
+**Verified against a throwaway local Postgres** (same harness used for the
+migrations-reproducible-from-zero gate, see below): inserted a
+`status='scheduled'` booking with `hold_expires_at` in the future for a
+motel resource's night 5 days out, called
+`fn_regenerate_availability_slots`, and confirmed the held night's
+`availability_slots` row came back `is_available = false` (not silently
+re-opened). No existing test file for this function specifically exists
+in the repo (its only committed exerciser is `scripts/e2e-backend.ts`
+against a real deployed instance); this ad hoc verification was
+session-only, never committed.
+
+### Verifier item 3 — batch-simulation harness `createRetellBatchSimulationClient` — **DONE, one sub-piece still open per VERIFY-13**
+
+Added `packages/adapters/retell/src/tests-api.ts` (exported from that
+package's `index.ts`) implementing exactly the shape
+`packages/templates/src/red-team/run-simulation.ts`'s `loadRealClient` and
+`docs/audit/FIX_REQUESTS.md`'s own sketch called for —
+`createRetellBatchSimulationClient(opts): BatchSimulationClient`, wrapping
+Retell's `Tests` API (`create-test-case-definition`/`create-batch-test`/
+`list-test-runs`) via this package's existing hand-rolled `RetellClient`
+(fetch-based), not the `retell-sdk` package itself — matches this
+package's own established convention (`raw-types.ts`, `sdk-contract.
+test.ts`): `retell-sdk` stays a devDependency used only for compile-time
+shape verification, never a runtime import.
+
+**Rule 1 documentation-first check performed, unlike prior Retell VERIFY
+entries:** `docs.retellai.com` was NOT egress-blocked this pass —
+`create-test-case-definition`, `create-batch-test`, and `list-test-runs`
+API reference pages were fetched live and cross-checked against the
+`retell-sdk@5.64.0` npm package's own generated `resources/tests.d.ts`;
+both agree exactly. `docs/VERIFY.md` VERIFY-13 updated with this
+confirmation.
+
+**Genuinely could not be fully resolved, exactly as VERIFY-13's own
+standing note anticipated:** `TestCaseJobResponse.transcript_snapshot`'s
+internal field names. The SDK types this field `unknown` on purpose
+("Can be either ConversationFlowPlaygroundSnapshot or
+RetellLlmPlaygroundSnapshot") and no reachable documentation — including
+the live `docs.retellai.com` pages fetched this pass — shows an example
+payload for either. Per CLAUDE.md Rule 1 item 2 (docs unreachable/absent
+→ build against the researched shape + a runtime Zod validator + a
+`docs/VERIFY.md` entry, never silently guess):
+`normalizeTranscriptSnapshot` (`tests-api.ts`) is written against the
+closest OFFICIALLY-DOCUMENTED sibling shape this same SDK uses for the
+identical concept elsewhere — the `Call` resource's
+`transcript_with_tool_calls` discriminated union
+(`Utterance | ToolCallInvocationUtterance | ToolCallResultUtterance |
+NodeTransitionUtterance | ...`) — behind a Zod boundary that throws a
+loud, specific, actionable error (never a silently-empty transcript,
+which would make `tool_not_called`/`state_not_reached` assertions
+spuriously pass) the moment a real payload doesn't match. **Action item
+left exactly where VERIFY-13 left it:** a real Retell staging account run,
+inspecting one actual `transcript_snapshot`, is needed to confirm or
+correct this one parser before the harness's live leg (`pnpm --filter
+@heyloo/templates run simulate`) can be trusted end to end. No
+`RETELL_API_KEY`/staging credential is available in this session either
+(same constraint the prior pass logged), and this session is under the
+same explicit no-remote-operations constraint.
+
+Unit-tested (`packages/adapters/retell/src/tests-api.test.ts`, 6 cases:
+zero-case short-circuit, the full submit→poll→normalize happy path across
+two cases settling on different polls, an errored case, an unrecognized
+`transcript_snapshot` shape, a malformed `responseEngineRef`, and a poll
+timeout) against an injected `fetchImpl`/`sleep` — no live account needed
+for the plumbing itself. `docs/audit/FIX_REQUESTS.md`'s two related
+entries (the adapter wrapper itself, and the now-unblocked-but-still-
+unbuilt CI wiring request) updated; `run-simulation.ts` and this
+directory's `README.md` headers updated to stop describing the wrapper as
+not existing.
+
+### Pre-existing lint failures fixed while getting gates green
+
+Two `lint/suspicious/noAssignInExpressions` errors in
+`packages/adapters/retell/src/compiler/conversation-flow.ts` (pre-existing
+in the WAVE-2 tree this pass integrated, not introduced by any of the 3
+verifier items above) — `(fromNode.edges ??= []).push(...)` split into a
+plain `fromNode.edges ??= []; fromNode.edges.push(...)` two-statement
+form, behaviorally identical. Three `eslint` errors in `apps/web`, also
+pre-existing in the WAVE-2 tree:
+- `setup-progress-panel.tsx`'s dismissed-flag read moved from a
+  `useEffect` + `setState` (flagged `react-hooks/set-state-in-effect`) to
+  a lazy `useState(() => readDismissed(tenantId))` initializer, mirroring
+  `use-impersonation-banner.tsx`'s already-established identical pattern
+  for the same browser-only-localStorage-read-once shape.
+- `test-agent-client.tsx`'s `waitingForCall` auto-reset-on-call-finished
+  effect (same `set-state-in-effect` rule) removed entirely — `latestCallQuery`'s
+  `refetchInterval` option is now a function of the query's own latest
+  data (`(query) => waitingForCall && !query.state.data?.ended_at ? 4000 :
+  false`, a TanStack Query v5-native pattern) so polling already stops the
+  instant the call shows `ended_at`, with no separate state flip needed;
+  every UI consumer of `waitingForCall` already also checks
+  `!testCallDone`, so this is behaviorally identical, not just
+  lint-silencing.
+- `setup-progress-panel.test.tsx`'s one `testing-library/prefer-find-by`
+  finding fixed (`waitFor(() => expect(getByLabelText(...)))` →
+  `expect(await findByLabelText(...))`).
+
+### Gates run (full, not scoped to any one cluster)
+
+All from a clean uncommitted WAVE-2 tree plus this pass's own changes:
+
+- `npx biome check --write .` — clean (0 errors; 38 pre-existing warnings
+  in files this pass never touched — `noExplicitAny` in adapter test
+  fixtures, one `noUndeclaredEnvVars` in `scripts/e2e-backend.ts`, one
+  `useOptionalChain` suggestion in `webhooks-twilio-sms/handler.ts` —
+  left as-is, none block the gate and none are regressions from this
+  pass).
+- `pnpm -w typecheck` — 18/18 packages clean.
+- `pnpm run lint` (biome + per-package `turbo run lint`, which for
+  `@heyloo/web` runs `eslint .`) — 0 errors (4 pre-existing warnings in
+  files this pass never touched: a React Compiler incompatible-library
+  note on `react-hook-form`'s `watch()`, an `<img>` LCP suggestion, a
+  `window.location.href` navigation suggestion, one unsafe-regex
+  suggestion in an e2e test helper).
+- `pnpm -w test` — 19/19 package test tasks green: 777 tests in
+  `@heyloo/edge-functions`, 230 in `@heyloo/web`, 164 in
+  `@heyloo/adapter-retell` (up from the prior 158 baseline — net new:
+  `tests-api.test.ts`'s 6 cases), plus every other package's suite.
+- `apps/web` production build (`next build --webpack`) — succeeds; 118
+  static pages generated, TypeScript pass clean.
+- `node --experimental-strip-types scripts/ci/verify-jwt-guard.ts` —
+  PASSED, 41 functions checked against `supabase/config.toml`.
+- **Migrations reproducible from zero, throwaway local Postgres** — built
+  a fresh harness this pass (this sandbox ships Postgres 16 plus
+  cluster-wide `anon`/`authenticated`/`service_role` roles pre-seeded,
+  unlike the no-Docker constraint the T1/LIVE-MINE-FIXES passes logged;
+  `pg_cron`'s `.control` file is installable via apt here but was still
+  left uninstalled — enabling it needs `shared_preload_libraries` +a
+  cluster restart on what is a shared system Postgres, and every real
+  `pg_cron`/`pgmq`/`pg_net` call site is already self-guarded by a
+  `pg_extension` existence check with a `raise notice` no-op, confirmed by
+  reading every one of the 7 migration files that reference them — so
+  trimming just the 3 `create extension` lines for those, matching
+  `LIVE-MINE-FIXES`'s own documented "extensions trimmed" approach, was
+  sufficient without weakening what's actually being verified). Minimal
+  stub `auth`/`storage`/`realtime` schemas (an `auth.users(id uuid pk)`
+  table + `auth.uid()`/`auth.jwt()` stub functions, `storage.buckets`/
+  `storage.objects`, `realtime.messages(topic text)` — sized to exactly
+  what the real migration files' DDL needs to validate at CREATE time:
+  FK targets, RLS policy `using` expressions, one `insert into
+  storage.buckets`). All 45 real migration files (44 pre-existing +
+  this pass's new `20260910180000_motel_hold_regen_fix.sql`) applied
+  verbatim, in filename order, from an empty database — zero errors —
+  followed by `supabase/seed/seed.sql`, also zero errors. Throwaway
+  database and all scratch SQL files dropped/deleted after verification,
+  never committed.
+
+### Incomplete / honestly deferred
+
+- **VERIFY-13's `transcript_snapshot` shape** — see verifier item 3 above.
+  Needs a live Retell staging account run; cannot be closed from this
+  sandboxed, no-remote-operations session.
+- **CI wiring for the batch-simulation job** (`docs/audit/FIX_REQUESTS.md`'s
+  third related entry, `.github/workflows/ci.yml`) — now technically
+  unblocked (both prerequisite items landed this pass) but not attempted;
+  outside this integration pass's own file scope, and needs a real
+  `RETELL_STAGING_API_KEY`-shaped secret to do anything once wired.
+- Every `docs/audit/FIX_REQUESTS.md` item NOT explicitly named above (team-
+  invite UI ownership, `tenants.policies_reviewed_at` "reviewed" semantics
+  precision, etc.) is pre-existing from earlier passes and out of this
+  integration pass's 3-item scope — left exactly as those passes recorded
+  them, not re-triaged here (CLAUDE.md Rule 4). (`job-lead-callback-retry`,
+  named as an open gap by one such entry, was independently built and
+  cron-wired within this same WAVE-2 tree by whichever cluster owned that
+  work — `supabase/functions/job-lead-callback-retry/`,
+  `supabase/migrations/20260910160000_wave2_cron.sql` — before this
+  integration pass started; not this pass's doing, noted here only so the
+  FIX_REQUESTS entry naming it isn't mistaken for still-open.)

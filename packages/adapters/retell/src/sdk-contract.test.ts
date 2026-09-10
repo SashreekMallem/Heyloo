@@ -43,6 +43,7 @@ import type {
   RetellFunctionTool,
   RetellMultiPromptRequest,
   RetellSinglePromptRequest,
+  RetellStateTool,
 } from "./compiler/types.js";
 import {
   AUTO_CONVERSATION_FLOW_TEMPLATE,
@@ -64,13 +65,27 @@ function assertAssignable<T>(_value: T): void {
 // flow's top-level `tools[]` and Retell LLM's `general_tools`/state `tools`).
 // ---------------------------------------------------------------------------
 
-function assertToolShape(tool: RetellFunctionTool): void {
+function assertFunctionToolShape(tool: RetellFunctionTool): void {
   assertAssignable<ConversationFlowCreateParams.CustomTool>(tool);
   assertAssignable<LlmCreateParams.CustomTool>(tool);
 }
 
+/** `RetellStateTool` (multi_prompt/single_prompt tool slots) — either a custom function or the native transfer_call tool (GAP_REGISTER §1.4 item 4). */
+function assertStateToolShape(tool: RetellStateTool): void {
+  if (tool.type === "custom") {
+    assertFunctionToolShape(tool);
+  } else {
+    assertAssignable<LlmCreateParams.TransferCallTool>(tool);
+  }
+}
+
 function assertEdgeShape(edge: RetellFlowEdge): void {
   assertAssignable<ConversationFlowCreateParams.ConversationNode.Edge>(edge);
+  // FunctionNode/TransferCallNode edges are a structurally distinct SDK
+  // type from ConversationNode.Edge (different namespace) but identical on
+  // the wire (`{id, transition_condition, destination_node_id?}`) —
+  // asserted separately so a future SDK divergence between them is caught.
+  assertAssignable<ConversationFlowCreateParams.FunctionNode.Edge>(edge);
 }
 
 // ---------------------------------------------------------------------------
@@ -92,11 +107,18 @@ function assertConversationFlowRequestShape(body: RetellConversationFlowRequest)
     if (node.type === "conversation") {
       assertAssignable<ConversationFlowCreateParams.ConversationNode>(node);
       for (const edge of node.edges) assertEdgeShape(edge);
+    } else if (node.type === "function") {
+      // GAP_REGISTER §1.4: single-tool states hard-lock to a Function Node.
+      assertAssignable<ConversationFlowCreateParams.FunctionNode>(node);
+      for (const edge of node.edges ?? []) assertEdgeShape(edge);
+    } else if (node.type === "transfer_call") {
+      // GAP_REGISTER §1.4 item 4: native transfer, not a custom webhook.
+      assertAssignable<ConversationFlowCreateParams.TransferCallNode>(node);
     } else {
       assertAssignable<ConversationFlowCreateParams.EndNode>(node);
     }
   }
-  for (const tool of body.tools) assertToolShape(tool);
+  for (const tool of body.tools) assertFunctionToolShape(tool);
 }
 
 // ---------------------------------------------------------------------------
@@ -111,14 +133,14 @@ function assertMultiPromptRequestShape(body: RetellMultiPromptRequest): void {
 
   for (const state of body.states) {
     assertAssignable<LlmCreateParams.State>(state);
-    for (const tool of state.tools) assertToolShape(tool);
+    for (const tool of state.tools) assertStateToolShape(tool);
   }
 }
 
 function assertSinglePromptRequestShape(body: RetellSinglePromptRequest): void {
   const withModel: LlmCreateParams = { ...body, model: "gpt-4.1" };
   assertAssignable<LlmCreateParams>(withModel);
-  for (const tool of body.general_tools) assertToolShape(tool);
+  for (const tool of body.general_tools) assertStateToolShape(tool);
 }
 
 // ---------------------------------------------------------------------------

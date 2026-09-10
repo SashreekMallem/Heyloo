@@ -5,6 +5,7 @@ import type {
   VoiceInboundResponse,
 } from "../_shared/schemas/voice-inbound.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
+import { resolveVerticalDynamicVariables } from "./dynamic-variables.ts";
 
 /**
  * `/voice-inbound` core logic (BACKEND_SPEC §7.1) — number -> tenant ->
@@ -22,6 +23,7 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
 interface InboundRow {
   tenant_id: string;
   business_name: string;
+  vertical: string;
   timezone: string;
   business_hours: Record<string, unknown>;
   hours_exceptions: unknown[];
@@ -32,6 +34,7 @@ interface InboundRow {
   dynamic_variable_overrides: Record<string, unknown>;
   retell_agent_id: string | null;
   disclosure_line: string;
+  transfer_number: string | null;
 }
 
 interface RecentCustomerRow {
@@ -66,6 +69,7 @@ export async function handleVoiceInbound(params: {
     select
       t.id as tenant_id,
       t.name as business_name,
+      t.vertical,
       t.timezone,
       t.business_hours,
       t.hours_exceptions,
@@ -75,6 +79,7 @@ export async function handleVoiceInbound(params: {
       ac.special_instructions,
       ac.dynamic_variable_overrides,
       ac.retell_agent_id,
+      ac.transfer_number,
       at.disclosure_line
     from public.phone_numbers pn
     join public.tenants t on t.id = pn.tenant_id
@@ -117,6 +122,18 @@ export async function handleVoiceInbound(params: {
     row.hours_exceptions as never,
   );
 
+  // GAP_REGISTER §1.3 — every per-vertical `{{token}}` the compiled prompt
+  // may reference (tow partner, practice areas, rate table, menu, ...),
+  // resolved with a safe default so a literal placeholder never reaches
+  // the model.
+  const verticalTokens = await resolveVerticalDynamicVariables({
+    sql,
+    tenantId: row.tenant_id,
+    vertical: row.vertical,
+    overrides,
+    logger,
+  });
+
   const dynamicVariables: VoiceInboundResponse["call_inbound"]["dynamic_variables"] = {
     business_name: row.business_name,
     assistant_name: row.assistant_name ?? "the AI assistant",
@@ -126,6 +143,8 @@ export async function handleVoiceInbound(params: {
     is_manual_mode: row.manual_mode,
     language: row.language_primary,
     disclosure_line: row.disclosure_line,
+    ...(row.transfer_number ? { transfer_number: row.transfer_number } : {}),
+    ...verticalTokens,
     ...(typeof overrides["manager_name"] === "string"
       ? { manager_name: overrides["manager_name"] as string }
       : {}),

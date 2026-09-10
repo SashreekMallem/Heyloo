@@ -35,7 +35,14 @@ export const TEMPLATE_DEFINITIONS: readonly TemplateDefinition[] = [
     template: AUTO_REPAIR_TEMPLATE,
   },
   {
-    key: "veterinary",
+    // GAP_REGISTER.md §2 Vet item 5: this key previously read "veterinary",
+    // diverging from the canonical vertical slug ("vet",
+    // `@heyloo/canonical-types` `vertical.ts`, and `VETERINARY_TEMPLATE
+    // .vertical` itself) — a landmine for a future seed script/provisioning
+    // saga that keys a tenant's `vertical` column against this registry.
+    // No other in-repo consumer referenced the old key at runtime (grep
+    // confirmed only this package's own tests did — updated alongside).
+    key: "vet",
     name: "Veterinary — Front Desk",
     version: 1,
     template: VETERINARY_TEMPLATE,

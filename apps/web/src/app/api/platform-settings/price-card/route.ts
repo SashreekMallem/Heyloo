@@ -9,6 +9,10 @@ export interface PriceCardResponse {
   included_minutes: number;
   overage_cents: number;
   annual_discount_pct: number;
+  /** Cluster H task brief item 5 — one-time onboarding fees, shown only when the admin has enabled them for this vertical (`platform_settings.fees_<vertical>`). */
+  setup_fee_cents: number | null;
+  white_glove_fee_cents: number | null;
+  white_glove_description: string | null;
 }
 
 /**
@@ -46,12 +50,30 @@ export async function GET(request: Request) {
     .maybeSingle();
   const annualDiscount = (discountRow.data?.value as { pct?: number } | undefined)?.pct ?? 12;
 
+  const feesRow = await supabase
+    .from("platform_settings")
+    .select("value")
+    .eq("key", `fees_${vertical}`)
+    .maybeSingle();
+  const fees = (feesRow.data?.value ?? {}) as {
+    setup_fee_enabled?: boolean;
+    setup_fee_cents?: number;
+    white_glove_enabled?: boolean;
+    white_glove_fee_cents?: number;
+    white_glove_description?: string;
+  };
+
   const body: PriceCardResponse = {
     vertical,
     base_cents: value.base_cents ?? 29900,
     included_minutes: value.included_minutes ?? 300,
     overage_cents: value.overage_cents ?? 45,
     annual_discount_pct: annualDiscount,
+    setup_fee_cents: fees.setup_fee_enabled ? (fees.setup_fee_cents ?? 0) : null,
+    white_glove_fee_cents: fees.white_glove_enabled ? (fees.white_glove_fee_cents ?? 0) : null,
+    white_glove_description: fees.white_glove_enabled
+      ? (fees.white_glove_description ?? null)
+      : null,
   };
 
   return NextResponse.json(body);

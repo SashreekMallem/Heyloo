@@ -15,10 +15,13 @@ function chain(result: unknown, onUpdate?: (payload: unknown) => void) {
   return obj;
 }
 
-function makeFrom(queue: unknown[], onUpdate?: (payload: unknown) => void) {
-  return vi.fn((_table: string) => {
+/** Records every table's update() payload (keyed by table name) rather than
+ * just the last call — this route now issues two updates (agent_configs,
+ * then a best-effort tenants.policies_reviewed_at touch). */
+function makeFrom(queue: unknown[], onUpdate?: (table: string, payload: unknown) => void) {
+  return vi.fn((table: string) => {
     const result = queue.length ? queue.shift() : { data: null, error: null };
-    return chain(result, onUpdate);
+    return chain(result, (payload) => onUpdate?.(table, payload));
   });
 }
 
@@ -71,25 +74,30 @@ describe("POST /api/tenant/agent/vertical-details", () => {
 
   it("merges the new fields into the existing dynamic_variable_overrides, scoped to the caller's own tenant_id", async () => {
     mockGetUser = async () => ({ data: { user: mockUser } });
-    let updatePayload: unknown;
+    const updatePayloads: Record<string, unknown> = {};
     fromMock = makeFrom(
       [
         { data: { dynamic_variable_overrides: { manager_name: "Sam" } }, error: null },
         { error: null },
+        { error: null }, // tenants.policies_reviewed_at best-effort touch
       ],
-      (payload) => {
-        updatePayload = payload;
+      (table, payload) => {
+        updatePayloads[table] = payload;
       },
     );
 
     const res = await POST(postRequest(validPayload));
     expect(res.status).toBe(200);
-    expect(updatePayload).toEqual({
+    expect(updatePayloads["agent_configs"]).toEqual({
       dynamic_variable_overrides: {
         manager_name: "Sam",
         cancellation_policy: validPayload.cancellation_policy,
       },
     });
+    // cancellation_policy.text is non-empty in validPayload — the route
+    // touches tenants.policies_reviewed_at as a real, timestamped
+    // acknowledgment signal (FIX_REQUESTS.md).
+    expect(updatePayloads["tenants"]).toHaveProperty("policies_reviewed_at");
   });
 
   it("500s when the update fails", async () => {

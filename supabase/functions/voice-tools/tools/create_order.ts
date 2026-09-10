@@ -3,6 +3,8 @@ import { enqueueAdapterPush } from "../../_shared/adapter-push.ts";
 import { isWithinRadius } from "../../_shared/geo.ts";
 import { orderIdempotencyKey } from "../../_shared/idempotency.ts";
 import { normalizeE164 } from "../../_shared/phone.ts";
+import type { GeocodeFetch } from "../../_shared/providers/geocode.ts";
+import { geocodeAddress } from "../../_shared/providers/geocode.ts";
 import { enqueue, QUEUE_NAMES } from "../../_shared/queue.ts";
 import type { CreateOrderArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { Logger, SqlClient } from "../../_shared/types.ts";
@@ -17,7 +19,7 @@ interface OfferingRow {
 }
 
 export type CreateOrderResult =
-  | { order_id: string; confirmed: true; total_cents: number }
+  | { order_id: string; confirmed: true; total_cents: number; delivery_fee_cents?: number }
   | {
       confirmed: false;
       reason: "item_not_found" | "out_of_delivery_radius" | "below_minimum_order" | "invalid_phone";
@@ -50,25 +52,48 @@ function isPgError(err: unknown, code: string): boolean {
  * itself is this file's own reasonable placement, VERIFY.md, since neither
  * spec pins a column for it and no dedicated tenant-geocode column exists
  * in T1's schema).
+ *
+ * restaurant.md Finding B4 fix: a confirmed delivery order best-effort
+ * upserts the spoken `delivery_address` onto `customer_addresses`
+ * (geocoded via `deps.geocode`, VERIFY-12) so a REPEAT caller's next order
+ * actually has a saved geocode for the radius check above to use, and so
+ * `lookup_customer` has a real saved address to surface (restaurant.ts's
+ * "confirm it back instead of asking from scratch" instruction). Entirely
+ * optional/non-blocking: when `deps.geocode` isn't wired (no
+ * `GEOCODE_API_KEY`) or the geocode fails, the order still completes
+ * exactly as before — this is a save-for-next-time enhancement, never a
+ * condition of the current order succeeding.
  */
 export async function createOrder(
   sql: SqlClient,
   ctx: CallContext,
   args: Args,
   logger: Logger,
+  deps?: { geocode?: { fetchImpl: GeocodeFetch; apiKey: string } },
 ): Promise<CreateOrderResult> {
   const phone = normalizeE164(args.customer.phone);
   if (!phone) return { confirmed: false, reason: "invalid_phone" };
 
   const idempotencyKey = orderIdempotencyKey(ctx.retellCallId, args.items);
 
-  const existing = await sql<{ id: string; total_cents: number }>`
-    select id, total_cents from public.orders
+  const existing = await sql<{
+    id: string;
+    total_cents: number;
+    delivery_fee_cents: number | null;
+  }>`
+    select id, total_cents, delivery_fee_cents from public.orders
     where tenant_id = ${ctx.tenantId} and idempotency_key = ${idempotencyKey}
     limit 1
   `;
   const prior = existing[0];
-  if (prior) return { order_id: prior.id, confirmed: true, total_cents: prior.total_cents };
+  if (prior) {
+    return {
+      order_id: prior.id,
+      confirmed: true,
+      total_cents: prior.total_cents,
+      ...(prior.delivery_fee_cents ? { delivery_fee_cents: prior.delivery_fee_cents } : {}),
+    };
+  }
 
   const offeringIds = args.items.map((i) => i.offering_id).filter((id): id is string => !!id);
   const offeringRows = offeringIds.length
@@ -158,7 +183,16 @@ export async function createOrder(
 
   const taxRateBps = typeof overrides["tax_rate_bps"] === "number" ? overrides["tax_rate_bps"] : 0;
   const taxCents = Math.round((subtotalCents * taxRateBps) / 10_000);
-  const totalCents = subtotalCents + taxCents;
+  // GAP_REGISTER.md §4 Cluster D — delivery-fee enforcement from the
+  // tenant's own per-vertical config, read directly from `agent_configs.
+  // dynamic_variable_overrides` (mirrors the existing `min_order_cents`/
+  // `delivery_radius_m`/`tax_rate_bps` reads above) — 0 for pickup/dine_in
+  // and for a tenant with no configured fee.
+  const deliveryFeeCents =
+    args.fulfillment_type === "delivery" && typeof overrides["delivery_fee_cents"] === "number"
+      ? overrides["delivery_fee_cents"]
+      : 0;
+  const totalCents = subtotalCents + taxCents + deliveryFeeCents;
 
   const customerRows = await sql<{ id: string }>`
     insert into public.customers (tenant_id, phone_e164, name)
@@ -169,16 +203,28 @@ export async function createOrder(
   `;
   const customerId = customerRows[0]?.id ?? null;
 
+  const consentPayload = args.consent
+    ? {
+        sms: args.consent.sms ?? false,
+        call: args.consent.call ?? false,
+        captured_at: new Date().toISOString(),
+        call_id: ctx.retellCallId,
+      }
+    : null;
+
   let order: { id: string } | undefined;
   try {
     const inserted = await sql<{ id: string }>`
       insert into public.orders (
         tenant_id, customer_id, items, fulfillment_type, delivery_address,
-        subtotal_cents, tax_cents, total_cents, source_call_id, idempotency_key
+        subtotal_cents, tax_cents, delivery_fee_cents, total_cents, source_call_id, idempotency_key,
+        allergies, special_instructions
       ) values (
         ${ctx.tenantId}, ${customerId}, ${JSON.stringify(priced)}::jsonb, ${args.fulfillment_type},
         ${args.delivery_address ? JSON.stringify(args.delivery_address) : null}::jsonb,
-        ${subtotalCents}, ${taxCents}, ${totalCents}, ${ctx.callLogId}, ${idempotencyKey}
+        ${subtotalCents}, ${taxCents}, ${deliveryFeeCents}, ${totalCents}, ${ctx.callLogId}, ${idempotencyKey},
+        ${args.allergies && args.allergies.length > 0 ? args.allergies : null},
+        ${args.special_instructions ?? null}
       )
       returning id
     `;
@@ -187,16 +233,59 @@ export async function createOrder(
     if (!isPgError(err, UNIQUE_VIOLATION)) throw err;
     // Concurrent retry raced us on `orders_idempotency_unique` — the other
     // call won, return its row rather than erroring or duplicating.
-    const raceWinner = await sql<{ id: string; total_cents: number }>`
-      select id, total_cents from public.orders
+    const raceWinner = await sql<{
+      id: string;
+      total_cents: number;
+      delivery_fee_cents: number | null;
+    }>`
+      select id, total_cents, delivery_fee_cents from public.orders
       where tenant_id = ${ctx.tenantId} and idempotency_key = ${idempotencyKey}
       limit 1
     `;
     const won = raceWinner[0];
-    if (won) return { order_id: won.id, confirmed: true, total_cents: won.total_cents };
+    if (won) {
+      return {
+        order_id: won.id,
+        confirmed: true,
+        total_cents: won.total_cents,
+        ...(won.delivery_fee_cents ? { delivery_fee_cents: won.delivery_fee_cents } : {}),
+      };
+    }
     return { confirmed: false, reason: "item_not_found" };
   }
   if (!order) return { confirmed: false, reason: "item_not_found" };
+
+  if (consentPayload && customerId) {
+    await sql`
+      update public.customers set consent = ${JSON.stringify(consentPayload)}::jsonb
+      where id = ${customerId}
+    `;
+  }
+
+  // GAP_REGISTER.md §1.7 — mirrors this call's captured order details onto
+  // `call_logs.structured_booking_payload` (the same dashboard "Linked
+  // booking" card column `create_booking.ts` writes), sourced from
+  // whatever the model actually captured this call — skipped when there's
+  // nothing beyond the priced items to add.
+  if ((args.allergies && args.allergies.length > 0) || args.special_instructions) {
+    await sql`
+      update public.call_logs
+      set structured_booking_payload = ${JSON.stringify({
+        allergies: args.allergies ?? [],
+        special_instructions: args.special_instructions ?? null,
+      })}::jsonb
+      where id = ${ctx.callLogId} and tenant_id = ${ctx.tenantId}
+    `;
+  }
+
+  if (
+    args.fulfillment_type === "delivery" &&
+    args.delivery_address?.street &&
+    customerId &&
+    deps?.geocode
+  ) {
+    await saveDeliveryAddress(sql, ctx, logger, customerId, args.delivery_address, deps.geocode);
+  }
 
   const messageRows = await sql<{ id: string }>`
     insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload, related_order_id)
@@ -221,5 +310,86 @@ export async function createOrder(
     idempotencyKey,
   });
 
-  return { order_id: order.id, confirmed: true, total_cents: totalCents };
+  return {
+    order_id: order.id,
+    confirmed: true,
+    total_cents: totalCents,
+    ...(deliveryFeeCents > 0 ? { delivery_fee_cents: deliveryFeeCents } : {}),
+  };
+}
+
+/**
+ * restaurant.md Finding B4: upserts the spoken delivery address onto
+ * `customer_addresses`, matching an existing row by (customer, street —
+ * case/whitespace-insensitive) and marking it (or a newly inserted row)
+ * the caller's new default, so the NEXT order's radius check and
+ * `lookup_customer`'s saved-address surface both have real data. Wrapped
+ * so a geocode-provider or DB hiccup here never fails the order that's
+ * already been confirmed and inserted above.
+ */
+async function saveDeliveryAddress(
+  sql: SqlClient,
+  ctx: CallContext,
+  logger: Logger,
+  customerId: string,
+  address: {
+    street: string;
+    city?: string | undefined;
+    state?: string | undefined;
+    zip?: string | undefined;
+  },
+  geocode: { fetchImpl: GeocodeFetch; apiKey: string },
+): Promise<void> {
+  try {
+    const geocoded = await geocodeAddress(geocode.fetchImpl, geocode.apiKey, address);
+    if (!geocoded.ok || !geocoded.point) {
+      logger.warn("create_order_geocode_failed", {
+        call_id: ctx.retellCallId,
+        tenant_id: ctx.tenantId,
+        status: geocoded.status,
+      });
+      return;
+    }
+
+    const existing = await sql<{ id: string }>`
+      select id from public.customer_addresses
+      where tenant_id = ${ctx.tenantId} and customer_id = ${customerId}
+        and lower(trim(street)) = lower(trim(${address.street}))
+      limit 1
+    `;
+
+    await sql`
+      update public.customer_addresses
+      set is_default = false
+      where tenant_id = ${ctx.tenantId} and customer_id = ${customerId} and is_default = true
+    `;
+
+    if (existing[0]) {
+      await sql`
+        update public.customer_addresses
+        set city = ${address.city ?? null},
+            state = ${address.state ?? null},
+            zip = ${address.zip ?? null},
+            geocode = point(${geocoded.point.lng}, ${geocoded.point.lat}),
+            is_default = true
+        where id = ${existing[0].id}
+      `;
+    } else {
+      await sql`
+        insert into public.customer_addresses (
+          tenant_id, customer_id, street, city, state, zip, geocode, is_default
+        ) values (
+          ${ctx.tenantId}, ${customerId}, ${address.street},
+          ${address.city ?? null}, ${address.state ?? null}, ${address.zip ?? null},
+          point(${geocoded.point.lng}, ${geocoded.point.lat}), true
+        )
+      `;
+    }
+  } catch (err) {
+    logger.warn("create_order_address_save_failed", {
+      call_id: ctx.retellCallId,
+      tenant_id: ctx.tenantId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }

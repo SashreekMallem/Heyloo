@@ -10,6 +10,8 @@ import {
   CentsInput,
   DataState,
   Input,
+  Label,
+  Switch,
   Tabs,
   TabsContent,
   TabsList,
@@ -178,11 +180,130 @@ function PricingTab({
   );
 }
 
+interface VerticalFees {
+  setup_fee_enabled: boolean;
+  setup_fee_cents: number;
+  white_glove_enabled: boolean;
+  white_glove_fee_cents: number;
+  white_glove_description: string;
+}
+
+const DEFAULT_VERTICAL_FEES: VerticalFees = {
+  setup_fee_enabled: false,
+  setup_fee_cents: 0,
+  white_glove_enabled: false,
+  white_glove_fee_cents: 0,
+  white_glove_description: "",
+};
+
+/** Setup fee / white-glove onboarding fee, per vertical (Cluster H task brief item 5 — new product surface, docs/BUILD_NOTES.md). Mounted with `key={vertical}` so switching verticals remounts with freshly seeded state, same convention as `PricingTab`. */
+function FeesTab({
+  vertical,
+  onVerticalChange,
+  initial,
+  onSaved,
+}: {
+  vertical: (typeof VERTICALS)[number];
+  onVerticalChange: (v: (typeof VERTICALS)[number]) => void;
+  initial: VerticalFees;
+  onSaved: () => void;
+}) {
+  const [setupEnabled, setSetupEnabled] = useState(initial.setup_fee_enabled);
+  const [setupCents, setSetupCents] = useState<number | undefined>(initial.setup_fee_cents);
+  const [wgEnabled, setWgEnabled] = useState(initial.white_glove_enabled);
+  const [wgCents, setWgCents] = useState<number | undefined>(initial.white_glove_fee_cents);
+  const [wgDescription, setWgDescription] = useState(initial.white_glove_description);
+
+  async function save() {
+    const res = await fetch("/api/admin/admin-platform-settings/fees", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        vertical,
+        setup_fee_enabled: setupEnabled,
+        setup_fee_cents: setupCents ?? 0,
+        white_glove_enabled: wgEnabled,
+        white_glove_fee_cents: wgCents ?? 0,
+        white_glove_description: wgDescription,
+      }),
+    });
+    if (res.ok) {
+      toast.success("Fees saved");
+      onSaved();
+    } else {
+      toast.error("Couldn't save — check the amounts and try again.");
+    }
+  }
+
+  return (
+    <TabsContent value="fees" className="space-y-4">
+      <select
+        className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+        value={vertical}
+        onChange={(e) => onVerticalChange(e.target.value as (typeof VERTICALS)[number])}
+      >
+        {VERTICALS.map((v) => (
+          <option key={v} value={v}>
+            {v}
+          </option>
+        ))}
+      </select>
+
+      <div className="flex items-center gap-2">
+        <Switch id="setup-fee-enabled" checked={setupEnabled} onCheckedChange={setSetupEnabled} />
+        <Label htmlFor="setup-fee-enabled" className="text-sm font-normal">
+          Charge a one-time setup fee
+        </Label>
+      </div>
+      <div className="space-y-1">
+        <label htmlFor="setup-fee-cents" className="text-sm font-medium">
+          Setup fee
+        </label>
+        <CentsInput id="setup-fee-cents" value={setupCents} onChange={setSetupCents} />
+      </div>
+
+      <div className="flex items-center gap-2 border-t border-border pt-4">
+        <Switch id="white-glove-enabled" checked={wgEnabled} onCheckedChange={setWgEnabled} />
+        <Label htmlFor="white-glove-enabled" className="text-sm font-normal">
+          Offer white-glove onboarding
+        </Label>
+      </div>
+      <div className="space-y-1">
+        <label htmlFor="white-glove-cents" className="text-sm font-medium">
+          White-glove fee
+        </label>
+        <CentsInput id="white-glove-cents" value={wgCents} onChange={setWgCents} />
+      </div>
+      <div className="space-y-1">
+        <label htmlFor="white-glove-description" className="text-sm font-medium">
+          White-glove description (shown to the tenant)
+        </label>
+        <Textarea
+          id="white-glove-description"
+          value={wgDescription}
+          onChange={(e) => setWgDescription(e.target.value)}
+          placeholder="We'll build your menu, book your integrations, and QA the agent with you live."
+        />
+      </div>
+
+      <p className="text-xs text-muted-foreground">
+        Shown at signup step 2 when enabled — a disabled fee is saved but never charged or shown.
+      </p>
+      <Button onClick={save}>Save fees</Button>
+    </TabsContent>
+  );
+}
+
 export default function PlatformSettingsPage() {
   const settingsQuery = useAdminQuery<PlatformSettingsResponse>(
     "platform-settings",
     [],
     "admin-platform-settings",
+  );
+  const feesQuery = useAdminQuery<{ fees: Record<string, VerticalFees> }>(
+    "platform-fees",
+    [],
+    "admin-platform-settings/fees",
   );
   const [vertical, setVertical] = useState<(typeof VERTICALS)[number]>("generic");
 
@@ -197,6 +318,7 @@ export default function PlatformSettingsPage() {
             <TabsList>
               <TabsTrigger value="referral">Referral</TabsTrigger>
               <TabsTrigger value="pricing">Pricing tables</TabsTrigger>
+              <TabsTrigger value="fees">Fees</TabsTrigger>
             </TabsList>
             <ReferralTab initial={data.referral} onSaved={() => void settingsQuery.refetch()} />
             <PricingTab
@@ -206,6 +328,15 @@ export default function PlatformSettingsPage() {
               initial={data.price_cards[vertical] ?? null}
               onSaved={() => void settingsQuery.refetch()}
             />
+            {feesQuery.data && (
+              <FeesTab
+                key={`fees-${vertical}`}
+                vertical={vertical}
+                onVerticalChange={setVertical}
+                initial={feesQuery.data.fees[vertical] ?? DEFAULT_VERTICAL_FEES}
+                onSaved={() => void feesQuery.refetch()}
+              />
+            )}
           </Tabs>
         )}
       />

@@ -2,6 +2,7 @@
 
 import {
   AudioPlayer,
+  Badge,
   Button,
   Card,
   CardContent,
@@ -26,6 +27,30 @@ export interface CallDetailData {
   recordingStatus: "processing" | "none" | "ready";
   durationSeconds: number | null;
   linkedBookingId: string | null;
+  urgencyFlag: boolean;
+  callSummary: string | null;
+  sentiment: "positive" | "neutral" | "negative" | null;
+  followUpNeeded: boolean;
+  legalAdviceGiven: boolean;
+  outcome: string | null;
+  messageText: string | null;
+  structuredPayload: Record<string, unknown> | null;
+  extractedEntities: Record<string, unknown> | null;
+}
+
+const SENTIMENT_VARIANT: Record<string, "success" | "secondary" | "destructive"> = {
+  positive: "success",
+  neutral: "secondary",
+  negative: "destructive",
+};
+
+function keyValueEntries(payload: Record<string, unknown>): [string, string][] {
+  return Object.entries(payload)
+    .filter(([, v]) => v !== null && v !== undefined && v !== "")
+    .map(([k, v]): [string, string] => [
+      k.replace(/_/g, " "),
+      Array.isArray(v) ? v.join(", ") : typeof v === "boolean" ? (v ? "Yes" : "No") : String(v),
+    ]);
 }
 
 export function CallDetailClient({ call }: { call: CallDetailData }) {
@@ -35,13 +60,76 @@ export function CallDetailClient({ call }: { call: CallDetailData }) {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-xl font-semibold">Call detail</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {call.urgencyFlag && <Badge variant="destructive">Urgent</Badge>}
+          {call.legalAdviceGiven && <Badge variant="destructive">Legal advice given</Badge>}
           {call.classification && <StatusBadge variant="call-class" value={call.classification} />}
+          {call.sentiment && (
+            <Badge variant={SENTIMENT_VARIANT[call.sentiment] ?? "outline"}>{call.sentiment}</Badge>
+          )}
+          {call.followUpNeeded && <Badge variant="warning">Follow-up needed</Badge>}
           <Button variant="outline" size="sm" asChild>
             <Link href={`/dashboard/support?call_id=${call.id}`}>Create support ticket</Link>
           </Button>
         </div>
       </div>
+
+      {(call.callSummary || call.outcome || call.messageText) && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Summary</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            {call.callSummary && <p>{call.callSummary}</p>}
+            {call.outcome && (
+              <p>
+                <span className="text-muted-foreground">Outcome</span> {call.outcome}
+              </p>
+            )}
+            {call.messageText && (
+              <p>
+                <span className="text-muted-foreground">Message left</span> {call.messageText}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {call.structuredPayload && keyValueEntries(call.structuredPayload).length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Captured on the call</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <dl className="space-y-1 text-sm">
+              {keyValueEntries(call.structuredPayload).map(([label, value]) => (
+                <div key={label} className="flex justify-between gap-2">
+                  <dt className="capitalize text-muted-foreground">{label}</dt>
+                  <dd className="text-right">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </CardContent>
+        </Card>
+      )}
+
+      {call.extractedEntities && keyValueEntries(call.extractedEntities).length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Extracted entities</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <dl className="space-y-1 text-sm">
+              {keyValueEntries(call.extractedEntities).map(([label, value]) => (
+                <div key={label} className="flex justify-between gap-2">
+                  <dt className="capitalize text-muted-foreground">{label}</dt>
+                  <dd className="text-right">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </CardContent>
+        </Card>
+      )}
 
       {call.linkedBookingId && (
         <Card>

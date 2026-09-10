@@ -55,4 +55,36 @@ describe("buildApiCheckoutRequest", () => {
     );
     expect("tenant_id" in body).toBe(false);
   });
+
+  it("passes white_glove: true through when the tenant opted in on the plan step", () => {
+    const body = buildApiCheckoutRequest(
+      { business_type: "auto", business_name: "Joe's Garage" },
+      "joe@example.com",
+      "America/Chicago",
+      true,
+    );
+    expect(body).toEqual({
+      vertical: "auto",
+      business_name: "Joe's Garage",
+      email: "joe@example.com",
+      timezone: "America/Chicago",
+      white_glove: true,
+    });
+  });
+
+  it("omits white_glove entirely when not opted in, matching CheckoutRequestSchema's default(false)", () => {
+    const bodyWithoutArg = buildApiCheckoutRequest(
+      { business_type: "vet", business_name: "Paws Clinic" },
+      "owner@example.com",
+    );
+    expect("white_glove" in bodyWithoutArg).toBe(false);
+
+    const bodyWithFalse = buildApiCheckoutRequest(
+      { business_type: "vet", business_name: "Paws Clinic" },
+      "owner@example.com",
+      undefined,
+      false,
+    );
+    expect("white_glove" in bodyWithFalse).toBe(false);
+  });
 });

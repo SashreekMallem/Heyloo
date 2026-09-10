@@ -8,6 +8,7 @@
  */
 
 import { z } from "zod";
+import { zBookingStructuredPayload } from "./booking-payloads.js";
 import { zCents } from "./primitives.js";
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,11 @@ export type ToolFallbackResult = z.infer<typeof zToolFallbackResult>;
 export const zCheckAvailabilityRequest = z.object({
   offering_id: z.string().min(1).optional(),
   resource_type: z.string().min(1).optional(),
+  /** Motel room-type / any other resource sub-type tag (`resources.room_type`,
+   * GAP_REGISTER.md §2 Motel item 2) — narrows within `resource_type`
+   * rather than replacing it (a motel's `resource_type` is always `'room'`;
+   * `room_type` picks which room tier, e.g. "queen"). */
+  room_type: z.string().min(1).optional(),
   date_range: z.object({ start: z.string().min(1), end: z.string().min(1) }),
   party_size: z.number().int().positive().optional(),
 });
@@ -51,6 +57,24 @@ export type CheckAvailabilityResult = z.infer<typeof zCheckAvailabilityResult>;
 // 7.2.2 create_booking
 // ---------------------------------------------------------------------------
 
+/** GAP_REGISTER.md §3.6: the caller's once-per-call SMS/call consent answer
+ * (MASTER_SPEC §3.6), mirrored 1:1 from `_shared/schemas/voice-tools.ts`'s
+ * `CreateBookingArgsSchema` — that file is the runtime-enforced shape;
+ * `zConsentInput` here is the single canonical source both it and
+ * `zCreateOrderRequest` below reference, closing GAP_REGISTER.md §1.9's
+ * schema-drift finding. */
+const zConsentInput = z.object({ sms: z.boolean().optional(), call: z.boolean().optional() });
+
+/** MASTER_SPEC §3.7 identity fallback: supplied ONLY when the live call's
+ * caller number differs from the booking's own customer phone — full name
+ * + the appointment time the caller believes they have, checked against
+ * the real booking before any write. Mirrored from `_shared/schemas/
+ * voice-tools.ts`'s `IdentityVerifySchema` (GAP_REGISTER.md §1.9). */
+const zIdentityVerifyInput = z.object({
+  full_name: z.string().min(1),
+  appointment_time: z.string().min(1),
+});
+
 export const zCreateBookingRequest = z.object({
   resource_id: z.string().min(1),
   offering_id: z.string().min(1).optional(),
@@ -58,7 +82,11 @@ export const zCreateBookingRequest = z.object({
   end: z.string().min(1),
   customer: zCustomerInput,
   party_size: z.number().int().positive().optional(),
-  structured_payload: z.record(z.string(), z.unknown()).optional(),
+  /** Typed per vertical (GAP_REGISTER.md §1.7, `booking-payloads.ts`) —
+   * still a union of loose objects, so an unrecognized/partial payload is
+   * never a hard validation failure on the booking itself. */
+  structured_payload: zBookingStructuredPayload.optional(),
+  consent: zConsentInput.optional(),
 });
 export type CreateBookingRequest = z.infer<typeof zCreateBookingRequest>;
 
@@ -85,6 +113,7 @@ export const zUpdateBookingRequest = z.object({
   booking_id: z.string().min(1),
   new_start: z.string().min(1),
   new_end: z.string().min(1),
+  verify: zIdentityVerifyInput.optional(),
 });
 export type UpdateBookingRequest = z.infer<typeof zUpdateBookingRequest>;
 
@@ -101,6 +130,7 @@ export type UpdateBookingResult = z.infer<typeof zUpdateBookingResult>;
 export const zCancelBookingRequest = z.object({
   booking_id: z.string().min(1),
   reason: z.string().min(1).optional(),
+  verify: zIdentityVerifyInput.optional(),
 });
 export type CancelBookingRequest = z.infer<typeof zCancelBookingRequest>;
 
@@ -122,6 +152,7 @@ export const zLookupCustomerResult = z.union([
     recent_bookings: z.array(z.record(z.string(), z.unknown())).optional(),
     vehicles: z.array(z.record(z.string(), z.unknown())).optional(),
     pets: z.array(z.record(z.string(), z.unknown())).optional(),
+    addresses: z.array(z.record(z.string(), z.unknown())).optional(),
   }),
   z.object({ error: z.literal("unauthorized_lookup") }),
 ]);
@@ -136,6 +167,13 @@ export const zTakeMessageRequest = z.object({
   caller_phone: z.string().min(1),
   message_text: z.string().min(1),
   callback_window: z.string().min(1).optional(),
+  /** GAP_REGISTER.md §2 Legal item 4 / real_estate — reuses the SAME
+   * per-vertical typed shapes `create_booking` uses (`booking-payloads.ts`)
+   * so a caller who leaves a message instead of completing a booking (no
+   * booking concept at all for legal; a lead not ready to schedule a
+   * showing for real_estate) still gets structured intake data recorded,
+   * not just free-text `message_text`. */
+  structured_payload: zBookingStructuredPayload.optional(),
 });
 export type TakeMessageRequest = z.infer<typeof zTakeMessageRequest>;
 
@@ -175,6 +213,29 @@ export const zTransferCallConfig = z.object({
 export type TransferCallConfig = z.infer<typeof zTransferCallConfig>;
 
 // ---------------------------------------------------------------------------
+// MASTER_SPEC §3.4 join_waitlist (GAP_REGISTER.md §1.2)
+// ---------------------------------------------------------------------------
+
+export const zJoinWaitlistRequest = z.object({
+  customer: zCustomerInput,
+  offering_id: z.string().min(1).optional(),
+  resource_type: z.string().min(1).optional(),
+  preferred_window_start: z.string().min(1),
+  preferred_window_end: z.string().min(1),
+  notes: z.string().min(1).optional(),
+});
+export type JoinWaitlistRequest = z.infer<typeof zJoinWaitlistRequest>;
+
+export const zJoinWaitlistResult = z.discriminatedUnion("joined", [
+  z.object({ joined: z.literal(true), waitlist_entry_id: z.string().min(1) }),
+  z.object({
+    joined: z.literal(false),
+    reason: z.enum(["invalid_phone", "offering_not_found"]),
+  }),
+]);
+export type JoinWaitlistResult = z.infer<typeof zJoinWaitlistResult>;
+
+// ---------------------------------------------------------------------------
 // MASTER_SPEC §3.0 create_order (restaurant/message-mode commerce)
 // ---------------------------------------------------------------------------
 
@@ -203,6 +264,14 @@ export const zCreateOrderRequest = z
     fulfillment_type: z.enum(FULFILLMENT_TYPES),
     delivery_address: zDeliveryAddressInput.optional(),
     customer: zCustomerInput,
+    /** GAP_REGISTER.md §1.10 — `create_order` had no consent field even
+     * though `create_booking` did; same once-per-call SMS/call consent ask
+     * (MASTER_SPEC §3.6). */
+    consent: zConsentInput.optional(),
+    /** GAP_REGISTER.md §2 Restaurant item 2 — the template mandates an
+     * explicit allergy ask with no schema field to persist the answer to. */
+    allergies: z.array(z.string().min(1)).optional(),
+    special_instructions: z.string().min(1).optional(),
   })
   .check((ctx) => {
     if (ctx.value.fulfillment_type === "delivery" && !ctx.value.delivery_address) {
@@ -224,6 +293,11 @@ export const zCreateOrderResult = z.discriminatedUnion("confirmed", [
     order_id: z.string().min(1),
     subtotal_cents: zCents,
     tax_cents: zCents,
+    /** GAP_REGISTER.md §4 Cluster D — delivery-fee enforcement from the
+     * tenant's own per-vertical config (`agent_configs.
+     * dynamic_variable_overrides.delivery_fee_cents`); 0/omitted for
+     * pickup/dine_in. */
+    delivery_fee_cents: zCents.optional(),
     total_cents: zCents,
   }),
   z.object({
@@ -249,7 +323,12 @@ export const zSendPaymentLinkRequest = z
     booking_id: z.string().min(1).optional(),
     phone: z.string().min(1),
     purpose: z.enum(PAYMENT_LINK_PURPOSES),
-    amount_cents: zCents,
+    /** Optional (FIX-1 follow-up, cross-schema parity test): the runtime
+     * `send_payment_link` handler (`voice-tools/tools/send_payment_link.ts`)
+     * falls back to the referenced order's own `total_cents` when this is
+     * omitted — a model-supplied amount is only needed for a deposit/
+     * no-show fee with no order to derive it from. */
+    amount_cents: zCents.optional(),
   })
   .check((ctx) => {
     if (!ctx.value.order_id && !ctx.value.booking_id) {
@@ -283,6 +362,7 @@ export const TOOL_REQUEST_SCHEMAS = {
   send_sms_confirmation: zSendSmsConfirmationRequest,
   create_order: zCreateOrderRequest,
   send_payment_link: zSendPaymentLinkRequest,
+  join_waitlist: zJoinWaitlistRequest,
 } as const;
 
 export type ToolName = keyof typeof TOOL_REQUEST_SCHEMAS;

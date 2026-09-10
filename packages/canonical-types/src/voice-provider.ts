@@ -30,6 +30,16 @@ export interface ProviderCapabilities {
   /** Whether `get-call`-style post-call cost data is itemized/exact, or coarse/estimated. */
   readonly costGranularity: CostGranularity;
   readonly maxToolsPerAgent?: number;
+  /**
+   * Whether this provider can place outbound calls (`createOutboundCall`).
+   * Optional (defaults to falsy when omitted) rather than a required flag
+   * on the existing `ProviderCapabilities` object literals every adapter
+   * already constructs (e.g. `packages/adapters/retell/src/provider.ts`'s
+   * `RETELL_CAPABILITIES`) so adding this capability doesn't itself force
+   * an edit to a file outside this cluster's ownership — see
+   * `docs/audit/FIX_REQUESTS.md` for the follow-up wiring request.
+   */
+  readonly supportsOutboundCalls?: boolean;
 }
 
 export function supportsCompileTarget(
@@ -101,6 +111,22 @@ export const zAgentDynamicVariables = z.object({
   special_instructions: z.string(),
   manager_name: z.string().optional(),
   manager_phone: z.string().optional(),
+  /**
+   * `agent_configs.transfer_number` (tenant-config-only, G6, BACKEND_SPEC
+   * §7.2.8), forwarded as a call-scoped dynamic variable so the compiled
+   * `transfer_call` node's `transfer_destination.number` (compiled as the
+   * literal `{{transfer_number}}` placeholder — see
+   * `packages/adapters/retell/src/compiler/conversation-flow.ts`) resolves
+   * at call time exactly like every other tenant-config token, never a
+   * caller- or model-supplied value. Optional here only because
+   * `AgentDynamicVariables` is shared by every call, including a tenant
+   * that hasn't configured a transfer number yet (the model still sees a
+   * literal unresolved placeholder in that case — no different from any
+   * other unset tenant-config token today, and outside this cluster's
+   * scope to change; flagged via FIX_REQUESTS for whichever cluster owns
+   * `voice-inbound/handler.ts`'s dynamic-variable assembly).
+   */
+  transfer_number: z.string().optional(),
   parking_info: z.string().optional(),
   accessibility_notes: z.string().optional(),
   accepted_payment_types: z.array(z.string()).optional(),
@@ -275,6 +301,45 @@ export interface ImportPhoneNumberResult {
 }
 
 // ---------------------------------------------------------------------------
+// Outbound calls (SYSTEM_DESIGN — reminders/reactivation/reschedule-offer
+// outbound calling, GAP_REGISTER Cluster A item 6). `createOutboundCall` is
+// OPTIONAL on `VoiceProvider` (not every provider/deployment supports
+// outbound, `capabilities.supportsOutboundCalls` gates it) and this file
+// only defines the canonical shape — `packages/adapters/retell/src/
+// outbound.ts` is the Retell implementation; wiring it onto
+// `RetellProvider` is a one-line addition outside this cluster's file
+// ownership, filed in `docs/audit/FIX_REQUESTS.md`.
+// ---------------------------------------------------------------------------
+
+export interface CreateOutboundCallInput {
+  toNumberE164: string;
+  /** MUST be a number this tenant owns — enforced by the caller (this adapter has no tenant/DB context to verify it itself, CLAUDE.md Rule 2). */
+  fromNumberE164: string;
+  providerAgentId: string;
+  /**
+   * Call-scoped dynamic variables, exactly like an inbound call's
+   * `AgentDynamicVariables` — MUST include a non-empty `disclosure_line`
+   * (G1/G2: the AI + recording disclosure is compiler-enforced on inbound
+   * templates already; an outbound call has no compiled-in first turn to
+   * carry it, so the caller must supply it explicitly here and the
+   * implementation refuses to place the call otherwise).
+   */
+  dynamicVariables: Record<string, string> & { disclosure_line: string };
+  /**
+   * Audit/idempotency reference for the consent record that authorized this
+   * specific outbound call (MASTER_SPEC §3.6 `customers.consent`) — never a
+   * literal boolean; the caller resolves and records consent BEFORE
+   * invoking this, this field only carries the reference through for
+   * correlation on the provider side (`metadata`).
+   */
+  consentRef: string;
+}
+
+export interface CreateOutboundCallResult {
+  providerCallId: string;
+}
+
+// ---------------------------------------------------------------------------
 // Signature verification (shared shape for inbound/tool-call/events webhooks)
 // ---------------------------------------------------------------------------
 
@@ -334,4 +399,13 @@ export interface VoiceProvider {
 
   /** Lower a canonical `AgentTemplate` into this provider's agent-config payload for the given compile target. */
   compileTemplate(template: AgentTemplate, target: CompileTarget): CompiledAgentArtifact;
+
+  /**
+   * Place an outbound call. Optional — check `capabilities.
+   * supportsOutboundCalls` before calling; an implementation that declares
+   * the capability MUST implement this. MUST enforce the disclosure
+   * requirement on `input.dynamicVariables.disclosure_line` (fail closed,
+   * never place a call without it).
+   */
+  createOutboundCall?(input: CreateOutboundCallInput): Promise<CreateOutboundCallResult>;
 }

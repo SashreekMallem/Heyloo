@@ -9,6 +9,8 @@ import {
   shouldRefreshEzyVetAuth,
 } from "../_shared/providers/ezyvet.ts";
 import {
+  GOOGLE_CALENDAR_BASE_URL,
+  type GoogleCalendarFetch,
   freeBusyQuery as googleFreeBusyQuery,
   getCalendarEvent as googleGetCalendarEvent,
   insertCalendarEvent as googleInsertCalendarEvent,
@@ -27,6 +29,8 @@ import {
   createSquareBooking,
   createSquareOrder,
   refreshSquareToken,
+  SQUARE_BASE_URL,
+  type SquareFetch,
 } from "../_shared/providers/square.ts";
 import type { AdapterPushQueueMsg } from "../_shared/queue.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
@@ -169,8 +173,36 @@ async function recordSyncSuccess(
   `;
 }
 
+/**
+ * GAP_REGISTER.md §4 Cluster C acceptance criteria / FIX-1's disclosed
+ * scope limit ("every pusher only implements a CREATE call ... a
+ * reschedule/cancel push therefore still calls the provider's create
+ * endpoint"): the correct "have we already pushed this entity" signal is
+ * `adapter_sync_state` (keyed by `entity_id`, not by the push message's own
+ * `idempotency_key`, which differs per create/update/cancel — see
+ * `create_booking.ts`/`update_booking.ts`/`cancel_booking.ts`'s distinct
+ * key conventions) — this is what lets a pusher tell CREATE apart from
+ * UPDATE/CANCEL for the same booking.
+ */
+async function loadSyncExternalId(
+  sql: SqlClient,
+  tenantId: string,
+  provider: string,
+  entityType: "booking" | "order",
+  entityId: string,
+): Promise<string | null> {
+  const rows = await sql<{ external_id: string }>`
+    select external_id from public.adapter_sync_state
+    where tenant_id = ${tenantId} and provider = ${provider}
+      and entity_type = ${entityType} and entity_id = ${entityId}
+    limit 1
+  `;
+  return rows[0]?.external_id ?? null;
+}
+
 interface BookingRow {
   id: string;
+  status: string;
   start_at: string;
   end_at: string;
   notes: string | null;
@@ -189,7 +221,7 @@ async function loadBookingForPush(
 ): Promise<BookingRow | null> {
   const rows = await sql<BookingRow>`
     select
-      b.id, b.start_at, b.end_at, b.notes, b.party_size,
+      b.id, b.status, b.start_at, b.end_at, b.notes, b.party_size,
       c.name as customer_name, c.phone_e164 as customer_phone, c.email as customer_email,
       o.metadata as offering_metadata,
       r.metadata as resource_metadata
@@ -243,6 +275,89 @@ function adapterExternalId(
 // Square
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Square booking update/cancel (GAP_REGISTER.md §4 Cluster C / FIX-1's
+// disclosed scope limit — every pusher was previously CREATE-only). Local
+// to this file (not added to `_shared/providers/square.ts`, outside this
+// task's ownership) — a minimal `squareRequest`-shaped call using that
+// file's own already-exported `SQUARE_BASE_URL`/`SquareFetch`.
+//
+// Endpoints confirmed against developer.squareup.com (CLAUDE.md Rule 1,
+// reachable this build):
+//   - PUT /v2/bookings/{booking_id} — body {idempotency_key?, booking:
+//     {version, start_at, ...}} — "version" is Square's optimistic-
+//     concurrency revision number, required on every update.
+//   - POST /v2/bookings/{booking_id}/cancel — body {booking_version,
+//     idempotency_key?}.
+// VERIFY (docs/VERIFY.md): GET /v2/bookings/{booking_id} (retrieve, needed
+// here only to read the current `version` before an update/cancel) matches
+// every other Square resource's REST convention and this file's own
+// existing POST/PUT paths, but could not be independently confirmed via
+// WebFetch in this build (the reference page rendered nav-only) — re-verify
+// before first live deploy.
+const SQUARE_API_VERSION_LOCAL = "2026-08-19"; // VERIFY-confirmed, see square.ts's own SQUARE_API_VERSION comment.
+
+async function squareBookingRequest(
+  fetchImpl: SquareFetch,
+  accessToken: string,
+  method: "GET" | "PUT" | "POST",
+  path: string,
+  body?: unknown,
+): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const res = await fetchImpl(`${SQUARE_BASE_URL}${path}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json",
+      "square-version": SQUARE_API_VERSION_LOCAL,
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  const parsedBody = await res.json().catch(() => undefined);
+  return { ok: res.ok, status: res.status, body: parsedBody };
+}
+
+async function retrieveSquareBookingVersion(
+  fetchImpl: SquareFetch,
+  accessToken: string,
+  bookingId: string,
+): Promise<number | null> {
+  const result = await squareBookingRequest(
+    fetchImpl,
+    accessToken,
+    "GET",
+    `/v2/bookings/${bookingId}`,
+  );
+  if (!result.ok) return null;
+  const version = (result.body as { booking?: { version?: number } })?.booking?.version;
+  return typeof version === "number" ? version : null;
+}
+
+async function updateSquareBooking(
+  fetchImpl: SquareFetch,
+  accessToken: string,
+  params: { bookingId: string; version: number; startAt: string; idempotencyKey: string },
+): Promise<{ ok: boolean; status: number; body: unknown }> {
+  return squareBookingRequest(fetchImpl, accessToken, "PUT", `/v2/bookings/${params.bookingId}`, {
+    idempotency_key: params.idempotencyKey,
+    booking: { version: params.version, start_at: params.startAt },
+  });
+}
+
+async function cancelSquareBooking(
+  fetchImpl: SquareFetch,
+  accessToken: string,
+  params: { bookingId: string; version: number; idempotencyKey: string },
+): Promise<{ ok: boolean; status: number; body: unknown }> {
+  return squareBookingRequest(
+    fetchImpl,
+    accessToken,
+    "POST",
+    `/v2/bookings/${params.bookingId}/cancel`,
+    { booking_version: params.version, idempotency_key: params.idempotencyKey },
+  );
+}
+
 async function pushToSquare(
   sql: SqlClient,
   msg: AdapterPushQueueMsg,
@@ -289,6 +404,93 @@ async function pushToSquare(
   if (msg.entity_type === "booking") {
     const booking = await loadBookingForPush(sql, msg.tenant_id, msg.entity_id);
     if (!booking) return false;
+
+    // GAP_REGISTER.md §4 Cluster C — an already-synced booking (a prior
+    // push recorded its Square booking id in adapter_sync_state) gets
+    // UPDATEd (reschedule) or CANCELled here instead of re-CREATEd against
+    // its current/possibly-cancelled state; a never-synced booking still
+    // takes the CREATE path below.
+    const existingExternalId = await loadSyncExternalId(
+      sql,
+      msg.tenant_id,
+      "square",
+      "booking",
+      msg.entity_id,
+    );
+
+    if (booking.status === "cancelled") {
+      if (!existingExternalId) {
+        // Never reached Square in the first place — nothing to cancel there.
+        return true;
+      }
+      const version = await retrieveSquareBookingVersion(
+        deps.fetchImpl,
+        accessToken,
+        existingExternalId,
+      );
+      if (version === null) {
+        logger.warn("adapter_push_square_retrieve_failed", {
+          adapter: "square",
+          entity_id: msg.entity_id,
+        });
+        return false;
+      }
+      const result = await cancelSquareBooking(deps.fetchImpl, accessToken, {
+        bookingId: existingExternalId,
+        version,
+        idempotencyKey: msg.idempotency_key,
+      });
+      if (!result.ok) {
+        if (result.status === 401 || result.status === 403) {
+          await markConnectionDisconnected(sql, connection.id, "square 401 on booking cancel");
+        }
+        return false;
+      }
+      await recordSyncSuccess(sql, {
+        tenantId: msg.tenant_id,
+        provider: "square",
+        entityType: "booking",
+        entityId: msg.entity_id,
+        externalId: existingExternalId,
+      });
+      return true;
+    }
+
+    if (existingExternalId) {
+      const version = await retrieveSquareBookingVersion(
+        deps.fetchImpl,
+        accessToken,
+        existingExternalId,
+      );
+      if (version === null) {
+        logger.warn("adapter_push_square_retrieve_failed", {
+          adapter: "square",
+          entity_id: msg.entity_id,
+        });
+        return false;
+      }
+      const result = await updateSquareBooking(deps.fetchImpl, accessToken, {
+        bookingId: existingExternalId,
+        version,
+        startAt: booking.start_at,
+        idempotencyKey: msg.idempotency_key,
+      });
+      if (!result.ok) {
+        if (result.status === 401 || result.status === 403) {
+          await markConnectionDisconnected(sql, connection.id, "square 401 on booking update");
+        }
+        return false;
+      }
+      await recordSyncSuccess(sql, {
+        tenantId: msg.tenant_id,
+        provider: "square",
+        entityType: "booking",
+        entityId: msg.entity_id,
+        externalId: existingExternalId,
+      });
+      return true;
+    }
+
     const teamMemberId =
       adapterExternalId(booking.resource_metadata, "square") ??
       (connection.metadata["defaultTeamMemberId"] as string | undefined);
@@ -550,6 +752,60 @@ async function pushToEzyVet(
 // Google Calendar (booking push only)
 // ---------------------------------------------------------------------------
 
+// GAP_REGISTER.md §4 Cluster C / FIX-1's disclosed scope limit — same
+// CREATE-only gap as Square, fixed the same way: an already-synced booking
+// (tracked in adapter_sync_state by entity_id) is PATCHed or DELETEd
+// instead of re-INSERTed. Endpoints confirmed against
+// developers.google.com/calendar/api/v3/reference/events/{patch,delete}
+// (CLAUDE.md Rule 1, reachable this build) — standard, well-documented
+// Calendar API v3 REST paths. Local to this file (not added to
+// `_shared/providers/google-calendar.ts`, outside this task's ownership) —
+// uses that file's own already-exported `GOOGLE_CALENDAR_BASE_URL`.
+async function patchGoogleCalendarEvent(
+  fetchImpl: GoogleCalendarFetch,
+  accessToken: string,
+  params: {
+    calendarId: string;
+    eventId: string;
+    startAt: string;
+    endAt: string;
+    summary: string;
+    description: string;
+  },
+): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const res = await fetchImpl(
+    `${GOOGLE_CALENDAR_BASE_URL}/calendars/${encodeURIComponent(params.calendarId)}/events/${encodeURIComponent(params.eventId)}`,
+    {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        summary: params.summary,
+        description: params.description,
+        start: { dateTime: params.startAt },
+        end: { dateTime: params.endAt },
+      }),
+    },
+  );
+  const body = await res.json().catch(() => undefined);
+  return { ok: res.ok, status: res.status, body };
+}
+
+async function deleteGoogleCalendarEvent(
+  fetchImpl: GoogleCalendarFetch,
+  accessToken: string,
+  calendarId: string,
+  eventId: string,
+): Promise<{ ok: boolean; status: number }> {
+  const res = await fetchImpl(
+    `${GOOGLE_CALENDAR_BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+    { method: "DELETE", headers: { authorization: `Bearer ${accessToken}` } },
+  );
+  // A 404/410 means the event is already gone (deleted out of band, or
+  // this is a retry of an already-processed delete) — treated as success,
+  // never a reason to re-attempt or disconnect the connection.
+  return { ok: res.ok || res.status === 404 || res.status === 410, status: res.status };
+}
+
 async function pushToGoogleCalendar(
   sql: SqlClient,
   msg: AdapterPushQueueMsg,
@@ -608,6 +864,63 @@ async function pushToGoogleCalendar(
   const calendarId = (connection.metadata["calendarId"] as string | undefined) ?? "primary";
   const booking = await loadBookingForPush(sql, msg.tenant_id, msg.entity_id);
   if (!booking) return false;
+
+  const existingEventId = await loadSyncExternalId(
+    sql,
+    msg.tenant_id,
+    "google_calendar",
+    "booking",
+    msg.entity_id,
+  );
+
+  if (booking.status === "cancelled") {
+    if (!existingEventId) return true; // never synced — nothing to delete
+    const result = await deleteGoogleCalendarEvent(
+      deps.fetchImpl,
+      accessToken,
+      calendarId,
+      existingEventId,
+    );
+    if (!result.ok) {
+      if (result.status === 401 || result.status === 403) {
+        await markConnectionDisconnected(sql, connection.id, "google_calendar 401/403 on delete");
+      }
+      return false;
+    }
+    await recordSyncSuccess(sql, {
+      tenantId: msg.tenant_id,
+      provider: "google_calendar",
+      entityType: "booking",
+      entityId: msg.entity_id,
+      externalId: existingEventId,
+    });
+    return true;
+  }
+
+  if (existingEventId) {
+    const result = await patchGoogleCalendarEvent(deps.fetchImpl, accessToken, {
+      calendarId,
+      eventId: existingEventId,
+      startAt: booking.start_at,
+      endAt: booking.end_at,
+      summary: `${booking.customer_name ?? "Phone caller"} — booking`,
+      description: `Phone: ${booking.customer_phone ?? "n/a"}${booking.notes ? `\nNotes: ${booking.notes}` : ""}`,
+    });
+    if (!result.ok) {
+      if (result.status === 401 || result.status === 403) {
+        await markConnectionDisconnected(sql, connection.id, "google_calendar 401/403 on patch");
+      }
+      return false;
+    }
+    await recordSyncSuccess(sql, {
+      tenantId: msg.tenant_id,
+      provider: "google_calendar",
+      entityType: "booking",
+      entityId: msg.entity_id,
+      externalId: existingEventId,
+    });
+    return true;
+  }
 
   const insertResult = await googleInsertCalendarEvent(deps.fetchImpl, accessToken, {
     calendarId,

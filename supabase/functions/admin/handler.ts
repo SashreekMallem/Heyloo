@@ -1,6 +1,6 @@
 import { writeAdminAction } from "../_shared/admin-actions.ts";
 import type { AdminJwtClaims } from "../_shared/admin-auth.ts";
-import { isAal2, isPlatformAdmin } from "../_shared/admin-auth.ts";
+import { impersonatedByClaim, isAal2, isPlatformAdmin } from "../_shared/admin-auth.ts";
 import {
   type CompilerAgentTemplate,
   compileTemplate,
@@ -26,7 +26,11 @@ import { renderTemplate } from "../_shared/templates.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import {
   AdminAlertThresholdSchema,
+  AdminCommissionTermsSchema,
+  AdminCommissionVerticalOverrideSchema,
   AdminReferralSettingSchema,
+  AdminSupportRequestNoteSchema,
+  AdminSupportRequestUpdateSchema,
   PlatformPricingTableSchema,
   VERTICALS,
 } from "./schemas.ts";
@@ -97,6 +101,42 @@ export interface AdminDeps {
 
 function segments(path: string): string[] {
   return path.split("/").filter(Boolean);
+}
+
+/**
+ * Impersonation cookie-fix (docs/audit/FIX_REQUESTS.md). Resolves WHO is
+ * allowed to act on an impersonation session for `impersonate-end`/
+ * `impersonate/edit-mode`: normally the calling platform admin (their own
+ * `sub`, AAL2-confirmed) — but `@supabase/ssr`'s one-cookie-per-domain
+ * session storage means opening the impersonation magic link in a new tab
+ * overwrites that cookie browser-wide, so a request from the ADMIN's
+ * original tab, or from the impersonated tab itself, can end up carrying
+ * the TENANT OWNER's own session instead. That token still carries
+ * `impersonated_by` (stamped only by `custom_access_token_hook` from a
+ * real, currently active `impersonation_sessions` row — unforgeable by an
+ * ordinary tenant login), so it is trusted as an alternative proof of the
+ * same admin identity for exactly these two narrow, already
+ * tenant_id+admin_user_id-scoped actions. AAL2 is not re-required on this
+ * path: the underlying session was already AAL2-gated at
+ * `impersonate`-start time.
+ */
+function resolveImpersonationActor(
+  claims: AdminJwtClaims | null,
+  jwtSub: string | null,
+  opts: { requireAal2: boolean },
+): string | null {
+  if (isPlatformAdmin(claims) && jwtSub && (!opts.requireAal2 || isAal2(claims))) return jwtSub;
+  return impersonatedByClaim(claims);
+}
+
+function isImpersonationSelfServicePath(path: string): boolean {
+  const parts = segments(path);
+  return (
+    parts[0] === "admin-tenants" &&
+    !!parts[1] &&
+    ((parts[2] === "impersonate-end" && parts[3] === undefined) ||
+      (parts[2] === "impersonate" && parts[3] === "edit-mode" && parts[4] === undefined))
+  );
 }
 
 async function handleTenants(
@@ -183,10 +223,14 @@ async function handleTenants(
     // the new value on the impersonated tab's next token refresh (the JWT
     // is short-lived, so this is bounded, not instantaneous — the same
     // tradeoff every claims-based authorization change on Supabase has).
-    if (!isAal2(ctx.claims)) {
-      return { status: 403, body: { error: "aal2_required" } };
+    const actorAdminUserId = resolveImpersonationActor(ctx.claims, ctx.adminUserId, {
+      requireAal2: true,
+    });
+    if (!actorAdminUserId) {
+      return isPlatformAdmin(ctx.claims)
+        ? { status: 403, body: { error: "aal2_required" } }
+        : { status: 403, body: { error: "forbidden" } };
     }
-    if (!ctx.adminUserId) return { status: 403, body: { error: "forbidden" } };
 
     const body = (ctx.body ?? {}) as { enabled?: boolean };
     if (typeof body.enabled !== "boolean") {
@@ -196,7 +240,7 @@ async function handleTenants(
     const before = (
       await sql<{ edit_enabled: boolean }>`
         select edit_enabled from public.impersonation_sessions
-        where tenant_id = ${tenantId} and admin_user_id = ${ctx.adminUserId}
+        where tenant_id = ${tenantId} and admin_user_id = ${actorAdminUserId}
           and ended_at is null and expires_at > now()
         order by created_at desc limit 1
       `
@@ -205,12 +249,12 @@ async function handleTenants(
 
     await sql`
       update public.impersonation_sessions set edit_enabled = ${body.enabled}
-      where tenant_id = ${tenantId} and admin_user_id = ${ctx.adminUserId}
+      where tenant_id = ${tenantId} and admin_user_id = ${actorAdminUserId}
         and ended_at is null and expires_at > now()
     `;
 
     await writeAdminAction(sql, {
-      adminUserId: ctx.adminUserId,
+      adminUserId: actorAdminUserId,
       action: "impersonate_edit_mode_change",
       targetType: "tenant",
       targetId: tenantId,
@@ -334,13 +378,16 @@ async function handleTenants(
     // `custom_access_token_hook` stops issuing the claim on the next
     // mint/refresh regardless of whether the impersonated tab's client-side
     // `supabase.auth.signOut()` (the real session teardown) ever reaches it.
-    if (ctx.adminUserId) {
+    const actorAdminUserId = resolveImpersonationActor(ctx.claims, ctx.adminUserId, {
+      requireAal2: false,
+    });
+    if (actorAdminUserId) {
       await sql`
         update public.impersonation_sessions set ended_at = now()
-        where tenant_id = ${tenantId} and admin_user_id = ${ctx.adminUserId} and ended_at is null
+        where tenant_id = ${tenantId} and admin_user_id = ${actorAdminUserId} and ended_at is null
       `;
       await writeAdminAction(sql, {
-        adminUserId: ctx.adminUserId,
+        adminUserId: actorAdminUserId,
         action: "impersonate_end",
         targetType: "tenant",
         targetId: tenantId,
@@ -501,6 +548,125 @@ async function handleAlerts(sql: SqlClient, ctx: AdminRequestContext): Promise<A
       });
     }
     return { status: 200, body: { deleted: true } };
+  }
+
+  return { status: 404, body: { error: "not_found" } };
+}
+
+/**
+ * `/admin-support-requests` (GAP_REGISTER Cluster G item 6 — change-request
+ * tickets backend). `support_requests`/`support_request_notes`
+ * (20260907131100_platform_support.sql) already exist and already have a
+ * real tenant-write RLS policy (a tenant creates its own ticket directly
+ * via an authenticated PostgREST insert — no edge function needed for
+ * that half); this is the admin-side read/triage/respond half that was
+ * still a `501 not_implemented` stub.
+ */
+async function handleSupportRequests(
+  sql: SqlClient,
+  ctx: AdminRequestContext,
+): Promise<AdminResponse> {
+  const parts = segments(ctx.path); // ["admin-support-requests", ":id"?, "notes"?]
+  const requestId = parts[1];
+
+  if (ctx.method === "GET" && !requestId) {
+    const status = ctx.query?.["status"];
+    const rows = status
+      ? await sql<Record<string, unknown>>`
+          select * from public.support_requests where status = ${status}
+          order by created_at desc limit 100
+        `
+      : await sql<Record<string, unknown>>`
+          select * from public.support_requests order by created_at desc limit 100
+        `;
+    return { status: 200, body: { support_requests: rows } };
+  }
+
+  if (ctx.method === "GET" && requestId && parts[2] === undefined) {
+    const ticket = (
+      await sql<Record<string, unknown>>`
+        select * from public.support_requests where id = ${requestId}
+      `
+    )[0];
+    if (!ticket) return { status: 404, body: { error: "support_request_not_found" } };
+    const notes = await sql<Record<string, unknown>>`
+      select * from public.support_request_notes where support_request_id = ${requestId}
+      order by created_at asc
+    `;
+    return { status: 200, body: { support_request: ticket, notes } };
+  }
+
+  if (ctx.method === "PATCH" && requestId && parts[2] === undefined) {
+    const parsed = AdminSupportRequestUpdateSchema.safeParse(ctx.body);
+    if (!parsed.success) {
+      return { status: 422, body: { error: "invalid_update", issues: parsed.error.issues } };
+    }
+    if (Object.keys(parsed.data).length === 0) {
+      return { status: 422, body: { error: "no_valid_fields" } };
+    }
+    const before = (
+      await sql<
+        Record<string, unknown>
+      >`select * from public.support_requests where id = ${requestId}`
+    )[0];
+    if (!before) return { status: 404, body: { error: "support_request_not_found" } };
+
+    if (parsed.data.status !== undefined) {
+      await sql`update public.support_requests set status = ${parsed.data.status} where id = ${requestId}`;
+    }
+    if (parsed.data.priority !== undefined) {
+      await sql`update public.support_requests set priority = ${parsed.data.priority} where id = ${requestId}`;
+    }
+    const after = (
+      await sql<
+        Record<string, unknown>
+      >`select * from public.support_requests where id = ${requestId}`
+    )[0];
+
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "support_request_update",
+        targetType: "support_request",
+        targetId: requestId,
+        before,
+        after,
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return { status: 200, body: { support_request: after } };
+  }
+
+  if (ctx.method === "POST" && requestId && parts[2] === "notes") {
+    if (!ctx.adminUserId) return { status: 403, body: { error: "forbidden" } };
+    const parsed = AdminSupportRequestNoteSchema.safeParse(ctx.body);
+    if (!parsed.success) {
+      return { status: 422, body: { error: "invalid_note", issues: parsed.error.issues } };
+    }
+    const ticket = (
+      await sql<{ id: string }>`select id from public.support_requests where id = ${requestId}`
+    )[0];
+    if (!ticket) return { status: 404, body: { error: "support_request_not_found" } };
+
+    const note = (
+      await sql<Record<string, unknown>>`
+        insert into public.support_request_notes (support_request_id, author_id, body, visible_to_tenant)
+        values (${requestId}, ${ctx.adminUserId}, ${parsed.data.body}, ${parsed.data.visible_to_tenant})
+        returning *
+      `
+    )[0];
+
+    await writeAdminAction(sql, {
+      adminUserId: ctx.adminUserId,
+      action: "support_request_note_add",
+      targetType: "support_request",
+      targetId: requestId,
+      after: note,
+      ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+      ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+    });
+    return { status: 201, body: { note } };
   }
 
   return { status: 404, body: { error: "not_found" } };
@@ -796,15 +962,129 @@ async function handleConfigLab(sql: SqlClient, ctx: AdminRequestContext): Promis
 // ---------------------------------------------------------------------
 // Referral P&L (BACKEND_SPEC §7.7)
 // ---------------------------------------------------------------------
-async function handleReferrals(sql: SqlClient, ctx: AdminRequestContext): Promise<AdminResponse> {
-  const parts = segments(ctx.path); // ["admin-referrals", ":commission_event_id"?, "payout-override"?]
-  const commissionEventId = parts[1];
+async function handleReferrals(
+  sql: SqlClient,
+  ctx: AdminRequestContext,
+  logger: Logger,
+): Promise<AdminResponse> {
+  const parts = segments(ctx.path); // ["admin-referrals", ":commission_event_id"?, "payout-override"?] or ["admin-referrals", "partners", ":partner_id", ...]
+  const commissionEventId = parts[1] !== "partners" ? parts[1] : undefined;
 
-  if (ctx.method === "GET" && !commissionEventId) {
+  if (ctx.method === "GET" && !commissionEventId && parts[1] !== "partners") {
     const rows = await sql<Record<string, unknown>>`
       select * from public.v_referral_pnl order by accrued_cents desc nulls last limit 200
     `;
     return { status: 200, body: { referral_partners: rows } };
+  }
+
+  // Recurring commission terms (GAP_REGISTER Cluster G item 1, owner
+  // decision): admin-set rate_bps/commission_base/duration_months per
+  // partner, with an optional per-vertical override — NO platform-wide
+  // default is ever applied here or anywhere downstream (job-commission-
+  // accrual simply skips a partner/vertical with no resolvable rate_bps).
+  if (parts[1] === "partners" && parts[2] && parts[3] === undefined && ctx.method === "PATCH") {
+    const partnerId = parts[2];
+    const parsed = AdminCommissionTermsSchema.safeParse(ctx.body);
+    if (!parsed.success) {
+      return {
+        status: 422,
+        body: { error: "invalid_commission_terms", issues: parsed.error.issues },
+      };
+    }
+    const before = (
+      await sql<Record<string, unknown>>`
+        select id, rate_bps, commission_base, duration_months from public.referral_partners where id = ${partnerId}
+      `
+    )[0];
+    if (!before) return { status: 404, body: { error: "referral_partner_not_found" } };
+
+    const updates: string[] = [];
+    if ("rate_bps" in parsed.data) updates.push("rate_bps");
+    if ("commission_base" in parsed.data) updates.push("commission_base");
+    if ("duration_months" in parsed.data) updates.push("duration_months");
+    if (updates.length === 0) return { status: 422, body: { error: "no_valid_fields" } };
+
+    if ("rate_bps" in parsed.data) {
+      await sql`update public.referral_partners set rate_bps = ${parsed.data.rate_bps ?? null} where id = ${partnerId}`;
+    }
+    if ("commission_base" in parsed.data) {
+      await sql`update public.referral_partners set commission_base = ${parsed.data.commission_base as string} where id = ${partnerId}`;
+    }
+    if ("duration_months" in parsed.data) {
+      await sql`update public.referral_partners set duration_months = ${parsed.data.duration_months ?? null} where id = ${partnerId}`;
+    }
+
+    const after = (
+      await sql<Record<string, unknown>>`
+        select id, rate_bps, commission_base, duration_months from public.referral_partners where id = ${partnerId}
+      `
+    )[0];
+
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "referral_commission_terms_update",
+        targetType: "referral",
+        targetId: partnerId,
+        before,
+        after,
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    logger.info("admin_referral_commission_terms_updated", { partner_id: partnerId });
+    return { status: 200, body: { referral_partner: after } };
+  }
+
+  if (
+    parts[1] === "partners" &&
+    parts[2] &&
+    parts[3] === "vertical-overrides" &&
+    parts[4] &&
+    ctx.method === "PUT"
+  ) {
+    const partnerId = parts[2];
+    const vertical = parts[4];
+    if (!VERTICALS.includes(vertical as (typeof VERTICALS)[number])) {
+      return { status: 422, body: { error: "invalid_vertical" } };
+    }
+    const parsed = AdminCommissionVerticalOverrideSchema.safeParse(ctx.body);
+    if (!parsed.success) {
+      return { status: 422, body: { error: "invalid_override", issues: parsed.error.issues } };
+    }
+    const partnerRows = await sql<{ id: string }>`
+      select id from public.referral_partners where id = ${partnerId}
+    `;
+    if (!partnerRows[0]) return { status: 404, body: { error: "referral_partner_not_found" } };
+
+    const after = (
+      await sql<Record<string, unknown>>`
+        insert into public.referral_partner_vertical_overrides
+          (referral_partner_id, vertical, rate_bps, commission_base, duration_months)
+        values (
+          ${partnerId}, ${vertical}, ${parsed.data.rate_bps ?? null},
+          ${parsed.data.commission_base ?? null}, ${parsed.data.duration_months ?? null}
+        )
+        on conflict (referral_partner_id, vertical) do update set
+          rate_bps = excluded.rate_bps,
+          commission_base = excluded.commission_base,
+          duration_months = excluded.duration_months
+        returning *
+      `
+    )[0];
+
+    if (ctx.adminUserId) {
+      await writeAdminAction(sql, {
+        adminUserId: ctx.adminUserId,
+        action: "referral_commission_vertical_override_upsert",
+        targetType: "referral",
+        targetId: partnerId,
+        after,
+        ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
+        ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
+      });
+    }
+    return { status: 200, body: { override: after } };
   }
 
   if (ctx.method === "POST" && commissionEventId && parts[2] === "payout-override") {
@@ -1484,7 +1764,7 @@ async function handleOutreach(
   return { status: 404, body: { error: "not_found" } };
 }
 
-const NOT_YET_IMPLEMENTED_PREFIXES = ["admin-support-requests", "admin-flags"];
+const NOT_YET_IMPLEMENTED_PREFIXES = ["admin-flags"];
 
 export async function routeAdminRequest(
   sql: SqlClient,
@@ -1492,7 +1772,15 @@ export async function routeAdminRequest(
   logger: Logger,
   deps: AdminDeps = {},
 ): Promise<AdminResponse> {
-  if (!isPlatformAdmin(ctx.claims)) {
+  // Impersonation cookie-fix: the two self-service routes below accept a
+  // resolved `impersonated_by` identity in place of a direct
+  // platform_admin claim (see `resolveImpersonationActor`) — every other
+  // route keeps the strict platform_admin gate unchanged.
+  const isSelfServiceImpersonation =
+    ctx.method === "POST" &&
+    isImpersonationSelfServicePath(ctx.path) &&
+    impersonatedByClaim(ctx.claims) !== null;
+  if (!isPlatformAdmin(ctx.claims) && !isSelfServiceImpersonation) {
     return { status: 403, body: { error: "not_a_platform_admin" } };
   }
 
@@ -1502,10 +1790,11 @@ export async function routeAdminRequest(
   if (first === "admin-platform-settings") return handlePlatformSettings(sql, ctx);
   if (first === "admin-cockpit") return handleCockpit(sql, ctx);
   if (first === "admin-config-lab") return handleConfigLab(sql, ctx);
-  if (first === "admin-referrals") return handleReferrals(sql, ctx);
+  if (first === "admin-referrals") return handleReferrals(sql, ctx, logger);
   if (first === "admin-cac") return handleCac(sql, ctx);
   if (first === "admin-templates") return handleTemplates(sql, ctx, deps);
   if (first === "admin-outreach") return handleOutreach(sql, ctx, deps);
+  if (first === "admin-support-requests") return handleSupportRequests(sql, ctx);
 
   if (first && NOT_YET_IMPLEMENTED_PREFIXES.includes(first)) {
     logger.info("admin_route_not_yet_implemented", { path: ctx.path });

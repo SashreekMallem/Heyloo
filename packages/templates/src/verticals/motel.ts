@@ -15,10 +15,22 @@
  * than a distinct tool-call node — flagged in `docs/BUILD_NOTES.md` (T6)
  * as a follow-up worth a real `get_rate_table` tool if rate tables grow
  * large enough to outgrow a dynamic variable.
+ *
+ * NOTE (`check_time`'s `room_type` arg — GAP_REGISTER.md §2 Motel item 2):
+ * `supabase/functions/voice-tools/tools/check_availability.ts` already
+ * filters by `room_type` server-side and `zCheckAvailabilityRequest`
+ * (`@heyloo/canonical-types`) already declares the field — but the
+ * model-FACING JSON-Schema `check_availability` sends to Retell
+ * (`checkAvailabilityTool()`, `packages/templates/src/shared/tools.ts`,
+ * outside this cluster's ownership) doesn't list `room_type` as a known
+ * property yet, so the model has no declared slot to put it in. Filed in
+ * `docs/audit/FIX_REQUESTS.md`; the prompt instruction below is written
+ * ready for when that lands.
  */
 
 import type { AgentTemplate } from "@heyloo/canonical-types";
 import { DISCLOSURE_LINE } from "../shared/disclosure.js";
+import { withCallOutcomeExtraction } from "../shared/extraction.js";
 import { CANCELLATION_POLICY_READOUT_FRAGMENT, CONSENT_ASK_FRAGMENT } from "../shared/fragments.js";
 import {
   humanRequestGlobalIntent,
@@ -72,6 +84,16 @@ export const MOTEL_TEMPLATE: AgentTemplate = {
       allowed_tools: [],
     },
     {
+      id: "collect_guest_contact",
+      name: "Collect guest name + phone",
+      prompt_fragment:
+        "Ask for the guest's full name, then the best callback number, reading the number " +
+        "back digit by digit to confirm. This is the name/phone the reservation will be held " +
+        "under, distinct from the room dates/type — ask for it explicitly, don't assume the " +
+        "caller ID number is the number to use.",
+      allowed_tools: [],
+    },
+    {
       id: "collect_dates",
       name: "Collect dates",
       prompt_fragment:
@@ -97,18 +119,22 @@ export const MOTEL_TEMPLATE: AgentTemplate = {
       id: "check_time",
       name: "Check availability",
       prompt_fragment:
-        "Call check_availability for the requested dates and room type. If none_available, " +
-        "offer the returned nearest_alternative first (\"I don't have that exact night open, " +
-        "but I do have ...\"); if the caller still can't be accommodated, offer to take a " +
-        "message so the motel can follow up if something opens.",
+        "Call check_availability for the requested dates, passing the chosen room type as " +
+        "room_type so only that room type's real inventory is checked (never assume a room " +
+        "type is available just because a rate is on file for it). If none_available, offer " +
+        "the returned nearest_alternative first (\"I don't have that exact night open, but I " +
+        "do have ...\"); if the caller still can't be accommodated, offer to take a message so " +
+        "the motel can follow up if something opens.",
       allowed_tools: ["check_availability"],
     },
     {
       id: "confirm_booking",
       name: "Confirm booking",
       prompt_fragment:
-        "Read back dates, guests, room type, and rate; ask the consent question; state the " +
-        "cancellation policy; then create the booking. If a deposit is required " +
+        "Read back the guest name, dates, guests, room type, and rate; ask the consent " +
+        "question; state the cancellation policy; then create the booking — pass " +
+        "structured_payload with room_type, quoted_rate_cents (the exact nightly rate you " +
+        "quoted from {{rate_table}}), and num_guests. If a deposit is required " +
         "({{deposit_policy_text}}), say so and send a payment link — the reservation stays " +
         "held but not guaranteed until the deposit is paid. Send the SMS confirmation either " +
         "way.",
@@ -120,14 +146,19 @@ export const MOTEL_TEMPLATE: AgentTemplate = {
     solicitorDeflectState(),
     safetyEmergencyState(),
     takeMessageFallbackState(),
-  ],
+  ].map(withCallOutcomeExtraction),
   transitions: [
-    { from: "greeting", to: "collect_dates", on: { intent: "wants_to_book" } },
+    { from: "greeting", to: "collect_guest_contact", on: { intent: "wants_to_book" } },
     { from: "greeting", to: "manage_booking", on: { intent: "wants_to_reschedule_or_cancel" } },
     {
       from: "greeting",
       to: "take_message_fallback",
       on: { intent: "after_hours_or_general_message" },
+    },
+    {
+      from: "collect_guest_contact",
+      to: "collect_dates",
+      on: { intent: "guest_contact_confirmed" },
     },
     { from: "collect_dates", to: "collect_guests", on: { intent: "dates_confirmed" } },
     { from: "collect_guests", to: "collect_room_type", on: { intent: "guests_confirmed" } },
@@ -149,11 +180,12 @@ export const MOTEL_TEMPLATE: AgentTemplate = {
     createBookingTool(
       "Create a reservation once dates, guests, room type, and a confirmed open slot are " +
         "collected and the consent question has been asked.",
+      "motel",
     ),
     updateBookingTool(),
     cancelBookingTool(),
     lookupCustomerTool(),
-    takeMessageTool(),
+    takeMessageTool("motel"),
     sendSmsConfirmationTool(),
     sendPaymentLinkTool(),
     transferCallTool(),

@@ -36,6 +36,17 @@ interface ApiCheckoutResponse {
  * session) — an `annual` flag collected earlier in the wizard is accepted
  * here for forward compatibility but currently has no effect; tracked in
  * docs/BUILD_NOTES.md, out of this cluster's assigned scope.
+ *
+ * `white_glove` (the opt-in white-glove onboarding add-on, unlike
+ * `annual`) DOES reach `api-checkout` and change what it does —
+ * `CheckoutRequestSchema.white_glove` gates a real Stripe one-time line
+ * item (`supabase/functions/api-checkout/handler.ts`). The tenant's choice
+ * is made on the plan step (`PlanStepClient`) and carried the same way
+ * `annual` already is: a `?white_glove=1` query param through to
+ * `/signup/account`, then as a plain boolean in this route's own request
+ * body (`AccountStepClient`'s checkout POST) — never trusted beyond that
+ * boolean read here, since it only ever selects a real, admin-configured
+ * price (`fees_<vertical>.white_glove_price_cents`), not an amount.
  */
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerComponentClient();
@@ -62,11 +73,12 @@ export async function POST(request: Request) {
     typeof (json as { timezone?: unknown }).timezone === "string"
       ? (json as { timezone: string }).timezone
       : undefined;
+  const whiteGlove = (json as { white_glove?: unknown }).white_glove === true;
 
   const { status, body: result } = await callEdgeFunction<ApiCheckoutResponse>("api-checkout", {
     method: "POST",
     accessToken: session.access_token,
-    body: buildApiCheckoutRequest(draft, user.email, timezone),
+    body: buildApiCheckoutRequest(draft, user.email, timezone, whiteGlove),
   });
 
   if (status !== 200 || !result.checkout_url) {

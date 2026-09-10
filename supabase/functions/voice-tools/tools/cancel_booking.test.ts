@@ -8,6 +8,7 @@ const ctx: CallContext = {
   callLogId: "cl_1",
   retellCallId: "call_1",
   callerNumber: "+15551234567",
+  vertical: "generic",
 };
 
 const args = { booking_id: "booking_1" };

@@ -1,4 +1,4 @@
-import type { StripeFetch } from "../_shared/providers/stripe.ts";
+import type { OneTimeCheckoutLineItem, StripeFetch } from "../_shared/providers/stripe.ts";
 import { createSubscriptionCheckoutSession } from "../_shared/providers/stripe.ts";
 import { CheckoutRequestSchema } from "../_shared/schemas/checkout.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
@@ -56,6 +56,23 @@ interface PriceCardRow {
   stripe_meter_price_id?: string;
 }
 
+/**
+ * `platform_settings.fees_<vertical>` (GAP_REGISTER Cluster G item 5).
+ * CONTRACT NOTE (docs/audit/FIX_REQUESTS.md, Cluster H entry): the admin
+ * "Fees" settings tab (`apps/web/src/app/api/admin/admin-platform-settings/
+ * fees/route.ts`) is already built and reads/writes exactly this key +
+ * shape — a SEPARATE `fees_<vertical>` row, not nested inside
+ * `price_card_<vertical>` — with an explicit `*_enabled` gate per fee (an
+ * amount can be configured ahead of time without going live). This
+ * function must read the SAME key/shape or the two features never connect.
+ */
+interface PlatformFeesRow {
+  setup_fee_enabled?: boolean;
+  setup_fee_cents?: number;
+  white_glove_enabled?: boolean;
+  white_glove_fee_cents?: number;
+}
+
 export async function handleCheckout(
   sql: SqlClient,
   userId: string,
@@ -64,7 +81,7 @@ export async function handleCheckout(
 ): Promise<CheckoutResult> {
   const parsed = CheckoutRequestSchema.safeParse(rawBody);
   if (!parsed.success) return { ok: false, status: 422, error: "invalid_request" };
-  const { vertical, business_name, email, timezone } = parsed.data;
+  const { vertical, business_name, email, timezone, white_glove } = parsed.data;
 
   const priceCardRows = await sql<{ value: PriceCardRow }>`
     select value from public.platform_settings where key = ${`price_card_${vertical}`}
@@ -74,6 +91,11 @@ export async function handleCheckout(
     deps.logger.error("api_checkout_stripe_not_configured", { vertical });
     return { ok: false, status: 500, error: "stripe_not_configured" };
   }
+
+  const feesRows = await sql<{ value: PlatformFeesRow }>`
+    select value from public.platform_settings where key = ${`fees_${vertical}`}
+  `;
+  const fees = feesRows[0]?.value;
 
   // Idempotent re-submit: reuse an existing not-yet-paid trialing tenant
   // for this owner rather than creating a second one (e.g. the tenant hit
@@ -106,6 +128,20 @@ export async function handleCheckout(
     `;
   }
 
+  const oneTimeLineItems: OneTimeCheckoutLineItem[] = [];
+  if (fees?.setup_fee_enabled && (fees.setup_fee_cents ?? 0) > 0) {
+    oneTimeLineItems.push({
+      productName: "One-time setup fee",
+      amountCents: fees.setup_fee_cents as number,
+    });
+  }
+  if (white_glove && fees?.white_glove_enabled && (fees.white_glove_fee_cents ?? 0) > 0) {
+    oneTimeLineItems.push({
+      productName: "White-glove onboarding",
+      amountCents: fees.white_glove_fee_cents as number,
+    });
+  }
+
   const session = await createSubscriptionCheckoutSession(deps.stripeFetch, deps.stripeSecretKey, {
     customerEmail: email,
     basePriceId: priceCard.stripe_base_price_id,
@@ -113,6 +149,7 @@ export async function handleCheckout(
     successUrl: deps.successUrl,
     cancelUrl: deps.cancelUrl,
     metadata: { tenant_id: tenantId, vertical, user_id: userId },
+    ...(oneTimeLineItems.length > 0 ? { oneTimeLineItems } : {}),
   });
 
   const body = session.body as { id?: string; url?: string };

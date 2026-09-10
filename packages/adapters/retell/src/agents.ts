@@ -96,6 +96,15 @@ export async function createOrUpdateRetellAgent(
     // webhook_timeout_ms rather than relying on Retell's undocumented
     // default — cheap, free knob, kept configurable via the input type.
     webhook_timeout_ms: input.webhookTimeoutMs ?? 10000,
+    // GAP_REGISTER §1.1: confirmed via retell-typescript-sdk that
+    // `post_call_analysis_data` is an AGENT field (not part of either flow
+    // resource body) — every shipped template's `AgentState.extraction[]`
+    // reaches Retell here, never previously sent at all. Omitted entirely
+    // (rather than `[]`) when a template declares no extraction fields, to
+    // avoid clobbering anything Retell defaults for an absent key.
+    ...(compiled.postCallAnalysisData.length > 0
+      ? { post_call_analysis_data: compiled.postCallAnalysisData }
+      : {}),
   };
 
   const agentRaw = input.existingProviderAgentId

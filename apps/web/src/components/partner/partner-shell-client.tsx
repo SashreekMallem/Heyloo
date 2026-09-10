@@ -8,6 +8,7 @@ const SECTIONS: NavSection[] = [
   {
     items: [
       { label: "Dashboard", href: "/portal" },
+      { label: "Customers", href: "/portal/customers" },
       { label: "Payouts", href: "/portal/payouts" },
       { label: "W-9", href: "/portal/w9" },
       { label: "Settings", href: "/portal/settings" },

@@ -115,10 +115,10 @@ export const WAITLIST_OFFER_FRAGMENT =
   "If check_availability comes back with no open slots, offer a waitlist " +
   "before giving up: \"I don't have anything open in that window, but I can " +
   "add you to our waitlist and someone will text you the moment something " +
-  'opens up — would you like that?" If they say yes, use take_message to ' +
-  'record it — start the message with the words "Waitlist request:" followed ' +
-  "by the desired date/time window and the caller's name and phone, so staff " +
-  "can add them to the waitlist.";
+  'opens up — would you like that?" If they say yes, call join_waitlist with ' +
+  "their name, phone, and the preferred date/time window — never take_message " +
+  "for this, so the request actually lands on the waitlist staff and the " +
+  "automatic cancellation-triggered notification can match against it.";
 
 /** Every general-purpose fragment above, concatenated for convenient embedding into a `system_prompt`. */
 export const QUALITY_AND_COLLECTION_FRAGMENT = [

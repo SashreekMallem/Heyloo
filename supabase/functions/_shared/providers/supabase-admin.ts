@@ -78,6 +78,67 @@ export async function generateMagicLink(
   };
 }
 
+export interface InviteUserResult {
+  ok: boolean;
+  status: number;
+  userId?: string;
+  /** GoTrue returns 422 `email_exists` (or similar) when the email already
+   * has an account — the caller decides how to handle that (e.g. add the
+   * existing user straight to `memberships` instead of re-inviting). */
+  alreadyExists?: boolean;
+}
+
+/**
+ * FIX_REQUESTS.md — team invite. `POST {SUPABASE_URL}/auth/v1/invite`
+ * (confirmed via `supabase/auth-js`'s `GoTrueAdminApi.inviteUserByEmail`
+ * source — `_request(fetch, 'POST', ${url}/invite, {body: {email, data},
+ * redirectTo})`, with `redirectTo` sent as a `redirect_to` query
+ * parameter, same plain-fetch-not-supabase-js rationale as
+ * `generateMagicLink` above). `data` carries `tenant_id`/`role` so the
+ * invited user's `app_metadata`/`user_metadata` (GoTrue merges `data` into
+ * `user_metadata`, not `app_metadata` — the tenant/role claim this repo's
+ * Custom Access Token Hook actually reads comes from the `memberships` row
+ * this function's caller inserts after a successful invite, NOT from this
+ * metadata) carries enough context for the acceptance email/page; the
+ * `data` payload itself is informational only, never a trust boundary.
+ */
+export async function inviteUser(
+  fetchImpl: SupabaseAdminFetch,
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  email: string,
+  data?: Record<string, unknown>,
+  redirectTo?: string,
+): Promise<InviteUserResult> {
+  const url = new URL(`${supabaseUrl}/auth/v1/invite`);
+  if (redirectTo) url.searchParams.set("redirect_to", redirectTo);
+
+  const res = await fetchImpl(url.toString(), {
+    method: "POST",
+    headers: {
+      apikey: serviceRoleKey,
+      authorization: `Bearer ${serviceRoleKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ email, data: data ?? {} }),
+  });
+  const body = (await res.json().catch(() => undefined)) as
+    | { id?: string; user?: { id?: string }; error_code?: string; msg?: string; code?: number }
+    | undefined;
+  const userId = body?.id ?? body?.user?.id;
+  const alreadyExists =
+    res.status === 422 ||
+    body?.error_code === "email_exists" ||
+    (typeof body?.msg === "string" && /already registered|already exists/i.test(body.msg));
+
+  return {
+    ok: res.ok,
+    status: res.status,
+    ...(userId ? { userId } : {}),
+    ...(alreadyExists ? { alreadyExists: true } : {}),
+  };
+}
+
 export async function getUserEmailById(
   fetchImpl: SupabaseAdminFetch,
   supabaseUrl: string,

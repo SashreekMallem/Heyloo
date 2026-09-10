@@ -14,7 +14,7 @@ export default async function CustomerDetailPage({ params }: { params: Promise<{
 
   const { data: customer } = await supabase
     .from("customers")
-    .select("id, name, phone_e164, email, segment, lifetime_value_cents")
+    .select("id, name, phone_e164, email, segment, lifetime_value_cents, metadata, consent")
     .eq("tenant_id", tenant.id)
     .eq("id", id)
     .maybeSingle();
@@ -44,6 +44,8 @@ export default async function CustomerDetailPage({ params }: { params: Promise<{
     email: customer.email,
     segment: customer.segment,
     lifetimeValueCents: customer.lifetime_value_cents,
+    metadata: customer.metadata ?? {},
+    consent: customer.consent ?? null,
     calls: (calls ?? []).map((c) => ({
       id: c.id,
       startedAt: c.started_at,

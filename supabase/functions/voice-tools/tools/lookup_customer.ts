@@ -19,6 +19,17 @@ interface RecentBookingRow {
   status: string;
 }
 
+interface CustomerAddressRow {
+  id: string;
+  label: string | null;
+  street: string;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  delivery_instructions: string | null;
+  is_default: boolean;
+}
+
 export type LookupCustomerResult =
   | { error: "unauthorized_lookup" }
   | { found: false }
@@ -29,6 +40,7 @@ export type LookupCustomerResult =
       recent_bookings: { id: string; start_at: string; status: string }[];
       vehicles?: unknown;
       pets?: unknown;
+      addresses?: CustomerAddressRow[];
     };
 
 /**
@@ -71,6 +83,19 @@ export async function lookupCustomer(
     limit 5
   `;
 
+  // GAP_REGISTER.md §1.8 — delivery addresses live in `customer_addresses`
+  // (the structured mechanism `customers.metadata`'s own column comment
+  // says supersedes a metadata blob for this), never in
+  // `customers.metadata.addresses` — nothing writes that key, so reading it
+  // would always be empty. Surfaced the same way `vehicles`/`pets` are:
+  // omitted entirely when the customer has none saved.
+  const addressRows = await sql<CustomerAddressRow>`
+    select id, label, street, city, state, zip, delivery_instructions, is_default
+    from public.customer_addresses
+    where tenant_id = ${ctx.tenantId} and customer_id = ${customer.id}
+    order by is_default desc, created_at desc
+  `;
+
   const metadata = customer.metadata ?? {};
   return {
     found: true,
@@ -79,5 +104,6 @@ export async function lookupCustomer(
     recent_bookings: bookingRows,
     ...(metadata["vehicles"] !== undefined ? { vehicles: metadata["vehicles"] } : {}),
     ...(metadata["pets"] !== undefined ? { pets: metadata["pets"] } : {}),
+    ...(addressRows.length > 0 ? { addresses: addressRows } : {}),
   };
 }

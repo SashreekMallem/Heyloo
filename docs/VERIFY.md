@@ -389,7 +389,7 @@ independently-re-derived Deno-side items.
 |---|---|---|---|
 | Webhook signature scheme | `X-Retell-Signature: v=<unix_ms>,d=<hex HMAC-SHA256>`; digest = HMAC-SHA256(secret=API key, message=rawBody+timestamp, direct concatenation) | **RESOLVED** — confirmed byte-for-byte against the official `retell-sdk`'s own `src/lib/webhook_auth.ts` (`symmetric.verify`/`sign`). No code change needed (`_shared/retell-signature.ts` already matched). | — (resolved) |
 | `/voice-inbound`, `/voice-tools`, `/voice-events` request shapes | Canonical shapes per BACKEND_SPEC §7.1-7.3 (call_id/from_number/to_number/agent_id; call_id/name/args; event+call object) | Medium (partially resolved) — the `call_started`/`call_ended`/`call_analyzed` envelope and every `RetellCallObject` field this codebase reads are confirmed via the SDK's `PhoneCallResponse`/`AgentCreateParams.webhook_events` (see VERIFY-5, resolved); the inbound-call and tool-call webhook ENVELOPES themselves remain unconfirmed — genuinely outside either SDK's typed surface (see VERIFY-2/VERIFY-3) | A live sandbox call for the two still-open envelopes specifically |
-| `call.call_analysis.custom_analysis_data` carrying `classification`/`outcome`/`follow_up_needed`/`legal_advice_given`/`emergency_detected` keys | Assumed the compiled template's per-state `extraction[]` fields land here under these literal names | Low — invented mapping, not sourced; the SDK confirms `custom_analysis_data?: unknown` exists but says nothing about its literal key names (those come from the agent's OWN configured post-call-analysis schema, which is a business config the SDK naturally can't type) | Confirm against T2's actual Retell compiler output + a live sandbox call |
+| `call.call_analysis.custom_analysis_data` carrying `classification`/`outcome`/`follow_up_needed`/`legal_advice_given`/`emergency_detected` keys | The compiled template's per-state `extraction[]` fields land here under these literal names | Medium (upgraded from Low) — no longer just an assumed mapping: `packages/adapters/retell/src/compiler/extraction.ts`'s `compilePostCallAnalysisData()` sets Retell's `post_call_analysis_data[].name` to `field.field` verbatim (SDK-confirmed field-for-field against `AgentResponse.{String,Enum,Boolean,Number}AnalysisData`), `agents.ts` attaches it to every create/update-agent body, and every shipped template (`packages/templates/src/verticals/*.ts`) now actually declares `classification`/`outcome`/`follow_up_needed` on every state via `shared/extraction.ts`'s `withCallOutcomeExtraction`, plus `emergency_detected` (vet/dental/auto-repair/the shared `safetyEmergencyState()`) and `legal_advice_given` (legal) — asserted for every template by `packages/templates/src/red-team/structural.test.ts`. What's still unconfirmed is Retell's RUNTIME behavior, not this codebase's request shape: whether Retell's own post-call LLM extractor actually populates `custom_analysis_data` keyed exactly by these `name`s in practice for a real call, which the SDK's `custom_analysis_data?: unknown` type can't confirm either way. | A live sandbox call confirming `custom_analysis_data` comes back keyed by these exact names (this repair pass could not make one — no live/remote operations in scope) |
 | `GET /v2/get-call/{id}`, `POST /create-agent`, `POST /publish-agent-version/{id}`, `POST /import-phone-number`, `POST /v2/create-web-call` REST paths | `api.retellai.com`, bearer auth | **RESOLVED** — every path confirmed exactly against the SDK's own resource files (`call.retrieve`, `agent.create`, `agent.publish`, `phoneNumber.import`, `call.createWebCall`) | — (resolved) |
 | `transfer_call` warm-transfer context-summary mechanism | Not implemented in this build (native Retell function, configured at template-compile time — T2's compiler) | N/A | Retell's transfer-call/handoff-summary docs before T2's compiler wires it |
 | Health-check probe (`job-retell-health-failover`) | Was `GET /list-agents?limit=1` | **RESOLVED, and WRONG as built** — confirmed via `Agent.list` (`src/resources/agent.ts`) that the real call is `POST /v2/list-agents?limit=1` (a POST, at `/v2/...`, not a GET to a bare `/list-agents`). The old call would 404/405 against the real API, making every health check register Retell as perpetually down. **FIXED** in `job-retell-health-failover/handler.ts`. | — (resolved) |
@@ -1383,3 +1383,261 @@ after the next live deploy that a booking-confirmation SMS sent via
 CLAUDE.md Rule 1.2's "no Docker/`supabase start`" fallback path.
 
 **Code:** `supabase/migrations/20260910100200_fn_enqueue_message_outbound.sql`.
+
+## GAP_REGISTER Cluster A (this pass) — packages/adapters/retell, packages/canonical-types
+
+### VERIFY-9 — Function Node `tool_id` for a `tool_type: "local"` tool assumed to equal the tool's `name`
+
+`retell-sdk`'s `ConversationFlowCreateParams.FunctionNode` (confirmed via
+`node_modules/.pnpm/retell-sdk@5.64.0/.../src/resources/conversation-flow.ts`)
+requires `tool_id: string` + `tool_type: "local" | "shared"`, but a
+"local" tool declared inline in the SAME flow's top-level `tools[]`
+(`CustomTool`) carries no separate `id` field at all on the wire — its doc
+comment says only `name` must be unique ("Name of the tool. Must be
+unique within all tools available to LLM at any given time"). This
+compiler (`packages/adapters/retell/src/compiler/conversation-flow.ts`,
+GAP_REGISTER §1.4 "Function-node tool locking") therefore sets
+`tool_id: <the tool's name>` for every `tool_type: "local"` Function Node
+it emits — a reasonable inference from the SDK types, not a documented
+guarantee. `docs.retellai.com` was unreachable from this environment
+(same egress constraint as every other item in this file); the assumption
+should be confirmed against a live sandbox `create-conversation-flow` call
+(or a Retell dashboard-authored flow with a Function Node, inspected via
+`get-conversation-flow`) before this code path goes live. If wrong, the
+fix is confined to `buildNode()` in `conversation-flow.ts` — nothing
+downstream depends on the exact `tool_id` value beyond round-tripping it
+back to Retell.
+
+**Code:** `packages/adapters/retell/src/compiler/conversation-flow.ts`.
+
+### VERIFY-10 — outbound `POST /v2/create-phone-call` — response fields beyond `call_id`
+
+Endpoint path, request shape (`{from_number, to_number, override_agent_id?,
+retell_llm_dynamic_variables?, metadata?}`), and the `/v2` prefix are
+confirmed field-for-field against `retell-sdk`'s
+`Call.createPhoneCall`/`CallCreatePhoneCallParams` (high confidence — this
+is a typed SDK method body, not an inferred webhook payload). The response
+(`PhoneCallResponse`) carries many more fields than this codebase reads;
+`packages/adapters/retell/src/raw-types.ts`'s `zRetellCreatePhoneCallResponse`
+only validates `call_id` (`.looseObject`, so extra fields never fail
+parsing) since that's the only field `outbound.ts` currently needs. Low-risk
+open item — confirm against a live sandbox call before outbound calling
+goes live, same as every other item in this file.
+
+**Code:** `packages/adapters/retell/src/outbound.ts`, `raw-types.ts`.
+
+## GAP_REGISTER Cluster C/D (this pass, 2026-09-10) — supabase/functions/voice-tools, worker-adapter-push
+
+### VERIFY-CD-1 — Square `GET /v2/bookings/{booking_id}` (retrieve booking) endpoint path/shape
+
+`worker-adapter-push/handler.ts`'s new Square booking UPDATE/CANCEL path
+(GAP_REGISTER.md §4 Cluster C — FIX-1 had disclosed every pusher was
+CREATE-only) needs the booking's current `version` (Square's optimistic-
+concurrency field) before either a `PUT /v2/bookings/{id}` update or a
+`POST /v2/bookings/{id}/cancel`. `PUT .../bookings/{booking_id}` (update)
+and `POST .../bookings/{booking_id}/cancel` were both confirmed field-for-
+field via `WebFetch` against `developer.squareup.com/reference/square/
+bookings-api/{update-booking,cancel-booking}` (CLAUDE.md Rule 1 — reachable
+this build). The retrieve call (`GET /v2/bookings/{booking_id}`) could NOT
+be independently confirmed the same way — the reference page rendered as
+nav-only content to the fetch tool — so `retrieveSquareBookingVersion()`
+(`worker-adapter-push/handler.ts`) assumes the standard REST convention
+every other confirmed Square endpoint in this file already follows (same
+base path, `{resource}/{id}` GET-to-retrieve shape used by e.g. `/v2/
+orders/{order_id}`), reading `body.booking.version` from the response.
+**MUST be confirmed against a live Square sandbox call** before this
+update/cancel path goes live — if the path or response shape is wrong,
+`retrieveSquareBookingVersion` returns `null` (already handled: the pusher
+logs `adapter_push_square_retrieve_failed` and returns `false`, so a
+wrong assumption here fails closed — no booking is ever silently
+mis-updated/mis-cancelled — but the update/cancel push itself would never
+succeed until fixed).
+
+**Code:** `supabase/functions/worker-adapter-push/handler.ts`
+(`retrieveSquareBookingVersion`, `updateSquareBooking`, `cancelSquareBooking`).
+
+### VERIFY-CD-2 — Google Calendar `PATCH`/`DELETE` event endpoints
+
+Confirmed field-for-field via `WebFetch` against `developers.google.com/
+calendar/api/v3/reference/events/{patch,delete}` (CLAUDE.md Rule 1 —
+reachable this build): `PATCH https://www.googleapis.com/calendar/v3/
+calendars/{calendarId}/events/{eventId}` (partial update) and `DELETE`
+same path. High confidence — standard, well-documented Calendar API v3
+REST paths, matching this file's own already-confirmed `insertCalendarEvent`/
+`getCalendarEvent` path shape (`_shared/providers/google-calendar.ts`).
+Not flagging this as an open item; noted here only because it's new
+surface added alongside VERIFY-CD-1 in the same pass.
+
+**Code:** `supabase/functions/worker-adapter-push/handler.ts`
+(`patchGoogleCalendarEvent`, `deleteGoogleCalendarEvent`).
+
+### VERIFY-11 — GoTrue `POST /auth/v1/admin/invite` response body shape (team invite)
+
+Confirmed the REQUEST shape (endpoint path, method, body fields, and that
+`redirectTo` is sent as a `redirect_to` query parameter, not a body field)
+field-for-field via `WebFetch` against `supabase/auth-js`'s
+`GoTrueAdminApi.inviteUserByEmail` source
+(`src/GoTrueAdminApi.ts`) — high confidence. The exact RESPONSE body shape
+on success (whether the invited user's id is a top-level `id` field or
+nested under a `user` key) and the exact error shape/status GoTrue returns
+for an email that already has an account (assumed here: HTTP 422 and/or an
+`error_code`/`msg` field matching `/already registered|already exists/i`)
+were NOT independently confirmed against a live GoTrue instance or the
+GoTrue OpenAPI spec's `/admin` section (that file's admin section did not
+render in this build's `WebFetch` pass). `inviteUser`
+(`supabase/functions/_shared/providers/supabase-admin.ts`) is written
+defensively against this uncertainty — it checks both `body.id` and
+`body.user?.id` for the created-user id, and treats a 422 status OR a
+matching `error_code`/`msg` as "already exists" — but **should be
+confirmed against a live Supabase Auth instance** before relying on the
+`alreadyExists` branch in production; a wrong assumption here fails
+closed in the caller (`api-team-invite/handler.ts` surfaces
+`invite_failed` rather than silently dropping the invite) but the
+"already exists — add directly instead" UX path may not trigger correctly
+until confirmed.
+
+**Code:** `supabase/functions/_shared/providers/supabase-admin.ts`
+(`inviteUser`), `supabase/functions/api-team-invite/handler.ts`.
+
+### VERIFY-12 — Geocod.io `GET /v2/geocode` forward-geocoding shape (repair pass, restaurant B4 fix)
+
+MASTER_SPEC §3.0's `VERIFY:` open item ("Geocodio vs Google", BUILD_NOTES.md
+line ~361/600) was picked here: Geocodio, single-address forward geocoding.
+Confirmed via `WebFetch` against `www.geocod.io/docs/` (reachable in this
+environment): `GET https://api.geocod.io/v2/geocode`, auth as the `api_key`
+query param, address as the `q` query param, `limit=1` for a single best
+match. Response: `{ results: [{ location: { lat, lng }, ... }, ...] }` —
+`results[0].location.lat`/`.lng` are the fields read. Not independently
+re-confirmed against a second source (single WebFetch pass) and not
+exercised against a live API key (`GEOCODE_API_KEY` is unset in this build,
+same as every other environment secret) — `geocodeAddress` fails closed
+(returns `{ok: false}`, never throws) on a non-2xx response or a body
+missing `results[0].location.lat`/`.lng`, and `create_order`'s caller ONLY
+attempts the geocode+save when a `geocode` dep (fetchImpl + apiKey) is
+explicitly wired in — unwired (no `GEOCODE_API_KEY`), the order still
+completes exactly as before, just without ever populating
+`customer_addresses.geocode` for that caller. Should be re-confirmed
+against a live Geocodio account/API key before the first production
+delivery order relies on the radius check actually firing.
+
+**Code:** `supabase/functions/_shared/providers/geocode.ts` (`geocodeAddress`),
+`supabase/functions/voice-tools/tools/create_order.ts` (caller, best-effort
+address save after a confirmed delivery order).
+
+## T6 — packages/templates (repair pass: batch-simulation CI harness)
+
+### VERIFY-13 — Retell `Tests` (batch-simulation) API shape — **wrapper implemented (WAVE-2 integration pass); `transcript_snapshot` internals still unconfirmed**
+
+**Update (WAVE-2 integration pass):** the provider-side wrapper this entry
+originally flagged as missing now exists —
+`packages/adapters/retell/src/tests-api.ts`'s
+`createRetellBatchSimulationClient`, exported from that package's
+`index.ts`. This pass also got LIVE access to `docs.retellai.com` (every
+page fetched loaded normally, unlike every prior Retell VERIFY entry's
+note that it stayed egress-blocked) and cross-checked
+`create-test-case-definition`, `create-batch-test`, and `list-test-runs`
+against the live API reference pages, not just the SDK source — all three
+match the SDK types below exactly, nothing new found. The wrapper is
+unit-tested (`tests-api.test.ts`) against an injected `fetchImpl`/`sleep`,
+no live account needed for the plumbing itself.
+
+**Still open, exactly as this entry originally flagged:** `transcript_snapshot`'s
+internal shape. This pass's live `docs.retellai.com` fetches of
+`get-test-run`/`list-test-runs` confirm the field is genuinely
+undocumented beyond "object, nullable" even in the live reference (not an
+egress artifact) — the SDK typing it `unknown` on purpose is accurate, not
+an SDK gap. `normalizeTranscriptSnapshot` (`tests-api.ts`) is written
+against the closest OFFICIALLY-DOCUMENTED sibling shape this same SDK uses
+for the same concept elsewhere — the `Call` resource's
+`transcript_with_tool_calls` discriminated union
+(`resources/call.d.ts`: `Utterance | ToolCallInvocationUtterance |
+ToolCallResultUtterance | NodeTransitionUtterance | ...`) — behind a Zod
+boundary that throws a loud, specific, actionable error (never a silently
+empty/default transcript) the instant a real payload doesn't match one of
+a few candidate top-level array keys
+(`transcript_with_tool_calls`/`transcript_object`/`turns`/`transcript`) or
+turn shapes. **Action required before the live leg ships, unchanged from
+this entry's original text:** a real Retell staging account run,
+inspecting one actual `transcript_snapshot` payload, to confirm or correct
+this parser.
+
+BUILD_PLAN.md:56's "batch-simulation CI harness" deliverable previously
+shipped only its seed data (`red-team/simulation-scenarios.ts`,
+`injection-fixtures.ts`) with the actual Retell wiring left as documented
+future work. This pass implements the harness itself
+(`red-team/run-simulation.ts`, `grader.ts`, `simulation-types.ts`) but
+could NOT exercise it against a live Retell staging account — this
+sandboxed repair session has no `RETELL_API_KEY`/staging credential and is
+under an explicit no-remote-operations constraint. Per CLAUDE.md Rule 1
+item 2, the integration is written against a shape confirmed from the
+current OFFICIAL source, with the harness itself failing closed (throws,
+never fabricates a pass) when the live piece isn't wired — see
+`run-simulation.ts`'s `loadRealClient`.
+
+**Docs-first check performed:** `docs.retellai.com` was NOT reachable from
+this environment this pass either (matches every prior Retell VERIFY
+entry's own note that it stays egress-blocked). Per CLAUDE.md's repair-task
+instructions, fell back to the officially-published `retell-sdk` npm
+package's own generated source as authority (same methodology as every
+`RETELL-VERIFY`-resolved item in this file) —
+`node_modules/retell-sdk@5.64.0/resources/tests.d.ts`, the SDK's `client.
+tests` resource. This is a genuinely separate resource from `client.
+batchCall` (real outbound phone calls) and `client.call` — `tests` is
+Retell's actual simulated/graded test-case-run capability
+(`ProviderCapabilities.supportsBatchSimulationTesting` on
+`RETELL_CAPABILITIES`, `packages/adapters/retell/src/provider.ts`).
+
+**Confirmed shape (from `tests.d.ts`, high confidence — generated SDK
+source, not a search snippet):**
+- `Tests.createTestCaseDefinition({name, response_engine, user_prompt,
+  metrics, dynamic_variables?, llm_model?, tool_mocks?})` → a
+  `test_case_definition_id`. `response_engine` is `{type: "conversation-
+  flow", conversation_flow_id, version?}` or `{type: "retell-llm", llm_id,
+  version?}` — i.e. the SAME published-agent resource id
+  `createOrUpdateRetellAgent`/`publishRetellAgentVersion`
+  (`packages/adapters/retell/src/agents.ts`, both canonical `VoiceProvider`
+  methods already in this codebase) produce, published to a STAGING account
+  only (SYSTEM_DESIGN §8, G16).
+- **`user_prompt` is a PERSONA description an LLM-driven simulated caller
+  follows for the WHOLE call** ("User prompt to simulate in the test
+  case") — NOT a literal fixed turn-by-turn script. This corrects an
+  implicit assumption in this package's own prior `README.md` draft (which
+  described `InjectionFixture`/`SimulationScenario` caller turns as "seeding
+  one simulated call" without specifying how) — `run-simulation.ts`'s
+  `buildPersonaPrompt` builds a persona instruction FROM the scripted
+  `callerTurns`/`callerTurn` ("say these lines in order, then continue
+  naturally") rather than passing them as literal dialogue.
+- `Tests.createBatchTest({response_engine, test_case_definition_ids})` → a
+  `test_case_batch_job_id`, `status: 'in_progress' | 'complete'`,
+  `pass_count`/`fail_count`/`error_count`.
+- `Tests.getTestRun(testCaseJobID)` / `listTestRuns(batchJobID)` →
+  `TestCaseJobResponse` with `status: 'pending'|'in_progress'|'pass'|'fail'|
+  'error'`, `result_explanation`, and `transcript_snapshot: unknown` (typed
+  opaque by the SDK itself — "Can be either ConversationFlowPlaygroundSnapshot
+  or RetellLlmPlaygroundSnapshot").
+- `tool_mocks` (`{tool_name, input_match_rule: {type:'any'} | {type:
+  'partial_match', args}, output, result?}`) lets a test case fake one
+  tool's return value so a run never hits a live downstream integration —
+  relevant for a future refinement (mocking `check_availability`/
+  `create_booking` results deterministically) but not required for this
+  pass's harness to be real.
+
+**NOT independently confirmed / left for the live-account pass:** the exact
+polling cadence/timeout for `status` to leave `'in_progress'`/`'pending'`;
+whether `transcript_snapshot`'s actual shape is stable/documented enough to
+write a permanent Zod boundary validator against (the SDK types it
+`unknown` on purpose); and the exact tool-call-log field names inside that
+snapshot (needed to populate this package's own provider-agnostic
+`SimulationTranscript.toolCalls`/`reachedStates` — `simulation-types.ts`).
+**Action required before the live leg ships:** a real Retell staging
+account call, inspecting one actual `transcript_snapshot`, to write the
+adapter-side normalizer (`packages/adapters/retell`, filed in
+`docs/audit/FIX_REQUESTS.md`) with a Zod validator at that exact boundary,
+per CLAUDE.md Rule 1.
+
+**Code:** `packages/templates/src/red-team/{simulation-types,grader,
+run-simulation}.ts`. The provider-side wrapper this shape describes,
+`createRetellBatchSimulationClient`, now exists at
+`packages/adapters/retell/src/tests-api.ts` (WAVE-2 integration pass — see
+this entry's update note above and `docs/audit/FIX_REQUESTS.md`'s matching
+entry).

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createLogger } from "../../_shared/logger.ts";
 import type { SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
 import { createBooking } from "./create_booking.ts";
@@ -8,6 +9,7 @@ const ctx: CallContext = {
   callLogId: "cl_1",
   retellCallId: "call_1",
   callerNumber: "+15551234567",
+  vertical: "generic",
 };
 
 type Step = { rows?: unknown[]; throws?: unknown };
@@ -150,5 +152,484 @@ describe("createBooking", () => {
       { throws: new Error("connection reset") },
     ]);
     await expect(createBooking(sql, ctx, args)).rejects.toThrow("connection reset");
+  });
+});
+
+/** Query-text-routed mock for the branch-heavy scenarios below (motel
+ * deposit hold, metadata merge, structured_booking_payload) — a fixed
+ * positional step list is too brittle once behavior branches on vertical/
+ * payload content. */
+function makeRoutedSql(routes: { match: string; rows?: unknown[]; throws?: unknown }[]): {
+  sql: SqlClient;
+  queries: string[];
+} {
+  const queries: string[] = [];
+  const sql = ((strings: TemplateStringsArray) => {
+    const text = strings.join(" ");
+    queries.push(text);
+    for (const route of routes) {
+      if (text.includes(route.match)) {
+        if (route.throws) return Promise.reject(route.throws);
+        return Promise.resolve(route.rows ?? []);
+      }
+    }
+    return Promise.resolve([]);
+  }) as SqlClient;
+  return { sql, queries };
+}
+
+describe("createBooking — motel deposit hold (GAP_REGISTER.md §2 Motel item 4)", () => {
+  const motelCtx: CallContext = { ...ctx, vertical: "motel" };
+
+  it("inserts status='scheduled' with a hold_expires_at when the tenant requires a deposit", async () => {
+    let insertedStatus: unknown;
+    let insertedHoldExpiresAt: unknown;
+    const { sql } = (() => {
+      const routed = makeRoutedSql([
+        { match: "from public.resources", rows: [{ id: "res_1" }] },
+        { match: "from public.bookings", rows: [] }, // idempotency pre-check
+        { match: "into public.customers", rows: [{ id: "customer_1", metadata: {} }] },
+        {
+          match: "from public.agent_configs",
+          rows: [
+            {
+              dynamic_variable_overrides: {
+                deposit_policy: { required: true, hold_window_hours: 48 },
+              },
+            },
+          ],
+        },
+        { match: "from public.adapter_connections", rows: [] },
+      ]);
+      const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = strings.join(" ");
+        if (text.includes("insert into public.bookings")) {
+          insertedStatus = values[6];
+          insertedHoldExpiresAt = values.at(-1);
+          return Promise.resolve([{ id: "booking_1", start_at: args.start, end_at: args.end }]);
+        }
+        return (routed.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(
+          strings,
+          ...values,
+        );
+      }) as SqlClient;
+      return { sql };
+    })();
+
+    const result = await createBooking(sql, motelCtx, args);
+    expect(result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
+    expect(insertedStatus).toBe("scheduled");
+    expect(insertedHoldExpiresAt).toBeTruthy();
+  });
+
+  it("inserts status='confirmed' (unchanged) when no deposit policy is configured", async () => {
+    let insertedStatus: unknown;
+    const routed = makeRoutedSql([
+      { match: "from public.resources", rows: [{ id: "res_1" }] },
+      { match: "from public.bookings", rows: [] },
+      { match: "into public.customers", rows: [{ id: "customer_1", metadata: {} }] },
+      { match: "from public.agent_configs", rows: [{ dynamic_variable_overrides: {} }] },
+      { match: "from public.adapter_connections", rows: [] },
+    ]);
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.bookings")) {
+        insertedStatus = values[6];
+        return Promise.resolve([{ id: "booking_1", start_at: args.start, end_at: args.end }]);
+      }
+      return (routed.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(
+        strings,
+        ...values,
+      );
+    }) as SqlClient;
+
+    const result = await createBooking(sql, motelCtx, args);
+    expect(result).toMatchObject({ confirmed: true });
+    expect(insertedStatus).toBe("confirmed");
+  });
+
+  it("20260910170000_motel_hold_exclusion.sql: rejects a second caller for the same resource/overlapping range while an unexpired deposit hold is active", async () => {
+    // bookings_hold_exclusion (exclude using gist ... where status='scheduled'
+    // and hold_expires_at is not null) raises the same 23P01 exclusion-
+    // violation code as the confirmed-only constraint it sits alongside —
+    // exercising the existing EXCLUSION_VIOLATION catch path, which is the
+    // only place a second overlapping hold attempt can be rejected from.
+    const routed = makeRoutedSql([
+      { match: "from public.resources", rows: [{ id: "res_1" }] },
+      { match: "from public.bookings", rows: [] }, // idempotency pre-check: none found
+      { match: "into public.customers", rows: [{ id: "customer_1", metadata: {} }] },
+      {
+        match: "from public.agent_configs",
+        rows: [{ dynamic_variable_overrides: { deposit_policy: { required: true } } }],
+      },
+    ]);
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.bookings")) {
+        return Promise.reject({
+          code: "23P01",
+          message: 'conflicting key value violates exclusion constraint "bookings_hold_exclusion"',
+        });
+      }
+      if (text.includes("select id, start_at, end_at from public.bookings")) {
+        // race-winner re-check by idempotency_key: this caller never won,
+        // and the existing hold was inserted under a different call's key.
+        return Promise.resolve([]);
+      }
+      return (routed.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(
+        strings,
+        ...values,
+      );
+    }) as SqlClient;
+
+    const result = await createBooking(sql, motelCtx, args);
+    expect(result).toEqual({ confirmed: false, reason: "slot_taken" });
+  });
+
+  it("mirrors a valid quoted_rate_cents from structured_payload onto the bookings column", async () => {
+    let insertedQuotedRate: unknown;
+    const routed = makeRoutedSql([
+      { match: "from public.resources", rows: [{ id: "res_1" }] },
+      { match: "from public.bookings", rows: [] },
+      { match: "into public.customers", rows: [{ id: "customer_1", metadata: {} }] },
+      { match: "from public.agent_configs", rows: [{ dynamic_variable_overrides: {} }] },
+      { match: "from public.adapter_connections", rows: [] },
+      { match: "update public.call_logs", rows: [] },
+    ]);
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.bookings")) {
+        insertedQuotedRate = values.at(-2);
+        return Promise.resolve([{ id: "booking_1", start_at: args.start, end_at: args.end }]);
+      }
+      return (routed.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(
+        strings,
+        ...values,
+      );
+    }) as SqlClient;
+
+    const result = await createBooking(sql, motelCtx, {
+      ...args,
+      structured_payload: { room_type: "queen", quoted_rate_cents: 12900 },
+    });
+    expect(result).toMatchObject({ confirmed: true });
+    expect(insertedQuotedRate).toBe(12900);
+  });
+
+  it("never mirrors quoted_rate_cents for a non-motel vertical", async () => {
+    let insertedQuotedRate: unknown;
+    const routed = makeRoutedSql([
+      { match: "from public.resources", rows: [{ id: "res_1" }] },
+      { match: "from public.bookings", rows: [] },
+      { match: "into public.customers", rows: [{ id: "customer_1", metadata: {} }] },
+      { match: "from public.adapter_connections", rows: [] },
+      { match: "update public.call_logs", rows: [] },
+    ]);
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.bookings")) {
+        insertedQuotedRate = values.at(-2);
+        return Promise.resolve([{ id: "booking_1", start_at: args.start, end_at: args.end }]);
+      }
+      return (routed.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(
+        strings,
+        ...values,
+      );
+    }) as SqlClient;
+
+    const result = await createBooking(sql, ctx, {
+      ...args,
+      structured_payload: { quoted_rate_cents: 12900 },
+    });
+    expect(result).toMatchObject({ confirmed: true });
+    expect(insertedQuotedRate).toBeNull();
+  });
+});
+
+describe("createBooking — customers.metadata vehicles/pets (GAP_REGISTER.md §1.8)", () => {
+  it("auto: appends a new vehicle to customers.metadata.vehicles", async () => {
+    let mergedMetadata: unknown;
+    const routed = makeRoutedSql([
+      { match: "from public.resources", rows: [{ id: "res_1" }] },
+      { match: "from public.bookings", rows: [] },
+      {
+        match: "into public.customers",
+        rows: [{ id: "customer_1", metadata: { vehicles: [{ make: "Toyota", model: "Camry" }] } }],
+      },
+      { match: "from public.adapter_connections", rows: [] },
+      { match: "update public.call_logs", rows: [] },
+    ]);
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.bookings")) {
+        return Promise.resolve([{ id: "booking_1", start_at: args.start, end_at: args.end }]);
+      }
+      if (text.includes("update public.customers") && text.includes("metadata")) {
+        mergedMetadata = values[0];
+        return Promise.resolve([]);
+      }
+      return (routed.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(
+        strings,
+        ...values,
+      );
+    }) as SqlClient;
+
+    const autoCtx: CallContext = { ...ctx, vertical: "auto" };
+    const result = await createBooking(sql, autoCtx, {
+      ...args,
+      structured_payload: { vehicle_year: 2019, vehicle_make: "Honda", vehicle_model: "Civic" },
+    });
+    expect(result).toMatchObject({ confirmed: true });
+    expect(JSON.parse(mergedMetadata as string)).toEqual({
+      vehicles: [
+        { make: "Toyota", model: "Camry" },
+        { year: 2019, make: "Honda", model: "Civic" },
+      ],
+    });
+  });
+
+  it("auto: never writes a duplicate vehicle already on file", async () => {
+    let metadataWriteCount = 0;
+    const routed = makeRoutedSql([
+      { match: "from public.resources", rows: [{ id: "res_1" }] },
+      { match: "from public.bookings", rows: [] },
+      {
+        match: "into public.customers",
+        rows: [
+          {
+            id: "customer_1",
+            metadata: { vehicles: [{ year: 2019, make: "Honda", model: "Civic" }] },
+          },
+        ],
+      },
+      { match: "from public.adapter_connections", rows: [] },
+      { match: "update public.call_logs", rows: [] },
+    ]);
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.bookings")) {
+        return Promise.resolve([{ id: "booking_1", start_at: args.start, end_at: args.end }]);
+      }
+      if (text.includes("update public.customers") && text.includes("metadata")) {
+        metadataWriteCount += 1;
+        return Promise.resolve([]);
+      }
+      return (routed.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(
+        strings,
+        ...values,
+      );
+    }) as SqlClient;
+
+    const autoCtx: CallContext = { ...ctx, vertical: "auto" };
+    await createBooking(sql, autoCtx, {
+      ...args,
+      structured_payload: { vehicle_year: 2019, vehicle_make: "Honda", vehicle_model: "Civic" },
+    });
+    expect(metadataWriteCount).toBe(0);
+  });
+
+  it("vet: appends a new pet to customers.metadata.pets", async () => {
+    let mergedMetadata: unknown;
+    const routed = makeRoutedSql([
+      { match: "from public.resources", rows: [{ id: "res_1" }] },
+      { match: "from public.bookings", rows: [] },
+      { match: "into public.customers", rows: [{ id: "customer_1", metadata: {} }] },
+      { match: "from public.adapter_connections", rows: [] },
+      { match: "update public.call_logs", rows: [] },
+    ]);
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.bookings")) {
+        return Promise.resolve([{ id: "booking_1", start_at: args.start, end_at: args.end }]);
+      }
+      if (text.includes("update public.customers") && text.includes("metadata")) {
+        mergedMetadata = values[0];
+        return Promise.resolve([]);
+      }
+      return (routed.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(
+        strings,
+        ...values,
+      );
+    }) as SqlClient;
+
+    const vetCtx: CallContext = { ...ctx, vertical: "vet" };
+    await createBooking(sql, vetCtx, {
+      ...args,
+      structured_payload: { pet_name: "Rex", species: "dog", breed: "Lab" },
+    });
+    expect(JSON.parse(mergedMetadata as string)).toEqual({
+      pets: [{ name: "Rex", species: "dog", breed: "Lab" }],
+    });
+  });
+});
+
+describe("createBooking — call_logs.structured_booking_payload (GAP_REGISTER.md §1.7)", () => {
+  it("writes the captured payload onto call_logs when present", async () => {
+    let wrote = false;
+    const routed = makeRoutedSql([
+      { match: "from public.resources", rows: [{ id: "res_1" }] },
+      { match: "from public.bookings", rows: [] },
+      { match: "into public.customers", rows: [{ id: "customer_1", metadata: {} }] },
+      { match: "from public.adapter_connections", rows: [] },
+    ]);
+    const sql = ((strings: TemplateStringsArray) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.bookings")) {
+        return Promise.resolve([{ id: "booking_1", start_at: args.start, end_at: args.end }]);
+      }
+      if (text.includes("update public.call_logs") && text.includes("structured_booking_payload")) {
+        wrote = true;
+        return Promise.resolve([]);
+      }
+      return (routed.sql as unknown as (s: TemplateStringsArray) => unknown)(strings);
+    }) as SqlClient;
+
+    await createBooking(
+      sql,
+      { ...ctx, vertical: "legal" },
+      {
+        ...args,
+        structured_payload: { matter_type: "contract_review" },
+      },
+    );
+    expect(wrote).toBe(true);
+  });
+
+  it("never writes call_logs.structured_booking_payload when nothing was captured", async () => {
+    let wrote = false;
+    const routed = makeRoutedSql([
+      { match: "from public.resources", rows: [{ id: "res_1" }] },
+      { match: "from public.bookings", rows: [] },
+      { match: "into public.customers", rows: [{ id: "customer_1", metadata: {} }] },
+      { match: "from public.adapter_connections", rows: [] },
+    ]);
+    const sql = ((strings: TemplateStringsArray) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.bookings")) {
+        return Promise.resolve([{ id: "booking_1", start_at: args.start, end_at: args.end }]);
+      }
+      if (text.includes("update public.call_logs") && text.includes("structured_booking_payload")) {
+        wrote = true;
+        return Promise.resolve([]);
+      }
+      return (routed.sql as unknown as (s: TemplateStringsArray) => unknown)(strings);
+    }) as SqlClient;
+
+    await createBooking(sql, ctx, args);
+    expect(wrote).toBe(false);
+  });
+});
+
+describe("createBooking — dental intake token (FIX_REQUESTS.md)", () => {
+  const dentalCtx: CallContext = { ...ctx, vertical: "dental" };
+  const deps = { logger: createLogger(), appBaseUrl: "https://app.example.com" };
+
+  it("issues a dental intake token + SMS after a successful dental booking when deps are given", async () => {
+    const { sql, queries } = makeRoutedSql([
+      { match: "from public.resources", rows: [{ id: "res_1" }] },
+      { match: "from public.bookings", rows: [] },
+      { match: "into public.customers", rows: [{ id: "customer_1", metadata: {} }] },
+      {
+        match: "insert into public.bookings",
+        rows: [{ id: "booking_1", start_at: args.start, end_at: args.end }],
+      },
+      { match: "into public.intake_tokens", rows: [{ id: "intake_1" }] },
+      { match: "from public.adapter_connections", rows: [] },
+    ]);
+    await createBooking(sql, dentalCtx, args, deps);
+    expect(queries.some((q) => q.includes("into public.intake_tokens"))).toBe(true);
+    expect(
+      queries.some(
+        (q) => q.includes("into public.messages_outbound") && q.includes("related_booking_id"),
+      ),
+    ).toBe(true);
+  });
+
+  it("skips the intake-token step for a non-dental vertical even when deps are given", async () => {
+    const { sql, queries } = makeRoutedSql([
+      { match: "from public.resources", rows: [{ id: "res_1" }] },
+      { match: "from public.bookings", rows: [] },
+      { match: "into public.customers", rows: [{ id: "customer_1", metadata: {} }] },
+      {
+        match: "insert into public.bookings",
+        rows: [{ id: "booking_1", start_at: args.start, end_at: args.end }],
+      },
+      { match: "from public.adapter_connections", rows: [] },
+    ]);
+    await createBooking(sql, ctx, args, deps);
+    expect(queries.some((q) => q.includes("into public.intake_tokens"))).toBe(false);
+  });
+
+  it("skips the intake-token step (and never throws) when deps are omitted, even for a dental tenant", async () => {
+    const { sql, queries } = makeRoutedSql([
+      { match: "from public.resources", rows: [{ id: "res_1" }] },
+      { match: "from public.bookings", rows: [] },
+      { match: "into public.customers", rows: [{ id: "customer_1", metadata: {} }] },
+      {
+        match: "insert into public.bookings",
+        rows: [{ id: "booking_1", start_at: args.start, end_at: args.end }],
+      },
+      { match: "from public.adapter_connections", rows: [] },
+    ]);
+    const result = await createBooking(sql, dentalCtx, args);
+    expect(result.confirmed).toBe(true);
+    expect(queries.some((q) => q.includes("into public.intake_tokens"))).toBe(false);
+  });
+
+  it("never blocks/throws the booking when the intake-token insert itself fails", async () => {
+    const { sql } = makeRoutedSql([
+      { match: "from public.resources", rows: [{ id: "res_1" }] },
+      { match: "from public.bookings", rows: [] },
+      { match: "into public.customers", rows: [{ id: "customer_1", metadata: {} }] },
+      {
+        match: "insert into public.bookings",
+        rows: [{ id: "booking_1", start_at: args.start, end_at: args.end }],
+      },
+      { match: "into public.intake_tokens", throws: new Error("db down") },
+      { match: "from public.adapter_connections", rows: [] },
+    ]);
+    const result = await createBooking(sql, dentalCtx, args, deps);
+    expect(result).toEqual({
+      booking_id: "booking_1",
+      confirmed: true,
+      start: args.start,
+      end: args.end,
+    });
+  });
+});
+
+describe("createBooking — structured_payload runtime validation (GAP_REGISTER.md §1.7)", () => {
+  it("auto: sanitizes a malformed field (non-numeric vehicle_year) rather than persisting it verbatim", async () => {
+    let insertedStructuredPayload: unknown;
+    const routed = makeRoutedSql([
+      { match: "from public.resources", rows: [{ id: "res_1" }] },
+      { match: "from public.bookings", rows: [] },
+      { match: "into public.customers", rows: [{ id: "customer_1", metadata: {} }] },
+      { match: "from public.adapter_connections", rows: [] },
+      { match: "update public.call_logs", rows: [] },
+    ]);
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.bookings")) {
+        insertedStructuredPayload = values[10];
+        return Promise.resolve([{ id: "booking_1", start_at: args.start, end_at: args.end }]);
+      }
+      return (routed.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(
+        strings,
+        ...values,
+      );
+    }) as SqlClient;
+
+    const autoCtx: CallContext = { ...ctx, vertical: "auto" };
+    const result = await createBooking(sql, autoCtx, {
+      ...args,
+      structured_payload: {
+        vehicle_year: "not_a_number",
+        vehicle_make: "Honda",
+        drop_off_or_wait: "not_a_valid_enum_value",
+      },
+    });
+    expect(result).toMatchObject({ confirmed: true });
+    expect(JSON.parse(insertedStructuredPayload as string)).toEqual({ vehicle_make: "Honda" });
   });
 });

@@ -1,7 +1,7 @@
 "use client";
 
 import type { CallClassification } from "@heyloo/supabase-client";
-import { Button, DataTable, StatusBadge } from "@heyloo/ui";
+import { Badge, Button, DataTable, StatusBadge } from "@heyloo/ui";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
 import { useRouter } from "@/i18n/navigation";
@@ -15,6 +15,8 @@ interface CallRow {
   classification: CallClassification | null;
   duration_seconds: number | null;
   outcome: string | null;
+  urgency_flag: boolean;
+  sentiment: "positive" | "neutral" | "negative" | null;
 }
 
 const PAGE_SIZE = 25;
@@ -34,12 +36,28 @@ const CLASSIFICATIONS: CallClassification[] = [
   "transfer_request",
 ];
 
+const SENTIMENT_VARIANT: Record<string, "success" | "secondary" | "destructive"> = {
+  positive: "success",
+  neutral: "secondary",
+  negative: "destructive",
+};
+
 const columns: ColumnDef<CallRow, unknown>[] = [
   {
     accessorKey: "started_at",
     header: "Time",
-    cell: ({ row }) =>
-      row.original.started_at ? new Date(row.original.started_at).toLocaleString() : "In progress",
+    cell: ({ row }) => (
+      <span className="flex items-center gap-1.5">
+        {row.original.urgency_flag && (
+          <Badge variant="destructive" className="shrink-0">
+            Urgent
+          </Badge>
+        )}
+        {row.original.started_at
+          ? new Date(row.original.started_at).toLocaleString()
+          : "In progress"}
+      </span>
+    ),
   },
   {
     accessorKey: "caller_number",
@@ -52,6 +70,18 @@ const columns: ColumnDef<CallRow, unknown>[] = [
     cell: ({ row }) =>
       row.original.classification ? (
         <StatusBadge variant="call-class" value={row.original.classification} />
+      ) : (
+        "—"
+      ),
+  },
+  {
+    accessorKey: "sentiment",
+    header: "Sentiment",
+    cell: ({ row }) =>
+      row.original.sentiment ? (
+        <Badge variant={SENTIMENT_VARIANT[row.original.sentiment] ?? "outline"}>
+          {row.original.sentiment}
+        </Badge>
       ) : (
         "—"
       ),
@@ -73,9 +103,10 @@ export function CallsListClient({ tenantId }: { tenantId: string }) {
   const query = useTenantQuery(tenantId, "call_logs", ["list", page, classification], async () => {
     let q = supabaseBrowserClient
       .from("call_logs")
-      .select("id, started_at, caller_number, classification, duration_seconds, outcome", {
-        count: "exact",
-      })
+      .select(
+        "id, started_at, caller_number, classification, duration_seconds, outcome, urgency_flag, sentiment",
+        { count: "exact" },
+      )
       .eq("tenant_id", tenantId)
       .order("started_at", { ascending: false })
       .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
@@ -134,13 +165,23 @@ export function CallsListClient({ tenantId }: { tenantId: string }) {
         }
         renderMobileCard={(row) => (
           <div className="rounded-lg border border-border p-3">
-            <p className="text-sm font-medium">{row.caller_number ?? "Unknown"}</p>
+            <div className="flex items-center gap-1.5">
+              <p className="text-sm font-medium">{row.caller_number ?? "Unknown"}</p>
+              {row.urgency_flag && <Badge variant="destructive">Urgent</Badge>}
+            </div>
             <p className="text-xs text-muted-foreground">
               {row.started_at ? new Date(row.started_at).toLocaleString() : "In progress"}
             </p>
-            {row.classification && (
-              <StatusBadge variant="call-class" value={row.classification} className="mt-1" />
-            )}
+            <div className="mt-1 flex items-center gap-1.5">
+              {row.classification && (
+                <StatusBadge variant="call-class" value={row.classification} />
+              )}
+              {row.sentiment && (
+                <Badge variant={SENTIMENT_VARIANT[row.sentiment] ?? "outline"}>
+                  {row.sentiment}
+                </Badge>
+              )}
+            </div>
           </div>
         )}
       />

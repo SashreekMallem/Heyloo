@@ -16,6 +16,7 @@
 export const CANONICAL_TYPES_VERSION = "0.1.0" as const;
 
 export * from "./agent-template.js";
+export * from "./booking-payloads.js";
 export * from "./call-taxonomy.js";
 export * from "./errors.js";
 export * from "./primitives.js";

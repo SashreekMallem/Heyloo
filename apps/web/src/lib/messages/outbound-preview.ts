@@ -7,10 +7,13 @@
  * enqueue time"), so reproducing the exact customer-visible wording here
  * would mean duplicating that renderer client-side with no guard against
  * drift (the same maintenance-debt shape flagged for the template-compiler
- * duplication in docs/VERIFY.md). Instead: the one case that IS genuinely
- * verbatim — an owner's own typed reply (`owner_reply`, this cluster's
- * reply feature) — shows the real text; everything else shows a neutral,
- * honestly-labeled system notice rather than a guessed transcript.
+ * duplication in docs/VERIFY.md). Instead: the cases where the payload
+ * itself IS the real content — an owner's own typed reply (`owner_reply`,
+ * this cluster's reply feature) and a caller's `take_message` (name +
+ * message text + optional callback window, captured verbatim from the
+ * voice-tools payload rather than a template needing separate wording) —
+ * show the real content; everything else shows a neutral, honestly-labeled
+ * system notice rather than a guessed transcript.
  */
 export function describeOutboundMessage(
   templateKey: string,
@@ -18,6 +21,17 @@ export function describeOutboundMessage(
 ): { text: string; isVerbatim: boolean } {
   if (templateKey === "owner_reply" && typeof payload["body"] === "string") {
     return { text: payload["body"], isVerbatim: true };
+  }
+  if (templateKey === "take_message") {
+    const callerName =
+      typeof payload["caller_name"] === "string" ? payload["caller_name"] : "A caller";
+    const messageText = typeof payload["message_text"] === "string" ? payload["message_text"] : "";
+    const callbackWindow =
+      typeof payload["callback_window"] === "string" ? payload["callback_window"] : null;
+    return {
+      text: `${callerName} left a message: "${messageText}"${callbackWindow ? ` (callback: ${callbackWindow})` : ""}`,
+      isVerbatim: true,
+    };
   }
   const labels: Record<string, string> = {
     booking_confirmation: "Booking confirmation sent",

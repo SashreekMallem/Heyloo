@@ -50,3 +50,32 @@ export const AdminAlertThresholdSchema = z.object({
   enabled: z.boolean(),
   channel: z.enum(["email", "sms", "dashboard_only"]),
 });
+
+/**
+ * Recurring referral-partner commission terms (GAP_REGISTER Cluster G item
+ * 1, owner decision — admin-set, NO platform-wide default). `rate_bps:
+ * null` explicitly clears the rate (partner earns no recurring commission)
+ * rather than leaving it unset — every field is nullable/optional so a
+ * partial PATCH only touches what's sent.
+ */
+export const AdminCommissionTermsSchema = z.object({
+  rate_bps: z.number().int().min(0).max(10_000).nullable().optional(),
+  commission_base: z.enum(["gross_profit", "revenue"]).optional(),
+  duration_months: z.number().int().positive().nullable().optional(),
+});
+
+export const AdminCommissionVerticalOverrideSchema = z.object({
+  rate_bps: z.number().int().min(0).max(10_000).nullable().optional(),
+  commission_base: z.enum(["gross_profit", "revenue"]).nullable().optional(),
+  duration_months: z.number().int().positive().nullable().optional(),
+});
+
+export const AdminSupportRequestUpdateSchema = z.object({
+  status: z.enum(["open", "pending", "resolved", "closed"]).optional(),
+  priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
+});
+
+export const AdminSupportRequestNoteSchema = z.object({
+  body: z.string().trim().min(1).max(5000),
+  visible_to_tenant: z.boolean().default(false),
+});

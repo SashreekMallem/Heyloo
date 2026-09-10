@@ -41,19 +41,21 @@ function arrayToLines(value: string[] | undefined): string {
   return (value ?? []).join("\n");
 }
 
-/** Simple `key: number` per line editor for `rate_table` (motel room/rate names -> cents-free dollar rate; MASTER_SPEC §3.5). */
-function rateTableToLines(value: Record<string, number> | undefined): string {
-  return Object.entries(value ?? {})
-    .map(([k, v]) => `${k}: ${v}`)
-    .join("\n");
+/** One `room type: nightly rate in cents` per line editor for motel's `rate_table` (an array of `{room_type, nightly_rate_cents}` — matches `zMotelOverrides`/MASTER_SPEC §3.5; cents, never dollars, per CLAUDE.md Rule 2). */
+function rateTableToLines(
+  value: Array<{ room_type: string; nightly_rate_cents: number }> | undefined,
+): string {
+  return (value ?? []).map((entry) => `${entry.room_type}: ${entry.nightly_rate_cents}`).join("\n");
 }
 
-function linesToRateTable(value: string): Record<string, number> {
-  const out: Record<string, number> = {};
+function linesToRateTable(value: string): Array<{ room_type: string; nightly_rate_cents: number }> {
+  const out: Array<{ room_type: string; nightly_rate_cents: number }> = [];
   for (const line of value.split("\n")) {
-    const [key, rest] = line.split(":");
-    const num = Number.parseFloat((rest ?? "").trim());
-    if (key?.trim() && Number.isFinite(num)) out[key.trim()] = num;
+    const [roomType, rest] = line.split(":");
+    const cents = Number.parseInt((rest ?? "").trim(), 10);
+    if (roomType?.trim() && Number.isFinite(cents)) {
+      out.push({ room_type: roomType.trim(), nightly_rate_cents: cents });
+    }
   }
   return out;
 }
@@ -75,10 +77,19 @@ interface VerticalDetailsFormValues {
   vehicle_makes_serviced?: string[];
   practice_areas?: string[];
   consult_fee_cents?: number;
-  deposit_policy?: string;
-  rate_table?: Record<string, number>;
+  deposit_policy?: {
+    required: boolean;
+    amount_cents?: number;
+    hold_window_hours?: number;
+    text: string;
+  };
+  rate_table?: Array<{ room_type: string; nightly_rate_cents: number }>;
   delivery_radius_m?: number;
   min_order_cents?: number;
+  delivery_fee_cents?: number;
+  tax_rate_bps?: number;
+  prep_time_minutes?: number;
+  menu_text?: string;
 }
 
 interface ReminderReviewFormValues {
@@ -181,6 +192,10 @@ function VerticalDetailsForm({
       rate_table: data.details.rate_table,
       delivery_radius_m: data.details.delivery_radius_m,
       min_order_cents: data.details.min_order_cents,
+      delivery_fee_cents: data.details.delivery_fee_cents,
+      tax_rate_bps: data.details.tax_rate_bps,
+      prep_time_minutes: data.details.prep_time_minutes,
+      menu_text: data.details.menu_text,
     });
     reminderForm.reset(data.reminderReview);
   }, [data, detailsForm, reminderForm]);
@@ -446,9 +461,69 @@ function VerticalDetailsForm({
 
               {vertical === "motel" && (
                 <>
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <FormField
+                      control={detailsForm.control}
+                      name="deposit_policy.required"
+                      render={({ field }) => (
+                        <FormItem className="flex items-center justify-between gap-4 sm:col-span-3">
+                          <FormLabel>Deposit required at booking</FormLabel>
+                          <FormControl>
+                            <Switch
+                              checked={field.value ?? false}
+                              onCheckedChange={field.onChange}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={detailsForm.control}
+                      name="deposit_policy.amount_cents"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Deposit amount (cents, optional)</FormLabel>
+                          <FormControl>
+                            <Input
+                              type="number"
+                              value={field.value ?? ""}
+                              onChange={(e) =>
+                                field.onChange(
+                                  e.target.value === "" ? undefined : Number(e.target.value),
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={detailsForm.control}
+                      name="deposit_policy.hold_window_hours"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Held-but-unpaid window (hours, optional)</FormLabel>
+                          <FormControl>
+                            <Input
+                              type="number"
+                              value={field.value ?? ""}
+                              onChange={(e) =>
+                                field.onChange(
+                                  e.target.value === "" ? undefined : Number(e.target.value),
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
                   <FormField
                     control={detailsForm.control}
-                    name="deposit_policy"
+                    name="deposit_policy.text"
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Deposit policy (spoken by the agent)</FormLabel>
@@ -464,13 +539,18 @@ function VerticalDetailsForm({
                     name="rate_table"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Rate table — one `room type: rate` per line</FormLabel>
+                        <FormLabel>
+                          Rate table — one `room type: nightly rate in cents` per line
+                        </FormLabel>
                         <FormControl>
                           <Textarea
                             value={rateTableToLines(field.value)}
                             onChange={(e) => field.onChange(linesToRateTable(e.target.value))}
                           />
                         </FormControl>
+                        <FormDescription>
+                          e.g. `Standard: 8900` for an $89.00/night standard room.
+                        </FormDescription>
                         <FormMessage />
                       </FormItem>
                     )}
@@ -479,50 +559,133 @@ function VerticalDetailsForm({
               )}
 
               {vertical === "restaurant" && (
-                <div className="grid gap-4 sm:grid-cols-2">
+                <>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <FormField
+                      control={detailsForm.control}
+                      name="delivery_radius_m"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Delivery radius (meters)</FormLabel>
+                          <FormControl>
+                            <Input
+                              type="number"
+                              value={field.value ?? ""}
+                              onChange={(e) =>
+                                field.onChange(
+                                  e.target.value === "" ? undefined : Number(e.target.value),
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={detailsForm.control}
+                      name="min_order_cents"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Minimum delivery order (cents)</FormLabel>
+                          <FormControl>
+                            <Input
+                              type="number"
+                              value={field.value ?? ""}
+                              onChange={(e) =>
+                                field.onChange(
+                                  e.target.value === "" ? undefined : Number(e.target.value),
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={detailsForm.control}
+                      name="delivery_fee_cents"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Delivery fee (cents)</FormLabel>
+                          <FormControl>
+                            <Input
+                              type="number"
+                              value={field.value ?? ""}
+                              onChange={(e) =>
+                                field.onChange(
+                                  e.target.value === "" ? undefined : Number(e.target.value),
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormDescription>Leave blank for free delivery.</FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={detailsForm.control}
+                      name="tax_rate_bps"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Sales tax rate (basis points)</FormLabel>
+                          <FormControl>
+                            <Input
+                              type="number"
+                              value={field.value ?? ""}
+                              onChange={(e) =>
+                                field.onChange(
+                                  e.target.value === "" ? undefined : Number(e.target.value),
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormDescription>e.g. 825 for 8.25%.</FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={detailsForm.control}
+                      name="prep_time_minutes"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Typical prep time (minutes)</FormLabel>
+                          <FormControl>
+                            <Input
+                              type="number"
+                              value={field.value ?? ""}
+                              onChange={(e) =>
+                                field.onChange(
+                                  e.target.value === "" ? undefined : Number(e.target.value),
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
                   <FormField
                     control={detailsForm.control}
-                    name="delivery_radius_m"
+                    name="menu_text"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Delivery radius (meters)</FormLabel>
+                        <FormLabel>Menu override (spoken by the agent)</FormLabel>
                         <FormControl>
-                          <Input
-                            type="number"
-                            value={field.value ?? ""}
-                            onChange={(e) =>
-                              field.onChange(
-                                e.target.value === "" ? undefined : Number(e.target.value),
-                              )
-                            }
-                          />
+                          <Textarea {...field} value={field.value ?? ""} />
                         </FormControl>
+                        <FormDescription>
+                          Leave blank to have the agent read from your active menu items instead.
+                        </FormDescription>
                         <FormMessage />
                       </FormItem>
                     )}
                   />
-                  <FormField
-                    control={detailsForm.control}
-                    name="min_order_cents"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Minimum delivery order (cents)</FormLabel>
-                        <FormControl>
-                          <Input
-                            type="number"
-                            value={field.value ?? ""}
-                            onChange={(e) =>
-                              field.onChange(
-                                e.target.value === "" ? undefined : Number(e.target.value),
-                              )
-                            }
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </div>
+                </>
               )}
 
               <Button type="submit">Save</Button>

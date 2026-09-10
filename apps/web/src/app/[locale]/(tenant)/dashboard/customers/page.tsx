@@ -1,6 +1,6 @@
 "use client";
 
-import { type CustomerSegment, DataState, DataTable, SegmentBadge } from "@heyloo/ui";
+import { Badge, type CustomerSegment, DataState, DataTable, SegmentBadge } from "@heyloo/ui";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
 import { useRouter } from "@/i18n/navigation";
@@ -14,6 +14,7 @@ interface CustomerRow {
   phone_e164: string;
   segment: CustomerSegment;
   lifetime_value_cents: number;
+  consent: { sms?: boolean; call?: boolean };
 }
 
 const columns: ColumnDef<CustomerRow, unknown>[] = [
@@ -23,6 +24,16 @@ const columns: ColumnDef<CustomerRow, unknown>[] = [
     accessorKey: "segment",
     header: "Segment",
     cell: ({ row }) => <SegmentBadge segment={row.original.segment} />,
+  },
+  {
+    accessorKey: "consent",
+    header: "Consent",
+    cell: ({ row }) =>
+      row.original.consent?.sms || row.original.consent?.call ? (
+        <Badge variant="success">On file</Badge>
+      ) : (
+        <Badge variant="outline">None</Badge>
+      ),
   },
 ];
 
@@ -38,7 +49,7 @@ export default function CustomersPage() {
     async () => {
       let q = supabaseBrowserClient
         .from("customers")
-        .select("id, name, phone_e164, segment, lifetime_value_cents")
+        .select("id, name, phone_e164, segment, lifetime_value_cents, consent")
         .eq("tenant_id", tenantId as string)
         .order("last_seen_at", { ascending: false })
         .limit(100);
@@ -75,7 +86,12 @@ export default function CustomersPage() {
               <div className="rounded-lg border border-border p-3">
                 <p className="text-sm font-medium">{row.name ?? "Unknown"}</p>
                 <p className="text-xs text-muted-foreground">{row.phone_e164}</p>
-                <SegmentBadge segment={row.segment} className="mt-1" />
+                <div className="mt-1 flex items-center gap-1.5">
+                  <SegmentBadge segment={row.segment} />
+                  {(row.consent?.sms || row.consent?.call) && (
+                    <Badge variant="success">Consent</Badge>
+                  )}
+                </div>
               </div>
             )}
           />

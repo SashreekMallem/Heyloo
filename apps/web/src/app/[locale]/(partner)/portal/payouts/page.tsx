@@ -1,22 +1,40 @@
 import type { Metadata } from "next";
-import { PayoutsTableClient } from "@/components/partner/payouts-table-client";
+import { type PayoutRow, PayoutsTableClient } from "@/components/partner/payouts-table-client";
 import { requirePartnerSession } from "@/lib/auth/require-partner-session";
 
 export const metadata: Metadata = { title: "Payouts — Heyloo" };
 
+/**
+ * `referral_payouts`'s real columns are `total_cents`/`period`/`status`
+ * (`supabase/migrations/20260907130800_referrals.sql`) — there is no
+ * `amount_cents`/`method`/`paid_at` column, despite `@heyloo/supabase-
+ * client`'s hand-maintained `ReferralPayoutRow` claiming those (a stale
+ * type, filed in docs/audit/FIX_REQUESTS.md); the previous version of this
+ * page selected the wrong columns entirely, which would 400 against the
+ * real schema. Payout method is constant per partner (`payout_method`),
+ * shown once above the table rather than repeated per row.
+ */
 export default async function PayoutsPage() {
   const { supabase, partner } = await requirePartnerSession("/portal/payouts");
 
-  const { data: payouts } = await supabase
-    .from("referral_payouts")
-    .select("id, amount_cents, method, status, created_at")
-    .eq("referral_partner_id", partner.id)
-    .order("created_at", { ascending: false });
+  const [{ data: payouts }, { data: partnerRow }] = await Promise.all([
+    supabase
+      .from("referral_payouts")
+      .select("id, total_cents, period, status, created_at")
+      .eq("referral_partner_id", partner.id)
+      .order("period", { ascending: false }),
+    supabase.from("referral_partners").select("payout_method").eq("id", partner.id).maybeSingle(),
+  ]);
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Payouts</h1>
-      <PayoutsTableClient payouts={payouts ?? []} />
+      <div>
+        <h1 className="text-xl font-semibold">Payouts</h1>
+        <p className="text-sm capitalize text-muted-foreground">
+          Paid via {(partnerRow?.payout_method ?? "paypal").replace(/_/g, " ")}
+        </p>
+      </div>
+      <PayoutsTableClient payouts={(payouts ?? []) as unknown as PayoutRow[]} />
     </div>
   );
 }

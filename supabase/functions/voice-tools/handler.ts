@@ -1,3 +1,4 @@
+import type { GeocodeFetch } from "../_shared/providers/geocode.ts";
 import type { StripeFetch } from "../_shared/providers/stripe.ts";
 import { fallbackEnvelope, toolEnvelope } from "../_shared/responses.ts";
 import {
@@ -5,6 +6,8 @@ import {
   CheckAvailabilityArgsSchema,
   CreateBookingArgsSchema,
   CreateOrderArgsSchema,
+  JoinWaitlistArgsSchema,
+  ListOfferingsArgsSchema,
   LookupCustomerArgsSchema,
   SendPaymentLinkArgsSchema,
   SendSmsConfirmationArgsSchema,
@@ -18,6 +21,8 @@ import { cancelBooking } from "./tools/cancel_booking.ts";
 import { checkAvailability } from "./tools/check_availability.ts";
 import { createBooking } from "./tools/create_booking.ts";
 import { createOrder } from "./tools/create_order.ts";
+import { joinWaitlist } from "./tools/join_waitlist.ts";
+import { listOfferings } from "./tools/list_offerings.ts";
 import { lookupCustomer } from "./tools/lookup_customer.ts";
 import { sendPaymentLink } from "./tools/send_payment_link.ts";
 import { sendSmsConfirmation } from "./tools/send_sms_confirmation.ts";
@@ -42,6 +47,16 @@ export interface DispatchDeps {
     successUrl: string;
     cancelUrl: string;
   };
+  /** FIX_REQUESTS.md — base URL the dental-intake link is built against. */
+  dentalIntake: {
+    appBaseUrl: string;
+  };
+  /** restaurant.md Finding B4 — undefined (no `GEOCODE_API_KEY`) leaves
+   * `create_order`'s delivery-address save a pure no-op, never a failure. */
+  geocode?: {
+    fetchImpl: GeocodeFetch;
+    apiKey: string;
+  };
 }
 
 const KNOWN_TOOLS = new Set([
@@ -54,6 +69,8 @@ const KNOWN_TOOLS = new Set([
   "send_sms_confirmation",
   "create_order",
   "send_payment_link",
+  "join_waitlist",
+  "list_offerings",
 ]);
 
 export function isKnownTool(name: string): boolean {
@@ -66,7 +83,7 @@ export async function dispatchTool(
   name: string,
   rawArgs: unknown,
 ): Promise<ToolResultEnvelope> {
-  const { sql, logger } = deps;
+  const { sql, logger, dentalIntake, geocode } = deps;
 
   const ctx = await resolveCallContext(sql, callId);
   if (!ctx) {
@@ -83,7 +100,9 @@ export async function dispatchTool(
     case "create_booking": {
       const parsed = CreateBookingArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
-      return toolEnvelope(await createBooking(sql, ctx, parsed.data));
+      return toolEnvelope(
+        await createBooking(sql, ctx, parsed.data, { logger, appBaseUrl: dentalIntake.appBaseUrl }),
+      );
     }
     case "update_booking": {
       const parsed = UpdateBookingArgsSchema.safeParse(rawArgs);
@@ -113,7 +132,9 @@ export async function dispatchTool(
     case "create_order": {
       const parsed = CreateOrderArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
-      return toolEnvelope(await createOrder(sql, ctx, parsed.data, logger));
+      return toolEnvelope(
+        await createOrder(sql, ctx, parsed.data, logger, geocode ? { geocode } : {}),
+      );
     }
     case "send_payment_link": {
       const parsed = SendPaymentLinkArgsSchema.safeParse(rawArgs);
@@ -121,6 +142,16 @@ export async function dispatchTool(
       return toolEnvelope(
         await sendPaymentLink(sql, ctx, parsed.data, { ...deps.paymentLink, logger }),
       );
+    }
+    case "join_waitlist": {
+      const parsed = JoinWaitlistArgsSchema.safeParse(rawArgs);
+      if (!parsed.success) return fallbackEnvelope();
+      return toolEnvelope(await joinWaitlist(sql, ctx, parsed.data));
+    }
+    case "list_offerings": {
+      const parsed = ListOfferingsArgsSchema.safeParse(rawArgs);
+      if (!parsed.success) return fallbackEnvelope();
+      return toolEnvelope(await listOfferings(sql, ctx, parsed.data));
     }
     default:
       logger.warn("voice_tools_unknown_tool", { call_id: callId, tool: name });

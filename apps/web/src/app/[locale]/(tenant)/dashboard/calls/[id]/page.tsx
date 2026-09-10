@@ -12,7 +12,7 @@ export default async function CallDetailPage({ params }: { params: Promise<{ id:
   const { data: call } = await supabase
     .from("call_logs")
     .select(
-      "id, classification, transcript, state_trace, recording_url, stereo_recording_url, duration_seconds, ended_at, structured_booking_payload",
+      "id, classification, transcript, state_trace, recording_url, stereo_recording_url, duration_seconds, ended_at, structured_booking_payload, urgency_flag, call_summary, sentiment, follow_up_needed, legal_advice_given, extracted_entities, message_text, outcome",
     )
     .eq("tenant_id", tenant.id)
     .eq("id", id)
@@ -43,6 +43,21 @@ export default async function CallDetailPage({ params }: { params: Promise<{ id:
     linkedBookingId:
       call.structured_booking_payload && typeof call.structured_booking_payload === "object"
         ? ((call.structured_booking_payload as { booking_id?: string }).booking_id ?? null)
+        : null,
+    urgencyFlag: call.urgency_flag,
+    callSummary: call.call_summary,
+    sentiment: call.sentiment,
+    followUpNeeded: call.follow_up_needed,
+    legalAdviceGiven: call.legal_advice_given,
+    outcome: call.outcome,
+    messageText: call.message_text,
+    structuredPayload:
+      call.structured_booking_payload && typeof call.structured_booking_payload === "object"
+        ? (call.structured_booking_payload as Record<string, unknown>)
+        : null,
+    extractedEntities:
+      call.extracted_entities && typeof call.extracted_entities === "object"
+        ? (call.extracted_entities as Record<string, unknown>)
         : null,
   };
 

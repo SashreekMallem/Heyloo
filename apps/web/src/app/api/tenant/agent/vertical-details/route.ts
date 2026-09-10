@@ -55,5 +55,21 @@ export async function POST(request: Request) {
     .eq("tenant_id", claims.tenant_id);
 
   if (error) return NextResponse.json({ error: "update_failed" }, { status: 500 });
+
+  // FIX_REQUESTS.md — `tenants.policies_reviewed_at`: a real, timestamped
+  // "reviewed" signal for the setup-progress panel, set the moment a
+  // tenant owner/admin actually saves this form with a non-empty
+  // cancellation_policy.text (an explicit acknowledgment action, not just
+  // an inferred proxy). Best-effort — never fails the save itself.
+  if (parsed.data.cancellation_policy?.text) {
+    const { error: reviewedError } = await supabase
+      .from("tenants")
+      .update({ policies_reviewed_at: new Date().toISOString() })
+      .eq("id", claims.tenant_id);
+    if (reviewedError) {
+      console.error("policies_reviewed_at update failed", reviewedError);
+    }
+  }
+
   return NextResponse.json({ ok: true });
 }

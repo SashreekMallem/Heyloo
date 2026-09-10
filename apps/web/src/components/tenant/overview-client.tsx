@@ -10,6 +10,7 @@ import {
 } from "@heyloo/ui";
 import { useState } from "react";
 import type { TenantPlanResponse } from "@/app/api/platform-settings/tenant-plan/route";
+import { SetupProgressPanel } from "@/components/tenant/setup-progress-panel";
 import { Link, useRouter } from "@/i18n/navigation";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
@@ -116,6 +117,8 @@ export function OverviewClient({
         <h1 className="text-xl font-semibold">Overview</h1>
         <DateRangePills value={preset} onChange={setPreset} tenantTz="America/New_York" />
       </div>
+
+      <SetupProgressPanel tenantId={tenantId} />
 
       <DataState
         query={overviewQuery}

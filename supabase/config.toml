@@ -115,6 +115,8 @@ verify_jwt = false
 verify_jwt = false
 [functions.job-referral-payouts]
 verify_jwt = false
+[functions.job-commission-accrual]
+verify_jwt = false
 [functions.job-churn-scoring]
 verify_jwt = false
 [functions.job-value-email]
@@ -130,6 +132,11 @@ verify_jwt = false
 [functions.job-outreach-personalize]
 verify_jwt = false
 [functions.job-outreach-personalize-collect]
+verify_jwt = false
+# job-lead-callback-retry (FIX_REQUESTS.md): drains lead_callback_requests
+# rows stuck in deferred_quiet_hours once scheduled_for has passed — same
+# x-cron-secret auth boundary as every other job-* function below.
+[functions.job-lead-callback-retry]
 verify_jwt = false
 [functions.admin]
 verify_jwt = true
@@ -154,4 +161,44 @@ verify_jwt = true
 # then the function checks the JWT's own app_metadata.tenant_id against the
 # body-supplied tenant_id (docs/audit/FIX_REQUESTS.md, cluster D contract).
 [functions.api-payment-link-resend]
+verify_jwt = true
+
+# api-lead-callback (GAP_REGISTER Cluster G item 2): server-to-server only
+# (a tenant's own web-form backend or CRM integration, never a raw browser
+# request) — authenticated by its own api_tokens bearer-token check
+# (leads:write scope), not a Supabase-issued JWT, so Supabase's platform
+# verify_jwt gate is off and this function is the sole auth boundary.
+[functions.api-lead-callback]
+verify_jwt = false
+
+# api-menu-import / api-intake (GAP_REGISTER Cluster G items 3-4):
+# api-menu-import is tenant-owner/admin JWT-authenticated (verify_jwt =
+# true, then the function checks the JWT's own tenant membership, same
+# posture as api-payment-link-resend above). api-intake is a PUBLIC
+# endpoint (function name + contract match docs/audit/FIX_REQUESTS.md's
+# already-built form page, not this cluster's own original naming) keyed
+# by an opaque single-use token tied to one booking, carried as the
+# remaining URL path — verify_jwt = false, the token itself is the entire
+# auth boundary (fails closed on any missing/invalid/already-used/expired
+# token).
+[functions.api-menu-import]
+verify_jwt = true
+[functions.api-intake]
+verify_jwt = false
+
+# api-tenant-test-call (docs/audit/FIX_REQUESTS.md): tenant-owner/admin
+# JWT-authenticated (verify_jwt = true, tenant_id from the JWT's own
+# app_metadata only — same posture as api-menu-import above) — starts a
+# Retell web-call session against the CALLING tenant's own already-
+# published agent, for the dashboard's "test your agent" page.
+[functions.api-tenant-test-call]
+verify_jwt = true
+
+# api-team-invite (docs/audit/FIX_REQUESTS.md): tenant-owner JWT-
+# authenticated (verify_jwt = true, tenant_id + caller user id from the
+# JWT only) — additionally re-verifies the caller's own memberships.role
+# is 'owner' itself (handler.ts), since it runs as service role to mint a
+# new auth user via GoTrue's admin invite endpoint and insert the
+# resulting memberships row.
+[functions.api-team-invite]
 verify_jwt = true

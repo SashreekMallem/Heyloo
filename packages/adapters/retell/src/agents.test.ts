@@ -189,6 +189,75 @@ describe("createOrUpdateRetellAgent", () => {
     expect(agentBody?.["webhook_timeout_ms"]).toBe(20000);
   });
 
+  it("attaches compiled post_call_analysis_data to the agent body (GAP_REGISTER §1.1)", async () => {
+    let agentBody: Record<string, unknown> | undefined;
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/create-conversation-flow") {
+        return jsonResponse(200, { conversation_flow_id: "flow_1" });
+      }
+      if (path === "/create-agent") {
+        agentBody = init?.body ? JSON.parse(init.body as string) : undefined;
+        return jsonResponse(200, { agent_id: "agent_1", version: 1 });
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    const client = new RetellClient({
+      apiKey: "k",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const input = baseInput({
+      template: {
+        ...AUTO_CONVERSATION_FLOW_TEMPLATE,
+        states: AUTO_CONVERSATION_FLOW_TEMPLATE.states.map((s) =>
+          s.id === "triage_emergency"
+            ? { ...s, extraction: [{ field: "emergency_detected", type: "boolean" as const }] }
+            : s,
+        ),
+      },
+    });
+    const compiled = compileRetellTemplate(
+      input.template,
+      "conversation_flow",
+      input.toolWebhookUrl,
+    );
+
+    await createOrUpdateRetellAgent(client, input, compiled);
+
+    expect(agentBody?.["post_call_analysis_data"]).toEqual([
+      expect.objectContaining({ name: "emergency_detected", type: "boolean" }),
+    ]);
+  });
+
+  it("omits post_call_analysis_data entirely when the template declares no extraction fields", async () => {
+    let agentBody: Record<string, unknown> | undefined;
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/create-conversation-flow") {
+        return jsonResponse(200, { conversation_flow_id: "flow_1" });
+      }
+      if (path === "/create-agent") {
+        agentBody = init?.body ? JSON.parse(init.body as string) : undefined;
+        return jsonResponse(200, { agent_id: "agent_1", version: 1 });
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    const client = new RetellClient({
+      apiKey: "k",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const input = baseInput();
+    const compiled = compileRetellTemplate(
+      input.template,
+      "conversation_flow",
+      input.toolWebhookUrl,
+    );
+
+    await createOrUpdateRetellAgent(client, input, compiled);
+
+    expect(agentBody).not.toHaveProperty("post_call_analysis_data");
+  });
+
   it("throws a typed error when the flow-resource response has neither id field", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(200, { unexpected: true }));
     const client = new RetellClient({

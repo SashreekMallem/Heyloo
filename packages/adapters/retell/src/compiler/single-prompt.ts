@@ -13,28 +13,51 @@
  * organizational scaffolding even though there's no graph to traverse);
  * `global_intents` become explicit textual escape instructions, since a
  * single prompt has no separate node/state to route to structurally.
+ *
+ * The one reserved `transfer_call` tool compiles to Retell LLM's native
+ * `TransferCallTool` (GAP_REGISTER §1.4 item 4), same as multi-prompt.ts.
  */
 
 import type { AgentTemplate } from "@heyloo/canonical-types";
-import type { RetellFunctionTool, RetellSinglePromptRequest } from "./types.js";
+import type {
+  RetellFunctionTool,
+  RetellSinglePromptRequest,
+  RetellStateTool,
+  RetellTransferCallTool,
+} from "./types.js";
+
+const TRANSFER_CALL_TOOL_NAME = "transfer_call";
 
 export function compileSinglePrompt(
   template: AgentTemplate,
   toolWebhookUrl: string,
 ): RetellSinglePromptRequest {
-  const generalTools: RetellFunctionTool[] = template.tools.map((tool) => ({
-    type: "custom",
-    name: tool.name,
-    description: tool.description,
-    url: toolWebhookUrl,
-    // `properties` is REQUIRED per retell-typescript-sdk's `CustomTool.
-    // Parameters` — default an omitted one to `{}` (RETELL-VERIFY).
-    parameters: {
-      type: "object",
-      properties: tool.parameters.properties ?? {},
-      ...(tool.parameters.required !== undefined ? { required: tool.parameters.required } : {}),
-    },
-  }));
+  const generalTools: RetellStateTool[] = template.tools.map((tool) => {
+    if (tool.name === TRANSFER_CALL_TOOL_NAME) {
+      const transferTool: RetellTransferCallTool = {
+        type: "transfer_call",
+        name: TRANSFER_CALL_TOOL_NAME,
+        description: tool.description,
+        transfer_destination: { type: "predefined", number: "{{transfer_number}}" },
+        transfer_option: { type: "warm_transfer" },
+      };
+      return transferTool;
+    }
+    const functionTool: RetellFunctionTool = {
+      type: "custom",
+      name: tool.name,
+      description: tool.description,
+      url: toolWebhookUrl,
+      // `properties` is REQUIRED per retell-typescript-sdk's `CustomTool.
+      // Parameters` — default an omitted one to `{}` (RETELL-VERIFY).
+      parameters: {
+        type: "object",
+        properties: tool.parameters.properties ?? {},
+        ...(tool.parameters.required !== undefined ? { required: tool.parameters.required } : {}),
+      },
+    };
+    return functionTool;
+  });
 
   const sections: string[] = [template.disclosure_line];
   if (template.system_prompt) {

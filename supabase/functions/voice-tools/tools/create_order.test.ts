@@ -10,6 +10,7 @@ const ctx: CallContext = {
   callLogId: "cl_1",
   retellCallId: "call_1",
   callerNumber: "+15551234567",
+  vertical: "generic",
 };
 
 type Step = { rows?: unknown[]; throws?: unknown };
@@ -109,6 +110,129 @@ describe("createOrder", () => {
     expect(pushMessage.entity_type).toBe("order");
   });
 
+  it("computes and returns delivery_fee_cents for a delivery order (GAP_REGISTER.md §4 Cluster D)", async () => {
+    const sql = makeStepSql([
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings lookup
+      { rows: [{ dynamic_variable_overrides: { delivery_fee_cents: 399 } }] }, // agent_configs overrides
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+      { rows: [{ id: "order_1" }] }, // order insert
+      { rows: [{ id: "msg_1" }] }, // confirmation message insert
+      { rows: [] }, // enqueue messages_outbound
+      { rows: [] }, // enqueue adapter_push
+    ]);
+    // subtotal = 2000; tax = 0; delivery fee = 399; total = 2399
+    const result = await createOrder(
+      sql,
+      ctx,
+      { ...pickupArgs, fulfillment_type: "delivery", delivery_address: { street: "1 Main St" } },
+      logger,
+    );
+    expect(result).toEqual({
+      order_id: "order_1",
+      confirmed: true,
+      total_cents: 2399,
+      delivery_fee_cents: 399,
+    });
+  });
+
+  it("never applies a delivery_fee_cents to a pickup/dine_in order", async () => {
+    const sql = makeStepSql([
+      { rows: [] },
+      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] },
+      { rows: [{ dynamic_variable_overrides: { delivery_fee_cents: 399 } }] },
+      { rows: [{ id: "customer_1" }] },
+      { rows: [{ id: "order_1" }] },
+      { rows: [{ id: "msg_1" }] },
+      { rows: [] },
+      { rows: [] },
+    ]);
+    const result = await createOrder(sql, ctx, pickupArgs, logger);
+    expect(result).toEqual({ order_id: "order_1", confirmed: true, total_cents: 2000 });
+  });
+
+  it("persists consent onto customers.consent (GAP_REGISTER.md §1.10)", async () => {
+    let consentUpdatePayload: unknown;
+    const steps: Step[] = [
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings lookup
+      { rows: [{ dynamic_variable_overrides: {} }] }, // agent_configs overrides
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+      { rows: [{ id: "order_1" }] }, // order insert
+    ];
+    let i = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("update public.customers") && text.includes("consent")) {
+        consentUpdatePayload = values[0];
+        return Promise.resolve([]);
+      }
+      const step = steps[i];
+      i += 1;
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+
+    await createOrder(sql, ctx, { ...pickupArgs, consent: { sms: true, call: false } }, logger);
+    expect(JSON.parse(consentUpdatePayload as string)).toMatchObject({ sms: true, call: false });
+  });
+
+  it("persists allergies and special_instructions onto the orders row (GAP_REGISTER.md §2 Restaurant item 2)", async () => {
+    let insertedAllergies: unknown;
+    let insertedInstructions: unknown;
+    const steps: Step[] = [
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings lookup
+      { rows: [{ dynamic_variable_overrides: {} }] }, // agent_configs overrides
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+    ];
+    let i = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.orders")) {
+        insertedAllergies = values.at(-2);
+        insertedInstructions = values.at(-1);
+        return Promise.resolve([{ id: "order_1" }]);
+      }
+      const step = steps[i];
+      i += 1;
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+
+    await createOrder(
+      sql,
+      ctx,
+      { ...pickupArgs, allergies: ["peanuts"], special_instructions: "no onions" },
+      logger,
+    );
+    expect(insertedAllergies).toEqual(["peanuts"]);
+    expect(insertedInstructions).toBe("no onions");
+  });
+
+  it("writes call_logs.structured_booking_payload when allergies/special_instructions were captured", async () => {
+    let wrote = false;
+    const steps: Step[] = [
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings lookup
+      { rows: [{ dynamic_variable_overrides: {} }] }, // agent_configs overrides
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+      { rows: [{ id: "order_1" }] }, // order insert
+    ];
+    let i = 0;
+    const sql = ((strings: TemplateStringsArray) => {
+      const text = strings.join(" ");
+      if (text.includes("update public.call_logs") && text.includes("structured_booking_payload")) {
+        wrote = true;
+        return Promise.resolve([]);
+      }
+      const step = steps[i];
+      i += 1;
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+
+    await createOrder(sql, ctx, { ...pickupArgs, allergies: ["peanuts"] }, logger);
+    expect(wrote).toBe(true);
+  });
+
   it("declines a delivery order below the tenant's minimum, offering pickup", async () => {
     const sql = makeStepSql([
       { rows: [] },
@@ -191,6 +315,207 @@ describe("createOrder", () => {
     );
     expect(warnings).toHaveLength(1);
     expect(result).toMatchObject({ confirmed: true });
+  });
+
+  it("restaurant.md Finding B4: best-effort geocodes and upserts a new customer_addresses row after a confirmed delivery order", async () => {
+    let insertedAddress: unknown;
+    let unsetDefaultCalled = false;
+    const steps: Step[] = [
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings lookup
+      { rows: [{ dynamic_variable_overrides: {} }] }, // agent_configs overrides (no radius policy)
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+      { rows: [{ id: "order_1" }] }, // order insert
+    ];
+    let i = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("lower(trim(street))")) {
+        return Promise.resolve([]); // no existing saved address for this customer/street
+      }
+      if (text.includes("set is_default = false")) {
+        unsetDefaultCalled = true;
+        return Promise.resolve([]);
+      }
+      if (text.includes("insert into public.customer_addresses")) {
+        insertedAddress = values;
+        return Promise.resolve([]);
+      }
+      if (text.includes("pgmq.send")) return Promise.resolve([]);
+      const step = steps[i];
+      i += 1;
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ results: [{ location: { lat: 30.2672, lng: -97.7431 } }] }), {
+        status: 200,
+      })) as unknown as (input: string, init?: RequestInit) => Promise<Response>;
+
+    const result = await createOrder(
+      sql,
+      ctx,
+      {
+        ...pickupArgs,
+        fulfillment_type: "delivery",
+        delivery_address: { street: "123 Main St", city: "Austin", state: "TX", zip: "78701" },
+      },
+      logger,
+      { geocode: { fetchImpl, apiKey: "test_key" } },
+    );
+
+    expect(result).toMatchObject({ confirmed: true, order_id: "order_1" });
+    expect(unsetDefaultCalled).toBe(true);
+    expect(insertedAddress).toContain("customer_1");
+    expect(insertedAddress).toContain("123 Main St");
+  });
+
+  it("never attempts a geocode/address save when no geocode dep is wired (GEOCODE_API_KEY unset)", async () => {
+    let addressTableTouched = false;
+    const steps: Step[] = [
+      { rows: [] },
+      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] },
+      { rows: [{ dynamic_variable_overrides: {} }] },
+      { rows: [{ id: "customer_1" }] },
+      { rows: [{ id: "order_1" }] },
+      { rows: [{ id: "msg_1" }] },
+      { rows: [] },
+      { rows: [] },
+    ];
+    let i = 0;
+    const sql = ((strings: TemplateStringsArray) => {
+      const text = strings.join(" ");
+      if (text.includes("customer_addresses")) addressTableTouched = true;
+      const step = steps[i];
+      i += 1;
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+
+    const result = await createOrder(
+      sql,
+      ctx,
+      { ...pickupArgs, fulfillment_type: "delivery", delivery_address: { street: "1 Main St" } },
+      logger,
+    );
+    expect(result).toMatchObject({ confirmed: true });
+    expect(addressTableTouched).toBe(false);
+  });
+
+  it("restaurant.md Finding B4: full write -> read -> radius-check loop — a repeat caller's address saved on order 1 lets order 2's radius check actually evaluate instead of always skipping", async () => {
+    const addresses: {
+      id: string;
+      customer_id: string;
+      street: string;
+      geocode: { x: number; y: number };
+      is_default: boolean;
+    }[] = [];
+    let nextAddressId = 1;
+    const warnings: unknown[] = [];
+    const spyLogger = {
+      ...logger,
+      warn: (msg: string, fields?: unknown) => warnings.push({ msg, fields }),
+    };
+
+    function makeLoopSql(orderSteps: Step[]): SqlClient {
+      let i = 0;
+      return ((strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = strings.join(" ");
+        if (text.includes("ca.geocode")) {
+          // create_order's own delivery-radius-check read.
+          const match = addresses.find((a) => a.customer_id === "customer_1");
+          return Promise.resolve(match ? [{ geocode: match.geocode }] : []);
+        }
+        if (text.includes("lower(trim(street))")) {
+          const match = addresses.find(
+            (a) =>
+              a.customer_id === values[1] &&
+              a.street.toLowerCase() === String(values[2]).toLowerCase(),
+          );
+          return Promise.resolve(match ? [{ id: match.id }] : []);
+        }
+        if (text.includes("set is_default = false")) {
+          for (const a of addresses) a.is_default = false;
+          return Promise.resolve([]);
+        }
+        if (text.includes("insert into public.customer_addresses")) {
+          const id = `addr_${nextAddressId}`;
+          nextAddressId += 1;
+          addresses.push({
+            id,
+            customer_id: values[1] as string,
+            street: values[2] as string,
+            geocode: { x: -97.7431, y: 30.2672 },
+            is_default: true,
+          });
+          return Promise.resolve([]);
+        }
+        if (text.includes("pgmq.send")) return Promise.resolve([]);
+        const step = orderSteps[i];
+        i += 1;
+        return Promise.resolve(step?.rows ?? []);
+      }) as SqlClient;
+    }
+
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ results: [{ location: { lat: 30.2672, lng: -97.7431 } }] }), {
+        status: 200,
+      })) as unknown as (input: string, init?: RequestInit) => Promise<Response>;
+    const geocodeDeps = { geocode: { fetchImpl, apiKey: "test_key" } };
+    const deliveryAddress = { street: "123 Main St", city: "Austin", state: "TX", zip: "78701" };
+    const overridesWithRadius = {
+      dynamic_variable_overrides: {
+        tenant_geocode: { lat: 30.2672, lng: -97.7431 }, // same point -> well within any radius
+        delivery_radius_m: 5000,
+      },
+    };
+
+    // Order 1: first-time caller, no saved address yet — radius check skips
+    // with a logged warning (pre-existing behavior), then the new address
+    // write path saves the spoken address for next time.
+    const sql1 = makeLoopSql([
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings
+      { rows: [overridesWithRadius] }, // agent_configs overrides
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+      { rows: [{ id: "order_1" }] }, // order insert
+    ]);
+    const ctx1: CallContext = { ...ctx, retellCallId: "call_1" };
+    const result1 = await createOrder(
+      sql1,
+      ctx1,
+      { ...pickupArgs, fulfillment_type: "delivery", delivery_address: deliveryAddress },
+      spyLogger,
+      geocodeDeps,
+    );
+    expect(result1).toMatchObject({ confirmed: true });
+    expect(warnings).toHaveLength(1);
+    expect((warnings[0] as { msg: string }).msg).toBe(
+      "create_order_radius_check_skipped_no_caller_geocode",
+    );
+    expect(addresses).toHaveLength(1);
+
+    // Order 2: same caller, now HAS a saved geocode from order 1 — the
+    // radius check finds it and actually evaluates (no second skip
+    // warning), and since it's the same point, the order is confirmed.
+    const sql2 = makeLoopSql([
+      { rows: [] },
+      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] },
+      { rows: [overridesWithRadius] },
+      { rows: [{ id: "customer_1" }] },
+      { rows: [{ id: "order_2" }] },
+    ]);
+    const ctx2: CallContext = { ...ctx, retellCallId: "call_2" };
+    const result2 = await createOrder(
+      sql2,
+      ctx2,
+      { ...pickupArgs, fulfillment_type: "delivery", delivery_address: deliveryAddress },
+      spyLogger,
+      geocodeDeps,
+    );
+    expect(result2).toMatchObject({ confirmed: true, order_id: "order_2" });
+    // still exactly one warning total — order 2 never hit the
+    // "skipped_no_caller_geocode" branch this time.
+    expect(warnings).toHaveLength(1);
   });
 
   it("returns confirmed:false/slot equivalent on a unique_violation race on the idempotency key, never throwing", async () => {

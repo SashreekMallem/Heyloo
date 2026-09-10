@@ -20,8 +20,20 @@ export const CheckAvailabilityArgsSchema = z
   .object({
     offering_id: z.string().optional(),
     resource_type: z.string().optional(),
+    // Motel room-type / any other resource sub-type tag (GAP_REGISTER.md
+    // §2 Motel item 2) — narrows within resource_type, doesn't replace it.
+    room_type: z.string().optional(),
     date_range: z.object({ start: z.string(), end: z.string() }),
     party_size: z.number().int().positive().optional(),
+  })
+  .passthrough();
+
+// FIX_REQUESTS.md — read-only offering catalog lookup so a model can
+// resolve an appointment-type/offering to a real `offering_id` (never
+// invented) before calling check_availability/create_booking.
+export const ListOfferingsArgsSchema = z
+  .object({
+    category: z.string().optional(),
   })
   .passthrough();
 
@@ -80,6 +92,7 @@ export const TakeMessageArgsSchema = z.object({
   caller_phone: z.string().min(3),
   message_text: z.string().min(1),
   callback_window: z.string().optional(),
+  structured_payload: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const SendSmsConfirmationArgsSchema = z.object({
@@ -115,6 +128,11 @@ export const CreateOrderArgsSchema = z
       .passthrough()
       .optional(),
     customer: CustomerInputSchema,
+    consent: z.object({ sms: z.boolean().optional(), call: z.boolean().optional() }).optional(),
+    // GAP_REGISTER.md §2 Restaurant item 2 — the template mandates an
+    // explicit allergy ask with no field to persist the answer to.
+    allergies: z.array(z.string()).optional(),
+    special_instructions: z.string().optional(),
   })
   .passthrough();
 
@@ -125,5 +143,18 @@ export const SendPaymentLinkArgsSchema = z
     phone: z.string().min(3),
     purpose: z.enum(["order", "deposit", "noshow_fee"]),
     amount_cents: z.number().int().positive().optional(),
+  })
+  .passthrough();
+
+/** MASTER_SPEC §3.4 (GAP_REGISTER.md §1.2) — join_waitlist, race-proof and
+ * idempotent the same way `create_booking` is. */
+export const JoinWaitlistArgsSchema = z
+  .object({
+    customer: CustomerInputSchema,
+    offering_id: z.string().optional(),
+    resource_type: z.string().optional(),
+    preferred_window_start: z.string().min(1),
+    preferred_window_end: z.string().min(1),
+    notes: z.string().optional(),
   })
   .passthrough();

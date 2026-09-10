@@ -22,7 +22,9 @@ import {
   Plug,
   Settings,
   ShoppingBag,
+  UserPlus,
   Users,
+  Wrench,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, usePathname } from "@/i18n/navigation";
@@ -38,10 +40,12 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Customers", href: "/dashboard/customers", icon: Users },
   { label: "Messages", href: "/dashboard/messages", icon: Inbox },
   { label: "Orders", href: "/dashboard/orders", icon: ShoppingBag },
+  { label: "Setup", href: "/dashboard/setup", icon: Wrench },
   { label: "Agent", href: "/dashboard/agent" },
   { label: "Phone Setup", href: "/dashboard/phone-setup" },
   { label: "Delivery", href: "/dashboard/delivery" },
   { label: "Integrations", href: "/dashboard/integrations", icon: Plug },
+  { label: "Team", href: "/dashboard/team", icon: UserPlus },
   { label: "Billing", href: "/dashboard/billing" },
   { label: "Refer & Earn", href: "/dashboard/refer" },
   { label: "Support", href: "/dashboard/support", icon: MessageSquare },

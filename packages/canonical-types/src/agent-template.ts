@@ -21,6 +21,15 @@ import { zVertical } from "./vertical.js";
 // State graph primitives
 // ---------------------------------------------------------------------------
 
+/**
+ * The one reserved tool name `transferCallTool()` always uses
+ * (`packages/templates/src/shared/tools.ts`) — every compiler target lowers
+ * it to the provider's native transfer mechanism, never a custom-function
+ * tool, and only when it is a state's SOLE `allowed_tools` entry
+ * (GAP_REGISTER §1.4 item 4, enforced below in `zAgentTemplate`'s `.check()`).
+ */
+export const TRANSFER_CALL_TOOL_NAME = "transfer_call";
+
 /** Slug, unique within a template. */
 export const zStateId = z
   .string()
@@ -36,6 +45,18 @@ export const zExtractionField = z
     field: z.string().min(1),
     type: z.enum(EXTRACTION_FIELD_TYPES),
     enum_values: z.array(z.string().min(1)).optional(),
+    /**
+     * Human-readable description of what this field captures, surfaced
+     * verbatim to Retell's post-call analysis extractor (RETELL-VERIFY:
+     * `AgentResponse.{String,Enum,Boolean,Number}AnalysisData.description`
+     * is a REQUIRED field on the wire). Optional here — the compiler
+     * (`packages/adapters/retell/src/compiler/extraction.ts`) synthesizes a
+     * reasonable default from `field`/the owning state's name when omitted,
+     * so existing templates that only authored `{field, type}` still
+     * compile — but an explicit description produces a materially better
+     * extraction prompt and should be preferred for new fields.
+     */
+    description: z.string().min(1).optional(),
   })
   .check((ctx) => {
     if (
@@ -63,14 +84,72 @@ export const zAgentState = z.object({
 });
 export type AgentState = z.infer<typeof zAgentState>;
 
+/**
+ * Retell's equation-edge comparators (RETELL-VERIFY, confirmed field-for-
+ * field against `retell-sdk`'s `ConversationFlowCreateParams.
+ * {FunctionNode,ConversationNode,BranchNode}.Edge.EquationCondition.Equation.operator`)
+ * — the deterministic operators a `tool_result` predicate can compile to.
+ */
+export const TOOL_RESULT_COMPARATORS = [
+  "==",
+  "!=",
+  ">",
+  ">=",
+  "<",
+  "<=",
+  "contains",
+  "not_contains",
+  "exists",
+  "not_exist",
+] as const;
+export type ToolResultComparator = (typeof TOOL_RESULT_COMPARATORS)[number];
+
+/**
+ * A deterministic branch on a PRIOR tool call's structured return value —
+ * `tool` names the state's tool whose result populates `variable` (a
+ * dynamic variable, via that tool's `response_variables` mapping), compared
+ * against `value` with `operator`. Compiles to a Retell equation-typed edge
+ * (the "Logic Split" mechanism, GAP_REGISTER §1.5) rather than a free-text
+ * `predicate`, so the branch is structural — never re-litigated by the
+ * model. `value` is required unless `operator` is `exists`/`not_exist`
+ * (mirrors Retell's own `EquationCondition.Equation.right` optionality).
+ */
+export const zToolResultPredicate = z
+  .object({
+    tool: z.string().min(1),
+    variable: z.string().min(1),
+    operator: z.enum(TOOL_RESULT_COMPARATORS),
+    value: z.string().optional(),
+  })
+  .check((ctx) => {
+    if (
+      ctx.value.operator !== "exists" &&
+      ctx.value.operator !== "not_exist" &&
+      ctx.value.value === undefined
+    ) {
+      ctx.issues.push({
+        code: "custom",
+        message: "`value` is required unless `operator` is 'exists' or 'not_exist'",
+        input: ctx.value,
+        path: ["value"],
+      });
+    }
+  });
+export type ToolResultPredicate = z.infer<typeof zToolResultPredicate>;
+
 export const zTransitionCondition = z
   .object({
     intent: z.string().min(1).optional(),
     predicate: z.string().min(1).optional(),
+    /** `predicate-on-tool-result` (GAP_REGISTER §1.5) — deterministic, not model-discretionary. */
+    tool_result: zToolResultPredicate.optional(),
   })
-  .refine((c) => c.intent !== undefined || c.predicate !== undefined, {
-    message: "a transition's `on` must specify at least one of intent/predicate",
-  });
+  .refine(
+    (c) => c.intent !== undefined || c.predicate !== undefined || c.tool_result !== undefined,
+    {
+      message: "a transition's `on` must specify at least one of intent/predicate/tool_result",
+    },
+  );
 
 export const zTransition = z.object({
   from: zStateId,
@@ -183,6 +262,33 @@ export const zAgentTemplate = z
           });
         }
       }
+      // `transfer_call` is the one reserved tool name every compiler target
+      // (packages/adapters/retell/src/compiler/{conversation-flow,multi-prompt,
+      // single-prompt}.ts) lowers to the provider's NATIVE transfer mechanism
+      // instead of a custom-function tool — and each compiler's own
+      // documented contract only supports it as the SOLE tool of a state
+      // (conversation_flow: any other tool count falls back to a plain node
+      // with no per-node tool-locking, so a mixed allowed_tools silently
+      // strands transfer_call with nothing wired to invoke it — the exact
+      // GAP_REGISTER §1.4 item 4 bug this check exists to catch at template-
+      // authoring time instead of shipping it silently). A vertical that
+      // wants to offer both a transfer and another tool at one triage step
+      // must split it into a no-tool step plus a dedicated transfer_call-only
+      // state reachable via a transition (see verticals/veterinary.ts).
+      if (state.allowed_tools.includes(TRANSFER_CALL_TOOL_NAME) && state.allowed_tools.length > 1) {
+        ctx.issues.push({
+          code: "custom",
+          message:
+            `state '${state.id}' declares '${TRANSFER_CALL_TOOL_NAME}' alongside ` +
+            `${state.allowed_tools.length - 1} other tool(s) (${state.allowed_tools
+              .filter((n) => n !== TRANSFER_CALL_TOOL_NAME)
+              .join(", ")}) — every compiler target lowers '${TRANSFER_CALL_TOOL_NAME}' to ` +
+            "the provider's native transfer mechanism only when it is a state's SOLE tool; " +
+            "split this into a no-tool step plus a dedicated transfer_call-only state instead",
+          input: state,
+          path: ["states", i, "allowed_tools"],
+        });
+      }
     }
     for (const [i, transition] of t.transitions.entries()) {
       if (!stateIds.has(transition.from)) {
@@ -199,6 +305,14 @@ export const zAgentTemplate = z
           message: `transition[${i}].to '${transition.to}' is not a declared state`,
           input: transition,
           path: ["transitions", i, "to"],
+        });
+      }
+      if (transition.on.tool_result && !toolNames.has(transition.on.tool_result.tool)) {
+        ctx.issues.push({
+          code: "custom",
+          message: `transition[${i}].on.tool_result references unknown tool '${transition.on.tool_result.tool}' (not declared in tools[])`,
+          input: transition,
+          path: ["transitions", i, "on", "tool_result", "tool"],
         });
       }
     }
@@ -324,6 +438,27 @@ export const zMotelOverrides = zBaseDynamicVariableOverrides.extend({
 export const zRestaurantOverrides = zBaseDynamicVariableOverrides.extend({
   delivery_radius_m: z.number().int().positive().optional(),
   min_order_cents: zCents.optional(),
+  /**
+   * GAP_REGISTER §1.6: this vertical's `system-prompt.ts`/fragments compile
+   * in `{{menu_text}}` (catalog discipline — "every item and price you
+   * offer must come from {{menu_text}}") but this schema never declared the
+   * field the compiled prompt references, even though
+   * `schemas/vertical-details.ts` (the tenant-facing form) already collects
+   * both `menu_text` and `tax_rate_bps`. Added here to close that drift —
+   * this is the template/compiler-side consumer schema `vertical-details.ts`
+   * itself documents keeping "byte-for-byte in sync" with.
+   */
+  menu_text: z.string().min(1).optional(),
+  tax_rate_bps: z.number().int().min(0).max(10000).optional(),
+  /**
+   * FIX_REQUESTS.md: `create_order.ts` already reads
+   * `agent_configs.dynamic_variable_overrides.delivery_fee_cents` directly
+   * and applies it to `orders.delivery_fee_cents`/`total_cents` for a
+   * delivery order (same pattern `tax_rate_bps` used before its own
+   * Settings-UI field existed) — added here so it's a validated,
+   * documented field instead of an unvalidated raw read.
+   */
+  delivery_fee_cents: zCents.optional(),
 });
 
 export const zRealEstateOverrides = zBaseDynamicVariableOverrides;

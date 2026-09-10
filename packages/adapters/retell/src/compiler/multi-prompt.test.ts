@@ -40,4 +40,35 @@ describe("compileMultiPrompt", () => {
     const result = compileMultiPrompt(LEGAL_MULTI_PROMPT_TEMPLATE, TOOL_WEBHOOK_URL);
     expect(result.general_prompt).toBe(LEGAL_MULTI_PROMPT_TEMPLATE.system_prompt);
   });
+
+  it("compiles a declared transfer_call tool to Retell LLM's native transfer_call tool, not a custom webhook (GAP_REGISTER §1.4 item 4)", () => {
+    const withTransfer = {
+      ...LEGAL_MULTI_PROMPT_TEMPLATE,
+      states: LEGAL_MULTI_PROMPT_TEMPLATE.states.map((s) =>
+        s.id === "conflict_check"
+          ? { ...s, allowed_tools: [...s.allowed_tools, "transfer_call"] }
+          : s,
+      ),
+      tools: [
+        ...LEGAL_MULTI_PROMPT_TEMPLATE.tools,
+        {
+          name: "transfer_call",
+          description: "Warm-transfer the caller to a human.",
+          parameters: { type: "object" as const, properties: {}, required: [] },
+          authorization: { scope: "tenant_config_only" as const },
+        },
+      ],
+    };
+    const result = compileMultiPrompt(withTransfer, TOOL_WEBHOOK_URL);
+    const conflictCheck = result.states.find((s) => s.name === "conflict_check");
+    const transferTool = conflictCheck?.tools.find((t) => t.name === "transfer_call");
+    expect(transferTool?.type).toBe("transfer_call");
+    if (transferTool?.type === "transfer_call") {
+      expect(transferTool.transfer_destination).toEqual({
+        type: "predefined",
+        number: "{{transfer_number}}",
+      });
+      expect(transferTool.transfer_option).toEqual({ type: "warm_transfer" });
+    }
+  });
 });

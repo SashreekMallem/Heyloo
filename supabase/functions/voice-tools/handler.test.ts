@@ -26,6 +26,7 @@ function makeDeps(callContextRow: unknown, extra: Record<string, unknown[]> = {}
       successUrl: "https://example.com/success",
       cancelUrl: "https://example.com/cancel",
     },
+    dentalIntake: { appBaseUrl: "https://app.example.com" },
   };
 }
 
@@ -41,6 +42,8 @@ describe("isKnownTool", () => {
       "send_sms_confirmation",
       "create_order",
       "send_payment_link",
+      "join_waitlist",
+      "list_offerings",
     ]) {
       expect(isKnownTool(name)).toBe(true);
     }
@@ -91,5 +94,15 @@ describe("dispatchTool", () => {
     const deps = makeDeps({ id: "cl1", tenant_id: "t1", caller_number: "+15551234567" });
     const result = await dispatchTool(deps, "call_1", "lookup_customer", { phone: "+15559998888" });
     expect(result).toEqual({ result: { error: "unauthorized_lookup" } });
+  });
+
+  it("routes join_waitlist through to a real tool result", async () => {
+    const deps = makeDeps({ id: "cl1", tenant_id: "t1", caller_number: "+15551234567" });
+    const result = await dispatchTool(deps, "call_1", "join_waitlist", {
+      customer: { name: "Jane Doe", phone: "not-a-phone" },
+      preferred_window_start: "2026-01-01T00:00:00Z",
+      preferred_window_end: "2026-01-02T00:00:00Z",
+    });
+    expect(result).toEqual({ result: { joined: false, reason: "invalid_phone" } });
   });
 });

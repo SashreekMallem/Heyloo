@@ -9,6 +9,8 @@ import {
   zCreateBookingResult,
   zCreateOrderRequest,
   zCreateOrderResult,
+  zJoinWaitlistRequest,
+  zJoinWaitlistResult,
   zLookupCustomerRequest,
   zLookupCustomerResult,
   zSendPaymentLinkRequest,
@@ -83,6 +85,30 @@ describe("create_booking", () => {
   it("rejects a confirmed:true result missing booking_id", () => {
     expect(() => zCreateBookingResult.parse({ confirmed: true, start: "x", end: "y" })).toThrow();
   });
+
+  it("accepts a consent answer (GAP_REGISTER.md §1.9 drift fix)", () => {
+    expect(
+      zCreateBookingRequest.parse({
+        resource_id: "res_1",
+        start: "2026-09-08T10:00:00Z",
+        end: "2026-09-08T10:30:00Z",
+        customer: { name: "Jane Doe", phone: "+15551234567" },
+        consent: { sms: true, call: false },
+      }),
+    ).toBeTruthy();
+  });
+
+  it("accepts a vertical-typed structured_payload (GAP_REGISTER.md §1.7)", () => {
+    expect(
+      zCreateBookingRequest.parse({
+        resource_id: "res_1",
+        start: "2026-09-08T10:00:00Z",
+        end: "2026-09-08T10:30:00Z",
+        customer: { name: "Jane Doe", phone: "+15551234567" },
+        structured_payload: { vehicle_make: "Honda", vehicle_year: 2019 },
+      }),
+    ).toBeTruthy();
+  });
 });
 
 describe("update_booking / cancel_booking", () => {
@@ -98,6 +124,62 @@ describe("update_booking / cancel_booking", () => {
 
   it("accepts a valid cancel request without a reason", () => {
     expect(zCancelBookingRequest.parse({ booking_id: "bk_1" })).toBeTruthy();
+  });
+
+  it("accepts an update_booking identity-fallback verify block (GAP_REGISTER.md §1.9)", () => {
+    expect(
+      zUpdateBookingRequest.parse({
+        booking_id: "bk_1",
+        new_start: "2026-09-08T11:00:00Z",
+        new_end: "2026-09-08T11:30:00Z",
+        verify: { full_name: "Jane Doe", appointment_time: "2026-09-08T10:00:00Z" },
+      }),
+    ).toBeTruthy();
+  });
+
+  it("accepts a cancel_booking identity-fallback verify block", () => {
+    expect(
+      zCancelBookingRequest.parse({
+        booking_id: "bk_1",
+        verify: { full_name: "Jane Doe", appointment_time: "2026-09-08T10:00:00Z" },
+      }),
+    ).toBeTruthy();
+  });
+});
+
+describe("join_waitlist (GAP_REGISTER.md §1.2)", () => {
+  it("accepts a valid request", () => {
+    expect(
+      zJoinWaitlistRequest.parse({
+        customer: { name: "Jane Doe", phone: "+15551234567" },
+        resource_type: "room",
+        preferred_window_start: "2026-09-08T00:00:00Z",
+        preferred_window_end: "2026-09-09T00:00:00Z",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("rejects a request with no preferred window", () => {
+    expect(() =>
+      zJoinWaitlistRequest.parse({ customer: { name: "Jane Doe", phone: "+15551234567" } }),
+    ).toThrow();
+  });
+
+  it("discriminated result: joined branch", () => {
+    expect(zJoinWaitlistResult.parse({ joined: true, waitlist_entry_id: "wl_1" })).toBeTruthy();
+  });
+
+  it("discriminated result: invalid_phone branch", () => {
+    expect(zJoinWaitlistResult.parse({ joined: false, reason: "invalid_phone" })).toBeTruthy();
+  });
+
+  it("discriminated result: offering_not_found branch", () => {
+    expect(zJoinWaitlistResult.parse({ joined: false, reason: "offering_not_found" })).toBeTruthy();
+  });
+
+  it("is registered in the tool dispatch table", () => {
+    expect(TOOL_NAMES).toContain("join_waitlist");
+    expect(TOOL_REQUEST_SCHEMAS.join_waitlist).toBe(zJoinWaitlistRequest);
   });
 });
 
@@ -208,6 +290,31 @@ describe("create_order (MASTER_SPEC §3.0)", () => {
       }),
     ).toBeTruthy();
   });
+
+  it("accepts the confirmed branch with a delivery_fee_cents", () => {
+    expect(
+      zCreateOrderResult.parse({
+        confirmed: true,
+        order_id: "ord_1",
+        subtotal_cents: 1500,
+        tax_cents: 120,
+        delivery_fee_cents: 399,
+        total_cents: 2019,
+      }),
+    ).toBeTruthy();
+  });
+
+  it("accepts consent + allergies + special_instructions (GAP_REGISTER.md §1.10 / §2 Restaurant item 2)", () => {
+    expect(
+      zCreateOrderRequest.parse({
+        ...baseOrder,
+        fulfillment_type: "pickup",
+        consent: { sms: true },
+        allergies: ["peanuts"],
+        special_instructions: "no onions",
+      }),
+    ).toBeTruthy();
+  });
 });
 
 describe("send_payment_link (MASTER_SPEC §3.2)", () => {
@@ -283,6 +390,7 @@ describe("tool registry", () => {
         "send_sms_confirmation",
         "create_order",
         "send_payment_link",
+        "join_waitlist",
       ]),
     );
   });

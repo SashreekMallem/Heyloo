@@ -2,6 +2,7 @@
 
 import { customerNoteSchema } from "@heyloo/canonical-types";
 import {
+  Badge,
   Button,
   Card,
   CardContent,
@@ -23,8 +24,27 @@ export interface CustomerDetailData {
   email: string | null;
   segment: CustomerSegment;
   lifetimeValueCents: number;
+  metadata: Record<string, unknown>;
+  consent: { sms?: boolean; call?: boolean; captured_at?: string } | null;
   calls: { id: string; startedAt: string | null; classification: string | null }[];
   bookings: { id: string; startAt: string; status: string }[];
+}
+
+/** `customers.metadata` — vertical-specific: `vehicles`/`pets` arrays are
+ * the two shapes the schema comment names (`20260907130400_customers.sql`);
+ * rendered as a labeled list per entry, falling back to a generic
+ * key/value dump for anything else so this never hides data it doesn't
+ * recognize. */
+function renderMetadataList(entries: Record<string, unknown>[]): string {
+  return entries
+    .map((entry) =>
+      Object.entries(entry)
+        .filter(([, v]) => v !== null && v !== undefined && v !== "")
+        .map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`)
+        .join(", "),
+    )
+    .filter((s) => s.length > 0)
+    .join(" · ");
 }
 
 export function CustomerDetailClient({ customer }: { customer: CustomerDetailData }) {
@@ -53,6 +73,13 @@ export function CustomerDetailClient({ customer }: { customer: CustomerDetailDat
   }
 
   const hasHistory = customer.calls.length > 0 || customer.bookings.length > 0;
+  const vehicles = Array.isArray(customer.metadata["vehicles"])
+    ? (customer.metadata["vehicles"] as Record<string, unknown>[])
+    : [];
+  const pets = Array.isArray(customer.metadata["pets"])
+    ? (customer.metadata["pets"] as Record<string, unknown>[])
+    : [];
+  const hasConsent = !!(customer.consent?.sms || customer.consent?.call);
 
   return (
     <div className="space-y-6">
@@ -69,8 +96,29 @@ export function CustomerDetailClient({ customer }: { customer: CustomerDetailDat
             </Link>
           </div>
         </div>
-        <SegmentBadge segment={customer.segment} />
+        <div className="flex items-center gap-2">
+          {hasConsent ? (
+            <Badge variant="success">Consent on file</Badge>
+          ) : (
+            <Badge variant="outline">No consent on file</Badge>
+          )}
+          <SegmentBadge segment={customer.segment} />
+        </div>
       </div>
+
+      {(vehicles.length > 0 || pets.length > 0) && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              {vehicles.length > 0 ? "Vehicles" : "Pets"} on file
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-1 text-sm">
+            {vehicles.length > 0 && <p>{renderMetadataList(vehicles)}</p>}
+            {pets.length > 0 && <p>{renderMetadataList(pets)}</p>}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

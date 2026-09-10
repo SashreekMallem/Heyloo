@@ -10,13 +10,22 @@ export interface OrderDetailData {
   id: string;
   createdAt: string;
   status: string;
-  items: { offering_id?: string; name: string; qty: number; unit_price_cents?: number }[];
+  items: {
+    offering_id?: string;
+    name: string;
+    qty: number;
+    unit_price_cents?: number;
+    modifiers?: string[];
+  }[];
   fulfillmentType: string;
   deliveryAddress: Record<string, unknown> | null;
   subtotalCents: number;
   taxCents: number;
   tipCents: number;
   totalCents: number;
+  deliveryFeeCents: number;
+  allergies: string[];
+  specialInstructions: string | null;
   customerName: string | null;
   customerPhone: string | null;
   paymentLinks: {
@@ -140,16 +149,34 @@ export function OrderDetailClient({ order }: { order: OrderDetailData }) {
             </p>
           )}
 
+          {order.allergies.length > 0 && (
+            <p>
+              <Badge variant="destructive">Allergies</Badge>{" "}
+              <span className="ml-1">{order.allergies.join(", ")}</span>
+            </p>
+          )}
+          {order.specialInstructions && (
+            <p>
+              <span className="text-muted-foreground">Special instructions</span>{" "}
+              {order.specialInstructions}
+            </p>
+          )}
+
           <Separator />
 
           <ul className="space-y-1">
             {order.items.map((item, i) => (
-              <li key={item.offering_id ?? `${item.name}-${i}`} className="flex justify-between">
-                <span>
-                  {item.qty}× {item.name}
-                </span>
-                {item.unit_price_cents !== undefined && (
-                  <span>{formatCentsUSD(item.unit_price_cents * item.qty)}</span>
+              <li key={item.offering_id ?? `${item.name}-${i}`}>
+                <div className="flex justify-between">
+                  <span>
+                    {item.qty}× {item.name}
+                  </span>
+                  {item.unit_price_cents !== undefined && (
+                    <span>{formatCentsUSD(item.unit_price_cents * item.qty)}</span>
+                  )}
+                </div>
+                {item.modifiers && item.modifiers.length > 0 && (
+                  <p className="pl-4 text-xs text-muted-foreground">{item.modifiers.join(", ")}</p>
                 )}
               </li>
             ))}
@@ -166,6 +193,12 @@ export function OrderDetailClient({ order }: { order: OrderDetailData }) {
               <span className="text-muted-foreground">Tax</span>
               <span>{formatCentsUSD(order.taxCents)}</span>
             </div>
+            {order.deliveryFeeCents > 0 && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Delivery fee</span>
+                <span>{formatCentsUSD(order.deliveryFeeCents)}</span>
+              </div>
+            )}
             {order.tipCents > 0 && (
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Tip</span>

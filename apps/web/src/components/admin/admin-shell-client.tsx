@@ -29,6 +29,8 @@ const SECTIONS: NavSection[] = [
   {
     items: [
       { label: "Tenants", href: "/cockpit/tenants" },
+      { label: "Partners", href: "/cockpit/partners" },
+      { label: "Support", href: "/cockpit/support" },
       { label: "Outreach", href: "/cockpit/outreach" },
       { label: "Templates", href: "/cockpit/templates" },
       { label: "Settings", href: "/cockpit/settings" },

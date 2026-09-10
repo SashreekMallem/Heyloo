@@ -1,5 +1,63 @@
 # Launch Status
 
+## Vertical wave (WAVE-2, 2026-09-10) — integration pass
+
+Integrated the uncommitted vertical-completeness build wave (engine,
+config pipeline, payloads, templates, commissions, onboarding —
+per-cluster detail lives in `docs/BUILD_NOTES.md`'s own WAVE-2 section)
+as the INTEGRATOR: closed the 3 items the wave's own verifier flagged as
+`partial`, ran every gate, and committed. No new architecture, no
+redesign of any cluster's work — CLAUDE.md Rule 4.
+
+**Closed this pass** (full detail in `docs/BUILD_NOTES.md`'s WAVE-2
+section):
+- Root `turbo.json` build-order fix so `registry-consistency.test.ts`'s
+  real-template-registry checks actually run in CI, not just when a human
+  happens to build packages in the right order first.
+- New migration `20260910180000_motel_hold_regen_fix.sql` — closes the
+  last of three places a motel deposit hold needed to block room
+  re-availability (the other two were already fixed by
+  `20260910170000_motel_hold_exclusion.sql`): `fn_regenerate_availability_slots`
+  (the nightly roll-forward job / a business-hours edit) now respects an
+  active, unexpired hold the same way the GIST exclusion constraint and
+  the availability-invalidation trigger already do.
+- `createRetellBatchSimulationClient` (`packages/adapters/retell/src/
+  tests-api.ts`) — the one piece the batch-simulation harness was waiting
+  on. **Not fully closed:** the wrapper's `transcript_snapshot` parser is
+  built against the closest officially-documented analogous shape and
+  fails loudly on a mismatch, but genuinely needs a live Retell staging
+  account run to confirm/correct — no such credential exists in this
+  sandbox. Tracked as `docs/VERIFY.md` VERIFY-13, unchanged from the prior
+  pass's own honest flag on this exact point.
+
+**Gates:** all green — `biome check --write` (0 errors), `pnpm -w
+typecheck` (18/18), `pnpm run lint` (0 errors — 3 pre-existing eslint
+errors in `apps/web` found and fixed along the way, none introduced by
+this pass), `pnpm -w test` (19/19 package test tasks, 777+230+164+…
+tests), `apps/web` production build, `verify-jwt-guard` (41 functions),
+and all 45 real migrations + seed applied clean from an empty database in
+a throwaway local-Postgres harness. Full detail, including the harness
+approach, in `docs/BUILD_NOTES.md`.
+
+**New secrets needed:** none. This pass added no new integration and no
+new secret-gated code path — `createRetellBatchSimulationClient` reads the
+same `RETELL_API_KEY`/`RETELL_STAGING_RESPONSE_ENGINE_<KEY>` env vars the
+batch-simulation harness already expected before this pass.
+
+**Owner to-do, added by this pass (in addition to everything already
+listed under "What remains for the owner" below, unchanged):**
+1. Once a Retell **staging** account exists (`docs/DEPLOY.md` §1/§4), run
+   `pnpm --filter @heyloo/templates run simulate` once, capture one real
+   `test_case_job.transcript_snapshot` payload, and confirm/correct
+   `packages/adapters/retell/src/tests-api.ts`'s `normalizeTranscriptSnapshot`
+   against it (VERIFY-13) — the wrapper fails loudly rather than
+   fabricating a pass in the meantime, so this is a correctness-hardening
+   step, not a blocking one.
+2. Optional, non-blocking: wire the batch-simulation job into
+   `.github/workflows/ci.yml` per `docs/audit/FIX_REQUESTS.md`'s sketch,
+   gated on a `RETELL_STAGING_API_KEY`-shaped secret being present so it's
+   skipped (not red) until item 1 above is done.
+
 ## Audit fix wave (FIX-1, 2026-09-10)
 
 Integrated the large parallel audit fix wave (Clusters B-G + the repair

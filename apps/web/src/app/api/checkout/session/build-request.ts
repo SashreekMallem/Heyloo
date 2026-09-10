@@ -22,16 +22,31 @@ import type { SignupDraft } from "@/lib/signup/draft-cookie";
  * map's long-form output (`"auto_repair"`, `"veterinary"`) is stale against
  * the live migration's short-form constraint (docs/BUILD_NOTES.md flagged;
  * see this cluster's FIX_REQUESTS.md entry for that package's owner).
+ *
+ * `whiteGlove` mirrors `CheckoutRequestSchema.white_glove` (opt-in
+ * white-glove onboarding add-on, default `false`) — omitted from the
+ * returned body entirely when falsy, the same way `timezone` is omitted
+ * when absent, so it matches the schema's own `.optional().default(false)`
+ * and doesn't change the body shape for the (still far more common) case
+ * where a tenant doesn't opt in.
  */
 export function buildApiCheckoutRequest(
   draft: Pick<SignupDraft, "business_type" | "business_name">,
   email: string,
   timezone?: string,
-): { vertical: string; business_name: string; email: string; timezone?: string } {
+  whiteGlove?: boolean,
+): {
+  vertical: string;
+  business_name: string;
+  email: string;
+  timezone?: string;
+  white_glove?: boolean;
+} {
   return {
     vertical: draft.business_type,
     business_name: draft.business_name,
     email,
     ...(timezone ? { timezone } : {}),
+    ...(whiteGlove ? { white_glove: true } : {}),
   };
 }

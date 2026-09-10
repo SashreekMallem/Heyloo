@@ -228,7 +228,19 @@ export async function processStripeEvent(
       `;
       const tenantId = tenantRows[0]?.id;
       if (!tenantId) return;
-      await clawBackReferral(sql, logger, tenantId, event.type);
+      // Per-invoice clawback (GAP_REGISTER Cluster G item 1): a refunded
+      // charge tied to a specific invoice (Stripe's Charge object carries
+      // `invoice` when the charge paid one) only reverses THAT invoice's
+      // period-scoped recurring commission_events row(s)
+      // (job-commission-accrual), not every accrual this referral has ever
+      // earned. A refund with no resolvable invoice/period (e.g. a
+      // standalone charge, or the pre-existing period-less flat
+      // qualification bonus) falls back to the prior full-clawback
+      // behavior — reversing every non-clawed-back commission_events row
+      // for the referral — which stays correct for that flat, one-time
+      // mechanism.
+      const period = await resolveInvoicePeriod(sql, obj["invoice"]);
+      await clawBackReferral(sql, logger, tenantId, event.type, period);
       return;
     }
 
@@ -256,11 +268,29 @@ export async function processStripeEvent(
   }
 }
 
+/** Resolves a Stripe Charge's `invoice` reference (when present) to the
+ * `billing_invoices.period_start` (first-of-month, matching
+ * `job-commission-accrual`'s `commission_events.period` convention) that
+ * invoice covers — used to scope a `charge.refunded` clawback to just that
+ * period's recurring commission accrual. Returns `null` when the charge
+ * carries no invoice, or the invoice isn't one this codebase billed (no
+ * matching `billing_invoices` row) — the caller falls back to a full
+ * clawback in that case, same as before this existed. */
+async function resolveInvoicePeriod(sql: SqlClient, invoiceField: unknown): Promise<string | null> {
+  const stripeInvoiceId = typeof invoiceField === "string" ? invoiceField : null;
+  if (!stripeInvoiceId) return null;
+  const rows = await sql<{ period_start: string }>`
+    select period_start from public.billing_invoices where stripe_invoice_id = ${stripeInvoiceId} limit 1
+  `;
+  return rows[0]?.period_start ?? null;
+}
+
 async function clawBackReferral(
   sql: SqlClient,
   logger: Logger,
   referredTenantId: string,
   eventType: string,
+  period: string | null = null,
 ): Promise<void> {
   const referralRows = await sql<{ id: string; referral_partner_id: string; status: string }>`
     select id, referral_partner_id, status from public.referrals
@@ -269,12 +299,24 @@ async function clawBackReferral(
   const referral = referralRows[0];
   if (!referral || referral.status === "clawed_back" || referral.status === "disqualified") return;
 
-  await sql`update public.referrals set status = 'clawed_back' where id = ${referral.id}`;
+  // A per-invoice (period-scoped) clawback never flips the referral's own
+  // status — the relationship keeps earning future months' commission; only
+  // a full clawback (no resolvable period) marks the referral itself
+  // clawed_back, matching the pre-existing "reverse the whole relationship"
+  // semantics for the flat one-time bonus / an unattributable refund.
+  if (!period) {
+    await sql`update public.referrals set status = 'clawed_back' where id = ${referral.id}`;
+  }
 
-  const commissionRows = await sql<{ id: string; amount_cents: number; status: string }>`
-    select id, amount_cents, status from public.commission_events
-    where referral_id = ${referral.id} and status <> 'clawed_back'
-  `;
+  const commissionRows = period
+    ? await sql<{ id: string; amount_cents: number; status: string }>`
+        select id, amount_cents, status from public.commission_events
+        where referral_id = ${referral.id} and period = ${period}::date and status <> 'clawed_back'
+      `
+    : await sql<{ id: string; amount_cents: number; status: string }>`
+        select id, amount_cents, status from public.commission_events
+        where referral_id = ${referral.id} and status <> 'clawed_back'
+      `;
   for (const commission of commissionRows) {
     await sql`update public.commission_events set status = 'clawed_back' where id = ${commission.id}`;
     if (commission.status === "paid") {
@@ -295,5 +337,6 @@ async function clawBackReferral(
     referral_id: referral.id,
     commission_events_reversed: commissionRows.length,
     event_type: eventType,
+    period,
   });
 }

@@ -22,11 +22,21 @@ export interface CheckAvailabilityResult {
  * `availability_slots` table (SYSTEM_DESIGN §5: "hot query = one indexed
  * read, <10ms ... no tz conversion"). No side effects.
  *
- * The `resource_type` filter is expressed as `($1::text is null or
- * resource_id in (...))` rather than an interpolated conditional SQL
- * fragment — `SqlClient` (types.ts) models postgres.js's tagged-template
- * callable but not its fragment-composition helper, so every branch here is
- * a single flat parameterized query instead.
+ * The `resource_type`/`room_type`/`party_size` filters are expressed as
+ * `(all null) or resource_id in (... every provided predicate ANDed ...)`
+ * rather than an interpolated conditional SQL fragment — `SqlClient`
+ * (types.ts) models postgres.js's tagged-template callable but not its
+ * fragment-composition helper, so this stays one flat parameterized query.
+ *
+ * `room_type` (GAP_REGISTER.md §2 Motel item 2, `resources.room_type`)
+ * narrows WITHIN `resource_type` (a motel's `resource_type` is always
+ * `'room'`; `room_type` picks which tier, e.g. "queen") — previously
+ * `offering_id` was accepted by this tool's schema but never used in the
+ * SQL at all (a dead parameter); `room_type` is the register's chosen fix
+ * since `resources` (not `offerings`) is what `availability_slots`
+ * actually keys off of. `party_size` (GAP_REGISTER.md §2 Restaurant item
+ * 3) filters to resources whose `capacity` can seat the party — previously
+ * accepted by the schema but never applied.
  */
 export async function checkAvailability(
   sql: SqlClient,
@@ -34,6 +44,8 @@ export async function checkAvailability(
   args: Args,
 ): Promise<CheckAvailabilityResult> {
   const resourceType = args.resource_type ?? null;
+  const roomType = args.room_type ?? null;
+  const partySize = args.party_size ?? null;
 
   const rows = await sql<SlotRow>`
     select resource_id, lower(slot_range) as slot_start, upper(slot_range) as slot_end
@@ -42,10 +54,13 @@ export async function checkAvailability(
       and is_available = true
       and slot_range && tstzrange(${args.date_range.start}, ${args.date_range.end})
       and (
-        ${resourceType}::text is null
+        (${resourceType}::text is null and ${roomType}::text is null and ${partySize}::int is null)
         or resource_id in (
           select id from public.resources
-          where tenant_id = ${ctx.tenantId} and type = ${resourceType} and active
+          where tenant_id = ${ctx.tenantId} and active
+            and (${resourceType}::text is null or type = ${resourceType})
+            and (${roomType}::text is null or room_type = ${roomType})
+            and (${partySize}::int is null or capacity >= ${partySize})
         )
       )
     order by slot_start asc
@@ -63,10 +78,13 @@ export async function checkAvailability(
         and is_available = true
         and lower(slot_range) >= ${args.date_range.end}
         and (
-          ${resourceType}::text is null
+          (${resourceType}::text is null and ${roomType}::text is null and ${partySize}::int is null)
           or resource_id in (
             select id from public.resources
-            where tenant_id = ${ctx.tenantId} and type = ${resourceType} and active
+            where tenant_id = ${ctx.tenantId} and active
+              and (${resourceType}::text is null or type = ${resourceType})
+              and (${roomType}::text is null or room_type = ${roomType})
+              and (${partySize}::int is null or capacity >= ${partySize})
           )
         )
       order by slot_start asc

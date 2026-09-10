@@ -11,6 +11,7 @@ const ctx: CallContext = {
   callLogId: "cl_1",
   retellCallId: "call_1",
   callerNumber: CALLER_NUMBER,
+  vertical: "generic",
 };
 
 describe("lookupCustomer (G6 caller-scope authorization)", () => {
@@ -72,5 +73,50 @@ describe("lookupCustomer (G6 caller-scope authorization)", () => {
     const result = await lookupCustomer(sql, ctx, { phone: CALLER_NUMBER }, logger);
     expect(result).toMatchObject({ found: true, vehicles: [{ make: "Honda" }] });
     expect((result as { pets?: unknown }).pets).toBeUndefined();
+  });
+
+  it("surfaces saved delivery addresses from customer_addresses only when present", async () => {
+    const sql = ((strings: TemplateStringsArray) => {
+      const text = strings.join(" ");
+      if (text.includes("from public.customers")) {
+        return Promise.resolve([
+          { id: "cust_1", name: "Jordan Lee", segment: "returning", metadata: {} },
+        ]);
+      }
+      if (text.includes("from public.customer_addresses")) {
+        return Promise.resolve([
+          {
+            id: "addr_1",
+            label: "Home",
+            street: "123 Main St",
+            city: "Austin",
+            state: "TX",
+            zip: "78701",
+            delivery_instructions: "Gate code 1234",
+            is_default: true,
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    }) as SqlClient;
+    const result = await lookupCustomer(sql, ctx, { phone: CALLER_NUMBER }, logger);
+    expect(result).toMatchObject({
+      found: true,
+      addresses: [{ id: "addr_1", street: "123 Main St", is_default: true }],
+    });
+  });
+
+  it("omits addresses when the customer has none saved", async () => {
+    const sql = ((strings: TemplateStringsArray) => {
+      const text = strings.join(" ");
+      if (text.includes("from public.customers")) {
+        return Promise.resolve([
+          { id: "cust_1", name: "Jordan Lee", segment: "returning", metadata: {} },
+        ]);
+      }
+      return Promise.resolve([]);
+    }) as SqlClient;
+    const result = await lookupCustomer(sql, ctx, { phone: CALLER_NUMBER }, logger);
+    expect((result as { addresses?: unknown }).addresses).toBeUndefined();
   });
 });

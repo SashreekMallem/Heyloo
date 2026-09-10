@@ -310,6 +310,101 @@ describe("routeAdminRequest — tenants group", () => {
       expect(auditCall).toBeDefined();
     });
   });
+
+  describe("impersonation cookie-fix — impersonated_by claim as alternative actor identity", () => {
+    // Simulates the exact failure mode this fixes: `@supabase/ssr`'s
+    // one-cookie-per-domain storage means a request that should carry the
+    // admin's own session instead carries the TENANT OWNER's session
+    // (tenant_id/role claims, no platform_admin) — but still carrying
+    // `impersonated_by` since the hook stamps it on every mint/refresh
+    // while the impersonation_sessions row is active.
+    const impersonatedOwnerClaims = {
+      app_metadata: { tenant_id: "t1", role: "owner" as const, impersonated_by: "admin_1" },
+    };
+
+    it("the top-level platform_admin gate still rejects a non-self-service route for an impersonated-owner token", async () => {
+      const { sql } = makeSql();
+      const result = await routeAdminRequest(
+        sql,
+        baseCtx({
+          method: "GET",
+          path: "/admin-tenants",
+          claims: impersonatedOwnerClaims,
+          adminUserId: "owner-1",
+        }),
+        logger,
+      );
+      expect(result).toEqual({ status: 403, body: { error: "not_a_platform_admin" } });
+    });
+
+    it("ends the real admin's impersonation session using the impersonated_by claim, not the token's own sub", async () => {
+      const { sql, calls } = makeSql();
+      const result = await routeAdminRequest(
+        sql,
+        baseCtx({
+          method: "POST",
+          path: "/admin-tenants/t1/impersonate-end",
+          claims: impersonatedOwnerClaims,
+          adminUserId: "owner-1",
+        }),
+        logger,
+      );
+      expect(result).toEqual({ status: 200, body: { ended: true } });
+      const updateCall = calls.find(
+        (c) =>
+          c.text.includes("update public.impersonation_sessions") && c.text.includes("ended_at"),
+      );
+      expect(updateCall).toBeDefined();
+      expect(updateCall?.values).toContain("admin_1");
+      expect(updateCall?.values).not.toContain("owner-1");
+      const auditCall = calls.find(
+        (c) =>
+          c.text.includes("insert into public.admin_actions") &&
+          JSON.stringify(c.values).includes("impersonate_end"),
+      );
+      expect(auditCall).toBeDefined();
+      expect(auditCall?.values).toContain("admin_1");
+    });
+
+    it("flips edit_enabled via the impersonated_by claim, scoped to the real admin's own session row", async () => {
+      const { sql, calls } = makeSql({
+        "select edit_enabled from public.impersonation_sessions": [{ edit_enabled: false }],
+      });
+      const result = await routeAdminRequest(
+        sql,
+        baseCtx({
+          method: "POST",
+          path: "/admin-tenants/t1/impersonate/edit-mode",
+          claims: impersonatedOwnerClaims,
+          adminUserId: "owner-1",
+          body: { enabled: true },
+        }),
+        logger,
+      );
+      expect(result).toEqual({ status: 200, body: { edit_enabled: true } });
+      const updateCall = calls.find((c) =>
+        c.text.includes("update public.impersonation_sessions set edit_enabled"),
+      );
+      expect(updateCall?.values).toContain("admin_1");
+      expect(updateCall?.values).not.toContain("owner-1");
+    });
+
+    it("rejects edit-mode for a plain tenant owner token carrying no impersonated_by claim", async () => {
+      const { sql } = makeSql();
+      const result = await routeAdminRequest(
+        sql,
+        baseCtx({
+          method: "POST",
+          path: "/admin-tenants/t1/impersonate/edit-mode",
+          claims: { app_metadata: { tenant_id: "t1", role: "owner" } },
+          adminUserId: "owner-1",
+          body: { enabled: true },
+        }),
+        logger,
+      );
+      expect(result).toEqual({ status: 403, body: { error: "not_a_platform_admin" } });
+    });
+  });
 });
 
 describe("routeAdminRequest — cockpit group", () => {
@@ -841,11 +936,7 @@ describe("routeAdminRequest — platform settings group", () => {
 describe("routeAdminRequest — not-yet-implemented groups", () => {
   it("returns 501 (never a silent 200) for an unimplemented endpoint group", async () => {
     const { sql } = makeSql();
-    const result = await routeAdminRequest(
-      sql,
-      baseCtx({ path: "/admin-support-requests" }),
-      logger,
-    );
+    const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-flags" }), logger);
     expect(result.status).toBe(501);
   });
 
@@ -1120,5 +1211,230 @@ describe("routeAdminRequest — outreach group", () => {
     expect(result.status).toBe(200);
     const body = result.body as { verticals: { cac_cents: number | null }[] };
     expect(body.verticals[0]?.cac_cents).toBe(500);
+  });
+});
+
+describe("routeAdminRequest — recurring commission terms (GAP_REGISTER Cluster G item 1)", () => {
+  it("PATCHes a partner's rate_bps/commission_base/duration_months and writes an audit entry", async () => {
+    const { sql, calls } = makeSql({
+      "select id, rate_bps, commission_base, duration_months from public.referral_partners": [
+        { id: "p1", rate_bps: null, commission_base: "gross_profit", duration_months: null },
+      ],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "PATCH",
+        path: "/admin-referrals/partners/p1",
+        body: { rate_bps: 1500, commission_base: "revenue", duration_months: 12 },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    expect(
+      calls.some(
+        (c) =>
+          c.text.includes("update public.referral_partners set rate_bps") &&
+          c.values.includes(1500),
+      ),
+    ).toBe(true);
+    expect(
+      calls.some(
+        (c) =>
+          c.text.includes("insert into public.admin_actions") &&
+          JSON.stringify(c.values).includes("referral_commission_terms_update"),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects an out-of-range rate_bps", async () => {
+    const { sql } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "PATCH",
+        path: "/admin-referrals/partners/p1",
+        body: { rate_bps: 20000 },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(422);
+  });
+
+  it("returns 404 for a non-existent partner", async () => {
+    const { sql } = makeSql({
+      "select id, rate_bps, commission_base, duration_months from public.referral_partners": [],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "PATCH",
+        path: "/admin-referrals/partners/missing",
+        body: { rate_bps: 1000 },
+      }),
+      logger,
+    );
+    expect(result).toEqual({ status: 404, body: { error: "referral_partner_not_found" } });
+  });
+
+  it("upserts a per-vertical override via PUT", async () => {
+    const { sql, calls } = makeSql({
+      "select id from public.referral_partners": [{ id: "p1" }],
+      "insert into public.referral_partner_vertical_overrides": [
+        { referral_partner_id: "p1", vertical: "dental", rate_bps: 2500 },
+      ],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "PUT",
+        path: "/admin-referrals/partners/p1/vertical-overrides/dental",
+        body: { rate_bps: 2500 },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    expect(
+      calls.some((c) => c.text.includes("on conflict (referral_partner_id, vertical) do update")),
+    ).toBe(true);
+  });
+
+  it("rejects an unknown vertical on the override route", async () => {
+    const { sql } = makeSql({ "select id from public.referral_partners": [{ id: "p1" }] });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "PUT",
+        path: "/admin-referrals/partners/p1/vertical-overrides/not_a_vertical",
+        body: { rate_bps: 2500 },
+      }),
+      logger,
+    );
+    expect(result).toEqual({ status: 422, body: { error: "invalid_vertical" } });
+  });
+});
+
+describe("routeAdminRequest — support requests (GAP_REGISTER Cluster G item 6)", () => {
+  it("lists support requests, optionally filtered by status", async () => {
+    const { sql, calls } = makeSql({
+      "from public.support_requests where status": [{ id: "sr1", status: "open" }],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-support-requests", query: { status: "open" } }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    expect((result.body as { support_requests: unknown[] }).support_requests).toHaveLength(1);
+    expect(calls.some((c) => c.text.includes("where status ="))).toBe(true);
+  });
+
+  it("returns a single ticket with its notes", async () => {
+    const { sql } = makeSql({
+      "select * from public.support_requests where id": [
+        { id: "sr1", subject: "Billing question" },
+      ],
+      "from public.support_request_notes": [{ id: "n1", body: "Looking into it" }],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-support-requests/sr1" }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    const body = result.body as { support_request: { id: string }; notes: unknown[] };
+    expect(body.support_request.id).toBe("sr1");
+    expect(body.notes).toHaveLength(1);
+  });
+
+  it("returns 404 for a ticket that doesn't exist", async () => {
+    const { sql } = makeSql({ "select * from public.support_requests where id": [] });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-support-requests/missing" }),
+      logger,
+    );
+    expect(result).toEqual({ status: 404, body: { error: "support_request_not_found" } });
+  });
+
+  it("PATCHes status/priority and writes an audit entry", async () => {
+    const { sql, calls } = makeSql({
+      "select * from public.support_requests where id": [
+        { id: "sr1", status: "open", priority: "medium" },
+      ],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "PATCH",
+        path: "/admin-support-requests/sr1",
+        body: { status: "resolved", priority: "low" },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    expect(calls.some((c) => c.text.includes("update public.support_requests set status"))).toBe(
+      true,
+    );
+    expect(calls.some((c) => c.text.includes("update public.support_requests set priority"))).toBe(
+      true,
+    );
+    expect(
+      calls.some(
+        (c) =>
+          c.text.includes("insert into public.admin_actions") &&
+          JSON.stringify(c.values).includes("support_request_update"),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a PATCH with no recognized fields", async () => {
+    const { sql } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ method: "PATCH", path: "/admin-support-requests/sr1", body: {} }),
+      logger,
+    );
+    expect(result).toEqual({ status: 422, body: { error: "no_valid_fields" } });
+  });
+
+  it("adds an admin note and writes an audit entry", async () => {
+    const { sql, calls } = makeSql({
+      "select id from public.support_requests where id": [{ id: "sr1" }],
+      "insert into public.support_request_notes": [
+        { id: "n1", support_request_id: "sr1", body: "Refund issued", visible_to_tenant: true },
+      ],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-support-requests/sr1/notes",
+        body: { body: "Refund issued", visible_to_tenant: true },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(201);
+    expect(
+      calls.some(
+        (c) =>
+          c.text.includes("insert into public.admin_actions") &&
+          JSON.stringify(c.values).includes("support_request_note_add"),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns 404 when adding a note to a ticket that doesn't exist", async () => {
+    const { sql } = makeSql({ "select id from public.support_requests where id": [] });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-support-requests/missing/notes",
+        body: { body: "hi" },
+      }),
+      logger,
+    );
+    expect(result).toEqual({ status: 404, body: { error: "support_request_not_found" } });
   });
 });

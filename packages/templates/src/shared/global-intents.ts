@@ -49,3 +49,27 @@ export function safetyEmergencyGlobalIntent(targetState: string): GlobalIntent {
       "progress, or any other immediate danger to life or property.",
   };
 }
+
+/**
+ * The structural target for `GIVE_UP_LADDER_FRAGMENT`'s "move to a transfer
+ * or a take-message fallback instead of guessing" — reachable from every
+ * state so a call that can't be completed in real time (repeated
+ * misunderstandings, the caller needs to go, no human is available to
+ * transfer to) always has a place to land that still records whatever was
+ * gathered so far, rather than silently discarding it. Not every template
+ * wires this yet (auto-repair/dental/motel/restaurant/vet currently only
+ * reach `take_message_fallback` via a couple of specific transitions, e.g.
+ * greeting/none_available) — legal is the first to need the fully general
+ * "any state" version, since its multi-step intake (conflict check,
+ * urgency, referral source) has the most to lose from an ungraceful exit.
+ */
+export function giveUpGlobalIntent(targetState: string): GlobalIntent {
+  return {
+    name: "give_up",
+    reachable_from: "any",
+    target_state: targetState,
+    description:
+      "The call cannot be completed in real time right now — repeated misunderstandings, or " +
+      "the caller needs to go and would rather leave a message than keep trying.",
+  };
+}

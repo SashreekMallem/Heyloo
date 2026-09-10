@@ -19,7 +19,8 @@
  * caller-suppliable destination parameter exists anywhere in its shape.
  */
 
-import type { CanonicalTool } from "@heyloo/canonical-types";
+import type { CanonicalTool, Vertical } from "@heyloo/canonical-types";
+import { BOOKING_STRUCTURED_PAYLOAD_PROPERTIES } from "@heyloo/canonical-types";
 
 export function checkAvailabilityTool(): CanonicalTool {
   return {
@@ -32,6 +33,12 @@ export function checkAvailabilityTool(): CanonicalTool {
       properties: {
         offering_id: { type: "string" },
         resource_type: { type: "string" },
+        room_type: {
+          type: "string",
+          description:
+            "Narrows within resource_type to a specific room/resource tier (e.g. a motel's " +
+            "'queen'/'king'/'suite') — only meaningful when the tenant configures tiers.",
+        },
         date_range: {
           type: "object",
           properties: { start: { type: "string" }, end: { type: "string" } },
@@ -45,7 +52,48 @@ export function checkAvailabilityTool(): CanonicalTool {
   };
 }
 
-export function createBookingTool(description: string): CanonicalTool {
+/**
+ * FIX_REQUESTS.md — read-only offering-catalog lookup (GAP_REGISTER.md §2
+ * Dental item 3 / Vet item 4) so a model can resolve an appointment-type
+ * to a real `offering_id` before calling `check_availability`/
+ * `create_booking`, instead of inventing one or leaving `offering_id`
+ * unset. Never mutates anything — `authorization: {scope: "none"}` like
+ * `check_availability`.
+ */
+export function listOfferingsTool(): CanonicalTool {
+  return {
+    name: "list_offerings",
+    description:
+      "List the tenant's configured appointment types/services (with id, name, category, " +
+      "duration, and price where set). Call this to resolve a caller's stated reason for " +
+      "visiting to a real offering_id before calling check_availability or create_booking — " +
+      "never invent an offering_id.",
+    parameters: {
+      type: "object",
+      properties: {
+        category: {
+          type: "string",
+          description: "Optional narrowing filter (e.g. 'wellness' vs 'emergency').",
+        },
+      },
+    },
+    authorization: { scope: "none" },
+  };
+}
+
+/**
+ * `vertical` (optional, GAP_REGISTER.md §1.7) surfaces that vertical's
+ * typed `structured_payload` JSON-Schema `properties`
+ * (`BOOKING_STRUCTURED_PAYLOAD_PROPERTIES`, `booking-payloads.ts`) as an
+ * authoring hint to the model instead of a bare `{type:"object"}` — Retell
+ * shows tool JSON-Schema `properties` to the LLM, which measurably improves
+ * fill rate. Left optional (defaulting to the bare shape) so every existing
+ * `createBookingTool(description)` call site keeps compiling unchanged;
+ * passing the vertical is a one-argument follow-up at each call site
+ * (`packages/templates/src/verticals/*.ts`, filed in
+ * docs/audit/FIX_REQUESTS.md).
+ */
+export function createBookingTool(description: string, vertical?: Vertical): CanonicalTool {
   return {
     name: "create_booking",
     description,
@@ -62,7 +110,13 @@ export function createBookingTool(description: string): CanonicalTool {
           required: ["name", "phone"],
         },
         party_size: { type: "integer", minimum: 1 },
-        structured_payload: { type: "object" },
+        structured_payload: vertical
+          ? {
+              type: "object",
+              description: "Vertical-specific booking details captured this call.",
+              properties: BOOKING_STRUCTURED_PAYLOAD_PROPERTIES[vertical],
+            }
+          : { type: "object" },
         consent: {
           type: "object",
           description: "The caller's answer to the once-per-call consent ask (MASTER_SPEC §3.6).",
@@ -149,7 +203,17 @@ export function lookupCustomerTool(): CanonicalTool {
   };
 }
 
-export function takeMessageTool(): CanonicalTool {
+/**
+ * `vertical` (optional, GAP_REGISTER.md §2 Legal item 4 / real_estate) —
+ * same non-breaking pattern as `createBookingTool`: surfaces that
+ * vertical's typed `structured_payload` properties so a caller who leaves
+ * a message instead of completing a booking still gets structured intake
+ * captured (`call_logs.structured_booking_payload`, `take_message.ts`),
+ * not just free-text `message_text`. Omitted vertical keeps the bare
+ * `{type:"object"}` shape, so every existing `takeMessageTool()` call site
+ * keeps compiling unchanged.
+ */
+export function takeMessageTool(vertical?: Vertical): CanonicalTool {
   return {
     name: "take_message",
     description: "Record a message/callback request for staff follow-up.",
@@ -160,6 +224,13 @@ export function takeMessageTool(): CanonicalTool {
         caller_phone: { type: "string" },
         message_text: { type: "string" },
         callback_window: { type: "string" },
+        structured_payload: vertical
+          ? {
+              type: "object",
+              description: "Vertical-specific intake details captured this call.",
+              properties: BOOKING_STRUCTURED_PAYLOAD_PROPERTIES[vertical],
+            }
+          : { type: "object" },
       },
       required: ["caller_phone", "message_text"],
     },
@@ -180,6 +251,39 @@ export function sendSmsConfirmationTool(): CanonicalTool {
         template_key: { type: "string" },
       },
       required: ["phone", "template_key"],
+    },
+    authorization: { scope: "none" },
+  };
+}
+
+/**
+ * MASTER_SPEC §3.4 (GAP_REGISTER.md §1.2) — record a caller's interest in a
+ * fully-booked window so the cancellation-triggered "a slot opened — reply
+ * YES" SMS flow (waitlist_entries + webhooks-twilio-sms/handler.ts) has
+ * something to match against. Call this instead of take_message when the
+ * caller wants to be notified if something opens up.
+ */
+export function joinWaitlistTool(): CanonicalTool {
+  return {
+    name: "join_waitlist",
+    description:
+      "Add the caller to the waitlist for a preferred date/time window that's fully booked. " +
+      "They'll be texted automatically if a matching slot opens up.",
+    parameters: {
+      type: "object",
+      properties: {
+        customer: {
+          type: "object",
+          properties: { name: { type: "string" }, phone: { type: "string" } },
+          required: ["name", "phone"],
+        },
+        offering_id: { type: "string" },
+        resource_type: { type: "string" },
+        preferred_window_start: { type: "string" },
+        preferred_window_end: { type: "string" },
+        notes: { type: "string" },
+      },
+      required: ["customer", "preferred_window_start", "preferred_window_end"],
     },
     authorization: { scope: "none" },
   };
@@ -227,6 +331,15 @@ export function createOrderTool(): CanonicalTool {
         consent: {
           type: "object",
           properties: { sms: { type: "boolean" }, call: { type: "boolean" } },
+        },
+        allergies: {
+          type: "array",
+          items: { type: "string" },
+          description: "Every allergy the caller mentioned — always ask explicitly.",
+        },
+        special_instructions: {
+          type: "string",
+          description: "Free-text prep/delivery instructions distinct from allergies.",
         },
       },
       required: ["items", "fulfillment_type", "customer"],

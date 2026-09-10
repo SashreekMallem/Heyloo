@@ -170,6 +170,53 @@ export async function importPhoneNumber(
   });
 }
 
+/**
+ * POST /v2/create-phone-call — outbound calling (GAP_REGISTER Cluster A
+ * item 6 / Cluster G item 2, real-estate lead callback). Same confirmed
+ * shape as `packages/adapters/retell/src/outbound.ts`'s
+ * `createRetellOutboundCall` (that file's own header: confirmed via
+ * `retell-sdk`'s `Call.createPhoneCall`/`CallCreatePhoneCallParams`,
+ * `/v2` prefix, `{from_number, to_number, override_agent_id?,
+ * retell_llm_dynamic_variables?, metadata?}` — see docs/VERIFY.md
+ * VERIFY-10 for the one open item, response fields beyond `call_id`) —
+ * reimplemented here as a plain-`fetch` Deno-importable function rather
+ * than consumed from that package directly, for the same Node/Deno import
+ * boundary reason every other function in this file exists (`packages/
+ * adapters/retell` cannot be imported from the Deno Edge Function
+ * runtime).
+ *
+ * Fails CLOSED (never calls Retell) when `dynamicVariables.disclosure_line`
+ * is missing/blank — an outbound call has no compiled-in first turn the way
+ * an inbound template does, so this is the enforcement point instead (G1/G2:
+ * the AI + recording disclosure is non-negotiable on every call).
+ */
+export async function createPhoneCall(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  payload: {
+    from_number: string;
+    to_number: string;
+    override_agent_id: string;
+    retell_llm_dynamic_variables: Record<string, string> & { disclosure_line: string };
+    metadata?: Record<string, unknown>;
+  },
+) {
+  if (
+    !payload.retell_llm_dynamic_variables.disclosure_line ||
+    payload.retell_llm_dynamic_variables.disclosure_line.trim() === ""
+  ) {
+    return {
+      ok: false as const,
+      status: 0,
+      body: { error: "disclosure_line_missing_refusing_to_call" },
+    };
+  }
+  return retellRequest(fetchImpl, apiKey, "/v2/create-phone-call", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function createWebCall(
   fetchImpl: RetellFetch,
   apiKey: string,

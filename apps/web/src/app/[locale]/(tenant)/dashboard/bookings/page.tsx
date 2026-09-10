@@ -31,12 +31,31 @@ import { parseTstzrange } from "@/lib/tstzrange";
 interface BookingDetail {
   resourceId: string | null;
   customerPhone: string | null;
+  partySize: number | null;
+  structuredPayload: Record<string, unknown>;
+  quotedRateCents: number | null;
+  identityVerifiedBy: "phone_match" | "knowledge" | null;
+  consent: { sms?: boolean; call?: boolean; captured_at?: string } | null;
   paymentLink: {
     id: string;
     amountCents: number;
     purpose: string;
     status: string;
   } | null;
+}
+
+/** `bookings.structured_payload` is a per-vertical loose object
+ * (`@heyloo/canonical-types`'s `zBookingStructuredPayloadFor`) — the
+ * dashboard renders whatever keys a given booking actually has rather than
+ * forking per vertical (GAP_REGISTER.md §1.11: "a single, mechanical,
+ * cross-vertical dashboard task — do not fork it per vertical"). */
+function structuredPayloadEntries(payload: Record<string, unknown>): [string, string][] {
+  return Object.entries(payload)
+    .filter(([, v]) => v !== null && v !== undefined && v !== "")
+    .map(([k, v]): [string, string] => [
+      k.replace(/_/g, " "),
+      Array.isArray(v) ? v.join(", ") : typeof v === "boolean" ? (v ? "Yes" : "No") : String(v),
+    ]);
 }
 
 interface SlotOption {
@@ -111,7 +130,13 @@ export default function BookingsPage() {
       const [{ data: booking }, { data: paymentLink }] = await Promise.all([
         supabaseBrowserClient
           .from("bookings")
-          .select("resource_id, customer_id")
+          // `quoted_rate_cents` (motel) is a real column not yet on the
+          // hand-maintained `BookingRow` type (docs/audit/FIX_REQUESTS.md) —
+          // select-string isn't statically checked against it, so this
+          // reads the live column today rather than waiting.
+          .select(
+            "resource_id, customer_id, party_size, structured_payload, quoted_rate_cents, identity_verified_by",
+          )
           .eq("id", bookingId)
           .eq("tenant_id", tenantId as string)
           .maybeSingle(),
@@ -124,16 +149,29 @@ export default function BookingsPage() {
           .limit(1)
           .maybeSingle(),
       ]);
-      const { data: customer } = booking?.customer_id
+      const row = booking as unknown as {
+        resource_id: string | null;
+        customer_id: string | null;
+        party_size: number | null;
+        structured_payload: Record<string, unknown> | null;
+        quoted_rate_cents: number | null;
+        identity_verified_by: "phone_match" | "knowledge" | null;
+      } | null;
+      const { data: customer } = row?.customer_id
         ? await supabaseBrowserClient
             .from("customers")
-            .select("phone_e164")
-            .eq("id", booking.customer_id)
+            .select("phone_e164, consent")
+            .eq("id", row.customer_id)
             .maybeSingle()
         : { data: null };
       return {
-        resourceId: booking?.resource_id ?? null,
+        resourceId: row?.resource_id ?? null,
         customerPhone: customer?.phone_e164 ?? null,
+        partySize: row?.party_size ?? null,
+        structuredPayload: row?.structured_payload ?? {},
+        quotedRateCents: row?.quoted_rate_cents ?? null,
+        identityVerifiedBy: row?.identity_verified_by ?? null,
+        consent: customer?.consent ?? null,
         paymentLink: paymentLink
           ? {
               id: paymentLink.id,
@@ -379,6 +417,62 @@ export default function BookingsPage() {
                   Message this customer
                 </Link>
               )}
+
+              <div className="flex flex-wrap gap-2">
+                {detailQuery.data?.identityVerifiedBy && (
+                  <Badge variant="secondary">
+                    Identity verified —{" "}
+                    {detailQuery.data.identityVerifiedBy === "phone_match"
+                      ? "phone match"
+                      : "knowledge check"}
+                  </Badge>
+                )}
+                {detailQuery.data?.consent?.sms || detailQuery.data?.consent?.call ? (
+                  <Badge variant="success">
+                    Consent on file
+                    {detailQuery.data.consent.sms && detailQuery.data.consent.call
+                      ? " (SMS + call)"
+                      : detailQuery.data.consent.sms
+                        ? " (SMS)"
+                        : " (call)"}
+                  </Badge>
+                ) : detailQuery.data && !detailQuery.isLoading ? (
+                  <Badge variant="outline">No consent on file</Badge>
+                ) : null}
+              </div>
+
+              {detailQuery.data?.partySize != null && (
+                <p className="text-sm">
+                  <span className="text-muted-foreground">Party size</span>{" "}
+                  {detailQuery.data.partySize}
+                </p>
+              )}
+
+              {detailQuery.data?.quotedRateCents != null && (
+                <p className="text-sm">
+                  <span className="text-muted-foreground">Quoted rate</span>{" "}
+                  {formatCentsUSD(detailQuery.data.quotedRateCents)}/night
+                </p>
+              )}
+
+              {detailQuery.data &&
+                structuredPayloadEntries(detailQuery.data.structuredPayload).length > 0 && (
+                  <div>
+                    <p className="mb-1 text-xs font-medium text-muted-foreground">
+                      Captured on the call
+                    </p>
+                    <dl className="space-y-1 rounded-md border border-border p-2 text-sm">
+                      {structuredPayloadEntries(detailQuery.data.structuredPayload).map(
+                        ([label, value]) => (
+                          <div key={label} className="flex justify-between gap-2">
+                            <dt className="capitalize text-muted-foreground">{label}</dt>
+                            <dd className="text-right">{value}</dd>
+                          </div>
+                        ),
+                      )}
+                    </dl>
+                  </div>
+                )}
 
               <div>
                 <p className="mb-1 text-xs font-medium text-muted-foreground">Payment</p>

@@ -302,6 +302,39 @@ describe("zAgentTemplate — structural cross-checks", () => {
     const t = { ...validTemplate(), disclosure_line: "" };
     expect(() => zAgentTemplate.parse(t)).toThrow();
   });
+
+  it("rejects a state declaring transfer_call alongside another tool (GAP_REGISTER §1.4 item 4)", () => {
+    const t = validTemplate();
+    t.tools = [
+      ...t.tools,
+      {
+        name: "transfer_call",
+        description: "Warm-transfer the caller to a human at this business.",
+        parameters: { type: "object" as const, properties: {}, required: [] },
+        authorization: { scope: "tenant_config_only" as const },
+      },
+    ];
+    t.states = [
+      greetingState,
+      { ...collectTimeState, allowed_tools: ["check_availability", "transfer_call"] },
+    ];
+    expect(() => zAgentTemplate.parse(t)).toThrow(/transfer_call.*alongside/);
+  });
+
+  it("accepts transfer_call as a state's sole tool", () => {
+    const t = validTemplate();
+    t.tools = [
+      ...t.tools,
+      {
+        name: "transfer_call",
+        description: "Warm-transfer the caller to a human at this business.",
+        parameters: { type: "object" as const, properties: {}, required: [] },
+        authorization: { scope: "tenant_config_only" as const },
+      },
+    ];
+    t.states = [greetingState, { ...collectTimeState, allowed_tools: ["transfer_call"] }];
+    expect(zAgentTemplate.parse(t)).toBeTruthy();
+  });
 });
 
 describe("zAgentTemplateRecord", () => {
@@ -402,6 +435,24 @@ describe("per-vertical overrides", () => {
     expect(
       zRestaurantOverrides.parse({ delivery_radius_m: 4000, min_order_cents: 1500 }),
     ).toBeTruthy();
+  });
+
+  it("restaurant accepts menu_text + tax_rate_bps (GAP_REGISTER §1.6 — vertical-details.ts parity)", () => {
+    expect(
+      zRestaurantOverrides.parse({
+        menu_text: "Margherita pizza $14, Caesar salad $9",
+        tax_rate_bps: 825,
+      }),
+    ).toBeTruthy();
+  });
+
+  it("rejects a tax_rate_bps outside 0-10000", () => {
+    expect(() => zRestaurantOverrides.parse({ tax_rate_bps: 10001 })).toThrow();
+    expect(() => zRestaurantOverrides.parse({ tax_rate_bps: -1 })).toThrow();
+  });
+
+  it("restaurant accepts delivery_fee_cents (FIX_REQUESTS.md)", () => {
+    expect(zRestaurantOverrides.parse({ delivery_fee_cents: 399 })).toBeTruthy();
   });
 
   it("all vertical schemas accept the shared base fields", () => {

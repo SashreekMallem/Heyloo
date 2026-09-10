@@ -16,6 +16,32 @@ describe("describeOutboundMessage", () => {
     });
   });
 
+  it("renders take_message verbatim with caller name, message text, and callback window", () => {
+    expect(
+      describeOutboundMessage("take_message", {
+        caller_name: "Jordan",
+        caller_phone: "+15551234567",
+        message_text: "Please call me back",
+        callback_window: "weekday afternoons",
+      }),
+    ).toEqual({
+      text: 'Jordan left a message: "Please call me back" (callback: weekday afternoons)',
+      isVerbatim: true,
+    });
+  });
+
+  it("renders take_message without a callback segment when callback_window is absent", () => {
+    expect(
+      describeOutboundMessage("take_message", {
+        caller_name: "Jordan",
+        message_text: "Please call me back",
+      }),
+    ).toEqual({
+      text: 'Jordan left a message: "Please call me back"',
+      isVerbatim: true,
+    });
+  });
+
   it("falls back to a generic label for an unrecognized template", () => {
     expect(describeOutboundMessage("something_new", {})).toEqual({
       text: "System message sent",

@@ -14,6 +14,8 @@ import type {
   CompileTarget,
   CreateOrUpdateAgentInput,
   CreateOrUpdateAgentResult,
+  CreateOutboundCallInput,
+  CreateOutboundCallResult,
   ImportPhoneNumberInput,
   ImportPhoneNumberResult,
   InboundCallContext,
@@ -33,6 +35,7 @@ import { RETELL_API_BASE_URL, RetellClient } from "./client.js";
 import { compileRetellTemplate, compileTemplateArtifact } from "./compiler/index.js";
 import { buildRetellInboundResponse, resolveRetellInboundCall } from "./inbound.js";
 import { importTwilioNumberIntoRetell } from "./numbers.js";
+import { createRetellOutboundCall } from "./outbound.js";
 import { verifyRetellWebhookSignature } from "./signature.js";
 import { buildRetellToolCallResponse, verifyAndParseRetellToolCall } from "./tool-call.js";
 
@@ -60,6 +63,7 @@ export const RETELL_CAPABILITIES: ProviderCapabilities = {
   supportsBatchSimulationTesting: true,
   supportsConcurrencyQuery: true,
   supportsPhoneNumberImport: true,
+  supportsOutboundCalls: true,
   costGranularity: "exact",
 };
 
@@ -95,6 +99,10 @@ export class RetellProvider implements VoiceProvider {
 
   async importPhoneNumber(input: ImportPhoneNumberInput): Promise<ImportPhoneNumberResult> {
     return importTwilioNumberIntoRetell(this.client, input);
+  }
+
+  async createOutboundCall(input: CreateOutboundCallInput): Promise<CreateOutboundCallResult> {
+    return createRetellOutboundCall(this.client, input);
   }
 
   verifyWebhookSignature(input: VerifyWebhookSignatureInput): VerifyWebhookSignatureResult {

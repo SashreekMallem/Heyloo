@@ -157,11 +157,15 @@ export async function handleCallAnalyzed(
   // `classification`/`outcome`/`follow_up_needed`/`extracted_entities` are
   // sourced from Retell's `custom_analysis_data` — the structured-extraction
   // output driven by the compiled template's per-state `extraction[]`
-  // fields (BACKEND_SPEC §1.3 canonical template schema), assumed here to
-  // include keys literally named `classification` (one of the 12-enum
-  // values), `outcome`, and `follow_up_needed`; VERIFY.md: confirm this
-  // mapping against the compiler's actual extraction-field naming once T2's
-  // Retell compiler lands.
+  // fields (BACKEND_SPEC §1.3 canonical template schema). Every shipped
+  // template now declares `classification` (one of the 12-enum values),
+  // `outcome`, and `follow_up_needed` on every state via
+  // `packages/templates/src/shared/extraction.ts`'s
+  // `withCallOutcomeExtraction` (asserted for every template in
+  // `packages/templates/src/red-team/structural.test.ts`), so these keys
+  // are always requested from Retell, not just assumed. VERIFY.md: a live
+  // sandbox call is still the open item to confirm Retell actually returns
+  // `custom_analysis_data` keyed exactly by these field names in practice.
   const customData = analysis?.custom_analysis_data ?? {};
   const classification =
     typeof customData["classification"] === "string" ? customData["classification"] : null;
@@ -189,6 +193,20 @@ export async function handleCallAnalyzed(
   }
 
   const legalAdviceGiven = customData["legal_advice_given"] === true;
+  // `call_logs.urgency_flag` is derived solely from the `emergency_detected`
+  // boolean, never a separate `urgency_flag` extraction field. Templates
+  // that declare a vertical-specific urgency tier (vet's
+  // "emergency"/"routine", dental's "same_day"/"routine") used to also
+  // compile a same-named `urgency_flag` enum field, but its enum vocabulary
+  // isn't consistent across verticals and the compiler's post-call-analysis
+  // pass dedupes `post_call_analysis_data` by field name (first declaration
+  // across `states[]` wins) — so a second, differently-voculated
+  // `urgency_flag` field from the shared `safetyEmergencyState()` would be
+  // silently dropped for any template declaring its own. `emergency_detected`
+  // has no such collision (same boolean semantics everywhere it's declared:
+  // `veterinary.ts`, `dental.ts`, `auto-repair.ts`, and the shared
+  // `safetyEmergencyState()` used by every other vertical), so it's the one
+  // authoritative signal this column is set from.
   const emergencyRetroactive = customData["emergency_detected"] === true;
 
   if (legalAdviceGiven || (emergencyRetroactive && !row.urgency_flag)) {

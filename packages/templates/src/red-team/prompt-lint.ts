@@ -16,27 +16,65 @@
  * caller-content sink (e.g. a stray `{{caller_last_message}}`) would take.
  */
 
-/** Every `{{name}}` placeholder actually used across the 8 templates + shared fragments — tenant-configured, never caller-supplied. */
-export const ALLOWED_DYNAMIC_VARIABLES: ReadonlySet<string> = new Set([
-  "business_name",
-  "assistant_name",
-  "manager_name",
-  "manager_phone",
-  "parking_info",
-  "accessibility_notes",
-  "cancellation_policy_text",
-  "consult_fee_text",
-  "deposit_policy_text",
-  "emergency_referral_name",
-  "emergency_referral_phone",
-  "menu_text",
-  "practice_areas",
-  "rate_table",
-  "species_treated",
-  "tow_partner_name",
-  "tow_partner_phone",
-  "vehicle_makes_serviced",
-]);
+import {
+  dynamicVariableOverridesSchemaForVertical,
+  VERTICALS,
+  verticalDetailsSchema,
+  zAgentDynamicVariables,
+} from "@heyloo/canonical-types";
+
+/**
+ * A raw override-schema field name isn't always the literal token name a
+ * prompt uses — `voice-inbound`'s dynamic-variable resolver formats/derives
+ * some fields (cents -> a "_text" string, a `{name,phone}` contact struct ->
+ * two separate tokens) rather than speaking the raw stored value. Mirrors
+ * `packages/adapters/retell/src/compiler/registry-consistency.test.ts`'s
+ * identically-named function byte-for-byte (duplicated rather than imported
+ * across the package boundary — importing `@heyloo/adapter-retell` here
+ * would create the same circular package dependency that file's own
+ * INTEGRATION NOTE documents avoiding) so a field rename/removal in
+ * `agent-template.ts`/`vertical-details.ts` is caught here too, instead of
+ * silently drifting from a second hand-maintained allowlist.
+ */
+function derivedTokensForField(fieldName: string): string[] {
+  if (fieldName.endsWith("_cents")) {
+    return [`${fieldName.slice(0, -"_cents".length)}_text`];
+  }
+  if (fieldName === "tow_partner" || fieldName === "emergency_referral") {
+    return [`${fieldName}_name`, `${fieldName}_phone`];
+  }
+  if (fieldName === "cancellation_policy" || fieldName === "deposit_policy") {
+    return [`${fieldName}_text`];
+  }
+  return [fieldName];
+}
+
+function computeAllowedDynamicVariables(): ReadonlySet<string> {
+  const allowed = new Set<string>(Object.keys(zAgentDynamicVariables.shape));
+
+  for (const vertical of VERTICALS) {
+    const overridesSchema = dynamicVariableOverridesSchemaForVertical(vertical);
+    const overridesShape = (overridesSchema as unknown as { shape: Record<string, unknown> }).shape;
+    for (const field of Object.keys(overridesShape)) {
+      for (const token of derivedTokensForField(field)) allowed.add(token);
+    }
+  }
+
+  for (const field of Object.keys(verticalDetailsSchema.shape)) {
+    for (const token of derivedTokensForField(field)) allowed.add(token);
+  }
+
+  return allowed;
+}
+
+/**
+ * Every `{{name}}` placeholder a template is allowed to reference —
+ * schema-derived (GAP_REGISTER §1.6) from `zAgentDynamicVariables` (base
+ * call-scoped variables) plus every vertical's `z*Overrides`/
+ * `verticalDetailsSchema` fields, rather than a second hand-maintained list
+ * that could silently drift from the schema a field was renamed/removed in.
+ */
+export const ALLOWED_DYNAMIC_VARIABLES: ReadonlySet<string> = computeAllowedDynamicVariables();
 
 const TEMPLATE_LITERAL_LEAK = /\$\{/;
 const MUSTACHE_PLACEHOLDER = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;

@@ -72,6 +72,26 @@ async function stripeRequest(
  * reported meter events). `metadata.tenant_id` is what `/webhooks-stripe`'s
  * `checkout.session.completed` handler reads to kick off provisioning.
  */
+/**
+ * One-time (non-recurring) line item added alongside the recurring
+ * subscription items below — setup fee / white-glove onboarding
+ * (GAP_REGISTER Cluster G item 5). Confirmed live against
+ * docs.stripe.com/api/checkout/sessions/create#create_checkout_session-line_items
+ * (Rule 1, fetched 2026-09-10): a `subscription`-mode Checkout Session
+ * allows up to 20 one-time-Price line items alongside its recurring ones,
+ * billed "on the initial invoice only" — exactly the setup-fee/white-glove
+ * semantics needed (a signup-time-only charge, never repeated on renewal).
+ * Uses `price_data` (an ad-hoc inline Price, `recurring` omitted) rather
+ * than a pre-created Stripe Price object, since these amounts are
+ * admin-set per-vertical config (`platform_settings.price_card_<vertical>`)
+ * rather than a small fixed catalog worth provisioning through
+ * `scripts/setup-stripe.ts`.
+ */
+export interface OneTimeCheckoutLineItem {
+  productName: string;
+  amountCents: number;
+}
+
 export async function createSubscriptionCheckoutSession(
   fetchImpl: StripeFetch,
   secretKey: string,
@@ -83,15 +103,32 @@ export async function createSubscriptionCheckoutSession(
     successUrl: string;
     cancelUrl: string;
     metadata: Record<string, string>;
+    /** Setup fee / white-glove — omitted or empty when neither applies to
+     * this signup (the common case: no extra charge beyond the recurring
+     * subscription). */
+    oneTimeLineItems?: OneTimeCheckoutLineItem[];
   },
 ) {
+  const oneTimeItems = (params.oneTimeLineItems ?? []).map((item) => ({
+    price_data: {
+      currency: "usd",
+      unit_amount: item.amountCents,
+      product_data: { name: item.productName },
+    },
+    quantity: 1,
+  }));
+
   return stripeRequest(fetchImpl, secretKey, "POST", "/checkout/sessions", {
     mode: "subscription",
     success_url: params.successUrl,
     cancel_url: params.cancelUrl,
     ...(params.customerId ? { customer: params.customerId } : {}),
     ...(!params.customerId && params.customerEmail ? { customer_email: params.customerEmail } : {}),
-    line_items: [{ price: params.basePriceId, quantity: 1 }, { price: params.meteredPriceId }],
+    line_items: [
+      { price: params.basePriceId, quantity: 1 },
+      { price: params.meteredPriceId },
+      ...oneTimeItems,
+    ],
     subscription_data: { metadata: params.metadata },
     metadata: params.metadata,
   });

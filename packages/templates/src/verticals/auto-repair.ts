@@ -7,6 +7,7 @@
 
 import type { AgentState, AgentTemplate, GlobalIntent } from "@heyloo/canonical-types";
 import { DISCLOSURE_LINE } from "../shared/disclosure.js";
+import { withCallOutcomeExtraction } from "../shared/extraction.js";
 import {
   CANCELLATION_POLICY_READOUT_FRAGMENT,
   CONSENT_ASK_FRAGMENT,
@@ -18,6 +19,7 @@ import {
   cancelBookingTool,
   checkAvailabilityTool,
   createBookingTool,
+  joinWaitlistTool,
   lookupCustomerTool,
   sendSmsConfirmationTool,
   takeMessageTool,
@@ -62,6 +64,23 @@ function vehicleSafetyEmergencyState(): AgentState {
       "with their name, phone, and location so the shop can follow up right away.",
     allowed_tools: ["take_message"],
     is_terminal: true,
+    // GAP_REGISTER.md — post-call extraction gap: lowered by the compiler's
+    // post-call-analysis pass (`packages/adapters/retell/src/compiler/
+    // extraction.ts`) into Retell `post_call_analysis_data`, read back by
+    // `voice-events/handler.ts`'s `handleCallAnalyzed` as
+    // `emergency_detected` — a retroactive safety net catching a vehicle-
+    // safety issue the model handled inline but didn't escalate loudly
+    // enough. Deliberately just this one boolean (see `veterinary.ts`/
+    // `dental.ts` for why no separate `urgency_flag` enum is declared).
+    extraction: [
+      {
+        field: "emergency_detected",
+        type: "boolean",
+        description:
+          "True if the call reached this vehicle-safety-emergency state — brakes failing, " +
+          "smoke, a collision, or another immediate vehicle safety issue or injury.",
+      },
+    ],
   };
 }
 
@@ -99,15 +118,19 @@ export const AUTO_REPAIR_TEMPLATE: AgentTemplate = {
       id: "collect_phone",
       name: "Collect phone",
       prompt_fragment:
-        "Ask for the best callback number and read it back digit by digit to confirm.",
-      allowed_tools: [],
+        "Ask for the best callback number and read it back digit by digit to confirm. Call " +
+        "lookup_customer with that number — if it returns a vehicle already on file, confirm " +
+        "it back in the next step instead of asking from scratch.",
+      allowed_tools: ["lookup_customer"],
     },
     {
       id: "collect_vehicle",
       name: "Collect vehicle",
       prompt_fragment:
-        "Ask for the vehicle's year, make, and model, one at a time. Cross-check the make " +
-        "against {{vehicle_makes_serviced}}.",
+        "If lookup_customer already returned this caller's vehicle (year/make/model), confirm " +
+        'it back ("still the 2019 Honda Civic?") instead of re-asking from scratch — ' +
+        "otherwise ask for the vehicle's year, make, and model, one at a time. Cross-check the " +
+        "make against {{vehicle_makes_serviced}}.",
       allowed_tools: [],
     },
     {
@@ -131,15 +154,16 @@ export const AUTO_REPAIR_TEMPLATE: AgentTemplate = {
       prompt_fragment:
         "Ask what day/time works, then call check_availability for that window. Offer the " +
         "returned open slots; if none_available, follow the waitlist-offer rule.",
-      allowed_tools: ["check_availability"],
+      allowed_tools: ["check_availability", "join_waitlist"],
     },
     {
       id: "confirm_booking",
       name: "Confirm booking",
       prompt_fragment:
         "Read back the full appointment (vehicle, service, drop-off/wait, date/time), ask the " +
-        "consent question, state the cancellation policy, then create the booking and send " +
-        "the SMS confirmation.",
+        "consent question, state the cancellation policy, then create the booking — pass " +
+        "structured_payload with vehicle_year, vehicle_make, vehicle_model, symptom_category, " +
+        "and drop_off_or_wait — and send the SMS confirmation.",
       allowed_tools: ["create_booking", "send_sms_confirmation"],
       is_terminal: true,
     },
@@ -148,7 +172,7 @@ export const AUTO_REPAIR_TEMPLATE: AgentTemplate = {
     transferToHumanState(),
     solicitorDeflectState(),
     takeMessageFallbackState(),
-  ],
+  ].map(withCallOutcomeExtraction),
   transitions: [
     { from: "greeting", to: "collect_name", on: { intent: "wants_to_book_service" } },
     { from: "greeting", to: "manage_booking", on: { intent: "wants_to_reschedule_or_cancel" } },
@@ -179,11 +203,13 @@ export const AUTO_REPAIR_TEMPLATE: AgentTemplate = {
     createBookingTool(
       "Create a service booking once vehicle, symptom, drop-off/wait preference, and a " +
         "confirmed open time are collected and the consent question has been asked.",
+      "auto",
     ),
     updateBookingTool(),
     cancelBookingTool(),
+    joinWaitlistTool(),
     lookupCustomerTool(),
-    takeMessageTool(),
+    takeMessageTool("auto"),
     sendSmsConfirmationTool(),
     transferCallTool(),
   ],

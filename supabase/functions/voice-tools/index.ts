@@ -27,6 +27,12 @@ const PAYMENT_LINK_SUCCESS_URL =
   optionalEnv("PAYMENT_LINK_SUCCESS_URL") ?? "https://heyloo.app/pay/success";
 const PAYMENT_LINK_CANCEL_URL =
   optionalEnv("PAYMENT_LINK_CANCEL_URL") ?? "https://heyloo.app/pay/cancelled";
+// restaurant.md Finding B4 / VERIFY-12 — unset until a Geocodio key is
+// provisioned; `create_order`'s address-save step no-ops without it.
+const GEOCODE_API_KEY = optionalEnv("GEOCODE_API_KEY");
+// FIX_REQUESTS.md — the base URL the dental-intake link is built against
+// (create_booking.ts, dental-only, best-effort post-booking side effect).
+const APP_BASE_URL = optionalEnv("APP_BASE_URL") ?? "https://heyloo.app";
 
 // Module-scope — survives across invocations on the same warm instance
 // (SYSTEM_DESIGN §5's per-tool rolling-window circuit breaker).
@@ -97,6 +103,8 @@ Deno.serve(async (req: Request) => {
             successUrl: PAYMENT_LINK_SUCCESS_URL,
             cancelUrl: PAYMENT_LINK_CANCEL_URL,
           },
+          dentalIntake: { appBaseUrl: APP_BASE_URL },
+          ...(GEOCODE_API_KEY ? { geocode: { fetchImpl: fetch, apiKey: GEOCODE_API_KEY } } : {}),
         },
         call_id,
         name,

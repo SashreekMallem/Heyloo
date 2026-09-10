@@ -25,10 +25,29 @@ export async function takeMessage(
 ): Promise<TakeMessageResult> {
   const callerPhone = normalizeE164(args.caller_phone) ?? args.caller_phone;
 
+  // GAP_REGISTER.md §2 Legal item 4 / real_estate — a caller who leaves a
+  // message instead of completing a booking still gets their captured
+  // intake data (matter_type, buyer_or_seller, etc.) on
+  // `call_logs.structured_booking_payload`, the same column
+  // `create_booking.ts` writes, rather than only inside the free-text
+  // `message_text`. Merged into whatever `structured_booking_payload`
+  // already holds (jsonb `||`) rather than overwritten, since a single
+  // call can reach `take_message` after an earlier tool already wrote
+  // something there.
+  //
+  // `callback_window` is folded in here too (not just left inside the
+  // transient `messages_outbound.payload` row below) so it's durably
+  // visible on the Call Detail page's `structured_booking_payload` render
+  // regardless of which channel/template renders the staff SMS.
+  const structuredPayload = {
+    ...(args.structured_payload ?? {}),
+    ...(args.callback_window ? { callback_window: args.callback_window } : {}),
+  };
   await sql`
     update public.call_logs
     set message_text = ${args.message_text},
-        classification = coalesce(classification, 'after_hours_message')
+        classification = coalesce(classification, 'after_hours_message'),
+        structured_booking_payload = coalesce(structured_booking_payload, '{}'::jsonb) || ${JSON.stringify(structuredPayload)}::jsonb
     where id = ${ctx.callLogId} and tenant_id = ${ctx.tenantId}
   `;
 

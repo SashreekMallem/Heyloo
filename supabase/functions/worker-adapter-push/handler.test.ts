@@ -244,6 +244,124 @@ describe("pushToAdapter: square", () => {
     );
     expect(result).toBe(true);
   });
+
+  describe("update/cancel semantics (GAP_REGISTER.md §4 Cluster C — FIX-1 disclosed this was CREATE-only)", () => {
+    it("PUTs an update instead of re-creating when the booking was already synced and is not cancelled", async () => {
+      const rescheduledBooking = {
+        ...BOOKING_ROW,
+        status: "confirmed",
+        start_at: "2026-09-11T14:00:00Z",
+      };
+      const sql = makeSql([
+        { when: "from public.adapter_connections", rows: [CONNECTION_ROW] },
+        { when: "from public.bookings b", rows: [rescheduledBooking] },
+        { when: "from public.adapter_sync_state", rows: [{ external_id: "sq_booking_1" }] },
+        { when: "insert into public.adapter_sync_state", rows: [] },
+      ]);
+      const calls: { method: string | undefined; url: string }[] = [];
+      const deps: AdapterPushDeps = {
+        ...DEPS,
+        fetchImpl: (async (url: string, init?: RequestInit) => {
+          calls.push({ method: init?.method, url: String(url) });
+          if (init?.method === "GET") return jsonResponse({ booking: { version: 3 } });
+          return jsonResponse({ booking: { id: "sq_booking_1", version: 4 } });
+        }) as unknown as typeof fetch,
+      };
+      const result = await pushToAdapter(
+        sql,
+        {
+          tenant_id: "t1",
+          adapter: "square",
+          entity_type: "booking",
+          entity_id: "booking_1",
+          idempotency_key: "booking_1:update:x",
+          attempt: 0,
+        },
+        createLogger(),
+        deps,
+      );
+      expect(result).toBe(true);
+      expect(
+        calls.some((c) => c.method === "GET" && c.url.includes("/v2/bookings/sq_booking_1")),
+      ).toBe(true);
+      expect(
+        calls.some((c) => c.method === "PUT" && c.url.includes("/v2/bookings/sq_booking_1")),
+      ).toBe(true);
+      // Never re-hits the CREATE endpoint (POST /v2/bookings) for an
+      // already-synced booking.
+      expect(calls.some((c) => c.method === "POST" && c.url.endsWith("/v2/bookings"))).toBe(false);
+    });
+
+    it("POSTs a cancel instead of a create when the booking is cancelled and was already synced", async () => {
+      const cancelledBooking = { ...BOOKING_ROW, status: "cancelled" };
+      const sql = makeSql([
+        { when: "from public.adapter_connections", rows: [CONNECTION_ROW] },
+        { when: "from public.bookings b", rows: [cancelledBooking] },
+        { when: "from public.adapter_sync_state", rows: [{ external_id: "sq_booking_1" }] },
+        { when: "insert into public.adapter_sync_state", rows: [] },
+      ]);
+      const calls: { method: string | undefined; url: string }[] = [];
+      const deps: AdapterPushDeps = {
+        ...DEPS,
+        fetchImpl: (async (url: string, init?: RequestInit) => {
+          calls.push({ method: init?.method, url: String(url) });
+          if (init?.method === "GET") return jsonResponse({ booking: { version: 3 } });
+          return jsonResponse({ booking: { id: "sq_booking_1", status: "CANCELLED_BY_SELLER" } });
+        }) as unknown as typeof fetch,
+      };
+      const result = await pushToAdapter(
+        sql,
+        {
+          tenant_id: "t1",
+          adapter: "square",
+          entity_type: "booking",
+          entity_id: "booking_1",
+          idempotency_key: "booking_1:cancel",
+          attempt: 0,
+        },
+        createLogger(),
+        deps,
+      );
+      expect(result).toBe(true);
+      expect(
+        calls.some(
+          (c) => c.method === "POST" && c.url.endsWith("/v2/bookings/sq_booking_1/cancel"),
+        ),
+      ).toBe(true);
+    });
+
+    it("cancelling a booking that was never synced to Square is a harmless no-op (never calls Square)", async () => {
+      const cancelledBooking = { ...BOOKING_ROW, status: "cancelled" };
+      const sql = makeSql([
+        { when: "from public.adapter_connections", rows: [CONNECTION_ROW] },
+        { when: "from public.bookings b", rows: [cancelledBooking] },
+        { when: "from public.adapter_sync_state", rows: [] },
+      ]);
+      let fetchCalled = false;
+      const deps: AdapterPushDeps = {
+        ...DEPS,
+        fetchImpl: (async () => {
+          fetchCalled = true;
+          return jsonResponse({});
+        }) as unknown as typeof fetch,
+      };
+      const result = await pushToAdapter(
+        sql,
+        {
+          tenant_id: "t1",
+          adapter: "square",
+          entity_type: "booking",
+          entity_id: "booking_1",
+          idempotency_key: "booking_1:cancel",
+          attempt: 0,
+        },
+        createLogger(),
+        deps,
+      );
+      expect(result).toBe(true);
+      expect(fetchCalled).toBe(false);
+    });
+  });
 });
 
 describe("adapter_connections token encryption (DB-H2)", () => {
@@ -553,6 +671,141 @@ describe("pushToAdapter: google_calendar", () => {
     );
     expect(result).toBe(true);
     expect(call).toBe(2);
+  });
+
+  describe("update/cancel semantics (GAP_REGISTER.md §4 Cluster C — FIX-1 disclosed this was CREATE-only)", () => {
+    it("PATCHes the existing event instead of inserting a new one on a reschedule", async () => {
+      const rescheduledBooking = {
+        ...BOOKING_ROW,
+        status: "confirmed",
+        start_at: "2026-09-11T14:00:00Z",
+      };
+      const sql = makeSql([
+        { when: "from public.adapter_connections", rows: [CONNECTION_ROW] },
+        { when: "from public.bookings b", rows: [rescheduledBooking] },
+        { when: "from public.adapter_sync_state", rows: [{ external_id: "evt_1" }] },
+        { when: "insert into public.adapter_sync_state", rows: [] },
+      ]);
+      const calls: { method: string | undefined; url: string }[] = [];
+      const deps: AdapterPushDeps = {
+        ...DEPS,
+        fetchImpl: (async (url: string, init?: RequestInit) => {
+          calls.push({ method: init?.method, url: String(url) });
+          return jsonResponse({ id: "evt_1" });
+        }) as unknown as typeof fetch,
+      };
+      const result = await pushToAdapter(
+        sql,
+        {
+          tenant_id: "t1",
+          adapter: "google_calendar",
+          entity_type: "booking",
+          entity_id: "booking_3",
+          idempotency_key: "booking_3:update:x",
+          attempt: 0,
+        },
+        createLogger(),
+        deps,
+      );
+      expect(result).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.method).toBe("PATCH");
+      expect(calls[0]?.url).toContain("/events/evt_1");
+    });
+
+    it("DELETEs the existing event when the booking is cancelled", async () => {
+      const cancelledBooking = { ...BOOKING_ROW, status: "cancelled" };
+      const sql = makeSql([
+        { when: "from public.adapter_connections", rows: [CONNECTION_ROW] },
+        { when: "from public.bookings b", rows: [cancelledBooking] },
+        { when: "from public.adapter_sync_state", rows: [{ external_id: "evt_1" }] },
+        { when: "insert into public.adapter_sync_state", rows: [] },
+      ]);
+      const calls: { method: string | undefined; url: string }[] = [];
+      const deps: AdapterPushDeps = {
+        ...DEPS,
+        fetchImpl: (async (url: string, init?: RequestInit) => {
+          calls.push({ method: init?.method, url: String(url) });
+          return new Response(null, { status: 204 });
+        }) as unknown as typeof fetch,
+      };
+      const result = await pushToAdapter(
+        sql,
+        {
+          tenant_id: "t1",
+          adapter: "google_calendar",
+          entity_type: "booking",
+          entity_id: "booking_3",
+          idempotency_key: "booking_3:cancel",
+          attempt: 0,
+        },
+        createLogger(),
+        deps,
+      );
+      expect(result).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.method).toBe("DELETE");
+    });
+
+    it("treats a 404 on delete as already-gone success, never a failure", async () => {
+      const cancelledBooking = { ...BOOKING_ROW, status: "cancelled" };
+      const sql = makeSql([
+        { when: "from public.adapter_connections", rows: [CONNECTION_ROW] },
+        { when: "from public.bookings b", rows: [cancelledBooking] },
+        { when: "from public.adapter_sync_state", rows: [{ external_id: "evt_1" }] },
+        { when: "insert into public.adapter_sync_state", rows: [] },
+      ]);
+      const deps: AdapterPushDeps = {
+        ...DEPS,
+        fetchImpl: (async () => new Response(null, { status: 404 })) as unknown as typeof fetch,
+      };
+      const result = await pushToAdapter(
+        sql,
+        {
+          tenant_id: "t1",
+          adapter: "google_calendar",
+          entity_type: "booking",
+          entity_id: "booking_3",
+          idempotency_key: "booking_3:cancel",
+          attempt: 0,
+        },
+        createLogger(),
+        deps,
+      );
+      expect(result).toBe(true);
+    });
+
+    it("cancelling a booking that was never synced is a harmless no-op (never calls Google)", async () => {
+      const cancelledBooking = { ...BOOKING_ROW, status: "cancelled" };
+      const sql = makeSql([
+        { when: "from public.adapter_connections", rows: [CONNECTION_ROW] },
+        { when: "from public.bookings b", rows: [cancelledBooking] },
+        { when: "from public.adapter_sync_state", rows: [] },
+      ]);
+      let fetchCalled = false;
+      const deps: AdapterPushDeps = {
+        ...DEPS,
+        fetchImpl: (async () => {
+          fetchCalled = true;
+          return jsonResponse({});
+        }) as unknown as typeof fetch,
+      };
+      const result = await pushToAdapter(
+        sql,
+        {
+          tenant_id: "t1",
+          adapter: "google_calendar",
+          entity_type: "booking",
+          entity_id: "booking_3",
+          idempotency_key: "booking_3:cancel",
+          attempt: 0,
+        },
+        createLogger(),
+        deps,
+      );
+      expect(result).toBe(true);
+      expect(fetchCalled).toBe(false);
+    });
   });
 });
 

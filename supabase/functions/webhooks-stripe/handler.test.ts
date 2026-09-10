@@ -278,5 +278,56 @@ describe("processStripeEvent", () => {
       await processStripeEvent(sql, event, logger);
       expect(calls.some((c) => c.text.includes("update public.referrals"))).toBe(false);
     });
+
+    it("scopes a per-invoice refund to only that period's commission_events, leaving the referral itself active", async () => {
+      const { sql, calls } = makeSql({
+        "from public.tenants where stripe_customer_id": [{ id: "t1" }],
+        "from public.billing_invoices": [{ period_start: "2026-08-01" }],
+        "from public.referrals": [{ id: "r1", referral_partner_id: "p1", status: "qualified" }],
+        "from public.commission_events": [{ id: "ce_aug", amount_cents: 5000, status: "accrued" }],
+      });
+      const event: StripeEvent = {
+        id: "evt_refund_invoice",
+        type: "charge.refunded",
+        data: { object: { id: "ch_1", customer: "cus_1", invoice: "in_aug" } },
+      };
+      await processStripeEvent(sql, event, logger);
+
+      // Referral relationship itself is NOT clawed back — only the one period.
+      expect(calls.some((c) => c.text.includes("update public.referrals set status"))).toBe(false);
+      const commissionUpdate = calls.find((c) =>
+        c.text.includes("update public.commission_events set status = 'clawed_back'"),
+      );
+      expect(commissionUpdate?.values).toContain("ce_aug");
+      const commissionSelect = calls.find(
+        (c) =>
+          c.text.includes("select id, amount_cents, status from public.commission_events") &&
+          c.text.includes("period ="),
+      );
+      expect(commissionSelect?.values).toContain("2026-08-01");
+    });
+
+    it("falls back to a full clawback when the refunded charge's invoice has no matching billing_invoices row", async () => {
+      const { sql, calls } = makeSql({
+        "from public.tenants where stripe_customer_id": [{ id: "t1" }],
+        "from public.billing_invoices": [], // unresolvable invoice -> null period
+        "from public.referrals": [{ id: "r1", referral_partner_id: "p1", status: "qualified" }],
+        "from public.commission_events": [{ id: "ce1", amount_cents: 5000, status: "accrued" }],
+      });
+      const event: StripeEvent = {
+        id: "evt_refund_unknown_invoice",
+        type: "charge.refunded",
+        data: { object: { id: "ch_1", customer: "cus_1", invoice: "in_unknown" } },
+      };
+      await processStripeEvent(sql, event, logger);
+
+      expect(
+        calls.some(
+          (c) =>
+            c.text.includes("update public.referrals set status = 'clawed_back'") &&
+            c.values.includes("r1"),
+        ),
+      ).toBe(true);
+    });
   });
 });

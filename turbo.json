@@ -18,6 +18,10 @@
       "dependsOn": ["^build"],
       "outputs": []
     },
+    "@heyloo/adapter-retell#test": {
+      "dependsOn": ["^build", "@heyloo/templates#build"],
+      "outputs": []
+    },
     "dev": {
       "cache": false,
       "persistent": true

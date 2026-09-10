@@ -497,6 +497,9 @@ importers:
         specifier: 4.5.4
         version: 4.5.4
     devDependencies:
+      '@heyloo/canonical-types':
+        specifier: workspace:*
+        version: link:../../packages/canonical-types
       '@types/node':
         specifier: 22.20.1
         version: 22.20.1

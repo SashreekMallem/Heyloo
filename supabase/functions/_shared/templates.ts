@@ -25,7 +25,10 @@ export type TemplateKey =
   | "reminder"
   | "review_request"
   | "outreach_demo_followup"
-  | "owner_reply";
+  | "owner_reply"
+  | "dental_intake_link"
+  | "order_ready"
+  | "waitlist_slot_opened";
 
 export interface RenderedMessage {
   subject?: string;
@@ -52,7 +55,10 @@ export function renderTemplate(
     case "take_message": {
       const callerName = str("caller_name", "A caller");
       const callerPhone = str("caller_phone");
-      return { body: `${callerName} (${callerPhone}) left a message: "${str("message_text")}"` };
+      const callbackWindow = str("callback_window");
+      return {
+        body: `${callerName} (${callerPhone}) left a message: "${str("message_text")}"${callbackWindow ? ` — callback window: ${callbackWindow}` : ""}`,
+      };
     }
     case "order_confirmation": {
       const total = num("total_cents");
@@ -112,12 +118,32 @@ export function renderTemplate(
           `Hi ${str("contact_name", "there")} — thanks for your interest! Here's a live demo you can ` +
           `try right now: ${str("demo_url")}`,
       };
+    case "dental_intake_link":
+      // `url` arrives already fully-built (APP_BASE_URL + the one-time
+      // token) by the caller that enqueues this row (_shared/dental-intake.ts
+      // — same "build the absolute URL where env access exists, render
+      // only interpolates" convention `payment_link` above already uses).
+      return {
+        body: `Please complete your intake info (DOB + insurance) before your visit: ${str("url")}. This link is single-use and expires soon.`,
+      };
     case "owner_reply":
       // Verbatim passthrough of the tenant owner's own typed reply text
       // (dashboard Messages-thread "reply" feature) — unlike every other
       // case above, this isn't a fixed transactional template; the whole
       // point is that the SMS says exactly what the owner typed.
       return { body: str("body") };
+    case "order_ready":
+      // Inserted by `apps/web/src/app/api/tenant/orders/[id]/route.ts` on a
+      // transition into `status: 'ready'` — no payload fields today
+      // (FIX_REQUESTS.md), fixed body.
+      return { body: "Your order is ready for pickup!" };
+    case "waitlist_slot_opened":
+      // Inserted by `fn_notify_waitlist_on_cancellation`
+      // (20260907131400_functions_triggers.sql) with
+      // `payload: {start, waitlist_entry_id}` (FIX_REQUESTS.md).
+      return {
+        body: `A spot just opened up${str("start") ? ` around ${str("start")}` : ""}! Call us back if you'd like to grab it.`,
+      };
     default:
       return { body: "" };
   }

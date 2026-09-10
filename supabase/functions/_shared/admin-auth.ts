@@ -11,12 +11,34 @@ export interface AdminJwtClaims {
     tenant_id?: string;
     role?: string;
     referral_partner_id?: string;
+    /** Stamped by `custom_access_token_hook` only from a real, currently
+     * active `impersonation_sessions` row (20260910110000_impersonation_
+     * claim.sql) — the platform-admin user id who started that session.
+     * Present on the IMPERSONATED tenant owner's own token, never
+     * forgeable by an ordinary tenant login. */
+    impersonated_by?: string;
+    impersonation_edit_enabled?: boolean;
   };
   aal?: "aal1" | "aal2";
 }
 
 export function isPlatformAdmin(claims: AdminJwtClaims | null): boolean {
   return claims?.app_metadata?.platform_admin === true;
+}
+
+/**
+ * The admin user id backing an `impersonated_by` claim, or `null` when the
+ * token carries none. Used as an alternative identity/authorization source
+ * for the narrow impersonation self-service routes (`impersonate-end`,
+ * `impersonate/edit-mode`) — see `resolveImpersonationActor` in
+ * `admin/handler.ts` and `docs/audit/FIX_REQUESTS.md`'s impersonation
+ * cookie-fix entry for why this is needed and why it's safe (the claim can
+ * only be stamped by the hook from a real active session row, so trusting
+ * it here does not let an ordinary tenant forge admin identity).
+ */
+export function impersonatedByClaim(claims: AdminJwtClaims | null): string | null {
+  const value = claims?.app_metadata?.impersonated_by;
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 /**

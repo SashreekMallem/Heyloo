@@ -77,16 +77,84 @@ export interface RetellFunctionTool {
    * field is REQUIRED whenever `parameters` is present at all).
    */
   parameters: { type: "object"; properties: Record<string, unknown>; required?: string[] };
+  /**
+   * RETELL-VERIFY (GAP_REGISTER §1.4): confirmed via `retell-sdk`'s
+   * `ConversationFlowCreateParams.CustomTool` that `speak_during_execution`/
+   * `speak_after_execution` live on the TOOL definition itself (this
+   * object), NOT on `FunctionNode` (which only re-exposes
+   * `speak_during_execution` as a per-node override, no
+   * `speak_after_execution` field at all — contrary to what the gap
+   * register's own fix text assumed; see conversation-flow.ts's header
+   * comment for the full correction). Set on any tool this compiler
+   * function-locks to a single-tool state (task item 2) so the model
+   * reliably reacts to/speaks the tool's result once it returns.
+   */
+  speak_during_execution?: boolean;
+  speak_after_execution?: boolean;
 }
+
+/** A Retell "native" transfer-call tool — used in place of `RetellFunctionTool` wherever a canonical `transfer_call` tool is declared (GAP_REGISTER §1.4 item 4: "native wiring, not a custom webhook"). Shared shape across `general_tools`/state `tools` (multi_prompt, single_prompt) — RETELL-VERIFY, confirmed via `retell-sdk`'s `LlmCreateParams.TransferCallTool`. */
+export interface RetellTransferCallTool {
+  type: "transfer_call";
+  name: string;
+  description?: string;
+  transfer_destination: RetellTransferDestination;
+  transfer_option: RetellTransferOption;
+}
+
+export type RetellTransferDestination =
+  | { type: "predefined"; number: string; extension?: string }
+  | { type: "inferred"; prompt: string };
+
+/**
+ * Only `warm_transfer` is compiled by this package (SYSTEM_DESIGN §4.5:
+ * "warm transfers always carry a context summary"). `agentic_warm_transfer`
+ * is deliberately omitted from this union — RETELL-VERIFY (confirmed via
+ * `sdk-contract.test.ts` against the real SDK types): it REQUIRES a nested
+ * `agentic_transfer_config` object this compiler never constructs, so
+ * including the bare variant here would make this type unsound (assignable
+ * to `RetellTransferOption` but NOT to the real SDK's
+ * `TransferOptionAgenticWarmTransfer`) for no benefit — nothing in this
+ * package ever emits it.
+ */
+export type RetellTransferOption = { type: "cold_transfer" } | { type: "warm_transfer" };
+
+export type RetellStateTool = RetellFunctionTool | RetellTransferCallTool;
 
 // ---------------------------------------------------------------------------
 // Conversation Flow target
 // ---------------------------------------------------------------------------
 
+/** A single equation, per `EquationCondition.Equation` (RETELL-VERIFY, identical shape on every node's edge type). */
+export interface RetellEquation {
+  left: string;
+  operator:
+    | "=="
+    | "!="
+    | ">"
+    | ">="
+    | "<"
+    | "<="
+    | "contains"
+    | "not_contains"
+    | "exists"
+    | "not_exist";
+  right?: string;
+}
+
+export type RetellTransitionCondition =
+  | { type: "prompt"; prompt: string }
+  | { type: "equation"; operator: "||" | "&&"; equations: RetellEquation[] };
+
 export interface RetellFlowEdge {
   id: string;
   destination_node_id: string;
-  transition_condition: { type: "prompt"; prompt: string };
+  transition_condition: RetellTransitionCondition;
+}
+
+/** `condition` is REQUIRED (non-empty) — confirmed via retell-sdk's `GlobalNodeSetting` (VERIFY-8, resolved); shared identically across every node type this compiler emits. */
+export interface RetellGlobalNodeSetting {
+  condition: string;
 }
 
 export interface RetellConversationNode {
@@ -95,14 +163,54 @@ export interface RetellConversationNode {
   name: string;
   instruction: { type: "prompt"; text: string };
   edges: RetellFlowEdge[];
-  /**
-   * Reachable from ANY node in the flow — Retell's global-node interrupt
-   * mechanism (SYSTEM_DESIGN §4.1). `condition` is REQUIRED (non-empty) —
-   * confirmed via retell-typescript-sdk's `GlobalNodeSetting` (VERIFY-8,
-   * resolved); this replaces a previously-assumed bare `global_node: true`
-   * boolean, which is not a real field.
-   */
-  global_node_setting?: { condition: string };
+  global_node_setting?: RetellGlobalNodeSetting;
+}
+
+/**
+ * RETELL-VERIFY (GAP_REGISTER §1.4, confirmed via retell-sdk's
+ * `ConversationFlowCreateParams.FunctionNode`): a single-tool node that
+ * hard-locks the model to exactly one callable tool, unlike a plain
+ * `ConversationNode` (which has no per-node tool-scoping field at all — see
+ * conversation-flow.ts's header). `tool_id` is the referenced tool's
+ * `name` for a `tool_type: "local"` tool (one declared in this same flow's
+ * top-level `tools[]`) — RETELL-VERIFY: local tools carry no separate `id`
+ * field on the wire, `name` is their only identifier, so `tool_id` is
+ * assumed to mean that name for the "local" case; `docs/VERIFY.md` tracks
+ * confirming this against a live sandbox call before go-live (egress to
+ * docs.retellai.com blocked in this environment, CLAUDE.md Rule 1).
+ */
+export interface RetellFunctionNode {
+  id: string;
+  type: "function";
+  tool_id: string;
+  tool_type: "local" | "shared";
+  wait_for_result: boolean;
+  name?: string;
+  instruction?: { type: "prompt"; text: string };
+  speak_during_execution?: boolean;
+  edges?: RetellFlowEdge[];
+  else_edge?: { id: string; transition_condition: RetellTransitionCondition };
+  global_node_setting?: RetellGlobalNodeSetting;
+}
+
+/**
+ * RETELL-VERIFY (GAP_REGISTER §1.4 item 4, confirmed via retell-sdk's
+ * `ConversationFlowCreateParams.TransferCallNode`): the native transfer
+ * mechanism — replaces the previous custom-webhook `transfer_call` tool
+ * entirely for the `conversation_flow` target (never appears in the flow's
+ * top-level `tools[]`). `edge` is singular and REQUIRED on the wire (not an
+ * array) — it is the "transfer failed" fallback path only; a successful
+ * transfer bridges the call away from this flow with no further routing
+ * needed here.
+ */
+export interface RetellTransferCallNode {
+  id: string;
+  type: "transfer_call";
+  transfer_destination: RetellTransferDestination;
+  transfer_option: RetellTransferOption;
+  edge: { id: string; transition_condition: RetellTransitionCondition };
+  name?: string;
+  global_node_setting?: RetellGlobalNodeSetting;
 }
 
 export interface RetellEndNode {
@@ -111,7 +219,11 @@ export interface RetellEndNode {
   name: string;
 }
 
-export type RetellConversationFlowNode = RetellConversationNode | RetellEndNode;
+export type RetellConversationFlowNode =
+  | RetellConversationNode
+  | RetellFunctionNode
+  | RetellTransferCallNode
+  | RetellEndNode;
 
 export interface RetellConversationFlowRequest {
   /** Shared instructions injected before every node's own instruction — lowered from `AgentTemplate.system_prompt`. */
@@ -151,7 +263,7 @@ export interface RetellMultiPromptState {
   name: string;
   state_prompt: string;
   edges: RetellMultiPromptStateEdge[];
-  tools: RetellFunctionTool[];
+  tools: RetellStateTool[];
 }
 
 export interface RetellMultiPromptRequest {
@@ -167,9 +279,31 @@ export interface RetellMultiPromptRequest {
 
 export interface RetellSinglePromptRequest {
   general_prompt: string;
-  general_tools: RetellFunctionTool[];
+  general_tools: RetellStateTool[];
   model?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Post-call analysis data (GAP_REGISTER §1.1) — an AGENT-level field
+// (RETELL-VERIFY: confirmed via retell-sdk's `AgentResponse.
+// post_call_analysis_data`, NOT a field on either flow-resource request
+// body), so it is not part of `RetellFlowRequest` above; `agents.ts` reads
+// `CompiledAgentPayload.postCallAnalysisData` and attaches it to the
+// create/update-agent request body directly.
+// ---------------------------------------------------------------------------
+
+interface RetellAnalysisFieldBase {
+  name: string;
+  description: string;
+  required?: boolean;
+  conditional_prompt?: string;
+}
+
+export type RetellPostCallAnalysisField =
+  | (RetellAnalysisFieldBase & { type: "string"; examples?: string[] })
+  | (RetellAnalysisFieldBase & { type: "enum"; choices: string[] })
+  | (RetellAnalysisFieldBase & { type: "boolean" })
+  | (RetellAnalysisFieldBase & { type: "number" });
 
 // ---------------------------------------------------------------------------
 // Compiler output — internal to this package (agents.ts consumes it to
@@ -188,4 +322,6 @@ export interface CompiledAgentPayload {
   /** True only when the disclosure-line publish gate passed. Never publish/create-agent when false. */
   disclosureVerified: boolean;
   flowRequest: RetellFlowRequest;
+  /** GAP_REGISTER §1.1 — lowered from every state's `extraction[]`; attached to the agent body by `agents.ts`, never sent as part of `flowRequest`. */
+  postCallAnalysisData: RetellPostCallAnalysisField[];
 }

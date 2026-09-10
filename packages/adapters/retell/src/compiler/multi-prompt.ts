@@ -16,6 +16,12 @@
  *   state (Retell LLM states have no separate global-node primitive the
  *   way Conversation Flow does — an edge from every applicable state is the
  *   structural equivalent: the escape is reachable, not model-discretionary).
+ * - The one reserved `transfer_call` tool (`packages/templates/src/shared/
+ *   tools.ts`) compiles to Retell LLM's native `TransferCallTool`
+ *   (GAP_REGISTER §1.4 item 4 — "not a custom webhook"), not a custom
+ *   function — RETELL-VERIFY, confirmed via retell-sdk's
+ *   `LlmCreateParams.State.TransferCallTool`. Every other declared tool
+ *   compiles as before.
  */
 
 import type { AgentTemplate } from "@heyloo/canonical-types";
@@ -23,25 +29,46 @@ import type {
   RetellFunctionTool,
   RetellMultiPromptRequest,
   RetellMultiPromptState,
+  RetellStateTool,
+  RetellTransferCallTool,
 } from "./types.js";
+
+const TRANSFER_CALL_TOOL_NAME = "transfer_call";
+
+function nativeTransferCallTool(description: string): RetellTransferCallTool {
+  return {
+    type: "transfer_call",
+    name: TRANSFER_CALL_TOOL_NAME,
+    description,
+    transfer_destination: { type: "predefined", number: "{{transfer_number}}" },
+    // Warm transfer — SYSTEM_DESIGN §4.5: "warm transfers always carry a context summary".
+    transfer_option: { type: "warm_transfer" },
+  };
+}
 
 export function compileMultiPrompt(
   template: AgentTemplate,
   toolWebhookUrl: string,
 ): RetellMultiPromptRequest {
-  const tools: RetellFunctionTool[] = template.tools.map((tool) => ({
-    type: "custom",
-    name: tool.name,
-    description: tool.description,
-    url: toolWebhookUrl,
-    // `properties` is REQUIRED per retell-typescript-sdk's `CustomTool.
-    // Parameters` — default an omitted one to `{}` (RETELL-VERIFY).
-    parameters: {
-      type: "object",
-      properties: tool.parameters.properties ?? {},
-      ...(tool.parameters.required !== undefined ? { required: tool.parameters.required } : {}),
-    },
-  }));
+  const tools: RetellStateTool[] = template.tools.map((tool) => {
+    if (tool.name === TRANSFER_CALL_TOOL_NAME) {
+      return nativeTransferCallTool(tool.description);
+    }
+    const functionTool: RetellFunctionTool = {
+      type: "custom",
+      name: tool.name,
+      description: tool.description,
+      url: toolWebhookUrl,
+      // `properties` is REQUIRED per retell-typescript-sdk's `CustomTool.
+      // Parameters` — default an omitted one to `{}` (RETELL-VERIFY).
+      parameters: {
+        type: "object",
+        properties: tool.parameters.properties ?? {},
+        ...(tool.parameters.required !== undefined ? { required: tool.parameters.required } : {}),
+      },
+    };
+    return functionTool;
+  });
   const toolsByName = new Map(tools.map((t) => [t.name, t]));
 
   const statesByName = new Map<string, RetellMultiPromptState>();
@@ -52,7 +79,7 @@ export function compileMultiPrompt(
       edges: [],
       tools: state.allowed_tools
         .map((t) => toolsByName.get(t))
-        .filter((t): t is RetellFunctionTool => t !== undefined),
+        .filter((t): t is RetellStateTool => t !== undefined),
     });
   }
 

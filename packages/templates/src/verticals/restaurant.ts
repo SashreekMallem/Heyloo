@@ -6,10 +6,21 @@
  * orders REQUIRE address capture + a delivery-radius check (handled by
  * `create_order` server-side — a decline there always offers pickup
  * instead, MASTER_SPEC §3.1 default-address reuse noted inline below).
+ *
+ * NOTE (`create_order`'s `allergies`/`special_instructions` args —
+ * GAP_REGISTER.md §2 Restaurant item 2, now fixed): `zCreateOrderRequest`
+ * (`@heyloo/canonical-types`), the runtime-enforced schema
+ * (`_shared/schemas/voice-tools.ts`), AND the model-FACING JSON-Schema
+ * `create_order` sends to Retell (`createOrderTool()`,
+ * `packages/templates/src/shared/tools.ts`) all declare `allergies`/
+ * `special_instructions` as known properties, so the model has a real
+ * declared slot to put the allergy answer in — the prompt instruction
+ * below draws on it directly.
  */
 
 import type { AgentTemplate } from "@heyloo/canonical-types";
 import { DISCLOSURE_LINE } from "../shared/disclosure.js";
+import { withCallOutcomeExtraction } from "../shared/extraction.js";
 import {
   CANCELLATION_POLICY_READOUT_FRAGMENT,
   CONSENT_ASK_FRAGMENT,
@@ -26,6 +37,7 @@ import {
   checkAvailabilityTool,
   createBookingTool,
   createOrderTool,
+  joinWaitlistTool,
   lookupCustomerTool,
   sendPaymentLinkTool,
   sendSmsConfirmationTool,
@@ -98,7 +110,7 @@ export const RESTAURANT_TEMPLATE: AgentTemplate = {
       prompt_fragment:
         "Call check_availability for the requested party size and time. If none_available, " +
         "follow the waitlist-offer rule.",
-      allowed_tools: ["check_availability"],
+      allowed_tools: ["check_availability", "join_waitlist"],
     },
     {
       id: "confirm_reservation",
@@ -145,9 +157,11 @@ export const RESTAURANT_TEMPLATE: AgentTemplate = {
       id: "confirm_order",
       name: "Confirm order",
       prompt_fragment:
-        "Follow the full-read-back rule, ask the consent question, then call create_order. " +
-        "If the order requires prepayment, send a payment link; always send the SMS " +
-        "confirmation.",
+        "Follow the full-read-back rule, ask the consent question, then call create_order — " +
+        "pass whatever the caller said about allergies as the allergies argument (an empty " +
+        "list if they said none) and any other special instructions as special_instructions, " +
+        "so the kitchen sees them, not just the transcript. If the order requires prepayment, " +
+        "send a payment link; always send the SMS confirmation.",
       allowed_tools: ["create_order", "send_payment_link", "send_sms_confirmation"],
       is_terminal: true,
     },
@@ -156,7 +170,7 @@ export const RESTAURANT_TEMPLATE: AgentTemplate = {
     solicitorDeflectState(),
     safetyEmergencyState(),
     takeMessageFallbackState(),
-  ],
+  ].map(withCallOutcomeExtraction),
   transitions: [
     { from: "greeting", to: "order_or_reservation", on: { intent: "greeting_complete" } },
     {
@@ -214,12 +228,14 @@ export const RESTAURANT_TEMPLATE: AgentTemplate = {
     createBookingTool(
       "Create a table reservation once party size and a confirmed open time are collected and " +
         "the consent question has been asked.",
+      "restaurant",
     ),
     updateBookingTool(),
     cancelBookingTool(),
     createOrderTool(),
+    joinWaitlistTool(),
     lookupCustomerTool(),
-    takeMessageTool(),
+    takeMessageTool("restaurant"),
     sendSmsConfirmationTool(),
     sendPaymentLinkTool(),
     transferCallTool(),

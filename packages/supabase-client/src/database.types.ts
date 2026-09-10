@@ -54,6 +54,10 @@ export type TenantRow = {
   voice_reminders_enabled: boolean;
   a2p_status: "pending_verification" | "verified" | "failed";
   deleted_at: Nullable<string>;
+  // 20260910150000_tenants_policies_reviewed_at.sql (FIX_REQUESTS.md) — set
+  // the moment a tenant owner/admin saves the vertical-details form with a
+  // non-empty cancellation_policy.text; NULL = never reviewed/saved.
+  policies_reviewed_at: Nullable<string>;
   created_at: string;
   updated_at: string;
 };
@@ -224,6 +228,7 @@ export type ResourceRow = {
   type: "chair" | "room" | "table" | "bay" | "staff" | "agent";
   name: string;
   capacity: number;
+  room_type: Nullable<string>;
   active: boolean;
   metadata: Record<string, unknown>;
   created_at: string;
@@ -262,6 +267,8 @@ export type BookingRow = {
   idempotency_key: Nullable<string>;
   notes: Nullable<string>;
   structured_payload: Record<string, unknown>;
+  quoted_rate_cents: Nullable<number>;
+  hold_expires_at: Nullable<string>;
   cancel_reason: Nullable<string>;
   cancelled_at: Nullable<string>;
   identity_verified_by: Nullable<"phone_match" | "knowledge">;
@@ -285,11 +292,14 @@ export type OrderRow = {
   subtotal_cents: number;
   tax_cents: number;
   tip_cents: number;
+  delivery_fee_cents: number;
   total_cents: number;
   status: "received" | "confirmed" | "preparing" | "ready" | "completed" | "cancelled";
   source_call_id: Nullable<string>;
   pos_order_id: Nullable<string>;
   idempotency_key: string;
+  allergies: Nullable<string[]>;
+  special_instructions: Nullable<string>;
   created_at: string;
   updated_at: string;
 };
@@ -302,6 +312,7 @@ export type WaitlistEntryRow = {
   resource_type: Nullable<string>;
   window: string;
   status: "active" | "notified" | "converted" | "expired";
+  idempotency_key: Nullable<string>;
   created_at: string;
 };
 
@@ -361,6 +372,50 @@ export type ReferralPartnerRow = {
   fraud_flags: unknown[];
   ftc_acknowledged_at?: Nullable<string>;
   ftc_acknowledged_version?: Nullable<string>;
+  // 20260910140000_referral_commission_recurring.sql — admin-set recurring
+  // per-partner profit-share commission terms (FIX_REQUESTS.md).
+  rate_bps: Nullable<number>;
+  commission_base: "gross_profit" | "revenue";
+  duration_months: Nullable<number>;
+  created_at: string;
+};
+
+// 20260910140000_referral_commission_recurring.sql — per-vertical override
+// of a referral_partners row's rate_bps/commission_base/duration_months
+// (FIX_REQUESTS.md — previously missing from the Database type entirely).
+export type ReferralPartnerVerticalOverrideRow = {
+  id: string;
+  referral_partner_id: string;
+  vertical:
+    | "auto"
+    | "vet"
+    | "legal"
+    | "dental"
+    | "real_estate"
+    | "motel"
+    | "restaurant"
+    | "generic";
+  rate_bps: Nullable<number>;
+  commission_base: Nullable<"gross_profit" | "revenue">;
+  duration_months: Nullable<number>;
+  created_at: string;
+};
+
+// 20260907131000_money.sql + 20260910140000_referral_commission_recurring.sql
+// (revenue_cents/cost_cents/base_cents/rate_bps added by the latter)
+// (FIX_REQUESTS.md — previously missing from the Database type entirely).
+export type CommissionEventRow = {
+  id: string;
+  referral_partner_id: string;
+  referral_id: string;
+  tenant_id: string;
+  amount_cents: number;
+  period: Nullable<string>;
+  status: "accrued" | "batched" | "paid" | "clawed_back";
+  revenue_cents: Nullable<number>;
+  cost_cents: Nullable<number>;
+  base_cents: Nullable<number>;
+  rate_bps: Nullable<number>;
   created_at: string;
 };
 
@@ -384,13 +439,17 @@ export type ReferralRow = {
   created_at: string;
 };
 
+// FIX_REQUESTS.md — the real columns (20260907130800_referrals.sql) are
+// total_cents/period/paypal_batch_id/status, NOT amount_cents/method/
+// paid_at; status's real CHECK (20260910100400_referral_payouts_terminal_statuses.sql)
+// is 'pending'|'sent'|'completed'|'failed'|'returned', not 'processing'|'paid'.
 export type ReferralPayoutRow = {
   id: string;
   referral_partner_id: string;
-  amount_cents: number;
-  method: string;
-  status: "pending" | "processing" | "paid" | "failed";
-  paid_at: Nullable<string>;
+  period: string;
+  total_cents: number;
+  paypal_batch_id: Nullable<string>;
+  status: "pending" | "sent" | "completed" | "failed" | "returned";
   created_at: string;
 };
 
@@ -678,9 +737,11 @@ export type Database = {
       messages_inbound: Tbl<MessageInboundRow>;
       payment_links: Tbl<PaymentLinkRow>;
       referral_partners: Tbl<ReferralPartnerRow>;
+      referral_partner_vertical_overrides: Tbl<ReferralPartnerVerticalOverrideRow>;
       referral_links: Tbl<ReferralLinkRow>;
       referrals: Tbl<ReferralRow>;
       referral_payouts: Tbl<ReferralPayoutRow>;
+      commission_events: Tbl<CommissionEventRow>;
       support_requests: Tbl<SupportRequestRow>;
       support_request_notes: Tbl<SupportRequestNoteRow>;
       billing_invoices: Tbl<BillingInvoiceRow>;

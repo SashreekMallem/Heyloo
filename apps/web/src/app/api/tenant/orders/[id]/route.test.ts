@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 function chain(result: unknown) {
   const obj: Record<string, unknown> = {};
-  for (const method of ["select", "eq", "maybeSingle", "update"]) {
+  for (const method of ["select", "eq", "maybeSingle", "update", "insert"]) {
     obj[method] = vi.fn(() => obj);
   }
   // biome-ignore lint/suspicious/noThenProperty: intentional thenable mock of a Supabase query-builder chain.
@@ -22,14 +22,23 @@ function makeFrom(queue: Record<string, unknown[]>) {
 const mockUser = { id: "u1", app_metadata: { tenant_id: "t1", role: "owner" } };
 
 let serverQueue: Record<string, unknown[]> = {};
+let serviceQueue: Record<string, unknown[]> = {};
 let mockGetUser: () => Promise<{ data: { user: unknown } }> = async () => ({
   data: { user: null },
 });
+let rpcMock = vi.fn(async (..._args: unknown[]) => ({ data: null, error: null }));
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({
     auth: { getUser: () => mockGetUser() },
     from: makeFrom(serverQueue),
+  }),
+}));
+
+vi.mock("@/lib/supabase/service-role", () => ({
+  createSupabaseServiceRoleServerClient: () => ({
+    from: makeFrom(serviceQueue),
+    rpc: (...args: unknown[]) => rpcMock(...args),
   }),
 }));
 
@@ -45,6 +54,7 @@ function patchRequest(body: unknown) {
 describe("PATCH /api/tenant/orders/[id]", () => {
   it("401s when unauthenticated", async () => {
     serverQueue = {};
+    serviceQueue = {};
     mockGetUser = async () => ({ data: { user: null } });
     const res = await PATCH(patchRequest({ status: "completed" }), {
       params: Promise.resolve({ id: "o1" }),
@@ -79,13 +89,73 @@ describe("PATCH /api/tenant/orders/[id]", () => {
     expect(res.status).toBe(404);
   });
 
-  it("updates status for an order scoped to the caller's tenant", async () => {
-    serverQueue = { orders: [{ data: { id: "o1" }, error: null }, { error: null }] };
+  it("updates status for an order scoped to the caller's tenant (no SMS for a non-'ready' transition)", async () => {
+    serverQueue = {
+      orders: [
+        { data: { id: "o1", status: "preparing", customer_id: "c1" }, error: null },
+        { error: null },
+      ],
+    };
     mockGetUser = async () => ({ data: { user: mockUser } });
     const res = await PATCH(patchRequest({ status: "completed" }), {
       params: Promise.resolve({ id: "o1" }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    expect(await res.json()).toEqual({ ok: true, sms_queued: false });
+  });
+
+  it("GAP_REGISTER.md §2 Restaurant item 6: sends an order_ready SMS on a transition into 'ready'", async () => {
+    serverQueue = {
+      orders: [
+        { data: { id: "o1", status: "preparing", customer_id: "c1" }, error: null },
+        { error: null },
+      ],
+    };
+    serviceQueue = {
+      customers: [{ data: { phone_e164: "+15551234567", sms_opt_out: false }, error: null }],
+      messages_outbound: [{ data: { id: "msg1" }, error: null }],
+    };
+    rpcMock = vi.fn(async () => ({ data: null, error: null }));
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    const res = await PATCH(patchRequest({ status: "ready" }), {
+      params: Promise.resolve({ id: "o1" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, sms_queued: true });
+    expect(rpcMock).toHaveBeenCalledWith("fn_enqueue_message_outbound", { p_message_id: "msg1" });
+  });
+
+  it("never re-sends the order_ready SMS if the order is already 'ready'", async () => {
+    serverQueue = {
+      orders: [
+        { data: { id: "o1", status: "ready", customer_id: "c1" }, error: null },
+        { error: null },
+      ],
+    };
+    serviceQueue = {};
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    const res = await PATCH(patchRequest({ status: "ready" }), {
+      params: Promise.resolve({ id: "o1" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, sms_queued: false });
+  });
+
+  it("never sends SMS to an opted-out customer", async () => {
+    serverQueue = {
+      orders: [
+        { data: { id: "o1", status: "preparing", customer_id: "c1" }, error: null },
+        { error: null },
+      ],
+    };
+    serviceQueue = {
+      customers: [{ data: { phone_e164: "+15551234567", sms_opt_out: true }, error: null }],
+    };
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    const res = await PATCH(patchRequest({ status: "ready" }), {
+      params: Promise.resolve({ id: "o1" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, sms_queued: false });
   });
 });

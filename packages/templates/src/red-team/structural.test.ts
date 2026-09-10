@@ -8,11 +8,15 @@
  * gate.
  */
 
+import type { AgentTemplate } from "@heyloo/canonical-types";
 import { zAgentTemplate } from "@heyloo/canonical-types";
 import { describe, expect, it } from "vitest";
 import { TEMPLATE_DEFINITIONS } from "../registry.js";
 import { INJECTION_FIXTURES } from "./injection-fixtures.js";
 import { lintPromptForInjectionSinks } from "./prompt-lint.js";
+import { fixtureAppliesTo, scenarioAppliesTo } from "./run-simulation.js";
+import { SIMULATION_SCENARIOS } from "./simulation-scenarios.js";
+import type { SimulationAssertion } from "./simulation-types.js";
 
 describe("every template validates against the canonical AgentTemplate schema", () => {
   for (const { key, template } of TEMPLATE_DEFINITIONS) {
@@ -89,9 +93,34 @@ describe("no state omits the no-advice guardrail on legal", () => {
   }
 });
 
+describe("every template declares classification/outcome/follow_up_needed on every state (post-call extraction gap)", () => {
+  const REQUIRED_OUTCOME_FIELDS = ["classification", "outcome", "follow_up_needed"] as const;
+
+  for (const { key, template } of TEMPLATE_DEFINITIONS) {
+    for (const state of template.states) {
+      it(`${key} state '${state.id}' carries classification/outcome/follow_up_needed extraction`, () => {
+        const extractionFields = (state.extraction ?? []).map((f) => f.field);
+        for (const required of REQUIRED_OUTCOME_FIELDS) {
+          expect(extractionFields).toContain(required);
+        }
+      });
+    }
+
+    it(`${key}'s classification field is an enum sourced from the full call taxonomy`, () => {
+      const classificationField = template.states
+        .flatMap((s) => s.extraction ?? [])
+        .find((f) => f.field === "classification");
+      expect(classificationField?.type).toBe("enum");
+      expect(classificationField?.enum_values).toEqual(
+        expect.arrayContaining(["emergency", "new_booking", "wrong_number"]),
+      );
+    });
+  }
+});
+
 describe("vet: red-flag emergency triage is FIRST and the emergency escape reaches every state", () => {
-  const vet = TEMPLATE_DEFINITIONS.find((d) => d.key === "veterinary");
-  if (!vet) throw new Error("veterinary template not registered");
+  const vet = TEMPLATE_DEFINITIONS.find((d) => d.key === "vet");
+  if (!vet) throw new Error("vet template not registered");
 
   it("declares a dedicated triage_redflags state before any routine symptom/scheduling state", () => {
     const ids = vet.template.states.map((s) => s.id);
@@ -121,6 +150,51 @@ describe("dental: PHI (DOB/insurance) is never collected on-call", () => {
     expect(text.toLowerCase()).toContain("insurance");
     expect(text.toLowerCase()).toContain("secure post-call form");
   });
+});
+
+describe("dental: pain_triage's emergency_detected extraction matches its own same-day urgency tier", () => {
+  const dental = TEMPLATE_DEFINITIONS.find((d) => d.key === "dental");
+  if (!dental) throw new Error("dental template not registered");
+  const painTriage = dental.template.states.find((s) => s.id === "pain_triage");
+  if (!painTriage) throw new Error("dental pain_triage state not found");
+  const emergencyDetected = painTriage.extraction?.find((f) => f.field === "emergency_detected");
+
+  // `call_logs.urgency_flag` (the dashboard "Urgent" alert) is derived
+  // solely from this one boolean (voice-events/handler.ts's
+  // handleCallAnalyzed) — every trigger the prompt calls "same-day
+  // urgency" must also be a trigger this field's own description names,
+  // or a same-day case the model doesn't escalate to safety_emergency
+  // silently fails to raise the alert.
+  const SAME_DAY_TRIGGER_WORDS = ["pain", "swelling", "fever", "knocked", "broken"];
+
+  it("declares emergency_detected", () => {
+    expect(emergencyDetected).toBeDefined();
+  });
+
+  for (const word of SAME_DAY_TRIGGER_WORDS) {
+    it(`prompt_fragment's same-day trigger "${word}" also appears in emergency_detected's description`, () => {
+      expect(painTriage.prompt_fragment.toLowerCase()).toContain(word);
+      expect(emergencyDetected?.description?.toLowerCase()).toContain(word);
+    });
+  }
+});
+
+describe("legal: every global-intent early-exit state can still call take_message (GAP_REGISTER.md §2 Legal item 3)", () => {
+  const legal = TEMPLATE_DEFINITIONS.find((d) => d.key === "legal");
+  if (!legal) throw new Error("legal template not registered");
+
+  // Regression guard for the specific data-loss scenario: `human_request`
+  // is reachable from every pre-terminal intake state (`reachable_from:
+  // "any"`), so its target must never be a dead end that only knows
+  // `transfer_call` — that would silently drop the conflict-check answer
+  // and everything else gathered before the caller asked for a human.
+  for (const globalIntent of legal.template.global_intents) {
+    it(`'${globalIntent.name}' global intent's target state '${globalIntent.target_state}' allows take_message`, () => {
+      const target = legal.template.states.find((s) => s.id === globalIntent.target_state);
+      expect(target).toBeDefined();
+      expect(target?.allowed_tools).toContain("take_message");
+    });
+  }
 });
 
 describe("restaurant: create_order requires delivery_address for delivery, allergy ask is explicit", () => {
@@ -163,11 +237,18 @@ describe("MASTER_SPEC §3.6 consent ask present in every booking/order-capable t
   }
 });
 
-describe("MASTER_SPEC §3.7 identity fallback present in every template with a reschedule/cancel path", () => {
+describe("MASTER_SPEC §3.7 identity fallback: every booking-capable template has a manage_booking state (GAP_REGISTER.md §1.12)", () => {
   for (const { key, template } of TEMPLATE_DEFINITIONS) {
-    const manageState = template.states.find((s) => s.id === "manage_booking");
-    if (!manageState) continue;
+    const canBook = template.tools.some((t) => t.name === "create_booking");
+    if (!canBook) continue;
+    it(`${key} declares create_booking and MUST also declare manage_booking (never one without the other)`, () => {
+      const manageState = template.states.find((s) => s.id === "manage_booking");
+      expect(manageState).toBeDefined();
+    });
+
     it(`${key}'s manage_booking requires BOTH name and appointment time on a number mismatch`, () => {
+      const manageState = template.states.find((s) => s.id === "manage_booking");
+      if (!manageState) return; // covered by the assertion above; avoid a duplicate crash here
       const text = manageState.prompt_fragment.toLowerCase();
       expect(text).toContain("full name");
       expect(text).toContain("appointment");
@@ -214,4 +295,124 @@ describe("injection-fixture dataset is well-formed and covers every registered v
   it("has at least one fixture per category actually exercised", () => {
     expect(INJECTION_FIXTURES.length).toBeGreaterThan(0);
   });
+});
+
+describe("simulation-scenario dataset (BUILD task: every register scenario) is well-formed and covers the required set", () => {
+  const REQUIRED_CATEGORIES = [
+    "happy_path",
+    "changes_mind",
+    "no_availability",
+    "out_of_radius",
+    "emergency",
+    "silence_voicemail",
+    "non_english",
+    "transfer",
+  ] as const;
+
+  it("every scenario's vertical is either '*' or a real registered template key", () => {
+    const validKeys = new Set(["*", ...TEMPLATE_DEFINITIONS.map((d) => d.key)]);
+    for (const scenario of SIMULATION_SCENARIOS) {
+      expect(validKeys.has(scenario.vertical)).toBe(true);
+    }
+  });
+
+  it("every scenario has at least one caller turn and a non-empty expectation", () => {
+    for (const scenario of SIMULATION_SCENARIOS) {
+      expect(scenario.callerTurns.length).toBeGreaterThan(0);
+      expect(scenario.expectation.length).toBeGreaterThan(0);
+    }
+  });
+
+  for (const category of REQUIRED_CATEGORIES) {
+    it(`at least one scenario covers '${category}' (register scenario coverage)`, () => {
+      expect(SIMULATION_SCENARIOS.some((s) => s.category === category)).toBe(true);
+    });
+  }
+
+  it("'injection' register coverage lives in injection-fixtures.ts, not duplicated here", () => {
+    // INJECTION_FIXTURES already asserted well-formed + non-empty above — this just documents
+    // why 'injection' isn't a SimulationScenarioCategory: it has its own richer, already-tested
+    // dataset rather than being folded into this one.
+    expect(INJECTION_FIXTURES.length).toBeGreaterThan(0);
+  });
+
+  it("every vertical with check_availability has a no_availability scenario, or is covered by the wildcard", () => {
+    for (const { key, template } of TEMPLATE_DEFINITIONS) {
+      const usesAvailability = template.tools.some((t) => t.name === "check_availability");
+      if (!usesAvailability) continue;
+      const covered = SIMULATION_SCENARIOS.some(
+        (s) => s.category === "no_availability" && (s.vertical === key || s.vertical === "*"),
+      );
+      expect(covered, `${key} should have a no_availability scenario`).toBe(true);
+    }
+  });
+
+  it("restaurant has an out_of_radius scenario (its own delivery-radius decline path)", () => {
+    const covered = SIMULATION_SCENARIOS.some(
+      (s) => s.category === "out_of_radius" && s.vertical === "restaurant",
+    );
+    expect(covered).toBe(true);
+  });
+});
+
+describe("every scenario's/fixture's expect(template) only references real tool and state names (BUILD task remaining-work item 3)", () => {
+  function referencedNames(assertion: SimulationAssertion): { tools: string[]; states: string[] } {
+    switch (assertion.kind) {
+      case "tool_called":
+      case "tool_not_called":
+      case "tool_called_with_zero_params":
+        return { tools: [assertion.tool], states: [] };
+      case "state_reached":
+      case "state_not_reached":
+        return { tools: [], states: [assertion.state] };
+      case "all":
+      case "any": {
+        const tools: string[] = [];
+        const states: string[] = [];
+        for (const nested of assertion.of) {
+          const found = referencedNames(nested);
+          tools.push(...found.tools);
+          states.push(...found.states);
+        }
+        return { tools, states };
+      }
+      default:
+        return { tools: [], states: [] };
+    }
+  }
+
+  function assertNamesExist(
+    template: AgentTemplate,
+    assertion: SimulationAssertion,
+    label: string,
+  ): void {
+    const { tools, states } = referencedNames(assertion);
+    const toolNames = new Set(template.tools.map((t) => t.name));
+    const stateIds = new Set(template.states.map((s) => s.id));
+    for (const tool of tools) {
+      expect(toolNames.has(tool), `${label}: expect() references unknown tool '${tool}'`).toBe(
+        true,
+      );
+    }
+    for (const state of states) {
+      expect(stateIds.has(state), `${label}: expect() references unknown state '${state}'`).toBe(
+        true,
+      );
+    }
+  }
+
+  for (const def of TEMPLATE_DEFINITIONS) {
+    for (const scenario of SIMULATION_SCENARIOS) {
+      if (!scenarioAppliesTo(scenario, def)) continue;
+      it(`${def.key}'s '${scenario.category}' scenario expect() only names real tools/states`, () => {
+        assertNamesExist(def.template, scenario.expect(def), `${def.key}/${scenario.category}`);
+      });
+    }
+    for (const fixture of INJECTION_FIXTURES) {
+      if (!fixtureAppliesTo(fixture, def)) continue;
+      it(`${def.key}'s '${fixture.category}' fixture expect() only names real tools/states`, () => {
+        assertNamesExist(def.template, fixture.expect(def), `${def.key}/${fixture.category}`);
+      });
+    }
+  }
 });

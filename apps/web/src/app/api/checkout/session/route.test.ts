@@ -88,6 +88,30 @@ describe("POST /api/checkout/session", () => {
     );
   });
 
+  it("forwards white_glove: true to the edge function when the tenant opted in on the plan step", async () => {
+    mockUser = { email: "owner@example.com" };
+    mockSession = { access_token: "at1" };
+    cookieValue = encodeSignupDraft({ business_type: "auto", business_name: "Joe's Garage" });
+    edgeResult = { status: 200, body: { checkout_url: "https://checkout.stripe.com/s2" } };
+    callEdgeFunction.mockClear();
+
+    await POST(postRequest({ white_glove: true, timezone: "America/Chicago" }));
+
+    expect(callEdgeFunction).toHaveBeenCalledWith(
+      "api-checkout",
+      expect.objectContaining({
+        accessToken: "at1",
+        body: {
+          vertical: "auto",
+          business_name: "Joe's Garage",
+          email: "owner@example.com",
+          timezone: "America/Chicago",
+          white_glove: true,
+        },
+      }),
+    );
+  });
+
   it("passes through the edge function's error and status on failure", async () => {
     mockUser = { email: "owner@example.com" };
     mockSession = { access_token: "at1" };

@@ -52,6 +52,27 @@ export function safetyEmergencyState(): AgentState {
       "original booking conversation.",
     allowed_tools: ["take_message"],
     is_terminal: true,
+    // Shared with every vertical that wires this state in (dental, legal,
+    // motel, restaurant, real_estate, generic) so `urgency_flag`
+    // (`call_logs`, derived from `emergency_detected` alone — see
+    // `voice-events/handler.ts`'s `handleCallAnalyzed`) is populated
+    // outside vet/auto's own richer vertical-specific triage too, not
+    // hardcoded false forever for these verticals. Deliberately just this
+    // one boolean, not a second `urgency_flag` enum field: a vertical that
+    // also declares its own `emergency_detected` earlier in `states[]`
+    // (e.g. dental's `pain_triage`) keeps that richer, earlier-declared
+    // version — the compiler's post-call-analysis pass dedupes by field
+    // name, first declaration across `states[]` wins.
+    extraction: [
+      {
+        field: "emergency_detected",
+        type: "boolean",
+        description:
+          "True if the call reached this safety-emergency state — the caller described a " +
+          "life-threatening emergency, a fire, a crime in progress, or another immediate " +
+          "danger to life or property.",
+      },
+    ],
   };
 }
 
@@ -78,7 +99,9 @@ export function takeMessageFallbackState(): AgentState {
       "You were not able to complete this in real time (after-hours, repeated " +
       "misunderstandings, or the caller asked to leave a message instead). Collect the " +
       "caller's name, phone number, and a short message, and let them know when to expect a " +
-      "call back.",
+      "call back. If you already gathered any information earlier in this call (what they " +
+      "were calling about, details already discussed), fold it into message_text rather than " +
+      "discarding it — a partial intake is still worth more to staff than a blank message.",
     allowed_tools: ["take_message"],
     is_terminal: true,
   };

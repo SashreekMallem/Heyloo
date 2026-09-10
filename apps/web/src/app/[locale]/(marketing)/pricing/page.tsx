@@ -103,6 +103,15 @@ export default async function PricingPage({ params }: { params: Promise<{ locale
               number if you switch providers.
             </AccordionContent>
           </AccordionItem>
+          <AccordionItem value="setup-fee">
+            <AccordionTrigger>Is there a setup fee?</AccordionTrigger>
+            <AccordionContent>
+              For most businesses, no — your monthly plan covers setup. Some business types carry a
+              one-time setup fee, and white-glove onboarding is available as an optional add-on;
+              you&apos;ll see the exact amount, if any applies to you, at signup step 2 before you
+              enter payment details.
+            </AccordionContent>
+          </AccordionItem>
         </Accordion>
       </section>
 

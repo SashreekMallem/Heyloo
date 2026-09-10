@@ -11,12 +11,18 @@
 import type { AgentTemplate, CompiledAgentArtifact, CompileTarget } from "@heyloo/canonical-types";
 import { compileConversationFlow } from "./conversation-flow.js";
 import { verifyDisclosureGate } from "./disclosure-gate.js";
+import { compilePostCallAnalysisData } from "./extraction.js";
 import { compileMultiPrompt } from "./multi-prompt.js";
 import { compileSinglePrompt } from "./single-prompt.js";
 import type { CompiledAgentPayload, RetellFlowRequest } from "./types.js";
 
 export { verifyDisclosureGate } from "./disclosure-gate.js";
-export type { CompiledAgentPayload, RetellFlowRequest } from "./types.js";
+export { compilePostCallAnalysisData } from "./extraction.js";
+export type {
+  CompiledAgentPayload,
+  RetellFlowRequest,
+  RetellPostCallAnalysisField,
+} from "./types.js";
 
 export function compileRetellTemplate(
   template: AgentTemplate,
@@ -25,8 +31,9 @@ export function compileRetellTemplate(
 ): CompiledAgentPayload {
   const flowRequest = buildFlowRequest(template, target, toolWebhookUrl);
   const disclosureVerified = verifyDisclosureGate(flowRequest, template.disclosure_line);
+  const postCallAnalysisData = compilePostCallAnalysisData(template);
 
-  return { compileTarget: target, disclosureVerified, flowRequest };
+  return { compileTarget: target, disclosureVerified, flowRequest, postCallAnalysisData };
 }
 
 function buildFlowRequest(

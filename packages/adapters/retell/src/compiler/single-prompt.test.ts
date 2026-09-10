@@ -26,6 +26,35 @@ describe("compileSinglePrompt", () => {
   it("wires general_tools to the given toolWebhookUrl", () => {
     const result = compileSinglePrompt(REAL_ESTATE_SINGLE_PROMPT_TEMPLATE, TOOL_WEBHOOK_URL);
     expect(result.general_tools).toHaveLength(1);
-    expect(result.general_tools[0]?.url).toBe(TOOL_WEBHOOK_URL);
+    const tool = result.general_tools[0];
+    expect(tool?.type).toBe("custom");
+    if (tool?.type === "custom") {
+      expect(tool.url).toBe(TOOL_WEBHOOK_URL);
+    }
+  });
+
+  it("compiles a declared transfer_call tool to Retell's native transfer_call tool, not a custom webhook (GAP_REGISTER §1.4 item 4)", () => {
+    const withTransfer = {
+      ...REAL_ESTATE_SINGLE_PROMPT_TEMPLATE,
+      tools: [
+        ...REAL_ESTATE_SINGLE_PROMPT_TEMPLATE.tools,
+        {
+          name: "transfer_call",
+          description: "Warm-transfer the caller to a human.",
+          parameters: { type: "object" as const, properties: {}, required: [] },
+          authorization: { scope: "tenant_config_only" as const },
+        },
+      ],
+    };
+    const result = compileSinglePrompt(withTransfer, TOOL_WEBHOOK_URL);
+    const transferTool = result.general_tools.find((t) => t.name === "transfer_call");
+    expect(transferTool?.type).toBe("transfer_call");
+    if (transferTool?.type === "transfer_call") {
+      expect(transferTool.transfer_destination).toEqual({
+        type: "predefined",
+        number: "{{transfer_number}}",
+      });
+      expect(transferTool.transfer_option).toEqual({ type: "warm_transfer" });
+    }
   });
 });

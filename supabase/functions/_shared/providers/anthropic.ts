@@ -80,6 +80,58 @@ export interface AnthropicBatchRequestItem {
   };
 }
 
+/**
+ * Vision/document content blocks (menu-import PDF/photo extraction,
+ * GAP_REGISTER Cluster G item 3). Confirmed live against
+ * platform.claude.com/docs/en/build-with-claude/vision and .../pdf-support
+ * (Rule 1 — both reachable this build, fetched 2026-09-10): an `image`
+ * block takes `source: {type:"base64", media_type: one of image/jpeg|png|
+ * gif|webp, data}`; a `document` block (PDF) takes `source: {type:"base64",
+ * media_type:"application/pdf", data}` — same envelope, just a different
+ * block `type`/`media_type`. High confidence, not logged to VERIFY.md.
+ */
+export type AnthropicImageMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+
+export type AnthropicContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; source: { type: "base64"; media_type: AnthropicImageMediaType; data: string } }
+  | { type: "document"; source: { type: "base64"; media_type: "application/pdf"; data: string } };
+
+function parseMessageResponseText(body: unknown): string | undefined {
+  const content = (body as { content?: { type: string; text?: string }[] } | undefined)?.content;
+  return content?.find((c) => c.type === "text")?.text;
+}
+
+/** Same envelope/response handling as `createMessage`, but accepts a full
+ * content-block array instead of a single text string — needed once a
+ * request must include an `image`/`document` block alongside text. */
+export async function createMessageWithContent(
+  fetchImpl: AnthropicFetch,
+  apiKey: string,
+  params: { model: string; maxTokens: number; system?: string; content: AnthropicContentBlock[] },
+): Promise<{ ok: boolean; status: number; text?: string }> {
+  const res = await fetchImpl(ANTHROPIC_MESSAGES_URL, {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": ANTHROPIC_VERSION,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: params.model,
+      max_tokens: params.maxTokens,
+      ...(params.system ? { system: params.system } : {}),
+      messages: [{ role: "user", content: params.content }],
+    }),
+  });
+
+  if (!res.ok) return { ok: false, status: res.status };
+
+  const body = await res.json().catch(() => undefined);
+  const text = parseMessageResponseText(body);
+  return { ok: true, status: res.status, ...(text ? { text } : {}) };
+}
+
 export async function createMessageBatch(
   fetchImpl: AnthropicFetch,
   apiKey: string,

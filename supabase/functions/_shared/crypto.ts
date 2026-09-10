@@ -30,6 +30,23 @@ export function fromBase64(b64: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
+/** Plain (non-HMAC) SHA-256 digest, hex-encoded — used to hash opaque
+ * bearer tokens at rest (`api_tokens.token_hash`, single-use intake tokens)
+ * so the plaintext token is never stored, only ever compared by re-hashing
+ * the presented value (BACKEND_SPEC's `api_tokens` design). */
+export async function sha256Hex(message: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(message));
+  return toHex(digest);
+}
+
+/** A cryptographically random opaque token, URL-safe base64 (no padding).
+ * `byteLength` of 32 (default) gives 256 bits of entropy — the same margin
+ * as the AES-GCM key this file already generates. */
+export function randomOpaqueToken(byteLength = 32): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
+  return toBase64(bytes.buffer).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 async function importHmacKey(secret: string, hash: "SHA-256" | "SHA-1"): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash }, false, [
     "sign",
