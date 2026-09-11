@@ -804,10 +804,19 @@ async function handlePlatformSettings(
     `;
     const before = beforeRows[0]?.value ?? null;
 
+    // Merge onto the previously-stored value rather than replacing the
+    // whole JSONB blob — an admin save through this schema-typed form must
+    // never silently drop fields it doesn't know about (e.g. a future key
+    // added by a migration/seed but not yet surfaced in this form). Every
+    // field this schema DOES know about is still sourced explicitly from
+    // the validated request, never left over from `before`.
     const value = {
+      ...(before ?? {}),
       base_cents: parsed.data.base_cents,
       included_minutes: parsed.data.included_minutes,
       overage_cents: parsed.data.overage_cents,
+      included_text_conversations: parsed.data.included_text_conversations,
+      text_conversation_overage_cents: parsed.data.text_conversation_overage_cents,
       effective_at: parsed.data.effective_at,
     };
     await sql`

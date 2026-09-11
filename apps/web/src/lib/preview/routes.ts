@@ -300,6 +300,13 @@ export const PREVIEW_ROUTES: PreviewRoute[] = [
     source: "apps/web/src/app/[locale]/(tenant)/dashboard/agent/manual-mode/page.tsx",
   },
   {
+    url: "/preview/dashboard/agent/text-agent",
+    href: "/preview/dashboard/agent/text-agent",
+    area: "Tenant dashboard",
+    label: "Text Agent",
+    source: "apps/web/src/app/[locale]/(tenant)/dashboard/agent/text-agent/page.tsx",
+  },
+  {
     url: "/preview/dashboard/agent/services",
     href: "/preview/dashboard/agent/services",
     area: "Tenant dashboard",
@@ -418,6 +425,13 @@ export const PREVIEW_ROUTES: PreviewRoute[] = [
     area: "Tenant dashboard",
     label: "Refer",
     source: "apps/web/src/app/[locale]/(tenant)/dashboard/refer/page.tsx",
+  },
+  {
+    url: "/preview/dashboard/website-widget",
+    href: "/preview/dashboard/website-widget",
+    area: "Tenant dashboard",
+    label: "Website Widget",
+    source: "apps/web/src/app/[locale]/(tenant)/dashboard/website-widget/page.tsx",
   },
   {
     url: "/preview/dashboard/setup",

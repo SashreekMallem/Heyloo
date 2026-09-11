@@ -10,6 +10,7 @@ import {
   DataState,
   DataTable,
   PageHeader,
+  Progress,
   StatusBadge,
   UsageMeter,
 } from "@heyloo/ui";
@@ -57,7 +58,7 @@ export default function BillingPage() {
       const [{ data }, { data: tenantRow }, planRes] = await Promise.all([
         supabaseBrowserClient
           .from("usage_daily")
-          .select("billable_minutes")
+          .select("billable_minutes, text_messages_out")
           .eq("tenant_id", tenantId as string)
           .gte("date", monthStart.toISOString().slice(0, 10)),
         supabaseBrowserClient
@@ -68,12 +69,24 @@ export default function BillingPage() {
         fetch("/api/platform-settings/tenant-plan"),
       ]);
       const used = (data ?? []).reduce((sum, r) => sum + (Number(r.billable_minutes ?? 0) || 0), 0);
+      // BACKEND_SPEC.md §13.3 — same "AI-generated text replies, SMS + web
+      // chat combined" total the Website Widget Install page's own usage
+      // tile shows; billed against the plan's included_text_conversations
+      // allowance here, which that page (a self-service settings surface,
+      // not a billing one) deliberately doesn't attempt.
+      const textMessagesUsed = (data ?? []).reduce(
+        (sum, r) => sum + (Number(r.text_messages_out ?? 0) || 0),
+        0,
+      );
       const plan = planRes.ok ? ((await planRes.json()) as TenantPlanResponse) : null;
       return {
         used,
         included: plan?.included_minutes ?? 0,
         alertThresholds: plan?.usage_alert_thresholds ?? { warn_pct: 0.8, critical_pct: 1.0 },
         hardCapMinutes: tenantRow?.usage_hard_cap_minutes ?? null,
+        textMessagesUsed,
+        includedTextConversations: plan?.included_text_conversations ?? 200,
+        textConversationOverageCents: plan?.text_conversation_overage_cents ?? 5,
       };
     },
     enabled: !!tenantId,
@@ -149,6 +162,48 @@ export default function BillingPage() {
             </CardContent>
           </Card>
         )}
+      />
+
+      <DataState
+        query={usageQuery}
+        empty={{ title: "No usage data yet" }}
+        render={(usage) => {
+          const included = usage.includedTextConversations;
+          const used = usage.textMessagesUsed;
+          const overage = Math.max(0, used - included);
+          const pct = included > 0 ? Math.min(100, (used / included) * 100) : 0;
+          return (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Text conversations usage this period</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <div className="flex items-baseline justify-between text-sm">
+                  <span className="font-medium">
+                    {used.toLocaleString()} of {included.toLocaleString()} AI text replies used
+                  </span>
+                  {overage > 0 && (
+                    <span className="text-xs font-medium text-destructive">
+                      +{overage.toLocaleString()} over ·{" "}
+                      {formatCentsUSD(overage * usage.textConversationOverageCents)}
+                    </span>
+                  )}
+                </div>
+                <Progress
+                  value={pct}
+                  indicatorClassName={
+                    pct >= 100 ? "bg-destructive" : pct >= 80 ? "bg-warning" : "bg-primary"
+                  }
+                  aria-label="AI text replies used this period"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Counts every AI-generated reply over SMS and your website chat widget combined —{" "}
+                  {formatCentsUSD(usage.textConversationOverageCents)} per reply beyond your plan.
+                </p>
+              </CardContent>
+            </Card>
+          );
+        }}
       />
 
       <div>

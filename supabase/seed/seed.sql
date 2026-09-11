@@ -15,15 +15,25 @@
 -- 1. platform_settings
 -- ===================================================================
 
+-- Channels (BACKEND_SPEC.md §13.3, `20260911110000_channels_pricing_and_
+-- usage.sql`): every price card also carries `included_text_conversations`/
+-- `text_conversation_overage_cents` (the text-agent metering unit — per
+-- outbound AI message, see that migration's own DECIDE note). Carried here
+-- explicitly, not left to that migration's own idempotent `jsonb ||` merge,
+-- because this insert's own `on conflict (key) do update set value =
+-- excluded.value` REPLACES the whole jsonb value on every `supabase db
+-- reset` — without these two keys in the literal below, a reset would
+-- silently wipe them back out immediately after the migration merged them
+-- in (docs/audit/CHANNELS_REQUESTS.md item 2, verified empirically).
 insert into public.platform_settings (key, value) values
-  ('price_card_auto',  '{"base_cents":29900,"included_minutes":300,"overage_cents":35}'),
-  ('price_card_vet',   '{"base_cents":34900,"included_minutes":500,"overage_cents":40}'),
-  ('price_card_legal',        '{"base_cents":39900,"included_minutes":300,"overage_cents":45}'),
-  ('price_card_dental',       '{"base_cents":34900,"included_minutes":350,"overage_cents":40}'),
-  ('price_card_real_estate',  '{"base_cents":34900,"included_minutes":150,"overage_cents":40}'),
-  ('price_card_motel',        '{"base_cents":29900,"included_minutes":400,"overage_cents":35}'),
-  ('price_card_restaurant',   '{"base_cents":24900,"included_minutes":500,"overage_cents":30}'),
-  ('price_card_generic',      '{"base_cents":29900,"included_minutes":300,"overage_cents":40}')
+  ('price_card_auto',  '{"base_cents":29900,"included_minutes":300,"overage_cents":35,"included_text_conversations":200,"text_conversation_overage_cents":5}'),
+  ('price_card_vet',   '{"base_cents":34900,"included_minutes":500,"overage_cents":40,"included_text_conversations":200,"text_conversation_overage_cents":5}'),
+  ('price_card_legal',        '{"base_cents":39900,"included_minutes":300,"overage_cents":45,"included_text_conversations":200,"text_conversation_overage_cents":5}'),
+  ('price_card_dental',       '{"base_cents":34900,"included_minutes":350,"overage_cents":40,"included_text_conversations":200,"text_conversation_overage_cents":5}'),
+  ('price_card_real_estate',  '{"base_cents":34900,"included_minutes":150,"overage_cents":40,"included_text_conversations":200,"text_conversation_overage_cents":5}'),
+  ('price_card_motel',        '{"base_cents":29900,"included_minutes":400,"overage_cents":35,"included_text_conversations":200,"text_conversation_overage_cents":5}'),
+  ('price_card_restaurant',   '{"base_cents":24900,"included_minutes":500,"overage_cents":30,"included_text_conversations":200,"text_conversation_overage_cents":5}'),
+  ('price_card_generic',      '{"base_cents":29900,"included_minutes":300,"overage_cents":40,"included_text_conversations":200,"text_conversation_overage_cents":5}')
 on conflict (key) do update set value = excluded.value, updated_at = now();
 
 insert into public.platform_settings (key, value) values

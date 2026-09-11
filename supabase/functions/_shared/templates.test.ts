@@ -74,6 +74,12 @@ describe("renderTemplate", () => {
     expect(result.body).toContain("2026-02-01T18:00:00Z");
   });
 
+  it("renders chat_phone_verification with the code (Cluster T text-agent engine)", () => {
+    const result = renderTemplate("chat_phone_verification", { code: "482913" });
+    expect(result.body).toContain("482913");
+    expect(result.body).toContain("expires");
+  });
+
   it("returns an empty body for an unknown template key rather than throwing", () => {
     expect(() => renderTemplate("not_a_real_template", {})).not.toThrow();
     expect(renderTemplate("not_a_real_template", {}).body).toBe("");

@@ -21,6 +21,7 @@ const TABS = [
   { value: "vertical-details", label: "Vertical details" },
   { value: "manual-mode", label: "Manual Mode" },
   { value: "language", label: "Language" },
+  { value: "text-agent", label: "Text agent" },
 ];
 
 export function AgentSettingsTabs({ children }: { children: ReactNode }) {

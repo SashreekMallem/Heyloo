@@ -7940,3 +7940,1120 @@ build --webpack`,
 no `UI_PREVIEW_MODE`) exit 0, run twice (before and after every change in
 this pass) to isolate the item-8 finding above from the required gate.
 No PNG/scratch files, `.next`, or other build output staged.
+
+## Cluster S — Channels: schema, pricing, docs (2026-09-11)
+
+BUILD_PLAN task: `text_conversations`/`text_messages` (two-way SMS/web-chat
+thread + transcript), tenant text-agent/widget config columns,
+`call_logs.channel`, price-card + `usage_daily` metering for the text
+agent, docs. Three new migrations, all additive, no earlier migration
+edited:
+
+- `supabase/migrations/20260911100000_channels_text_conversations.sql` —
+  `text_conversations` (thread: `status 'ai'|'human'|'closed'`,
+  `ai_enabled`, `structured_state`) + `text_messages` (append-only
+  transcript: `direction`, `author 'ai'|'human'|'customer'`, `tool_calls`,
+  `messages_outbound_id` FK for outbound SMS delivery-status linkage,
+  `provider_message_id` for inbound). RLS: tenant `SELECT`; tenant
+  `UPDATE` on conversations (status/ai_enabled human-takeover, role
+  `owner|admin|member`); tenant `INSERT` on messages forced to
+  `author='human'` (a dashboard session can never spoof an ai/customer-
+  authored row) and scoped to a conversation the tenant actually owns
+  (EXISTS check, same DB-H1-hardened-era pattern bookings/orders already
+  use); everything else `service_role`-only. Impersonation read-only guard
+  included from the start (this migration postdates
+  `20260910110000_impersonation_claim.sql`, so it's written directly
+  against the current hardened convention rather than needing a follow-up
+  hardening pass). Broadcast triggers on both tables via the existing
+  `fn_broadcast_tenant_update()`.
+- `supabase/migrations/20260911101000_channels_tenant_and_call_log_columns.sql`
+  — `tenants.{text_agent_enabled, text_agent_persona, quiet_hours,
+  widget_enabled, widget_settings, widget_public_key}` (unique index on
+  the key) + `call_logs.channel text default 'phone' check in
+  ('phone','web')`.
+- `supabase/migrations/20260911110000_channels_pricing_and_usage.sql` —
+  `usage_daily.text_messages_out int not null default 0`;
+  `fn_upsert_usage_daily` re-declared (`CREATE OR REPLACE`, same
+  convention the impersonation-claim migration used for
+  `custom_access_token_hook` rather than editing an applied migration) to
+  compute it; an idempotent `jsonb ||` merge adding
+  `included_text_conversations`/`text_conversation_overage_cents` (200 /
+  5&cent;) into every existing `price_card_<vertical>` `platform_settings`
+  row.
+
+**DECIDE resolutions** (CLAUDE.md Rule 4, full reasoning in
+`BACKEND_SPEC.md` §13): (1) `messages_inbound`/`messages_outbound` remain
+the SMS transport; `text_conversations`/`text_messages` are a new layer on
+top, not a replacement — §13.1. (2) Metering unit is **per outbound AI
+message**, not per conversation or conversation-day — §13.3, with the
+reasoning for rejecting the other two shapes spelled out there.
+(3) `phone_e164` on `text_conversations` is nullable (a `web_chat` visitor
+may never give one), despite BUILD_PLAN's own column-list shorthand not
+marking it `?` the way `customer_id?` is marked — the only literal
+column-list case in this task where the given shorthand was ambiguous
+enough to warrant a documented judgment call rather than a literal
+transcription.
+
+**Extended `scripts/ci/rls-cross-tenant-probe.ts`**: `text_conversations`
+added to the standard tenant-scoped cross-read probe list;
+`text_messages` (needs a `conversation_id` FK, so can't be a plain list
+entry) is seeded and separately probed in `main()`, mirroring the existing
+`customer_addresses`/`waitlist_entries` pattern for their `customer_id`
+dependency.
+
+**Verification performed** (no `supabase start` attempted — Docker is
+present and usable in this sandbox, unlike prior sessions' documented
+no-Docker constraint, but spinning up the full GoTrue+PostgREST+Realtime
+stack was judged out of proportion for a 3-migration schema task when the
+RLS/constraint substance is directly testable at the SQL layer; noted as a
+real, not merely inherited, scope call): built a throwaway local Postgres
+16 harness — stub `auth`/`storage`/`realtime` schemas (`auth.users` +
+`auth.uid()`/`auth.jwt()` stubs, `storage.buckets`/`storage.objects`,
+`realtime.messages` + a no-op `realtime.broadcast_changes()` stub matching
+the real function's call signature) plus the standard Supabase default
+grants (`grant all on all tables in schema public to anon, authenticated,
+service_role` + matching `alter default privileges` — without this, every
+RLS check trivially "passes" for the wrong reason, `permission denied`
+before RLS is even evaluated; this took one iteration to notice and fix),
+the 3 unavailable `create extension` lines (`pg_cron`/`pgmq`/`pg_net`)
+trimmed per this doc's own established approach. Applied all 48 real
+migration files (45 pre-existing + this task's 3) in filename order from
+an empty database — **zero errors** — then `supabase/seed/seed.sql` — also
+zero errors. Directly exercised, as a real `authenticated` role with
+`request.jwt.claims` set (not just as the seeding superuser): inserted/
+updated `text_conversations`/`text_messages` rows and confirmed real
+data flows through `fn_upsert_usage_daily` into
+`usage_daily.text_messages_out`; confirmed tenant A cannot `SELECT` tenant
+B's `text_conversations`/`text_messages` rows; confirmed tenant A CAN post
+an `author='human'` reply into its own conversation; confirmed tenant A
+CANNOT insert an `author='ai'` (spoofed) message — `ERROR: new row
+violates row-level security policy for table "text_messages"`; confirmed
+tenant B cannot insert into tenant A's conversation even with a
+correctly-scoped `tenant_id` (the `EXISTS` ownership check) — same error;
+confirmed tenant A CAN flip its own conversation's `status`/`ai_enabled`
+(human takeover); confirmed `tenants.widget_public_key`'s unique
+constraint rejects a duplicate across two tenants; confirmed
+`call_logs.channel`'s `CHECK` rejects an invalid value and defaults to
+`'phone'`. Also directly confirmed, empirically (not just by reading the
+SQL), the `docs/audit/CHANNELS_REQUESTS.md` request #2 finding: applying
+`seed.sql` after the migrations wipes the merged price-card keys back out
+via its own `on conflict ... do update set value = excluded.value`.
+`node --experimental-strip-types scripts/ci/rls-cross-tenant-probe.ts`
+run directly (no `SUPABASE_URL` available in this harness, so it fails
+fast at its own env-var check) — confirms no syntax/import errors in the
+edit, not a full pass; the full HTTP-level probe still needs a real
+`supabase start` + `supabase functions serve` run per this doc's own
+established caveat for that script. Throwaway database and all scratch
+SQL files dropped/deleted after verification, never committed.
+
+**Real, currently-unresolved conflict discovered and documented, not
+silently fixed**: a different, concurrently-running build agent
+("Cluster T / BUILD_PLAN text-agent task") had already landed
+`supabase/migrations/20260911120000_text_conversations.sql`, which adds
+the *same three things* this task was assigned (`call_logs.channel`,
+`usage_daily.text_messages_out`, a `text_conversations` table) with a
+materially different, incompatible shape — applying it after this task's
+migrations fails (`column "channel" of relation "call_logs" already
+exists`, reproduced directly in the harness above). Per CLAUDE.md Rule 4,
+this was not redesigned around or silently deleted; full detail (both
+schemas side by side, the reasoning for why neither is a strict subset of
+the other, and a recommendation) is in `docs/audit/CHANNELS_REQUESTS.md`
+item 1, and it is surfaced as a `cross_cluster_requests` entry in this
+task's own structured output for the orchestrator to arbitrate. This
+repo's migrations are, as of this task's own files plus that pre-existing
+one, **not currently reproducible from zero end to end** — only with the
+`20260911120000` file excluded, which is exactly what was verified above
+and is not this cluster's file to fix or remove.
+
+**Gates run**: throwaway-Postgres migration + seed + live RLS/constraint
+exercise (above, in lieu of `pnpm` gates — this task touched no
+TypeScript/application code besides the one CI script, which was run
+directly per above); no `pnpm -w typecheck`/`test` run since nothing in
+`packages/`/`apps/` changed. No build output, `.env*`, or scratch files
+staged.
+
+## CLUSTER T — Text agent engine (SMS + web chat, 2026-09-11)
+
+Built the text-agent engine and wired it into both channels: `supabase/
+functions/_shared/text-agent/**` (new — `engine.ts` orchestrates the
+Anthropic Messages tool-use loop; `tool-router.ts` dispatches every
+booking/order/message/waitlist/lookup tool call to the SAME `voice-tools/
+tools/*.ts` implementations, unmodified; `conversation-store.ts`,
+`tools.ts`, `system-prompt.ts`, `anthropic-messages.ts`, `rate-limit.ts`,
+`verification.ts`, `widget-token.ts` — plus tests for each),
+`webhooks-twilio-sms/handler.ts` (routes an "other"-classified inbound SMS
+into the engine after STOP/HELP/waitlist-YES precedence, optional
+`textEngineDeps` param so every pre-existing compliance test keeps passing
+unchanged), `supabase/functions/api-text-chat/**` (new — the widget's chat
+mode HTTP entrypoint), `packages/templates/src/shared/text-persona.ts`
+(new — per-vertical text disclosure/persona, composed from the SAME
+policy fragments every voice template reuses, parity-tested byte-for-byte
+against a hand-mirrored Deno-side copy in `_shared/text-agent/
+system-prompt.ts` since Deno cannot import the Node/ESM `@heyloo/
+templates` package, same documented constraint as `_shared/schemas/
+booking-payloads.ts`/`admin/schemas.ts` for `@heyloo/canonical-types`),
+`_shared/templates.ts` (new `chat_phone_verification` template case),
+`supabase/config.toml` (new `[functions.api-text-chat]` entry),
+`.env.example` (`ANTHROPIC_TEXT_AGENT_MODEL`).
+
+**Deliberate deviation from API_AND_FLOWS.md's "SMS sending path" section**
+(A.1): that spec assumed Retell's native chat-agent SMS channel for
+two-way SMS conversations. This task's own explicit instruction directs a
+purpose-built Anthropic Messages API tool-use engine instead, reusing the
+SAME `voice-tools/tools/*.ts` handlers a live call uses — this also better
+satisfies CLAUDE.md Rule 2's provider-isolation invariant (a Retell chat
+channel would couple the text flow to Retell-specific SMS semantics) and
+lets one canonical booking-logic path serve voice, SMS, and web chat.
+Documented here per Rule 4 rather than redesigned around silently.
+
+**`CallContext.callLogId` reuse problem and its fix**: `voice-tools/
+tools/*.ts` (out of this cluster's ownership — read-only reuse) requires a
+real, non-null `call_logs.id` (`create_booking`/`create_order`'s
+`source_call_id`, and `take_message`'s direct `update call_logs set ...`).
+A text conversation has no real call. Fix: a lazily-created SHADOW
+`call_logs` row per `text_conversations` row (`ensureShadowCallLog`,
+`retell_call_id = 'text:' || conversation.id`), tagged via a new,
+additive `call_logs.channel` column (`'voice'|'sms'|'web_chat'`, default
+`'voice'`) so voice-only dashboards/rollups can filter it out — flagged to
+the dashboard cluster in `docs/audit/CHANNELS_REQUESTS.md`.
+
+**Identity rules (MASTER_SPEC §3.7-adjacent, this task's own instruction)**:
+SMS — `CallContext.callerNumber` is always the texter's own verified
+number (set by the inbound webhook, never trusted from the model).
+Web chat — `callerNumber` stays `null` until the customer provides and
+confirms a phone by a 6-digit SMS code (`verify_phone`, an engine-internal
+tool declared ONLY for the web_chat channel, never added to `packages/
+templates`'s shared voice-tool registry since it has no voice equivalent);
+`lookup_customer`'s existing G6 caller-scope check (`samePhone(args.phone,
+ctx.callerNumber)`) then naturally rejects every lookup attempt until that
+happens — no fork of that tool was needed.
+
+**TCPA quiet-hours decision (this task's own instruction: "document TCPA
+reasoning")**: `_shared/quiet-hours.ts` (9pm-9am tenant-local) gates the
+reminder-scheduler's UNSOLICITED outbound sends. A text-agent reply is
+never unsolicited — it is a direct reply inside a conversation the
+CUSTOMER just initiated — so the engine does NOT apply quiet-hours gating
+to its own replies at all, on either channel; `engine.test.ts`'s "golden
+conversation: quiet hours" test asserts a 3am customer-initiated text
+still gets a reply. A2P/opt-out ARE still enforced for the SMS channel
+specifically (separate, non-TCPA-quiet-hours gates: carrier campaign
+verification and CTIA opt-out compliance).
+
+**A2P gate wording**: this task's brief said "if tenant `a2p_status !=
+approved`" — `tenants.a2p_status`'s real enum (BACKEND_SPEC §10.1,
+`20260907130100_tenancy.sql`) is `'pending_verification'|'verified'|
+'failed'`, no `'approved'` value exists. Mapped to `!= 'verified'`,
+documented at the one call site (`engine.ts`).
+
+**Metering**: `usage_daily.text_messages_out` (new, additive `int not
+null default 0` column) incremented once per AI-authored reply actually
+sent (never per inbound customer message, never for a gated/no-reply
+turn) via `incrementTextMessagesOut`.
+
+**Rate limiting / tool-loop / timeout budgets**: in-process sliding-window
+limiter per (tenant, channel, phone-or-conversation-id) — same
+module-scope-singleton, per-warm-instance shape as `_shared/circuit-
+breaker.ts`'s `ToolCircuitBreaker`, not a cross-instance-exact limit.
+Tool-use loop capped at 4 round trips; the whole turn wrapped in
+`withTimeout` (8s default) — either failure mode degrades to a fixed
+graceful-fallback reply, never a thrown error or silence, matching
+`_shared/responses.ts`'s discipline. Reply capped at 350 max_tokens
+(SMS-shaped, short replies) to keep the "~5s p95" latency budget and
+per-turn token cost down.
+
+**Golden-conversation tests** (`engine.test.ts`, this task's own
+requirement): booking, reschedule, take-message, waitlist, opt-out
+mid-conversation, quiet hours, human handoff, prompt-injection attempt,
+A2P-pending — plus rate-limiting, web-chat verification-code interception,
+and two resilience tests (Anthropic timeout, tool-loop exhaustion). Tool
+dispatch and conversation-store persistence are exercised for real against
+`voice-tools/tools/*.ts` in `tool-router.test.ts`/`conversation-
+store.test.ts` instead of re-mocked there too — `engine.test.ts` itself
+mocks both modules so it tests ONLY the engine's own orchestration
+(gating order, disclosure, loop, persistence), per-file separation of
+concerns rather than one giant integration test.
+
+**Real, currently-unresolved migration-filename conflict discovered**
+(same shared-tree collision Cluster S's own `docs/BUILD_NOTES.md` entry
+above independently found and documented from its side — read that entry
+first): this cluster's `supabase/migrations/20260911120000_text_
+conversations.sql` and Cluster S's `20260911100000_channels_text_
+conversations.sql`/`20260911101000_channels_tenant_and_call_log_
+columns.sql` both add `call_logs.channel`, `usage_daily.
+text_messages_out`, and a `text_conversations`-shaped table, with
+materially different, non-additive shapes — applying both fails
+(`column "channel" of relation "call_logs" already exists`). Full
+side-by-side comparison, plus this cluster's own additional finding
+Cluster S's write-up didn't have visibility into — see
+`docs/audit/CHANNELS_REQUESTS.md` item 1's update below — is there, not
+duplicated here. Per CLAUDE.md Rule 4, neither this cluster's own files
+nor Cluster S's were deleted or silently rewritten; this cluster's own
+migration was independently verified against a real, throwaway local
+Postgres 16 (`pgcrypto`/`btree_gist` extensions installed via apt;
+`pg_cron`/`pgmq`/`pg_net` unavailable in this sandbox, so a minimal stub
+`tenants`/`phone_numbers`/`customers`/`call_logs`/`usage_daily` schema +
+the 4 helper functions (`fn_set_updated_at`/`fn_broadcast_tenant_update`/
+`fn_jwt_tenant_id`/`fn_jwt_is_platform_admin`/`fn_jwt_role`) it actually
+depends on was hand-built instead of applying the full real migration
+chain) — applied cleanly with zero errors, then every exact query shape
+`conversation-store.ts` issues (the SMS upsert-or-reopen `ON CONFLICT
+... WHERE` clause, the shadow-`call_logs` `ON CONFLICT (retell_call_id)`
+upsert, the full `saveConversationPatch` UPDATE including its
+boolean-parameterized `CASE WHEN` for `last_outbound_at`, the
+`usage_daily` upsert) was executed directly and its result verified
+row-by-row — not just typechecked/unit-tested with a mocked `sql`.
+Followed by a second throwaway database applying this cluster's follow-up
+migration (`20260911130000_text_conversation_messages.sql`, below) on top
+— also zero errors, with real inserts/selects confirming the
+customer/ai-author derivation. Both throwaway databases dropped after
+verification; no scratch SQL files committed.
+
+**Follow-up migration, `text_conversation_messages`** (new, additive,
+self-contained — references only this cluster's own uncontested
+`text_conversations` table content, deliberately touches neither
+`call_logs` nor `usage_daily` again to avoid deepening the conflict
+above): fills a real gap Cluster W's `docs/audit/CHANNELS_REQUESTS.md`
+item 5 identified — `text_conversations.recent_turns` is a BOUNDED
+working-memory window (trimmed to `MAX_REPLAYED_TURNS`), never the full
+transcript, and the pre-existing `messages_inbound`/`messages_outbound`
+(SMS's own audit trail) has no column distinguishing an AI-generated
+reply from a human dashboard operator's manual one — so the dashboard's
+planned "AI vs human vs customer" authorship thread view had nowhere to
+read that distinction from. `text_conversation_messages` is the full,
+unbounded, `author ('customer'|'ai'|'human')`-tagged transcript for BOTH
+channels; `conversation-store.ts`'s `saveConversationPatch` now writes a
+row here for every turn it also appends to `recent_turns`, deriving
+`author` from the turn's own `role` (`'user'` -> `'customer'`,
+`'assistant'` -> `'ai'`) — `'human'` rows are reserved for a future
+dashboard "take over"/reply write path (Cluster W's own UI, outside this
+cluster's ownership), permitted by that migration's own RLS insert
+policy (`author = 'human'` only, tenant-member/admin-scoped).
+
+**Widget contract adopted mid-task, not invented**: `docs/audit/
+CHANNELS_REQUESTS.md` item 4 (posted by Cluster W, which had ALREADY built
+`packages/widget/src/api.ts`'s `sendChatMessage`/`packages/widget/src/
+types.ts`'s `WidgetChatResponse` and `apps/web/src/lib/widget/
+session-token.ts`'s `mintWidgetToken`/`verifyWidgetToken` against an
+assumed `api-text-chat` shape before this function existed in the tree)
+was discovered partway through this task, after an initial simpler
+`{tenant_id, session_token, message}` contract had already been built and
+tested. Rebuilt `api-text-chat` to match that real, already-consumed
+contract exactly: `{widget_token, message, conversation_token?}` in,
+`{conversation_token, reply, sent, reason?}` out (200) or
+`{error:"invalid_widget_token"|"expired_widget_token"|"invalid_request"}`
+(401/422); `tenant_id` is NEVER a client-supplied field — it is resolved
+server-side from the verified `widget_token`
+(`_shared/widget-token.ts` — first written here as this cluster's own
+Deno-portable port of `apps/web`'s HMAC construction using `_shared/
+crypto.ts`'s existing `hmacSha256Hex`/`timingSafeEqual` primitives, then
+DISCOVERED to be a near-byte-for-byte duplicate of a file another
+concurrently-running cluster had independently built at that exact same
+shared, non-`text-agent`-scoped path for `api-widget-voice-token` — that
+file's own docstring names `api-text-chat` as its other intended consumer.
+Rather than ship two parallel implementations of the same security-
+critical HMAC-verification logic, deleted this cluster's own copy and its
+test and switched `api-text-chat/handler.ts` to import the other cluster's
+`_shared/widget-token.ts` directly — `handler.test.ts` still cross-checks
+against a token minted with Node's own `node:crypto` the EXACT way
+`mintWidgetToken` does, not just round-tripped against itself); added
+`OPTIONS` CORS preflight handling + `Access-Control-Allow-Origin`
+(echoing the request `Origin`) on every response, per that same request's
+explicit requirement. `WIDGET_TOKEN_SECRET` was already declared in
+`.env.example` (Cluster W) — reused verbatim, no second secret minted.
+
+**Gates run**: `pnpm turbo typecheck test --filter=@heyloo/edge-functions
+--filter=@heyloo/templates --filter=@heyloo/canonical-types` — green (98
+edge-functions test files / 865 tests, 8 templates test files / 368
+tests, 11 canonical-types test files / 163 tests; typecheck clean across
+all three under `exactOptionalPropertyTypes: true`). `pnpm biome check
+--write` over every new/changed file (formatting only; one pre-existing,
+untouched lint warning elsewhere in `webhooks-twilio-sms/handler.ts` left
+as-is, out of scope). Both new migrations additionally verified directly
+against a real throwaway local Postgres 16 (detailed above), not just
+typechecked.
+
+**Deferred, filed as cross-cluster requests, not built**: the actual
+dashboard "take over"/"hand back to AI" UI and its human-authored-reply
+write path (Cluster W's own ownership — this cluster only exposes the
+`text_conversations.status` state transition and the
+`text_conversation_messages` `author='human'` insert policy for it to use);
+resolving the `call_logs.channel`/`usage_daily.text_messages_out`/
+`text_conversations` migration-filename conflict itself (needs
+orchestrator arbitration, not a single cluster's unilateral call — see
+`docs/audit/CHANNELS_REQUESTS.md` item 1's update).
+
+## Cluster W — Website widget + dashboard (2026-09-11)
+
+BUILD_PLAN task: the embeddable website widget (Voice web-call + Chat
+modes), its apps/web-side session/config/voice-token routes, the tenant
+Install page, and the dashboard-side pieces that had to change to support
+it (Messages authorship/takeover, Agent settings' new Text agent tab, a
+Billing usage tile). Built against `docs/spec/BACKEND_SPEC.md` §13 and
+this task's own read-first list; full list of new/changed files below by
+area.
+
+**`packages/widget/` (new package)** — the actual embed script. Framework-
+free, no dependency on the rest of the monorepo at runtime (it ships as a
+standalone `<script>` on an arbitrary third-party page): `src/index.ts`
+(boot — captures `document.currentScript` synchronously, reads `data-key`/
+`data-preview-config`), `src/panel.ts` (builds the whole shadow-DOM button
++ panel UI procedurally — no framework), `src/api.ts` (fetch wrappers,
+`.then()` chains only — see below), `src/styles.ts`/`src/icons.ts`/
+`src/dom.ts` (small helpers), `src/voice-bridge.ts` + `src/voice-runtime.ts`
+(the lazy-loaded voice chunk), `src/types.ts`. Built with `tsup` (esbuild
+under the hood) to two independent IIFE bundles (`tsup.config.ts`):
+`widget.global.js` (the always-loaded main script — **4.98–5.00KB gzipped,
+well under the 25KB budget**, `scripts/check-size.mjs` enforces it) and
+`voice-runtime.global.js` (bundles `retell-client-js-sdk`, ~680KB raw,
+loaded only once a visitor opens Voice mode — never counted against the
+main budget). `target: "es5"` — esbuild lowers `let`/`const`/arrow
+functions/optional chaining/nullish coalescing/classes, but CANNOT lower
+`async`/`await` or generators to ES5 at all (the build fails loudly
+instead of silently shipping broken output), which is why every async
+flow in `src/**` is written as explicit `.then()`/`.catch()` chains
+instead — documented at the top of `api.ts` and `tsup.config.ts`.
+Real-file-based tests throughout (21 tests, 3 files) — `panel.test.ts`
+renders the actual shadow DOM and asserts on it (accessibility roles,
+tab/keyboard behavior, preview-mode send flow, a real end-to-end chat
+send against a mocked `fetch`), `api.test.ts`/`index.test.ts` cover the
+network layer and boot-time attribute parsing.
+
+**Real bug found and fixed via actual Playwright screenshots, not just
+unit tests** (see "Screenshot verification" below): the chat and voice
+tab panels both had an inline `style="display:flex;…"` attribute
+alongside the `hidden` attribute/property `panel.ts`'s `showTab` toggles —
+an inline style ALWAYS wins over the `[hidden]{display:none}` UA-
+stylesheet rule regardless of the `hidden` attribute's presence, so both
+panels rendered stacked on top of each other at once (screenshot showed
+the chat message list, input row, AND the voice orb/Start-call button all
+visible simultaneously under the "Chat" tab). Fixed by moving those two
+layout rules into real CSS classes (`.hl-chat-panel`/`.hl-voice-panel` in
+`styles.ts`) and adding an explicit `[hidden]{display:none!important}`
+rule as a second line of defense — re-verified by screenshot after the
+fix (both tabs now render exclusively). This is exactly the kind of bug
+unit tests alone would not have caught (jsdom happily reports `.hidden ===
+true` regardless of what actually paints) — the reason the task's own
+brief asked for real screenshot verification, not just `pnpm test`.
+
+**`apps/web` — widget serving + API routes (new)**:
+`src/app/widget.js/route.ts` / `src/app/widget-voice.js/route.ts` — read
+`packages/widget/dist/*.global.js` from disk at request time (module-scope
+cached per warm instance) and serve with a content-hash ETag (304 support)
++ short real cache (`widget.js`: 5min; the lazy `voice-runtime.js`: 1hr,
+since it's never linked directly by a tenant page, only fetched
+dynamically by `widget.js` itself). `apps/web/next.config.ts` gained
+`outputFileTracingIncludes` pinning both dist files into a standalone
+build's traced output (they're read via `fs`, never `import`ed, so Next's
+build-time tracer can't discover them on its own) and `apps/web/
+package.json` gained an unused `@heyloo/widget` devDependency purely to
+give turbo's own dependency graph a `build` ordering edge (`turbo.json`'s
+`build: {dependsOn: ["^build"]}`) — verified end to end with a real `next
+build --webpack` (twice: once mid-task, once as the final gate) that both
+routes appear in the route manifest and serve real, correctly-sized
+content; `docs/audit/CHANNELS_REQUESTS.md` item 6 flags the
+`docs/DEPLOY.md` doc gap for whoever owns that file.
+`src/app/api/widget/{config,session,voice-token}/route.ts` — the three
+routes BUILD_PLAN named explicitly: `GET config` (public, origin+
+`widget_public_key`-gated via `src/lib/widget/resolve-tenant.ts`'s single
+choke-point implementation of BACKEND_SPEC §13.2's "two independent
+checks", returns only client-safe fields, never `allowed_origins` itself);
+`POST session` (mints the `WIDGET_TOKEN_SECRET`-signed `widget_token`,
+rate-limited, same origin/key gate); `POST voice-token` (verifies the
+token — never trusts a bare `tenant_id` — then proxies to the NEW
+`supabase/functions/api-widget-voice-token` edge function, mirroring how
+`api/tenant/test-agent/web-call/route.ts` already proxies to
+`api-tenant-test-call` for the authenticated-dashboard equivalent of this
+same flow; provider isolation, CLAUDE.md Rule 2, means this apps/web route
+can never touch Retell directly). `src/lib/widget/{session-token,
+rate-limit,resolve-tenant,settings-schema}.ts` back all three. 53 tests
+across these + the two serving routes, all passing; full `apps/web`
+production build (`next build --webpack`) run clean twice (zero warnings/
+errors beyond pre-existing, unrelated Next/Sentry deprecation notices) as
+the final gate, plus a `pnpm -w typecheck`-equivalent `tsc -b` pass on
+every touched package.
+
+**`supabase/functions/api-widget-voice-token` (new edge function)** —
+mints a Retell web-call token for the TENANT's own real published agent
+(Voice mode), same shape as `api-tenant-test-call/handler.ts` but
+authenticated by the `widget_token` (independently re-verified server-
+side, never a caller-supplied `tenant_id`) since there is no Supabase user
+JWT in this flow at all — `verify_jwt: false`, `supabase/config.toml`
+entry added. `supabase/functions/_shared/widget-token.ts` (new) is the
+Deno-side HMAC verifier ported from `apps/web/src/lib/widget/session-
+token.ts`'s Node construction (`_shared/crypto.ts`'s existing
+`hmacSha256Hex`/`timingSafeEqual` primitives) — cross-runtime
+interoperability directly tested (`widget-token.test.ts`'s own dedicated
+test mints a token with Node's `createHmac` and verifies it with the Deno-
+side function). 15 tests across the edge function + shared verifier.
+
+**Widget ↔ `api-text-chat` contract — posted early, then actually adopted
+mid-task by the other cluster building that function**: this task's own
+brief said to agree the contract "in your first 10 minutes"; posted as
+`docs/audit/CHANNELS_REQUESTS.md` item 4 (full request/response shape +
+CORS + auth) once the design was settled, built `packages/widget/src/
+api.ts`'s `sendChatMessage`/`types.ts`'s `WidgetChatResponse` against it
+before `api-text-chat` existed in the tree at all. Confirmed directly in
+this session, after the other cluster's own `docs/BUILD_NOTES.md` entry
+surfaced mid-task: `supabase/functions/api-text-chat/**` now exists,
+matches that contract exactly (`{widget_token, message,
+conversation_token?}` → `{conversation_token, reply, sent, reason?}`), and
+imports `_shared/widget-token.ts` (this cluster's own file, built for
+`api-widget-voice-token`) directly rather than duplicating it — verified
+`_shared/widget-token.ts` is byte-identical to what this cluster wrote (no
+changes needed on this side). `docs/audit/CHANNELS_REQUESTS.md` item 7
+closes the loop.
+
+**`dashboard/website-widget/` (new tenant page)** — Install page: master
+enabled toggle (saves immediately), embed snippet with copy button and a
+"Generate/Rotate key" action (`widget_public_key`, client-generated opaque
+value written via the existing `tenants_update` RLS policy — no new API
+route needed, same direct-write pattern `agent/manual-mode/page.tsx`
+already uses), an allowed-domains editor (add/remove, validated to a bare
+`https://host` origin — rejects a path/query/fragment or a duplicate
+before it's ever saved), appearance (modes/position/accent/greeting), a
+usage tile (30-day AI text-reply count, honestly labeled "SMS + widget
+chat combined" since `usage_daily.text_messages_out` genuinely can't be
+split by channel today), and a REAL live preview — mounts the actual
+built `widget.js` against the current, possibly-unsaved form state via
+`data-preview-config` (debounced re-mount on change), not a mocked
+approximation. Nav link added (`tenant-shell-client.tsx`, new `Globe`
+`NAV_ICONS.websiteWidget` entry in `packages/ui`). Preview-mode mirror +
+fixture data added (`(preview)/preview/dashboard/website-widget/page.tsx`,
+`lib/preview/routes.ts`, `PREVIEW_TENANT`'s new widget/text-agent fields
+in `lib/preview/fixtures.ts`). 7 tests.
+
+**Agent settings → new "Text agent" tab** (`dashboard/agent/text-agent/`)
+— master toggle, persona (tone + optional sign-off), quiet hours.
+Documented explicitly, in the page's own docstring, that
+`text_agent_persona`'s shape is "owned by the text-agent runtime" per that
+migration's comment, but the runtime (`_shared/text-agent/system-
+prompt.ts`'s `buildTextSystemPrompt`) does not read either
+`text_agent_persona` or `quiet_hours` as of this task — this page is the
+tenant self-service surface for a reasonable, forward-looking shape a
+follow-up engine change can wire in without a schema change, not a claim
+that it's already wired up. Tab added to `agent-settings-tabs.tsx`,
+preview mirror + routes.ts entry added. 4 tests.
+
+**Billing → Text conversations usage tile**: `api/platform-settings/
+tenant-plan/route.ts` extended (2 new response fields,
+`included_text_conversations`/`text_conversation_overage_cents`, read from
+the same already-fetched `price_card_<vertical>` row, defaulting to the
+BACKEND_SPEC-documented 200/5¢ when absent — e.g. on an environment where
+`docs/audit/CHANNELS_REQUESTS.md` item 2's `seed.sql` gap hasn't been
+fixed yet). `billing/page.tsx`'s existing usage query extended to also
+select `text_messages_out` (one extra column on an already-issued query,
+no new round trip) and a new Card rendering the same included/used/
+overage math `UsageMeter` already does for minutes, by hand (that
+component's copy is hardcoded to "minutes", so reused the same `Progress`
+primitive directly with honest text rather than repurposing a
+minutes-specific component). 5 new tests + 2 pre-existing tests
+reconfirmed passing unchanged.
+
+**`dashboard/messages/` — AI vs human vs customer authorship + Take
+over/Hand back to AI** (this task's own brief item; initially deferred as
+blocked — see `docs/audit/CHANNELS_REQUESTS.md` item 5 — until the other
+cluster's follow-up `text_conversation_messages` migration landed
+mid-session and unblocked it; built against that table once it existed,
+not against a guess). Backward-compatibility constraint that shaped the
+whole design: `customer-detail-client.tsx`, `order-detail-client.tsx`, and
+`bookings/page.tsx` (none owned by this cluster) already deep-link
+`/dashboard/messages/<phone>` with a real E.164 number — renaming that
+route's param to a conversation id would silently break every one of
+those links. Instead: the SAME `[phone]` route now accepts either a real
+phone (unchanged) or an opaque `wc:<conversation id>` key for a web-chat-
+only conversation (which has no phone at all until/unless the visitor
+verifies one, BACKEND_SPEC §13.1) — `src/lib/messages/text-
+conversations.ts`'s `webChatKey`/`parseThreadKey` is the one place that
+distinction is made, never leaking a `wc:`-prefixed string into
+`formatPhoneDisplay`/a `.eq("phone_e164", …)` filter anywhere else.
+`messages-list-client.tsx`: unchanged SMS-thread base (`messages_inbound`/
+`messages_outbound`), now ALSO queries `text_conversations` to (a) attach
+a status badge to an existing SMS thread and (b) surface web-chat-only
+conversations (which have no `messages_inbound` row at all — that
+transport is SMS-only) as their own rows. `[phone]/message-thread-
+client.tsx`: when a `text_conversations` row exists for the thread, shows
+the real `text_conversation_messages` transcript with author-colored/
+-labeled bubbles (customer/AI/You) instead of the legacy inbound/outbound
+view, plus a "Take over"/"Hand back to AI" button (direct client write to
+`text_conversations.status`, permitted by that migration's own
+`text_conversations_human_takeover` RLS policy — no new API route needed);
+when no `text_conversations` row exists (a thread the engine never
+touched — pre-existing STOP/HELP-only history, or simply not created
+yet), falls back to the exact prior behavior, unchanged, zero regression
+risk. A human reply always inserts a `text_conversation_messages` row
+(`author: 'human'`, permitted by that same migration's insert policy); for
+an SMS thread it ALSO sends a real SMS via the pre-existing `messages_
+outbound`/`fn_enqueue_message_outbound` path (`api/tenant/messages/
+[phone]/route.ts`, unchanged) so the customer actually receives it; for a
+web-chat thread it can only save the transcript row — **known, documented
+gap, not silently glossed over**: the widget's chat is a plain request/
+response HTTP call with no live-push mechanism (no WebSocket/polling), so
+a human's dashboard reply to a web-chat visitor won't reach them until
+they send another message and the (not-yet-built) delivery of saved human
+replies into that next `api-text-chat` turn is wired up — out of this
+task's scope to build the push side of that, flagged here rather than
+implied to work. Also not carried over from the old view: a STOP/HELP
+reply sent by a customer mid-conversation returns early in `webhooks-
+twilio-sms/handler.ts` before ever reaching the text-agent engine, so it
+never gets a `text_conversation_messages` row — an ongoing SMS
+conversation's author-tagged transcript can be missing that one message
+even though `messages_inbound` still has it; a real, small, documented
+gap rather than a claim of 1:1 parity with every legacy message. 16 tests
+across the three files (`text-conversations.test.ts`,
+`messages-list-client.test.tsx`, `message-thread-client.test.tsx`).
+`database.types.ts` gained hand-transcribed `TextConversationRow`/
+`TextConversationMessageRow` types (plus `text_messages_out` on
+`UsageDailyRow` and the widget/text-agent columns on `TenantRow`) — this
+package's own stated convention ("hand-maintained... add a column here the
+day a page needs it"), not a full `supabase gen types` run (unavailable in
+this sandbox, same constraint every other package in this repo already
+documents).
+
+**Cross-cluster requests filed** (`docs/audit/CHANNELS_REQUESTS.md`,
+items 4-7, posted by this cluster): item 4 (the widget/`api-text-chat`
+contract, posted early per this task's own instruction, since adopted —
+item 7 closes the loop); item 5 (the authorship-table gap, since filled by
+the other cluster's `text_conversation_messages` migration); item 6
+(`docs/DEPLOY.md`'s widget-build-step + new edge function secrets gap,
+still open — this cluster doesn't own that file).
+
+**Screenshot verification** (this task's own explicit instruction — "at
+1440/390 via Playwright", PNGs not committed): a static test page
+(`/tmp/.../scratchpad/widget-test-page.html`) with the REAL built
+`widget.global.js` inlined into a plain `<script data-key="..."
+data-preview-config="...">` tag — no server, no backend — rendered at
+1440×900 and 390×844: `widget-{desktop,mobile}-closed.png` (launcher
+only), `widget-{desktop,mobile}-open-chat.png`, `widget-{desktop,mobile}-
+open-voice.png` (tab switch). This exercise is what caught and confirmed
+the fix for the `[hidden]`-vs-inline-`style` bug above — the FIRST
+screenshot pass, before the fix, visibly showed both tabs' content
+stacked. `dashboard/website-widget` (the Install page) was ALSO attempted
+via a separate `UI_PREVIEW_MODE=1` run (both `next build --webpack` +
+`next start` and plain `next dev`/`next dev --webpack` were tried) against
+`/preview/dashboard/website-widget` — every attempt left the page stuck on
+`DataState`'s loading skeleton indefinitely, its `useTenantQuery`/
+`useQuery` `queryFn` never observed to execute at all (confirmed by a
+temporary `console.log` at the very top of the query function, which never
+printed) even though `tsc`, `pnpm test` (7/7 for this exact component,
+mocking the same Supabase call shape), and two independent full `next
+build --webpack` production builds all pass clean for this file with no
+changes. One dev-server run's own log additionally showed a transient SWC
+"Syntax Error" pointing at a location `tsc` itself parsed without
+complaint on the identical file content — evidence pointing at dev-server/
+Turbopack-or-webpack compilation instability specific to this session's
+sandbox (a tree three build agents are concurrently editing live) rather
+than a defect in the shipped code. Not chased further past a reasonable
+number of attempts across three different dev-server configurations;
+the stuck-loading captures were deleted rather than kept/reported as a
+successful design screenshot. The Install page's correctness rests on its
+7 passing tests + clean `tsc`/production-build gates instead, same
+evidentiary standard every other new page in this task meets.
+`widget-*.png` (6 files, the widget itself — the higher-risk, more novel
+piece, and the one that actually caught a real bug) ARE genuine, correct
+captures, and are what's under this session's scratchpad directory
+(`/tmp/claude-0/.../scratchpad/`) now — never committed to the repo, per
+this task's own instruction; paths and this caveat reported in this
+task's structured output notes for the orchestrator.
+
+**Deliberately out of scope / deferred, not silently skipped**: live
+push of a human's dashboard reply into an OPEN web-chat conversation (the
+widget's chat transport has no server-push mechanism today — see the
+Messages section above); resolving `docs/audit/CHANNELS_REQUESTS.md` item
+1's `call_logs.channel`/migration-filename conflict (not this cluster's
+call — flagged, not touched); wiring `tenants.text_agent_persona`/
+`quiet_hours` into the actual engine prompt (the Agent settings tab is the
+tenant-facing half only, documented as such in its own file).
+
+**Gates run**: `packages/widget` — `tsc -b` clean, `tsup` build (both
+bundles), `scripts/check-size.mjs` (5.00KB gz, budget 25KB), `vitest run`
+(3 files/21 tests). `apps/web` — `tsc -b` clean (`exactOptionalPropertyTypes:
+true`), `vitest run` **full suite: 78 files / 423 tests, all green** (not
+just the new/changed files — a full regression pass after the
+`database.types.ts` change), two full `next build --webpack` runs (mid-
+task and as the final gate) both exit 0 with zero warnings/errors beyond
+pre-existing unrelated Next/Sentry deprecation notices, plus a third
+`UI_PREVIEW_MODE=1 next build --webpack` + `next start` run for the
+screenshot pass. `supabase/functions` — `tsc -p tsconfig.json --noEmit`
+clean, `vitest run` on the two new files (2 files/15 tests). `packages/
+supabase-client`/`packages/ui` — `tsc -b` clean after the new row types/
+`NAV_ICONS` entry; `packages/ui`'s own full suite (19 files/97 tests) re-
+run to confirm the new icon didn't regress anything. `biome check --write`
+over every new/changed file (formatting only — every substantive finding
+was a real lint error, e.g. a `forEach` callback returning a value,
+fixed, not suppressed). No `.next`, build output, or `.env*` staged;
+PNGs kept out of the repo per this task's own instruction.
+
+## Integrator — Channels migration-collision resolution + cross-cluster requests pass (2026-09-11, session_012xvcAnjqsMbPqitErDJQbR)
+
+Applied every unapplied request in `docs/audit/CHANNELS_REQUESTS.md` after
+three concurrently-run build clusters (S — schema/pricing/docs, T —
+text-agent engine, W — website widget + dashboard) finished. The one
+blocking item was item 1/item 6, the real, reproduced migration collision
+between Cluster S's `20260911100000_channels_text_conversations.sql` /
+`20260911101000_channels_tenant_and_call_log_columns.sql` and Cluster T's
+`20260911120000_text_conversations.sql` (both independently adding
+`call_logs.channel`, `usage_daily.text_messages_out`, and a differently-
+shaped `text_conversations` table).
+
+**Resolution and why**: kept Cluster T's `text_conversations` design as
+canonical — independently confirmed it is the only one actually wired to
+working code before touching anything: `webhooks-twilio-sms/handler.ts`
+and `api-text-chat/handler.ts` both call `_shared/text-agent/engine.ts`'s
+`handleInboundText`, which reads/writes Cluster T's schema exclusively;
+Cluster W's dashboard (`apps/web/src/app/[locale]/(tenant)/dashboard/
+messages/**`, `apps/web/src/lib/messages/text-conversations.ts`) and
+`packages/supabase-client/src/database.types.ts`'s `TextConversationRow`/
+`TextConversationMessageRow` were already built against Cluster T's column
+names/enum values, not Cluster S's — Cluster S's `text_conversations`/
+`text_messages` tables had zero consumers anywhere in the tree. Concrete
+changes:
+
+- `20260911100000_channels_text_conversations.sql`: neutered to an
+  explained no-op (kept in place, timestamp preserved, never delete a
+  cluster's actual deliverable file silently — CLAUDE.md Rule 2's "never
+  edit an applied migration" doesn't apply here since nothing in this tree
+  has ever been applied to a real environment, confirmed by re-deriving
+  every migration from zero below).
+- `20260911101000_channels_tenant_and_call_log_columns.sql`: kept the
+  `tenants.*` text-agent/widget columns unchanged; `call_logs.channel`
+  reconciled to a single 4-value enum (`'phone'|'web_voice'|'sms'|
+  'web_chat'`, default `'phone'`) per Cluster T's own item-6 follow-up,
+  which correctly identified the two clusters' 2-value enums as describing
+  genuinely different, both-needed axes rather than a "pick one" conflict.
+- `20260911110000_channels_pricing_and_usage.sql`: kept the
+  `usage_daily.text_messages_out` column and the `price_card_*`
+  jsonb-merge `UPDATE`; rewrote `fn_upsert_usage_daily` to stop touching
+  `text_messages_out` at all (it used to recompute it from Cluster S's now-
+  gone `text_messages` table on every `on conflict do update set`) — that
+  column is event-sourced, incremented directly and exclusively by
+  `_shared/text-agent/conversation-store.ts` per outbound AI message; the
+  nightly rollup function silently resetting it to 0 on every cron run
+  would have been a real, live billing-undercount bug, not just a schema
+  mismatch, had this shipped as Cluster S originally wrote it.
+- `20260911120000_text_conversations.sql`: removed its now-duplicate
+  `call_logs.channel`/`usage_daily.text_messages_out` `ALTER TABLE`s (both
+  now owned exactly once, by the two files above); its `text_conversations`
+  `CREATE TABLE` and everything after is unchanged.
+- `scripts/ci/rls-cross-tenant-probe.ts` (Cluster S's file, needed a fix
+  regardless of arbitration direction): its seed/probe of Cluster S's
+  now-gone `text_messages` table swapped for Cluster T's
+  `text_conversation_messages` (same dependent-FK seeding pattern, just the
+  right table/columns — no `direction` column on the new table).
+- `packages/supabase-client/src/database.types.ts`: `CallLogRow` was
+  missing a `channel` field entirely (neither cluster had added it, since
+  neither knew which enum would win) — added the reconciled 4-value type.
+
+**Verified, not just asserted** — a real throwaway Postgres 16 instance
+(this environment ships one; `service postgresql start`, a stub `auth`/
+`storage`/`realtime` schema matching what earlier clusters' own
+BUILD_NOTES entries describe, the 3 unavailable `create extension pg_cron/
+pgmq/pg_net` lines stripped since this box doesn't have those extensions
+installed — the migrations' own code already `raise notice`s and no-ops
+gracefully without them, confirmed by reading `20260910093000_queues_and_
+scheduled_jobs.sql` rather than assuming):
+1. All 50 migration files in `supabase/migrations/` apply cleanly, zero
+   errors, in filename order, from an empty database.
+2. `supabase/seed/seed.sql` then applies cleanly on top (also fixes item 2
+   below — the seed's own literal price-card jsonb now carries the two new
+   keys so a `supabase db reset` no longer wipes them).
+3. A live smoke test inside a transaction (rolled back): inserted
+   `call_logs` rows with all 4 `channel` values including the un-set
+   default; inserted a `text_conversations` row + a `text_conversation_
+   messages` row and joined them; called `fn_upsert_usage_daily`, then
+   directly incremented `usage_daily.text_messages_out` (the same `UPDATE`
+   shape `conversation-store.ts` uses), then called `fn_upsert_usage_daily`
+   again — confirmed the second rollup call does **not** reset the
+   incremented value back to 0, the exact bug being fixed.
+
+**Also applied** (the rest of the task's unapplied-request list, all
+confirmed already-done or done here):
+- Widget chat mode ↔ `api-text-chat` contract (item 4/7): confirmed
+  already exactly matching — `api-text-chat/handler.ts` imports `_shared/
+  widget-token.ts` verbatim, `packages/widget/src/api.ts`'s
+  `sendChatMessage`/`types.ts`'s `WidgetChatResponse` need no changes. No
+  action needed.
+- Dashboard nav links to Messages / Website widget (item implied by the
+  task brief): already present in `tenant-shell-client.tsx`. No action
+  needed.
+- `supabase/config.toml` `[functions.api-text-chat]`/
+  `[functions.api-widget-voice-token]` entries: already present with
+  correct `verify_jwt = false`. No action needed.
+- `.env.example`/`docs/DEPLOY.md` env docs (item 6, posted twice under the
+  same number by Cluster W): `WIDGET_TOKEN_SECRET`/`RETELL_API_KEY` were
+  already in `.env.example` and `docs/DEPLOY.md`'s var table, but the table
+  didn't cross-reference that `api-widget-voice-token` needs both — added
+  that note. Added the missing `docs/DEPLOY.md` §3.7 note that
+  `packages/widget` must build before `apps/web` (the two widget-serving
+  routes read its `dist/` files from disk, not via `import`) plus a
+  `/widget.js`/`/widget-voice.js` 200-not-404 smoke-test line.
+- `supabase/seed/seed.sql` (item 2): added `included_text_conversations`/
+  `text_conversation_overage_cents` to all 8 `price_card_<vertical>`
+  literals — verified via the same throwaway-Postgres harness that a fresh
+  `seed.sql` apply now carries both keys.
+- `docs/spec/BACKEND_SPEC.md` §13 / `docs/spec/FRONTEND_SPEC.md` §12: both
+  rewritten to describe the resolved shape (Cluster T's `text_conversations`
+  / `text_conversation_messages`, the reconciled `call_logs.channel`
+  4-value enum) rather than Cluster S's superseded design.
+
+**Known gap found while verifying, NOT fixed here (out of this pass's
+scope — flagging per CLAUDE.md Rule 4 rather than redesigning)**: a widget
+**voice** call (`api-widget-voice-token` → Retell web call → `voice-events`
+webhook) never actually gets `channel = 'web_voice'` tagged, and worse,
+`voice-events/handler.ts`'s `resolveTenantForCall` resolves the tenant by
+looking up `phone_numbers` via `call.to_number` — a web call has no
+`to_number` (no Twilio number involved at all), so `voice-events` likely
+drops the tenant-resolution entirely for a widget voice call today and
+never inserts a `call_logs` row for it at all, not just an untagged one.
+This is a real, currently-uncovered gap in Cluster W's widget voice
+feature (the `api-widget-voice-token/handler.ts` comment itself already
+flagged the channel-tagging half as "not written here"), but fixing
+`voice-events`'s tenant-resolution to also handle web calls (likely via the
+Retell `agent_id` rather than `to_number`) is a real engine change beyond
+"apply every unapplied request" — appended to `docs/audit/
+CHANNELS_REQUESTS.md` as a new item for whoever picks up the widget-voice
+feature next.
+
+**Gates run**: throwaway-Postgres migration-from-zero + seed + live smoke
+test (above, real verification, not theorized) for every schema change;
+`pnpm -w typecheck` run after all edits (see this session's own final
+summary for the exact result and any further fixes it required).
+
+## REPAIR — Cluster T text-agent safety follow-up: web_chat rate-limit bypass + verify_phone SMS-bombing cap
+
+**What was fixed** (per verifier findings on the "text agent safety" claim;
+files: `supabase/functions/_shared/text-agent/engine.ts`, `tool-router.ts`,
+`rate-limit.ts`, `supabase/functions/api-text-chat/handler.ts`; tests in the
+sibling `*.test.ts` for each):
+
+1. **Rate-limit bypass (web_chat conversation-creation reset).**
+   `handleInboundText`'s rate-limit key for `web_chat` used to be
+   `${tenantId}:web_chat:${conversation.id}`, but `resolveOrCreateConversation`
+   mints a brand-new `conversation.id` every time a caller omits
+   `conversation_token` — since `api-text-chat` is public
+   (`verify_jwt: false`) and reachable directly with just a `widget_token`,
+   a caller could omit `conversation_token` on every request and get a
+   fresh rate-limit bucket every time, i.e. the limiter never actually
+   engaged. Fix: added an optional `WebChatTurnInput.sessionKey`, keyed by
+   the engine's rate limiter instead of `conversation.id` when present
+   (falls back to `conversation.id` when absent, e.g. direct engine
+   callers). `api-text-chat/handler.ts` derives it as
+   `` `widget_token:${sha256Hex(body.widget_token)}` `` — stable for the
+   token's whole 15-minute TTL regardless of how many fresh conversations
+   get created under it, since the widget_token is already the thing this
+   endpoint trusts as caller identity. Regression tests: `engine.test.ts`
+   ("keys the web_chat limiter on the caller-supplied sessionKey...") and
+   `api-text-chat/handler.test.ts` ("still enforces the rate limit when
+   conversation_token is omitted on every call") — the latter drives 9 real
+   `handleTextChat` calls through a fixture that mints a DISTINCT
+   `conversation.id` every time (matching the real DB's actual behavior)
+   and asserts the 9th is `rate_limited`.
+
+2. **`verify_phone` open SMS-relay / bombing.** `verify_phone` sends a real
+   SMS to whatever number the customer (or a scripted attacker) supplies,
+   with no cap beyond the general per-session message rate limit — which
+   fix #1 closes for a single session, but a per-tenant SMS-cost/abuse
+   vector independent of session identity was still open (many freshly-
+   minted sessions, each under budget individually, could still add up to
+   unlimited real sends). Added two independent caps in
+   `tool-router.ts`'s `runVerifyPhone`, checked BEFORE any send/DB write:
+   - Per-conversation distinct-number cap
+     (`MAX_DISTINCT_PHONES_PER_CONVERSATION = 3`): tracked in
+     `conversation.structured_state.verify_phone_attempts` (a plain string
+     array), persisted via the normal `saveConversationPatch` path. A 4th
+     distinct number in one conversation is blocked
+     (`{sent:false, reason:"too_many_numbers"}`); resending to an
+     already-attempted number is never blocked by this cap.
+   - Tenant-wide hourly cap (`verifyPhoneRateLimiter` in `rate-limit.ts`,
+     20/hour, same `TextAgentRateLimiter` shape as the existing message
+     limiter): keyed on `tenantId` alone (never conversation/session), so
+     it holds even across attacker-minted fresh conversations/sessions
+     that would otherwise each look individually within-budget.
+   Regression tests in `tool-router.test.ts`: distinct-number-cap block +
+   resend-still-works, and a 25-iteration fresh-conversation/fresh-phone
+   loop asserting exactly 20 sends succeed and 5 are `rate_limited`.
+
+**Not changed in this pass** (out of scope per the verifier's own
+priority ordering — flagging per CLAUDE.md Rule 4 rather than expanding
+scope):
+- `widget_token` is still reusable (not single-use) for its full TTL, and
+  `/api/widget/session`'s Origin check is still the only non-browser-caller
+  guard (`apps/web/src/lib/widget/session-token.ts`,
+  `apps/web/src/lib/widget/rate-limit.ts`) — the verifier flagged this as
+  worth considering but lower priority than the two fixes above, which
+  directly close the demonstrated bypass/abuse paths regardless of how a
+  `widget_token` was obtained.
+- `verifyBookingIdentity`'s name+time "knowledge" fallback
+  (`_shared/identity-verification.ts`) for unverified web_chat sessions —
+  called out by the verifier as a secondary, lower-severity, pre-existing
+  write-path issue, not part of this pass's rate-limit/SMS-bombing scope.
+
+**Gates run**: `cd supabase/functions && npx vitest run` — 870 tests across
+98 files, all passing, including this pass's 5 new regression tests spread
+across `engine.test.ts` (+2), `api-text-chat/handler.test.ts` (+1), and
+`tool-router.test.ts` (+2); `npx tsc -p supabase/functions/tsconfig.json
+--noEmit --pretty` clean; `biome check` clean on every touched file. No
+`apps/web` or `packages/**` files were touched by this pass, so their
+gates weren't re-run.
+
+## Cluster repair (2026-09-11) — Calls-dashboard channel leak + quiet-hours decision ratified
+
+**1. Fixed: `call_logs` shadow rows polluting the voice Calls dashboards.**
+The text-agent's shadow `call_logs` rows (`channel in ('sms','web_chat')`,
+`started_at` always `null` — see `20260911101000_channels_tenant_and_
+call_log_columns.sql`) were showing up as blank "In progress" rows at the
+top of every voice-only Calls surface, because Postgres's default
+`ORDER BY started_at DESC` is `NULLS FIRST` and none of these queries
+filtered `channel`. Fixed by adding `.in("channel", ["phone","web_voice"])`
+plus explicit `{ ascending: false, nullsFirst: false }` ordering to:
+- `apps/web/src/components/tenant/calls-list-client.tsx` (Calls list)
+- `apps/web/src/components/tenant/overview-client.tsx` (Overview's
+  "Recent calls" widget and its spam-deflected count)
+- `apps/web/src/app/api/tenant/calls/export/route.ts` (CSV export)
+- `apps/web/src/app/[locale]/(tenant)/dashboard/customers/[id]/page.tsx`
+  (customer profile's call history — same bug shape, in scope for
+  consistency even though not in the original three named files)
+
+Not touched: `apps/web/src/app/[locale]/(tenant)/dashboard/calls/[id]/
+page.tsx` (fetches one call by its own id, not a list — a direct link to a
+shadow row's id would still render mostly-blank, but that's an out-of-
+scope "should a text conversation even have a /dashboard/calls/[id] URL"
+question, not this ordering bug) and `api/tenant/setup-progress/route.ts`
+(counts `is_test_call = true` only, unaffected by channel).
+
+**2. Quiet-hours claim: ratifying the existing decision, no code change.**
+Re-reviewed the reasoning at line ~8131 above (`_shared/quiet-hours.ts`
+gates only unsolicited proactive outbound; a text-agent reply is a direct
+response inside a conversation the customer just started, so it is
+deliberately exempt on both channels). This is confirmed as the intended
+behavior, not a gap to close — "quiet hours respected" in the original
+task brief should be read as "quiet hours are respected for unsolicited
+outbound (reminders, campaigns), not reinterpreted as deferring a direct
+reply to a customer-initiated conversation." No change made to
+`resolveTenantTextContext` / `engine.ts`.
+
+**3. `.env.example` duplicate `ANTHROPIC_TEXT_AGENT_MODEL`**: deduped —
+kept the fuller comment in the Cluster T text-agent-engine section, left a
+pointer comment in the Channels/widget section instead of a second
+declaration.
+
+**4. Root `vitest run` project-glob bug** (`apps/*` matching non-project
+`apps/README.md`/`apps/docs`): left as-is, out of scope for this repair
+pass (pre-existing, unrelated to the SMS feature or the two items above);
+scoped `vitest run` invocations continue to be the correct workaround.
+
+**Gates run**: `apps/web` — `npx tsc --noEmit` clean. No existing test
+exercises the touched query chains directly (`overview-client.test.tsx`
+only covers the pure `usageDailyToTrend` adapter), so no test needed
+updating; none broken.
+
+## REPAIR — Text-conversation price-card admin edit was destructive; text-agent `price_version` was hardcoded (2026-09-11, session_012xvcAnjqsMbPqitErDJQbR)
+
+Verifier's "admin can edit the values" claim was false, and worse: the
+existing admin Pricing-tab save path silently deleted
+`included_text_conversations`/`text_conversation_overage_cents` from
+`platform_settings.price_card_<vertical>` on the FIRST edit through the
+UI, because the write handler built a brand-new `value` object from only
+the fields its schema knew about and did a full JSONB replace. Fixed:
+
+1. Added `included_text_conversations`/`text_conversation_overage_cents`
+   (both required, matching the other pricing fields' "admin always sends
+   an explicit value" convention) to `platformPricingTableSchema`
+   (`packages/canonical-types/src/schemas/platform-pricing-table.ts`) and
+   its Deno mirror `PlatformPricingTableSchema`
+   (`supabase/functions/admin/schemas.ts`).
+2. `supabase/functions/admin/handler.ts`'s pricing POST now spreads the
+   previously-stored `value` (`...(before ?? {})`) before overwriting the
+   fields this schema knows about, so any field a future migration/seed
+   adds before the admin form is updated to know about it survives an
+   edit instead of being wiped — not just the two new fields, structurally
+   fixed for any future one. Added a regression test
+   (`admin/handler.test.ts` — "merges a pricing save onto the
+   previously-stored value...") that seeds a `some_future_field` the
+   schema doesn't know about and asserts it survives both the response
+   body and the actual `insert` values.
+3. Added the two fields to the `PricingTab` UI
+   (`apps/web/src/app/[locale]/(admin)/cockpit/settings/page.tsx`) —
+   inputs, state (defaulted to 200/5¢ to match the tenant-facing read-path
+   fallbacks in `/api/platform-settings/tenant-plan`), and the save
+   payload.
+4. `incrementTextMessagesOut`'s two call sites
+   (`_shared/text-agent/engine.ts:216,326`) now pass
+   `tenantContext.priceVersion` instead of the literal `"v1"`.
+   `resolveTenantTextContext` (`_shared/text-agent/conversation-store.ts`)
+   now selects `t.price_version` and returns it on `TenantTextContext`
+   (`_shared/text-agent/types.ts`) — the "small additional column" the
+   original task brief anticipated; reuses the tenant/agent-config query
+   already run for every text turn rather than a second round trip.
+
+**Gates run**: `supabase/functions` — `npx vitest run` (98 files, 871
+tests, all green) and `npx tsc -p tsconfig.json --noEmit --pretty` clean.
+`packages/canonical-types` — `npx vitest run` (163 tests green) and
+`npx tsc -b --pretty` clean. `apps/web` — `npx tsc -b --pretty` clean and
+`npx vitest run` (78 files, 423 tests, all green).
+
+## REPAIR — Cluster S/W widget-voice `channel='web_voice'` gap: fixed
+
+**What was fixed** (per verifier finding on the "website widget" claim —
+`call_logs` for a widget voice call was either absent entirely or, if
+narrowly patched, mistagged `'phone'`; files: `supabase/functions/
+voice-events/handler.ts`, `handler.test.ts`):
+
+- `resolveTenantForCall` now has two resolution paths instead of one. It
+  still tries `call.to_number -> public.phone_numbers` first (unchanged,
+  real Twilio-originated calls always carry `to_number`); when that's
+  absent or unmatched — exactly how a Retell web call arrives, since
+  `createWebCall` (`_shared/providers/retell.ts`) never sends a
+  `to_number` at all — it now falls back to `call.agent_id ->
+  agent_configs.retell_agent_id -> tenant_id`, joining `tenants` the same
+  way for `owner_test_phone`/test-call detection.
+- The resolver returns which path matched (`channel: 'phone' |
+  'web_voice'`), and both `handleCallStarted`'s insert and
+  `handleCallEnded`'s out-of-order fallback insert now write that value
+  into `call_logs.channel` explicitly (`phone_number_id` is `null` on the
+  `web_voice` path — there is no PSTN number to attach). The column
+  default (`'phone'`) is now only ever hit for pre-existing rows/schema
+  default, not relied on implicitly for real inserts.
+- This closes the exact gap this same file's `channel` column comment
+  (`20260911101000_channels_tenant_and_call_log_columns.sql`) and
+  `api-widget-voice-token/handler.ts`'s "not written here" comment both
+  point at, and the gap flagged above in the "Integrator — Channels
+  migration-collision resolution" entry and mirrored in `docs/audit/
+  CHANNELS_REQUESTS.md` item 8 — both marked resolved there.
+- Added `handler.test.ts` cases: `handleCallStarted` resolving a call with
+  `agent_id` set and no `to_number` via `agent_configs`, asserting the
+  insert carries `channel='web_voice'` and a `null` `phone_number_id`; a
+  no-`to_number`-and-no-`agent_id` call still no-ops (never silently
+  invents a tenant); and `handleCallEnded`'s out-of-order fallback insert
+  path doing the same agent_id resolution + `channel='web_voice'` tagging.
+
+**Gates run**: `supabase/functions` — `npx vitest run` (98 files / 874
+tests, all passing, including the 3 new cases above) and `npx tsc -p
+tsconfig.json --noEmit --pretty` (clean).
+
+## CHANNELS-1 — Integrator pass over the Channels wave (SMS text agent +
+website widget), final gate run + commit (2026-09-11, session_012xvcAnjqsMbPqitErDJQbR)
+
+Closed out the last open verifier finding on this feature and ran every
+CLAUDE.md gate before committing the whole Channels wave (Clusters S/T/W
+plus every repair entry above) as one commit.
+
+**Real bug fixed** — the verifier's own finding: `messages-list-client.tsx`
+(the tenant Messages inbox list) merges three sources per thread —
+`messages_inbound`, `messages_outbound`, and `text_conversations` — and the
+SMS-with-a-matching-conversation-row branch only ever copied `c.status`
+onto the already-built row, never `c.updated_at`/the conversation's latest
+`recent_turns` entry. So whenever the text-agent engine's own write (an
+agent-only STOP/HELP/YES reply, or any turn recorded solely via
+`conversation-store.ts` — `text_conversations.updated_at` moving forward
+with no corresponding `messages_inbound`/`messages_outbound` row landing in
+this component's own 300-row queries) was the most recent activity on a
+thread, the list kept showing a stale `lastAt`/preview and could sort the
+thread out of place entirely. Fixed: that branch now also promotes
+`existing.lastAt`/`existing.preview` from the conversation row whenever
+`c.updated_at` is newer than what the SMS tables already produced, using
+the conversation's own last `recent_turns` entry as the preview text.
+Regression test added (`messages-list-client.test.tsx` — "updates lastAt/
+preview from a text_conversations row newer than the matching SMS row").
+
+**Two real `react-hooks/set-state-in-effect` lint errors fixed** (found by
+the `pnpm run lint` gate, not pre-existing — both were part of this
+feature's own uncommitted work): `dashboard/agent/text-agent/page.tsx` and
+`dashboard/website-widget/website-widget-client.tsx` both used the
+`useState<Form | null>(null)` + `useEffect(() => setForm(derived), [query.
+data])` shape to seed a locally-edited form from a query result — a
+cascading-render anti-pattern the React Compiler ESLint plugin now flags as
+an error, not a style nit (calling a state setter synchronously inside an
+effect body). Fixed the same way in both, rather than suppressing the rule:
+split each into an outer component that gates on `query.data`/`DataState`
+being loaded and an inner component that takes the loaded row as a prop and
+seeds its form state via `useState(() => deriveForm(initial))` — a lazy
+initializer that runs once at mount, not an effect — eliminating the
+null-gap entirely instead of bridging it with a synchronous `setState`. No
+behavior change for either page's own tests (`text-agent/page.test.tsx`
+unchanged and still green; `website-widget-client.test.tsx` updated only
+to drop a `.closest("li")` DOM-traversal call in favor of querying the
+remove button by its already-origin-specific accessible name, and to
+`eslint-disable`-with-justification its `afterEach`'s cleanup of the
+`<script>` tag the component's own preview effect appends directly to
+`document.body` outside the render tree — both were newly-introduced
+`testing-library/no-node-access` errors the same lint gate caught).
+
+**Gates run, all green:**
+- `npx biome check --write` on every changed path (70 pre-existing +
+  1 test file this pass touched) — 0 errors; 2 pre-existing unsafe-fix
+  warnings in files this pass didn't author (`admin/handler.test.ts`,
+  `webhooks-twilio-sms/handler.ts`) left as-is, out of scope.
+- `pnpm -w typecheck` — 21/21 tasks clean.
+- `pnpm run lint` — 0 errors (down from 6 before this pass's two fixes
+  above); 31 pre-existing warnings across the repo, none in Channels code.
+- `pnpm -w test` — 21/21 test tasks green: `apps/web` 78 files/424 tests
+  (+1 from the merge-bug regression test), `supabase/functions` 98
+  files/874 tests, `packages/canonical-types` 11/163,
+  `packages/templates` 8/368, `packages/widget` 3/21, `packages/ui`
+  19/97, plus every other package's smoke test.
+- `apps/web` production build — `next build --webpack`, exit 0, every
+  route compiled including `/widget.js`, `/widget-voice.js`,
+  `/api/widget/session`, `/api/widget/voice-token`, `/api/widget/config`.
+- `packages/widget` — `pnpm build` (tsup, `widget.global.js` 14.42KB /
+  `voice-runtime.global.js` 678.65KB) then `pnpm size` — 5.00KB gzipped
+  against the 25KB budget on the always-loaded main bundle (voice-runtime
+  is lazy-loaded, deliberately excluded from that budget per the check
+  script's own comment).
+- `node --experimental-strip-types scripts/ci/verify-jwt-guard.ts` —
+  PASSED, 43 functions checked against `supabase/config.toml`.
+- Migrations from zero, verified live (not just re-asserting the prior
+  REPAIR entry's result, which predates this pass): `service postgresql
+  start` against this sandbox's local Postgres 16 (no Docker/`supabase
+  start` available, same constraint every prior pass in this repo has
+  hit and disclosed), a session-only stub of the `auth`/`storage`/
+  `realtime` schemas + `anon`/`authenticated`/`service_role`/
+  `supabase_auth_admin` roles, all 50 real migration files applied
+  verbatim in filename order against an empty database (stripping only
+  the 3 `create extension` lines for `pg_cron`/`pgmq`/`pg_net` — genuinely
+  unavailable outside a Supabase-hosted Postgres, and every migration
+  that depends on them already no-ops gracefully without them) — zero
+  errors — followed by `supabase/seed/seed.sql`, also zero errors.
+  Spot-checked the schema this pass's own fix and the wider Channels wave
+  depend on: `text_conversations`/`text_conversation_messages` exist with
+  their documented RLS policies and triggers, `call_logs.channel` is the
+  reconciled 4-value text column, and all 8 `platform_settings.price_card_
+  <vertical>` rows carry `included_text_conversations: 200`/
+  `text_conversation_overage_cents: 5` after seeding.
+- **Not run** (unchanged from every prior pass in this repo, not in this
+  task's own gate list): `scripts/ci/rls-cross-tenant-probe.ts` — needs a
+  live `supabase start` (PostgREST + GoTrue), which this sandbox has never
+  had available (no Docker daemon). CLAUDE.md Rule 2 still requires this
+  probe stay green in the real CI environment that does have it.
+
+**New secrets needed (owner to-do):** `WIDGET_TOKEN_SECRET` (32+ random
+bytes, generated — HMAC key signing the embeddable widget's short-lived
+session token; shared by `api-text-chat` and `api-widget-voice-token`, set
+once). `ANTHROPIC_TEXT_AGENT_MODEL` is optional (defaults to
+`claude-sonnet-5` in code if unset) — only needed if the owner wants a
+different model for SMS/web-chat replies than voice tools/outreach use.
+Both already documented with these exact names in `.env.example` and
+`docs/DEPLOY.md`'s secrets table (by prior Channels-cluster passes, this
+pass only confirmed the entries are current and named correctly).
+
+**Owner to-do — widget domain:** the embeddable widget's `<script>` tag
+(`<script src="https://app.heyloo.example/widget.js" data-key="...">`,
+shown on the tenant's own Website Widget settings page) is served from the
+**same domain `apps/web` deploys to** — there is no separate CDN/asset
+domain — because `apps/web/src/app/widget.js/route.ts` and
+`.../widget-voice.js/route.ts` read `packages/widget/dist/*.global.js`
+from disk at request time. Before go-live: (1) confirm `packages/widget`
+is actually built as part of the production deploy (`docs/DEPLOY.md` §3.7
+— already wired via `turbo.json`'s dependency graph + `outputFileTracingIncludes`,
+but worth the explicit `/widget.js`/`/widget-voice.js` 200-not-404 smoke
+test that section now documents); (2) each tenant's "Allowed domains" list
+(`tenants.widget_settings.allowed_origins`) must be the exact `https://`
+origin of *their own* site, not this app's own domain — the widget's CORS/
+origin check (`docs/audit/CHANNELS_REQUESTS.md` item 4) rejects anything
+not on that per-tenant allowlist, by design.
+
+**Incomplete / deferred, not this pass's scope (CLAUDE.md Rule 4):** the
+one item this pass closed was the only remaining item on the verifier's
+partial-status list for the SMS text agent; nothing else was flagged as
+open. `scripts/ci/rls-cross-tenant-probe.ts` staying unrun in every sandbox
+pass (noted above) is a standing, previously-disclosed environment gap, not
+a new one.

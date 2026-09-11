@@ -1,5 +1,74 @@
 # Launch Status
 
+## SMS text agent + website widget (CHANNELS-1, 2026-09-11)
+
+**New features shipped:** two new tenant-facing channels, both riding the
+same text-agent engine as inbound SMS. **Text agent**
+(`dashboard/agent/text-agent`): tenants turn on/off AI replies to inbound
+texts and web chat independently of the always-on voice agent, set a tone
++ optional sign-off, and configure quiet hours. **Website widget**
+(`dashboard/website-widget`): an embeddable floating Voice + Chat button
+tenants paste onto their own site via a one-line `<script>` snippet
+(public-key auth, per-tenant allowed-origins allowlist, live in-page
+preview using the real built widget script). **Messages inbox**
+(`dashboard/messages`) now shows both SMS and web-chat threads from one
+unified `text_conversations` table, with a status badge (AI replying /
+human took over / closed) and an unhandled-message indicator. Full
+technical detail across every cluster and repair pass:
+`docs/BUILD_NOTES.md`'s `Cluster S`/`Cluster T`/`Cluster W`/`CHANNELS-1`/
+and the several `REPAIR` sections in between.
+
+This pass (INTEGRATOR) closed the one remaining verifier finding — the
+Messages list silently kept a stale preview/timestamp for a thread whose
+most recent activity was recorded only in `text_conversations` (e.g. an
+agent-only STOP/HELP/YES reply) rather than in `messages_inbound`/
+`messages_outbound` — and ran every gate before committing the whole
+Channels wave as one commit.
+
+**Gates:** all green — `npx biome check --write` (0 errors on every
+changed path), `pnpm -w typecheck` (21/21), `pnpm run lint` (0 errors, down
+from 6 — two real `react-hooks/set-state-in-effect` errors this pass found
+and fixed properly rather than suppressed, see `docs/BUILD_NOTES.md`),
+`pnpm -w test` (21/21 test tasks — `apps/web` 78 files/424 tests,
+`supabase/functions` 98 files/874 tests, plus every other package), `apps/
+web` production build (`next build --webpack`, exit 0, `/widget.js`/
+`/widget-voice.js`/`/api/widget/*` all compiled), `packages/widget` build +
+size check (5.00KB gzipped main bundle vs. a 25KB budget), the verify-jwt
+drift guard (43 functions checked), and a from-zero migration + seed
+replay against a real throwaway local Postgres (50 migrations + seed, zero
+errors, schema spot-checked). No build output, `.env*`, or scratch
+artifacts in the tree. **Not run** (this sandbox has never had Docker/
+`supabase start` available, disclosed by every prior pass in this repo):
+`scripts/ci/rls-cross-tenant-probe.ts` — must stay green in real CI per
+CLAUDE.md Rule 2.
+
+**New secrets needed:** `WIDGET_TOKEN_SECRET` (generate 32+ random bytes —
+HMAC key signing the widget's short-lived session token; shared by
+`api-text-chat` and `api-widget-voice-token`, set once). Optional:
+`ANTHROPIC_TEXT_AGENT_MODEL` (defaults to `claude-sonnet-5` if unset — only
+set it to use a different model for SMS/web-chat replies than voice tools/
+outreach use). Both already named and commented in `.env.example` and
+`docs/DEPLOY.md`'s secrets table.
+
+**Owner to-do:**
+1. Generate and set `WIDGET_TOKEN_SECRET` before enabling the widget for
+   any tenant — `api-text-chat`/`api-widget-voice-token` both fail closed
+   without it.
+2. **Widget domain** — the widget's `<script>` snippet is served from
+   `apps/web`'s own production domain (`/widget.js`, `/widget-voice.js`),
+   not a separate CDN. Confirm `packages/widget` actually builds as part
+   of the production deploy (`docs/DEPLOY.md` §3.7) and smoke-test that
+   both routes return `200` (not `404`) after deploying — the one failure
+   mode if the widget package build is skipped.
+3. Each tenant must add their own site's exact `https://` origin to
+   "Allowed domains" on the Website Widget settings page before the
+   widget will render there — this is a per-tenant allowlist
+   (`tenants.widget_settings.allowed_origins`), not a global setting.
+4. `scripts/ci/rls-cross-tenant-probe.ts` has never run against this
+   feature's new tables in this sandbox (no Docker/`supabase start`
+   available here) — run it in a real CI/staging environment with
+   `supabase start` before go-live, per CLAUDE.md Rule 2.
+
 ## Design: accent text contrast, touch targets, currency inputs, template-by-vertical fix (DESIGN-4, 2026-09-10)
 
 Round-7 punch list of 7 items (plus a mid-task addition investigating a

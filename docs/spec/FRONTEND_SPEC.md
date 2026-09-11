@@ -1399,3 +1399,70 @@ Cross-referencing every surface named in the assignment:
 No page, component, form, or state named in the assignment is missing from
 a section above; every `DECIDE:` carries a concrete recommendation the T5
 build agent can implement against without blocking on the owner.
+
+---
+
+## 12. Channels — text conversations, text agent, embeddable widget
+
+Appended by the Cluster S build task (2026-09-11), backing schema in
+`docs/spec/BACKEND_SPEC.md` §13. Originally a spec delta with nothing yet
+built; **the Messages/Settings pieces below are now built**
+(`apps/web/src/app/[locale]/(tenant)/dashboard/messages/**`, the
+"Website widget" settings tab), by Cluster W, against the schema that
+actually shipped (`text_conversations`/`text_conversation_messages` —
+`docs/audit/CHANNELS_REQUESTS.md` item 1's resolution) rather than this
+section's original `text_messages`/`status ('ai'|'human'|'closed')`
+naming — this section is updated below to describe what was actually
+built, not the original spec-only draft.
+
+**§6.6 Settings — new "Channels" tab** (alongside the 7 tabs §6.6 already
+names): text agent toggle (`tenants.text_agent_enabled`) + persona editor
+(`text_agent_persona`) + quiet-hours picker (`quiet_hours`, same
+open/close-time control pattern as the Hours tab, but a single daily
+window rather than a weekly schedule); widget toggle
+(`tenants.widget_enabled`) + widget settings form (`widget_settings`:
+allowed-origins list input, accent color picker, position radio, greeting
+text field, voice/chat mode checkboxes) + a read-only "embed this on your
+site" panel showing the `<script>` snippet keyed by
+`tenants.widget_public_key` with a "regenerate key" action (secret-reveal-
+once-style confirmation, same UX posture as `api_tokens`'s one-time reveal,
+§6.7-adjacent) that immediately invalidates the old key.
+
+**§6.2/§6.3-adjacent — Messages** (built,
+`dashboard/messages/**`/`dashboard/messages/[phone]/**`): the thread view
+per customer MASTER_SPEC §3.10 already calls for is `text_conversations`/
+`text_conversation_messages`-backed: a conversation list (filter by
+channel `sms`/`web_chat`, status `open`/`human`/`closed`, sorted by
+`updated_at`) and an open-thread view rendering `text_conversation_
+messages` in order (author-tagged bubbles: ai/human/customer) with a reply
+box that posts as `author='human'` and, in the same action, flips the
+conversation's `status` between `'open'` and `'human'` to take over from
+the AI (and a "hand back to AI" action to flip it back — there is no
+separate `ai_enabled` field in the shipped schema; `status` alone drives
+this). A web-chat thread has no phone number, so the existing
+`/dashboard/messages/[phone]` route's param slot is reused with an opaque
+`wc:<conversation id>` key (`apps/web/src/lib/messages/text-
+conversations.ts`'s `webChatKey`/`parseThreadKey`) rather than adding a
+second route. Live-updates via the same `tenant:<tenant_id>` broadcast
+channel + TanStack Query refetch model §9.6 already specifies, on both
+`text_conversations` (list) and `text_conversation_messages` (open thread)
+broadcasts.
+
+**§3.4-adjacent — Demo/marketing widget reuse**: the embeddable widget
+(voice via the demo's existing web-call token-minting flow, extended per
+`widget_public_key`/`allowed_origins`/`WIDGET_TOKEN_SECRET` — BACKEND_SPEC
+§13.2 — plus a new chat mode) is the same component embedded both on a
+live tenant's own site (via the Settings-tab script snippet above) and,
+unchanged, on `/demo` itself — one implementation, not a fork per
+surface.
+
+**Loading/empty/error states**: conversation list — "no data ever" (no
+text conversations yet, with a short "texts and web-chat visits will
+appear here once enabled" empty state distinct from "no results for this
+filter") vs. a filtered-empty state, matching the recurring instruction
+elsewhere in this spec (§6.2 et al.) to never collapse those two. Reply-
+send failure (e.g. the tenant's `a2p_status` isn't `verified` yet, or the
+recipient opted out via STOP) surfaces inline on the reply box, never
+silently, and never folded into the thread's own success/failure state —
+the same "don't collapse a partial failure into the primary action" rule
+§0's rationale already states for SMS delivery elsewhere.

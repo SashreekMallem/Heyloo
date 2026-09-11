@@ -53,6 +53,19 @@ const nextConfig: NextConfig = {
   images: {
     remotePatterns: [{ protocol: "https", hostname: "**.supabase.co" }],
   },
+  // `packages/widget/dist/*.global.js` (the embeddable widget's built
+  // bundles) are read from disk at request time by
+  // `src/app/widget.js/route.ts` / `src/app/widget-voice.js/route.ts`, NOT
+  // `import`ed — Next's build-time output-file tracing only discovers
+  // files actually reachable via module imports, so a production
+  // (standalone) build would silently omit them without this. `turbo.json`
+  // already makes `packages/widget#build` a dependency of `apps/web#build`
+  // (`build` depends on `^build`), so the file exists on disk by the time
+  // this app builds; this just tells Next's tracer to ship it too.
+  outputFileTracingIncludes: {
+    "/widget.js": ["../../packages/widget/dist/widget.global.js"],
+    "/widget-voice.js": ["../../packages/widget/dist/voice-runtime.global.js"],
+  },
   // `UI_PREVIEW_MODE` itself is never sent to the browser (no NEXT_PUBLIC_
   // prefix, read via bracket access in guard.ts) — but
   // `installPreviewFetchMock()` also needs to run client-side (admin/

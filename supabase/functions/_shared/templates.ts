@@ -28,7 +28,8 @@ export type TemplateKey =
   | "owner_reply"
   | "dental_intake_link"
   | "order_ready"
-  | "waitlist_slot_opened";
+  | "waitlist_slot_opened"
+  | "chat_phone_verification";
 
 export interface RenderedMessage {
   subject?: string;
@@ -137,6 +138,12 @@ export function renderTemplate(
       // transition into `status: 'ready'` — no payload fields today
       // (FIX_REQUESTS.md), fixed body.
       return { body: "Your order is ready for pickup!" };
+    case "chat_phone_verification":
+      // Cluster T text-agent engine (_shared/text-agent/tool-router.ts's
+      // `verify_phone` web-chat tool) — a short, code-only body since the
+      // customer needs to read and re-type this quickly; never includes a
+      // link or any other account detail.
+      return { body: `Your verification code is ${str("code")}. It expires in 10 minutes.` };
     case "waitlist_slot_opened":
       // Inserted by `fn_notify_waitlist_on_cancellation`
       // (20260907131400_functions_triggers.sql) with

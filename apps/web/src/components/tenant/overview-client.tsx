@@ -88,6 +88,7 @@ export function OverviewClient({
           .from("call_logs")
           .select("id", { count: "exact", head: true })
           .eq("tenant_id", tenantId)
+          .in("channel", ["phone", "web_voice"])
           .eq("classification", "spam_robocall")
           .gte("started_at", `${since}T00:00:00.000Z`),
         fetch("/api/platform-settings/tenant-plan"),
@@ -118,7 +119,11 @@ export function OverviewClient({
         .from("call_logs")
         .select("id, caller_number, classification, started_at, duration_seconds")
         .eq("tenant_id", tenantId)
-        .order("started_at", { ascending: false })
+        // Voice-only "Recent calls" widget: exclude text-agent shadow rows
+        // (channel 'sms'/'web_chat') — see calls-list-client.tsx for the
+        // same NULLS FIRST hazard this also avoids.
+        .in("channel", ["phone", "web_voice"])
+        .order("started_at", { ascending: false, nullsFirst: false })
         .limit(20);
       return (data ?? []).map((c) => ({
         id: c.id,

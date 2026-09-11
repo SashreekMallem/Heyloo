@@ -30,6 +30,8 @@ export const PlatformPricingTableSchema = z.object({
   base_cents: z.number().int().nonnegative(),
   included_minutes: z.number().int().nonnegative(),
   overage_cents: z.number().int().nonnegative(),
+  included_text_conversations: z.number().int().nonnegative(),
+  text_conversation_overage_cents: z.number().int().nonnegative(),
   effective_at: z.string().min(1),
 });
 

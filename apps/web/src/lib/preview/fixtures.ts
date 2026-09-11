@@ -42,6 +42,22 @@ export const PREVIEW_TENANT = {
   // blocker).
   hours_exceptions: [] as { date: string; closed?: boolean; note?: string }[],
   usage_hard_cap_minutes: 6000,
+  // Website widget + text agent (BUILD_PLAN Cluster W, BACKEND_SPEC.md
+  // §13.2) — a plausible "already set up" state so the Install page and
+  // Agent settings' Text agent tab preview with real-looking data rather
+  // than every field empty.
+  text_agent_enabled: true,
+  text_agent_persona: { tone: "friendly", signOff: "— Golden Fork Bistro" },
+  quiet_hours: { start: "21:00", end: "09:00", enabled: true },
+  widget_enabled: true,
+  widget_settings: {
+    allowed_origins: ["https://goldenforkbistro.example"],
+    accent: "#d96a3f",
+    position: "bottom-right" as const,
+    greeting: "Hi! Ask us about reservations or delivery.",
+    modes: ["voice", "chat"] as const,
+  },
+  widget_public_key: "pk_preview_widget_key",
 };
 
 export const PREVIEW_TENANT_USER = {

@@ -29,5 +29,11 @@ declare namespace NodeJS {
     readonly SENTRY_DSN?: string;
     readonly NEXT_RUNTIME?: "nodejs" | "edge";
     readonly SIGNUP_DRAFT_SECRET: string;
+    // Widget (BUILD_PLAN Cluster W, BACKEND_SPEC.md §13.2) — HMAC key
+    // signing the embeddable widget's short-lived session token. Read
+    // directly via `process.env.WIDGET_TOKEN_SECRET` from
+    // `src/lib/widget/session-token.ts`, same pattern as
+    // `SIGNUP_DRAFT_SECRET`/`src/lib/signup/draft-cookie.ts`.
+    readonly WIDGET_TOKEN_SECRET: string;
   }
 }

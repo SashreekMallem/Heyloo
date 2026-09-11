@@ -18,6 +18,7 @@ export * from "./shared/disclosure.js";
 export * from "./shared/fragments.js";
 export * from "./shared/global-intents.js";
 export * from "./shared/system-prompt.js";
+export * from "./shared/text-persona.js";
 export * from "./shared/tools.js";
 export * from "./shared/utility-states.js";
 export * from "./verticals/auto-repair.js";

@@ -1,0 +1,24 @@
+{
+  "name": "@heyloo/widget",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The embeddable website widget (BUILD_PLAN Cluster W): a tiny, framework-free floating button + panel (Voice web-call mode, Chat mode) rendered inside a shadow root so a tenant's page CSS can never leak in or out. Built with tsup (esbuild under the hood) to a single ES5-safe IIFE, no third-party CDN, no runtime dependency on React/the rest of the monorepo — this package is loaded directly in an arbitrary third-party page via a <script> tag (`apps/web/src/app/widget.js/route.ts` serves the built output), so it must stand completely alone.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "typecheck": "tsc -b --pretty",
+    "test": "vitest run",
+    "size": "node scripts/check-size.mjs"
+  },
+  "dependencies": {
+    "retell-client-js-sdk": "2.0.8"
+  },
+  "devDependencies": {
+    "jsdom": "30.0.1",
+    "tsup": "8.3.5",
+    "typescript": "5.9.3",
+    "vitest": "5.0.0"
+  }
+}

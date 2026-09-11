@@ -342,6 +342,8 @@ not fetched from a vendor dashboard.
 | `DEMO_PHONE_E164` | A real Twilio number reserved for the shared demo-call phone flow |
 | `PAYMENT_LINK_SUCCESS_URL` / `PAYMENT_LINK_CANCEL_URL` | Your own domain's payment-outcome pages |
 | `RETELL_FAILOVER_VOICE_URL` | A TwiML Bin or your own small endpoint implementing "forward to owner cell, then voicemail" — build this before go-live, since `job-retell-health-failover` points a tenant's Twilio number here during a real Retell outage |
+| `ANTHROPIC_TEXT_AGENT_MODEL` | Leave as the pinned default (Channels, `BACKEND_SPEC.md` §13) — SMS/web-chat text-agent replies, same Anthropic provider voice-tools/outreach already use |
+| `WIDGET_TOKEN_SECRET` | Generated (32+ random bytes) — signs the embeddable widget's short-lived session token (Channels, `BACKEND_SPEC.md` §13.2). Needed by **both** `api-text-chat` (widget chat mode) and `api-widget-voice-token` (widget voice mode, `[functions.api-widget-voice-token]` in `supabase/config.toml`) — set it once, both functions read the same secret. `api-widget-voice-token` also needs `RETELL_API_KEY` (already listed above for the other Retell-touching functions) to mint the tenant's own web-call token, same as `api-tenant-test-call`/`api-demo-agent` (`docs/audit/CHANNELS_REQUESTS.md` item 6). |
 
 Set every server-only var as an edge-function **secret**
 (`supabase secrets set KEY=value`, or the dashboard's Edge Functions →
@@ -524,10 +526,36 @@ project's actual extension versions, per that same header's own caveat.
 
 ### 3.7 Deploy `apps/web` to Vercel
 
+**Build `packages/widget` before `apps/web`** (`docs/audit/
+CHANNELS_REQUESTS.md` item 6). `apps/web/src/app/widget.js/route.ts` and
+`.../widget-voice.js/route.ts` — the two routes that serve the embeddable
+widget's script tags — read `packages/widget/dist/{widget,voice-runtime}
+.global.js` **from disk at request time**, never via an `import`, so they
+404 if that package hasn't been built into the same deploy:
+
+```bash
+pnpm --filter @heyloo/widget build
+```
+
+Two things already wire this in so a normal `turbo run build` (or Vercel's
+own build command, if it invokes turbo) gets the order right without a
+manual step: `apps/web/package.json` lists `@heyloo/widget` as a
+`devDependency` (unused in code — added purely so turbo's `build: {
+dependsOn: ["^build"] }` graph in `turbo.json` builds the widget package
+first), and `apps/web/next.config.ts`'s `outputFileTracingIncludes` pins
+both dist files into a standalone build's traced output. Still worth the
+explicit step above if you ever build/deploy `apps/web` in isolation
+(e.g. a Vercel project scoped to just that app's directory, bypassing
+turbo's own dependency graph) — verified working via a real `next build
+--webpack` including this dependency, not just asserted.
+
 Push to the branch Vercel's project is connected to (or `vercel deploy
 --prod` directly). Confirm the build succeeds and the deployed site's
 `/api/signup/draft` route returns `200` (a quick `curl -X POST` smoke —
 this route needs no auth and confirms the deployment's env vars are wired).
+Also smoke-test `/widget.js` and `/widget-voice.js` return `200` with a
+`content-type: application/javascript` body, not a 404 — the one symptom
+of skipping the widget build above.
 
 ### 3.8 Point Retell agents at the deployed webhook URLs
 

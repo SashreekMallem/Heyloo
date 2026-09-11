@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
-import type { SqlClient } from "../_shared/types.ts";
+import { describe, expect, it, vi } from "vitest";
+import type { TextAgentDeps } from "../_shared/text-agent/engine.ts";
+import type { Logger, SqlClient } from "../_shared/types.ts";
 import { processInboundSms } from "./handler.ts";
+
+const silentLogger: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 
 function makeSql(fixtures: Record<string, unknown[]> = {}): { sql: SqlClient; calls: string[] } {
   const calls: string[] = [];
@@ -100,5 +103,128 @@ describe("processInboundSms", () => {
     expect(result.replyBody).toContain("already been taken");
     expect(calls.some((c) => c.includes("status = 'expired'"))).toBe(true);
     expect(calls.some((c) => c.includes("insert into public.bookings"))).toBe(false);
+  });
+
+  describe("Cluster T text-agent engine routing (post STOP/HELP/waitlist-YES)", () => {
+    function fakeAnthropicFetch(replyText: string): typeof fetch {
+      return vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            content: [{ type: "text", text: replyText }],
+            stop_reason: "end_turn",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+          { status: 200 },
+        ),
+      ) as unknown as typeof fetch;
+    }
+
+    function engineFixtures(overrides: Record<string, unknown[]> = {}) {
+      return {
+        "from public.phone_numbers": [{ tenant_id: "t1", id: "pn1" }],
+        "insert into public.text_conversations": [
+          {
+            id: "conv-1",
+            tenant_id: "t1",
+            channel: "sms",
+            phone_e164: "+15551234567",
+            customer_id: null,
+            widget_session_token_hash: null,
+            call_log_id: null,
+            status: "open",
+            structured_state: {},
+            recent_turns: [],
+            disclosure_sent: false,
+            verification_phone_e164: null,
+            verification_code_hash: null,
+            verification_code_expires_at: null,
+            verification_attempts: 0,
+            message_count: 0,
+            ai_message_count: 0,
+          },
+        ],
+        "from public.tenants t": [
+          {
+            business_name: "Acme Dental",
+            vertical: "dental",
+            timezone: "America/New_York",
+            a2p_status: "verified",
+            assistant_name: null,
+            transfer_number: null,
+            dynamic_variable_overrides: {},
+            disclosure_line: "disclosure",
+          },
+        ],
+        ...overrides,
+      };
+    }
+
+    it("uses the engine's AI reply as the TwiML body for an ordinary message", async () => {
+      const { sql, calls } = makeSql(engineFixtures());
+      const fetchImpl = fakeAnthropicFetch("Sure — what day works for you?");
+      const deps: TextAgentDeps = {
+        sql,
+        logger: silentLogger,
+        anthropicFetch: fetchImpl,
+        anthropicApiKey: "key",
+        model: "claude-sonnet-5",
+        appBaseUrl: "https://heyloo.app",
+        turnTimeoutMs: 2000,
+      };
+
+      const result = await processInboundSms(
+        sql,
+        { ...BASE_SMS, Body: "Can I book a cleaning?" },
+        deps,
+      );
+
+      expect(result.replyBody).toContain("Sure — what day works for you?");
+      expect(result.replyBody).toContain("texting with Acme Dental's AI assistant");
+      expect(calls.some((c) => c.includes("insert into public.messages_inbound"))).toBe(true);
+    });
+
+    it("archives without replying (no AI call) when the tenant's A2P campaign isn't verified", async () => {
+      const { sql, calls } = makeSql(
+        engineFixtures({
+          "from public.tenants t": [
+            {
+              business_name: "Acme Dental",
+              vertical: "dental",
+              timezone: "America/New_York",
+              a2p_status: "pending_verification",
+              assistant_name: null,
+              transfer_number: null,
+              dynamic_variable_overrides: {},
+              disclosure_line: "disclosure",
+            },
+          ],
+        }),
+      );
+      const fetchImpl = vi.fn();
+      const deps: TextAgentDeps = {
+        sql,
+        logger: silentLogger,
+        anthropicFetch: fetchImpl as unknown as typeof fetch,
+        anthropicApiKey: "key",
+        model: "claude-sonnet-5",
+        appBaseUrl: "https://heyloo.app",
+      };
+
+      const result = await processInboundSms(
+        sql,
+        { ...BASE_SMS, Body: "Can I book a cleaning?" },
+        deps,
+      );
+
+      expect(result.replyBody).toBeUndefined();
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(calls.some((c) => c.includes("insert into public.messages_inbound"))).toBe(true);
+    });
+
+    it("falls back to archive-only behavior when no engine deps are provided (unchanged from before this task)", async () => {
+      const { sql } = makeSql(engineFixtures());
+      const result = await processInboundSms(sql, { ...BASE_SMS, Body: "Can I book a cleaning?" });
+      expect(result).toEqual({});
+    });
   });
 });

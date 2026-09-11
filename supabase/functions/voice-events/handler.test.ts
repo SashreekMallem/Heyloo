@@ -63,6 +63,32 @@ describe("handleCallStarted", () => {
     await handleCallStarted(sql, { call_id: "call_1", to_number: "+19999999999" }, logger);
     expect(calls.some((c) => c.text.includes("insert into public.call_logs"))).toBe(false);
   });
+
+  it("resolves via agent_id -> agent_configs when to_number is absent (widget voice call) and tags channel='web_voice'", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.agent_configs": [{ tenant_id: "t1", owner_test_phone: null }],
+    });
+    const call: RetellCallObject = {
+      call_id: "call_web_1",
+      agent_id: "agent_widget_123",
+      from_number: "+15551234567",
+      start_timestamp: 1_700_000_000_000,
+    };
+    await handleCallStarted(sql, call, logger);
+    const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
+    expect(insertCall).toBeDefined();
+    expect(insertCall?.values).toContain("t1");
+    expect(insertCall?.values).toContain("call_web_1");
+    expect(insertCall?.values).toContain("web_voice");
+    // phone_number_id must be null — a widget voice call has no PSTN number.
+    expect(insertCall?.values).toContain(null);
+  });
+
+  it("still no-ops when there is neither a resolvable to_number nor an agent_id", async () => {
+    const { sql, calls } = makeRecordingSql({});
+    await handleCallStarted(sql, { call_id: "call_1" }, logger);
+    expect(calls.some((c) => c.text.includes("insert into public.call_logs"))).toBe(false);
+  });
 });
 
 describe("handleCallEnded", () => {
@@ -104,6 +130,23 @@ describe("handleCallEnded", () => {
     };
     await handleCallEnded(sql, call, logger);
     expect(calls.some((c) => c.text.includes("insert into public.call_logs"))).toBe(true);
+    expect(calls.some((c) => c.text.includes("pgmq.send"))).toBe(true);
+  });
+
+  it("tolerates an out-of-order widget voice call (no to_number) by resolving via agent_id and tagging channel='web_voice'", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.agent_configs": [{ tenant_id: "t1", owner_test_phone: null }],
+      "insert into public.call_logs": [{ id: "cl1", tenant_id: "t1", is_test_call: false }],
+    });
+    const call: RetellCallObject = {
+      call_id: "call_web_1",
+      agent_id: "agent_widget_123",
+      end_timestamp: 1_700_000_060_000,
+    };
+    await handleCallEnded(sql, call, logger);
+    const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
+    expect(insertCall).toBeDefined();
+    expect(insertCall?.values).toContain("web_voice");
     expect(calls.some((c) => c.text.includes("pgmq.send"))).toBe(true);
   });
 

@@ -991,6 +991,8 @@ describe("routeAdminRequest — platform settings group", () => {
           base_cents: 34900,
           included_minutes: 350,
           overage_cents: 40,
+          included_text_conversations: 200,
+          text_conversation_overage_cents: 5,
           effective_at: new Date().toISOString(),
         },
       }),
@@ -1005,6 +1007,60 @@ describe("routeAdminRequest — platform settings group", () => {
           JSON.stringify(c.values).includes("platform_settings_pricing_edit"),
       ),
     ).toBe(true);
+  });
+
+  it("merges a pricing save onto the previously-stored value instead of replacing the whole JSONB blob — a field this schema doesn't know about must survive an edit", async () => {
+    const { sql, calls } = makeSql({
+      "select value from public.platform_settings where key": [
+        {
+          value: {
+            base_cents: 29900,
+            included_minutes: 300,
+            overage_cents: 35,
+            included_text_conversations: 200,
+            text_conversation_overage_cents: 5,
+            // A field a future migration/seed might add before this admin
+            // form is updated to know about it — must not be dropped.
+            some_future_field: "keep-me",
+          },
+        },
+      ],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-platform-settings/pricing",
+        body: {
+          vertical: "auto",
+          base_cents: 34900,
+          included_minutes: 350,
+          overage_cents: 40,
+          included_text_conversations: 500,
+          text_conversation_overage_cents: 3,
+          effective_at: new Date().toISOString(),
+        },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    const body = result.body as { price_card: Record<string, unknown> };
+    // New/known fields reflect the admin's edit...
+    expect(body.price_card).toMatchObject({
+      base_cents: 34900,
+      included_minutes: 350,
+      overage_cents: 40,
+      included_text_conversations: 500,
+      text_conversation_overage_cents: 3,
+    });
+    // ...while a field this schema doesn't know about is preserved, not wiped.
+    expect(body.price_card["some_future_field"]).toBe("keep-me");
+
+    const insertCall = calls.find((c) => c.text.includes("insert into public.platform_settings"));
+    expect(insertCall).toBeDefined();
+    const writtenValue = JSON.parse(insertCall!.values[1] as string) as Record<string, unknown>;
+    expect(writtenValue["some_future_field"]).toBe("keep-me");
+    expect(writtenValue["included_text_conversations"]).toBe(500);
   });
 });
 

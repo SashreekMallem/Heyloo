@@ -2187,3 +2187,205 @@ Nothing in the assignment's six numbered requirement areas was left
 unaddressed; every `DECIDE:` above carries a concrete recommendation so a
 build agent can proceed without blocking on it, per CLAUDE.md Rule 4 ("append
 to `docs/BUILD_NOTES.md` and proceed with the documented decision").
+
+---
+
+## 13. Channels — text conversations, text agent, embeddable widget
+
+Appended by the Cluster S build task (2026-09-11). **§13.1's schema was
+rewritten by an integrator pass later the same day** to describe the
+design actually shipped, after a real migration-filename collision was
+found and resolved between this section's original schema and a
+concurrently-run Cluster T (text-agent engine) migration — full
+before/after and verification detail in `docs/audit/CHANNELS_REQUESTS.md`
+items 1/6/8 and `docs/BUILD_NOTES.md`'s integrator entry. §13.2-§13.4 are
+otherwise as Cluster S wrote them, with `call_logs.channel` in §13.2
+updated to the reconciled 4-value shape.
+
+### 13.1 `text_conversations` / `text_conversation_messages`
+
+`messages_inbound`/`messages_outbound` (§1.5, MASTER_SPEC §3.3) **remain
+the SMS transport layer** — provider SID, delivery status
+(queued/sent/delivered/failed), and STOP/HELP classification all continue
+to live there, and the `messages_outbound` queue worker is still what
+actually calls Twilio. `text_conversations`/`text_conversation_messages`
+(`20260911120000_text_conversations.sql` /
+`20260911130000_text_conversation_messages.sql`, Cluster T's text-agent
+engine schema) are a new, higher-level layer on top — a LIVE, mutated-
+in-place conversation row plus its own full transcript table, not another
+append-only queue:
+
+- **`text_conversations`**: `id, tenant_id, channel ('sms'|'web_chat'),
+  phone_e164? (null for a web_chat visitor who hasn't verified one yet),
+  customer_id? (FK customers), widget_session_token_hash? (web_chat
+  identity — the opaque session token's sha256, same pattern as
+  `intake_tokens.token_hash`), call_log_id? (FK call_logs — the lazily-
+  created shadow row a tool call needs, see §13.2's `call_logs.channel`
+  entry), status ('open'|'human'|'closed'), structured_state jsonb,
+  recent_turns jsonb (a BOUNDED working-memory window replayed to the
+  model each turn — `MAX_REPLAYED_TURNS` in `_shared/text-agent/
+  conversation-store.ts`, never the full transcript), disclosure_sent
+  bool, verification_phone_e164/verification_code_hash/
+  verification_code_expires_at/verification_attempts (web-chat phone
+  verification — SMS is already phone-authenticated by the inbound
+  webhook itself so these stay null for `channel='sms'`), message_count,
+  ai_message_count, last_inbound_at, last_outbound_at, created_at,
+  updated_at`. One live row per (tenant, phone) SMS thread or per (tenant,
+  widget session) web-chat thread — a closed thread reopens (`status`
+  flips back to `'open'`) rather than forking a new row. `status='human'`
+  is the per-conversation "take over from the AI" action (scoped to one
+  thread, unlike the voice side's tenant-wide `manual_mode`); the engine
+  keeps recording inbound messages while `status='human'` but never
+  replies.
+- **`text_conversation_messages`**: `id, tenant_id, conversation_id (FK
+  text_conversations), author ('customer'|'ai'|'human'), body,
+  created_at`. The thread's full, UNBOUNDED, author-tagged transcript —
+  distinct from `text_conversations.recent_turns` (bounded working memory)
+  and from `messages_inbound`/`messages_outbound` (SMS-only, no author
+  column, so it alone can't distinguish an AI reply from a human dashboard
+  operator's one). `_shared/text-agent/conversation-store.ts`'s
+  `saveConversationPatch` writes a row here for every engine turn
+  (`role:'user'` → `author:'customer'`, `role:'assistant'` →
+  `author:'ai'`); the dashboard's human-takeover reply path inserts
+  `author:'human'` rows directly via the RLS policy below. Tool calls the
+  engine makes reuse the exact same canonical tool implementations
+  voice-tools does (§1.3's `CanonicalTool[]` shape) via a lazily-created
+  shadow `call_logs` row (§13.2) — booking/order logic is never forked per
+  channel.
+
+**How this connects to the SMS transport layer**: an outbound SMS the text
+agent sends still gets an ordinary `messages_outbound` row (the actual
+queued send; `messages_outbound.status` stays the delivery-status source
+of truth) in addition to its `text_conversation_messages` row — the two
+are not linked by an FK; `text_conversation_messages` is a conversation-
+level transcript, `messages_outbound`/`messages_inbound` stay the delivery-
+level queue, and nothing in this schema forces reconciling them 1:1. A
+`web_chat` turn has no SMS provider involved at all (a plain HTTP
+request/response through `api-text-chat`), so it only ever gets a
+`text_conversation_messages` row. Both `webhooks-twilio-sms/handler.ts` and
+`api-text-chat/handler.ts` write this layer end-to-end via `_shared/
+text-agent/engine.ts`'s `handleInboundText` — not a follow-up item, already
+built and verified.
+
+RLS: tenant members `SELECT` their own tenant's rows (platform admins,
+every tenant's). Two narrow tenant-write paths back the human-takeover
+flow: `UPDATE` on `text_conversations` (role `owner|admin|member`, the only
+client-writable transition being `status` `'open'`⇄`'human'`), and
+`INSERT` on `text_conversation_messages` **forced to `author = 'human'`**
+(a dashboard user can never spoof an `'ai'`- or `'customer'`-authored row)
+into a conversation their own tenant owns. Every other write (conversation
+creation/update, AI/customer-authored messages, the shadow `call_logs`
+row) is `service_role`-only, matching `messages_inbound`/
+`messages_outbound`. Indexes: unique `(tenant_id, phone_e164) where
+channel='sms'`, unique `(tenant_id, widget_session_token_hash) where
+channel='web_chat'`, `(tenant_id, updated_at desc)`, and a partial
+`(tenant_id) where status='human'` on `text_conversations`; `(conversation_
+id, created_at)` and `(tenant_id, created_at desc)` on `text_conversation_
+messages`. Both broadcast to the tenant realtime channel via the existing
+`fn_broadcast_tenant_update()` trigger (§3.4), so the dashboard's
+conversation LIST live-updates, not only an open thread's message feed.
+
+**Retention**: no dedicated purge job for either table (same posture as
+`call_logs`/`messages_inbound`/`messages_outbound` today — indefinite
+retention; `tenants.retention_days` governs Storage recordings
+specifically, not conversation text). A tenant-configurable retention
+sweep is a natural future extension of `fn_cron_internal_retention_sweep`
+(§8) but is not invented unprompted here.
+
+### 13.2 Tenant config: text agent + embeddable widget
+
+`tenants` gains (`20260911101000_channels_tenant_and_call_log_columns.sql`):
+
+| Column | Type | Default | Notes |
+|---|---|---|---|
+| `text_agent_enabled` | boolean | `false` | master switch, independent of voice |
+| `text_agent_persona` | jsonb | `{}` | tone/persona overrides; shape owned by the text-agent runtime, same "DB stores it, the runtime Zod-validates it" posture as `agent_configs.dynamic_variable_overrides` |
+| `quiet_hours` | jsonb | `{}` | `{"start":"21:00","end":"09:00","enabled":true}`, tenant-tz local; the text agent's own after-hours gate — deliberately distinct from `business_hours` (booking availability) |
+| `widget_enabled` | boolean | `false` | master switch for the embeddable widget |
+| `widget_settings` | jsonb | `{"allowed_origins":[],"accent":null,"position":"bottom-right","greeting":null,"modes":["chat"]}` | `allowed_origins` gates embed pages (checked server-side against `Origin` at session-mint time); `modes` is a subset of `["voice","chat"]` |
+| `widget_public_key` | text, unique | `null` | opaque, rotatable, **client-visible** identifier embedded in the tenant's widget script tag — not itself a secret; see `WIDGET_TOKEN_SECRET` below for the actual session-signing key |
+
+`call_logs` gains `channel text not null default 'phone' check in
+('phone','web_voice','sms','web_chat')` — a single column covering two
+independent axes, reconciled from what shipped as two separately-added,
+colliding 2-value enums (`docs/audit/CHANNELS_REQUESTS.md` items 1/6):
+`'phone'`/`'web_voice'` tag a real voice call's origination (a Twilio
+number vs. the embeddable widget's voice mode — both share the exact same
+`call_logs` row shape and the exact same voice-tools booking path);
+`'sms'`/`'web_chat'` tag a shadow `call_logs` row the text-agent engine
+creates lazily on a text conversation's first tool call (`_shared/
+text-agent/conversation-store.ts`'s `ensureShadowCallLog`) so the
+unmodified `voice-tools/tools/*.ts` handlers — which require a real,
+non-null `call_logs.id` — can be reused verbatim for SMS/web-chat
+bookings; `duration_seconds`/`recording_url`/`transcript`/`cost_cents`
+stay null on those rows. A voice-only "recent calls" view should filter
+`channel in ('phone','web_voice')`. **Known gap** (found verifying this
+reconciliation, not yet fixed): `voice-events/handler.ts` resolves the
+owning tenant via a `phone_numbers` lookup on `call.to_number`, which a
+widget voice call never has — so today a widget voice call likely never
+gets a `call_logs` row at all, `channel='web_voice'` included; see
+`docs/audit/CHANNELS_REQUESTS.md` item 8's new entry.
+
+**Widget session auth** (for whichever cluster builds the widget runtime,
+reusing the demo web-call token-minting pattern per this task's brief):
+mint a short-lived, server-signed session token (HMAC via
+`WIDGET_TOKEN_SECRET`, same pattern as `SIGNUP_DRAFT_SECRET`/
+`AIRTABLE_OAUTH_STATE_SECRET`) after checking the request's `Origin`
+against `widget_settings.allowed_origins` and the presented
+`widget_public_key` against `tenants.widget_public_key` — two independent
+checks, since the public key alone is visible to anyone who views page
+source on an allowed origin, but is *not* usable from a disallowed origin
+without also defeating the `Origin` check.
+
+### 13.3 Pricing + usage metering
+
+**Metering unit — DECIDE, resolved**: per **outbound AI message**, not
+per conversation or per conversation-day. A conversation can run from one
+reply to a long back-and-forth; billing per conversation-day would make a
+long thread free after its first message while a dozen one-line threads
+on the same day cost a dozen units for near-zero AI work, and per-
+conversation-ever would let a single thread run forever for one unit —
+both are worse proxies for actual cost than counting the thing that
+actually costs money (each AI-generated reply, an LLM call — the same
+cost driver `cost_events.product = 'llm'` already tracks for voice
+minutes).
+
+`platform_settings` gains two keys per `price_card_<vertical>` row:
+`included_text_conversations` (int) and `text_conversation_overage_cents`
+(int). **The key names count outbound AI messages despite reading
+"conversations"** — chosen to read naturally next to the existing
+`included_minutes`/`overage_cents` keys on the same price-card shape, and
+because `BUILD_PLAN`'s own task line names these two keys verbatim; this
+is documented here rather than renamed. Default, uniform across every
+vertical pending real usage data (same "tune later" posture as the
+customer-segment thresholds, §3.6's `DECIDE`): **200 included outbound AI
+messages/month, 5&cent; overage per message** beyond that
+(`20260911110000_channels_pricing_and_usage.sql`'s idempotent `jsonb ||`
+merge into the existing eight `price_card_*` rows — a no-op, not an error,
+on an environment where `supabase/seed/seed.sql` hasn't run yet, since
+that's the only place those eight rows are actually `INSERT`ed).
+
+`usage_daily` gains `text_messages_out int not null default 0` — count of
+AI-generated text-agent replies (SMS + web_chat) sent that tenant that day.
+**Owned and incremented directly by `_shared/text-agent/conversation-
+store.ts`** (one `UPDATE ... SET text_messages_out = text_messages_out + 1`
+per outbound AI message, an event-sourced counter) — `fn_upsert_usage_daily`
+(§3.3) deliberately does **not** compute or touch this column (it
+originally did, computing it from a `text_messages` table that no longer
+exists after `docs/audit/CHANNELS_REQUESTS.md` item 1's resolution;
+leaving that in would have reset the real incremented count to 0 on every
+nightly cron run — a real billing-undercount bug, caught and fixed before
+it shipped, see `docs/BUILD_NOTES.md`'s integrator entry). A future
+`v_usage_alerts`-style view or a `billing_invoices` overage line for text
+can read `usage_daily.text_messages_out` the same way voice minutes
+already work; wiring that billing-cycle math itself remains out of scope
+here (schema + metering only).
+
+### 13.4 CI / RLS probe coverage
+
+`scripts/ci/rls-cross-tenant-probe.ts` (§5's cross-tenant probe) is
+extended: `text_conversations` is added to the standard tenant-scoped-
+table cross-read probe; `text_conversation_messages` (which needs a
+`conversation_id` FK, so it can't be a plain entry in that list) is seeded
+and probed separately, the same pattern already established for
+`customer_addresses`/`waitlist_entries`'s `customer_id` dependency.

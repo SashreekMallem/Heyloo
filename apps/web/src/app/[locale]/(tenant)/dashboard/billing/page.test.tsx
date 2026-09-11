@@ -14,7 +14,7 @@ function chain(result: unknown) {
   return obj;
 }
 
-let usageDailyRows: { billable_minutes: number | null }[] = [];
+let usageDailyRows: { billable_minutes: number | null; text_messages_out?: number | null }[] = [];
 
 vi.mock("@/lib/supabase/browser", () => ({
   supabaseBrowserClient: {
@@ -80,5 +80,73 @@ describe("BillingPage usage card", () => {
 
     expect(await screen.findByText("0 of 0 minutes used")).toBeInTheDocument();
     expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
+  });
+});
+
+describe("BillingPage text conversations usage tile", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    usageDailyRows = [];
+  });
+
+  it("sums text_messages_out across the period and shows the plan's included allowance", async () => {
+    usageDailyRows = [
+      { billable_minutes: 10, text_messages_out: 30 },
+      { billable_minutes: 5, text_messages_out: 45 },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          included_minutes: 300,
+          usage_alert_thresholds: { warn_pct: 0.8, critical_pct: 1.0 },
+          included_text_conversations: 200,
+          text_conversation_overage_cents: 5,
+        }),
+      ),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText("75 of 200 AI text replies used")).toBeInTheDocument();
+    expect(screen.queryByText(/over ·/)).not.toBeInTheDocument();
+  });
+
+  it("shows overage cost once usage exceeds the included allowance", async () => {
+    usageDailyRows = [{ billable_minutes: 1, text_messages_out: 210 }];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          included_minutes: 300,
+          usage_alert_thresholds: { warn_pct: 0.8, critical_pct: 1.0 },
+          included_text_conversations: 200,
+          text_conversation_overage_cents: 5,
+        }),
+      ),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText("210 of 200 AI text replies used")).toBeInTheDocument();
+    expect(screen.getByText("+10 over · $0.50")).toBeInTheDocument();
+  });
+
+  it("defaults to 200 included / 5¢ overage when the plan lookup omits the new fields", async () => {
+    usageDailyRows = [{ billable_minutes: 1, text_messages_out: 12 }];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          included_minutes: 300,
+          usage_alert_thresholds: { warn_pct: 0.8, critical_pct: 1.0 },
+        }),
+      ),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText("12 of 200 AI text replies used")).toBeInTheDocument();
   });
 });

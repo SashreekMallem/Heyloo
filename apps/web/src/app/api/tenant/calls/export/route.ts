@@ -22,7 +22,11 @@ export async function GET(request: Request) {
     .from("call_logs")
     .select("started_at, caller_number, classification, duration_seconds, outcome")
     .eq("tenant_id", tenantId)
-    .order("started_at", { ascending: false })
+    // Voice-only export: exclude the text-agent's shadow rows (channel
+    // 'sms'/'web_chat', started_at always null) — same NULLS FIRST hazard
+    // as calls-list-client.tsx / overview-client.tsx.
+    .in("channel", ["phone", "web_voice"])
+    .order("started_at", { ascending: false, nullsFirst: false })
     .limit(5000);
 
   const header = "started_at,caller_number,classification,duration_seconds,outcome";

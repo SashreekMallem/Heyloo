@@ -58,6 +58,20 @@ export type TenantRow = {
   // the moment a tenant owner/admin saves the vertical-details form with a
   // non-empty cancellation_policy.text; NULL = never reviewed/saved.
   policies_reviewed_at: Nullable<string>;
+  // 20260911101000_channels_tenant_and_call_log_columns.sql
+  // (BACKEND_SPEC.md §13.2, BUILD_PLAN Cluster W/text-agent tasks).
+  text_agent_enabled: boolean;
+  text_agent_persona: Record<string, unknown>;
+  quiet_hours: { start?: string; end?: string; enabled?: boolean };
+  widget_enabled: boolean;
+  widget_settings: {
+    allowed_origins?: string[];
+    accent?: Nullable<string>;
+    position?: "bottom-right" | "bottom-left";
+    greeting?: Nullable<string>;
+    modes?: ("voice" | "chat")[];
+  };
+  widget_public_key: Nullable<string>;
   created_at: string;
   updated_at: string;
 };
@@ -165,6 +179,16 @@ export type CallLogRow = {
   retell_call_id: string;
   caller_number: Nullable<string>;
   direction: "inbound" | "outbound";
+  // `20260911101000_channels_tenant_and_call_log_columns.sql` — reconciled
+  // 4-value shape (docs/audit/CHANNELS_REQUESTS.md item 1/item 6):
+  // 'phone'/'web_voice' distinguish a real voice call's origination
+  // (Twilio number vs. the embeddable widget's voice mode); 'sms'/
+  // 'web_chat' tag a shadow row the text-agent engine creates so
+  // voice-tools/tools/*.ts can be reused unmodified for text-originated
+  // bookings (duration_seconds/recording_url/transcript/cost_cents stay
+  // null on those rows). Default 'phone'; a voice-only "recent calls" view
+  // should filter `channel in ("phone", "web_voice")`.
+  channel: "phone" | "web_voice" | "sms" | "web_chat";
   started_at: Nullable<string>;
   ended_at: Nullable<string>;
   duration_seconds: Nullable<number>;
@@ -346,6 +370,46 @@ export type MessageInboundRow = {
   created_at: string;
 };
 
+// 20260911120000_text_conversations.sql /
+// 20260911130000_text_conversation_messages.sql (Cluster T's text-agent
+// engine). `text_conversations.channel`/`status` enums per that migration
+// exactly — NOT the same shape `docs/audit/CHANNELS_REQUESTS.md` item 1
+// flags as a still-unresolved filename conflict with a different cluster's
+// own migration; this is the schema that's actually wired to working
+// engine code, per that doc's own resolution note.
+export type TextConversationRow = {
+  id: string;
+  tenant_id: string;
+  channel: "sms" | "web_chat";
+  phone_e164: Nullable<string>;
+  customer_id: Nullable<string>;
+  widget_session_token_hash: Nullable<string>;
+  call_log_id: Nullable<string>;
+  status: "open" | "human" | "closed";
+  structured_state: Record<string, unknown>;
+  recent_turns: { role: "user" | "assistant"; text: string; at: string }[];
+  disclosure_sent: boolean;
+  verification_phone_e164: Nullable<string>;
+  verification_code_hash: Nullable<string>;
+  verification_code_expires_at: Nullable<string>;
+  verification_attempts: number;
+  message_count: number;
+  ai_message_count: number;
+  last_inbound_at: Nullable<string>;
+  last_outbound_at: Nullable<string>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TextConversationMessageRow = {
+  id: string;
+  tenant_id: string;
+  conversation_id: string;
+  author: "customer" | "ai" | "human";
+  body: string;
+  created_at: string;
+};
+
 export type PaymentLinkRow = {
   id: string;
   tenant_id: string;
@@ -502,6 +566,12 @@ export type UsageDailyRow = {
   total_orders: number;
   total_order_value_cents: number;
   price_version: string;
+  // 20260911110000_channels_pricing_and_usage.sql /
+  // 20260911120000_text_conversations.sql (BACKEND_SPEC.md §13.3) — the
+  // one column both cluster S's and cluster T's colliding migrations add
+  // identically (same name, same type, same default); safe regardless of
+  // how docs/audit/CHANNELS_REQUESTS.md item 1's conflict resolves.
+  text_messages_out: number;
   created_at: string;
   updated_at: string;
 };
@@ -735,6 +805,8 @@ export type Database = {
       waitlist_entries: Tbl<WaitlistEntryRow>;
       messages_outbound: Tbl<MessageOutboundRow>;
       messages_inbound: Tbl<MessageInboundRow>;
+      text_conversations: Tbl<TextConversationRow>;
+      text_conversation_messages: Tbl<TextConversationMessageRow>;
       payment_links: Tbl<PaymentLinkRow>;
       referral_partners: Tbl<ReferralPartnerRow>;
       referral_partner_vertical_overrides: Tbl<ReferralPartnerVerticalOverrideRow>;

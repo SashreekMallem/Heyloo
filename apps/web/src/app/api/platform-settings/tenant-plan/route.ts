@@ -11,6 +11,15 @@ export interface TenantPlanResponse {
   base_cents: number;
   overage_cents: number;
   usage_alert_thresholds: { warn_pct: number; critical_pct: number };
+  // BACKEND_SPEC.md §13.3 — same `price_card_<vertical>` row, merged in by
+  // `20260911110000_channels_pricing_and_usage.sql`. Defaults (200 / 5¢)
+  // match that migration's own documented default exactly, so a `value`
+  // that predates the merge (or an environment where
+  // `supabase/seed/seed.sql` wiped it back out —
+  // docs/audit/CHANNELS_REQUESTS.md item 2) still shows a sane number
+  // instead of 0.
+  included_text_conversations: number;
+  text_conversation_overage_cents: number;
 }
 
 /**
@@ -71,6 +80,8 @@ export async function GET() {
       warn_pct: thresholds.warn_pct ?? 0.8,
       critical_pct: thresholds.critical_pct ?? 1.0,
     },
+    included_text_conversations: value.included_text_conversations ?? 200,
+    text_conversation_overage_cents: value.text_conversation_overage_cents ?? 5,
   };
   return NextResponse.json(body);
 }

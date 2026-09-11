@@ -1,6 +1,8 @@
 import { normalizeE164 } from "../_shared/phone.ts";
 import type { TwilioInboundSms } from "../_shared/schemas/twilio-sms.ts";
 import { classifyInboundSms, SMS_STATIC_REPLIES } from "../_shared/sms-compliance.ts";
+import type { TextAgentDeps } from "../_shared/text-agent/engine.ts";
+import { handleInboundText } from "../_shared/text-agent/engine.ts";
 import type { SqlClient } from "../_shared/types.ts";
 
 const EXCLUSION_VIOLATION = "23P01";
@@ -103,6 +105,18 @@ export interface TwilioSmsResult {
 export async function processInboundSms(
   sql: SqlClient,
   sms: TwilioInboundSms,
+  /**
+   * Cluster T (text-agent engine): when provided, an "other"-classified
+   * message (post STOP/HELP/waitlist-YES precedence, per this task's own
+   * instruction) is routed into `handleInboundText` instead of only being
+   * archived to `messages_inbound`. Optional and defaulting to the prior
+   * archive-only behavior so every existing STOP/START/HELP/waitlist test
+   * above keeps passing unchanged — a caller that wants the AI reply (the
+   * real `index.ts` entrypoint) passes it; a caller that only wants the
+   * compliance-keyword behavior (or doesn't have Anthropic credentials
+   * configured) can omit it.
+   */
+  textEngineDeps?: TextAgentDeps,
 ): Promise<TwilioSmsResult> {
   const fromNumber = normalizeE164(sms.From);
   const toNumber = normalizeE164(sms.To);
@@ -172,5 +186,23 @@ export async function processInboundSms(
     on conflict (twilio_message_sid) do nothing
   `;
 
-  return {};
+  if (!textEngineDeps) {
+    // No engine deps wired (older/simpler callers, or an environment
+    // without Anthropic credentials configured) — archive-only, same
+    // behavior as before this task.
+    return {};
+  }
+
+  // Route into the text-agent engine (this task's core instruction). The
+  // engine applies its own gates (A2P, opt-out, rate limit, human handoff)
+  // and returns `sent: false` for any of those — never a thrown error —
+  // so the TwiML reply is simply omitted rather than surfacing a webhook
+  // failure to Twilio for a deliberate no-reply outcome.
+  const engineResult = await handleInboundText(textEngineDeps, {
+    channel: "sms",
+    tenantId,
+    phoneE164: fromNumber,
+    message: sms.Body ?? "",
+  });
+  return engineResult.sent && engineResult.reply ? { replyBody: engineResult.reply } : {};
 }

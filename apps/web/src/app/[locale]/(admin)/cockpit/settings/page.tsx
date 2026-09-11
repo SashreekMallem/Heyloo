@@ -32,6 +32,8 @@ interface PriceCard {
   base_cents: number;
   included_minutes: number;
   overage_cents: number;
+  included_text_conversations?: number;
+  text_conversation_overage_cents?: number;
 }
 
 interface PlatformSettingsResponse {
@@ -115,6 +117,17 @@ function PricingTab({
   const [baseCents, setBaseCents] = useState<number | undefined>(initial?.base_cents);
   const [includedMinutes, setIncludedMinutes] = useState(initial?.included_minutes ?? 0);
   const [overageCents, setOverageCents] = useState<number | undefined>(initial?.overage_cents);
+  // Defaults match the read-path fallbacks in
+  // `/api/platform-settings/tenant-plan` and `price-card` routes (200
+  // included conversations / 5¢ overage) so an admin who has never edited
+  // a vertical's card sees exactly the value the tenant-facing UI is
+  // currently applying, not a blank/zero field.
+  const [includedTextConversations, setIncludedTextConversations] = useState(
+    initial?.included_text_conversations ?? 200,
+  );
+  const [textConversationOverageCents, setTextConversationOverageCents] = useState<
+    number | undefined
+  >(initial?.text_conversation_overage_cents ?? 5);
 
   async function savePricing() {
     const parsed = platformPricingTableSchema.safeParse({
@@ -122,6 +135,8 @@ function PricingTab({
       base_cents: baseCents,
       included_minutes: includedMinutes,
       overage_cents: overageCents,
+      included_text_conversations: includedTextConversations,
+      text_conversation_overage_cents: textConversationOverageCents,
       effective_at: new Date().toISOString(),
     });
     if (!parsed.success) {
@@ -180,6 +195,27 @@ function PricingTab({
           Overage per minute
         </label>
         <CentsInput id="pricing-overage-cents" value={overageCents} onChange={setOverageCents} />
+      </div>
+      <div className="space-y-1">
+        <label htmlFor="pricing-included-text-conversations" className="text-sm font-medium">
+          Included text conversations
+        </label>
+        <Input
+          id="pricing-included-text-conversations"
+          type="number"
+          value={includedTextConversations}
+          onChange={(e) => setIncludedTextConversations(Number(e.target.value))}
+        />
+      </div>
+      <div className="space-y-1">
+        <label htmlFor="pricing-text-conversation-overage-cents" className="text-sm font-medium">
+          Text conversation overage
+        </label>
+        <CentsInput
+          id="pricing-text-conversation-overage-cents"
+          value={textConversationOverageCents}
+          onChange={setTextConversationOverageCents}
+        />
       </div>
       <p className="text-xs text-muted-foreground">
         Updates the live price card for this vertical — every previous value is preserved in the

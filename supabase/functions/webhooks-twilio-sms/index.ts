@@ -2,9 +2,10 @@
 // supabase/config.toml — Twilio calls this directly with its own
 // X-Twilio-Signature scheme (BACKEND_SPEC Rule 2 fail-closed).
 import { getSql } from "../_shared/deno/db.ts";
-import { requireEnv } from "../_shared/deno/env.ts";
+import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { formParamsToObject, TwilioInboundSmsSchema } from "../_shared/schemas/twilio-sms.ts";
+import type { TextAgentDeps } from "../_shared/text-agent/engine.ts";
 import { verifyTwilioSignature } from "../_shared/twilio-signature.ts";
 import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/webhook-dedup.ts";
 import { processInboundSms } from "./handler.ts";
@@ -15,6 +16,38 @@ const TWILIO_AUTH_TOKEN = requireEnv("TWILIO_AUTH_TOKEN");
 // webhook URL byte-for-byte (VERIFY.md: confirm no trailing-slash/query
 // mismatch against the actual Twilio console config before go-live).
 const FUNCTION_URL = requireEnv("WEBHOOKS_TWILIO_SMS_URL");
+
+// Text-agent engine deps (Cluster T). `ANTHROPIC_API_KEY` optional here
+// (not required): a deploy that hasn't provisioned Anthropic credentials
+// yet still handles STOP/HELP/waitlist-YES correctly — it just falls back
+// to archive-only for an ordinary inbound message (`textEngineDeps`
+// omitted below), same graceful-degradation posture as `GEOCODE_API_KEY`
+// in `voice-tools/index.ts`.
+const ANTHROPIC_API_KEY = optionalEnv("ANTHROPIC_API_KEY");
+const ANTHROPIC_TEXT_AGENT_MODEL = optionalEnv("ANTHROPIC_TEXT_AGENT_MODEL") ?? "claude-sonnet-5";
+const APP_BASE_URL = optionalEnv("APP_BASE_URL") ?? "https://heyloo.app";
+const STRIPE_SECRET_KEY = optionalEnv("STRIPE_SECRET_KEY") ?? "";
+const PAYMENT_LINK_SUCCESS_URL =
+  optionalEnv("PAYMENT_LINK_SUCCESS_URL") ?? "https://heyloo.app/pay/success";
+const PAYMENT_LINK_CANCEL_URL =
+  optionalEnv("PAYMENT_LINK_CANCEL_URL") ?? "https://heyloo.app/pay/cancelled";
+
+const textEngineDeps: TextAgentDeps | undefined = ANTHROPIC_API_KEY
+  ? {
+      sql: getSql(),
+      logger,
+      anthropicFetch: fetch,
+      anthropicApiKey: ANTHROPIC_API_KEY,
+      model: ANTHROPIC_TEXT_AGENT_MODEL,
+      appBaseUrl: APP_BASE_URL,
+      paymentLink: {
+        fetchImpl: fetch,
+        stripeSecretKey: STRIPE_SECRET_KEY,
+        successUrl: PAYMENT_LINK_SUCCESS_URL,
+        cancelUrl: PAYMENT_LINK_CANCEL_URL,
+      },
+    }
+  : undefined;
 
 function twiml(body?: string): Response {
   const xml = body
@@ -73,7 +106,7 @@ Deno.serve(async (req: Request) => {
   // reply channel) — only the DB side effects run in the background.
   let result: Awaited<ReturnType<typeof processInboundSms>> = {};
   try {
-    result = await processInboundSms(sql, sms);
+    result = await processInboundSms(sql, sms, textEngineDeps);
     if (dedup.webhookEventId) await markWebhookEventProcessed(sql, dedup.webhookEventId);
   } catch (err) {
     logger.error("twilio_sms_processing_error", { error: String(err) });

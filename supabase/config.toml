@@ -202,3 +202,24 @@ verify_jwt = true
 # resulting memberships row.
 [functions.api-team-invite]
 verify_jwt = true
+
+# api-text-chat (Cluster T text-agent engine): PUBLIC — called directly,
+# cross-origin, from an arbitrary tenant's own website (the embeddable
+# widget's chat mode; docs/audit/CHANNELS_REQUESTS.md item 4). verify_jwt =
+# false — there is no Supabase user session here at all; auth is the
+# WIDGET_TOKEN_SECRET-signed `widget_token` apps/web's
+# `POST /api/widget/session` mints (`_shared/text-agent/widget-token.ts`
+# verifies it), and `conversation_token` is the separate per-conversation
+# continuity credential the engine itself mints/re-verifies.
+[functions.api-text-chat]
+verify_jwt = false
+
+# api-widget-voice-token (BUILD_PLAN Cluster W — the embeddable widget's
+# Voice mode): PUBLIC, same posture as api-text-chat directly above —
+# called from an arbitrary tenant's own website with no Supabase user
+# session at all. Mints a Retell web-call token for the TENANT's own real
+# published agent; auth is the same WIDGET_TOKEN_SECRET-signed
+# `widget_token` (`_shared/widget-token.ts` verifies it independently here
+# too, never trusting a caller-supplied tenant_id).
+[functions.api-widget-voice-token]
+verify_jwt = false

@@ -20,6 +20,25 @@ interface PhoneNumberLookupRow {
   owner_test_phone: string | null;
 }
 
+interface AgentConfigLookupRow {
+  tenant_id: string;
+  owner_test_phone: string | null;
+}
+
+interface ResolvedCall {
+  tenant_id: string;
+  phone_number_id: string | null;
+  owner_test_phone: string | null;
+  // 'phone' = resolved via to_number -> phone_numbers (Twilio-originated
+  // PSTN call); 'web_voice' = resolved via agent_id -> agent_configs (the
+  // embeddable widget's voice mode — Retell web calls carry no to_number
+  // at all, see _shared/providers/retell.ts's createWebCall, so this is the
+  // only signal available). BACKEND_SPEC §13.2; previously an unfixed gap
+  // (docs/BUILD_NOTES.md) where such calls resolved to null and were never
+  // logged at all.
+  channel: "phone" | "web_voice";
+}
+
 function isoFromUnixSeconds(seconds: number | undefined): string | null {
   if (seconds === undefined) return null;
   return new Date(seconds).toISOString();
@@ -28,17 +47,48 @@ function isoFromUnixSeconds(seconds: number | undefined): string | null {
 async function resolveTenantForCall(
   sql: SqlClient,
   call: RetellCallObject,
-): Promise<PhoneNumberLookupRow | null> {
+): Promise<ResolvedCall | null> {
   const toNumber = normalizeE164(call.to_number ?? null);
-  if (!toNumber) return null;
-  const rows = await sql<PhoneNumberLookupRow>`
-    select pn.tenant_id, pn.id as phone_number_id, t.owner_test_phone
-    from public.phone_numbers pn
-    join public.tenants t on t.id = pn.tenant_id
-    where pn.e164 = ${toNumber}
+  if (toNumber) {
+    const rows = await sql<PhoneNumberLookupRow>`
+      select pn.tenant_id, pn.id as phone_number_id, t.owner_test_phone
+      from public.phone_numbers pn
+      join public.tenants t on t.id = pn.tenant_id
+      where pn.e164 = ${toNumber}
+      limit 1
+    `;
+    const row = rows[0];
+    if (row) {
+      return {
+        tenant_id: row.tenant_id,
+        phone_number_id: row.phone_number_id,
+        owner_test_phone: row.owner_test_phone,
+        channel: "phone",
+      };
+    }
+  }
+
+  // No usable to_number (or no phone_numbers match) — this is exactly how
+  // a widget voice call arrives (browser-based Retell web call, no PSTN
+  // to_number). Fall back to resolving by the Retell agent_id the call
+  // actually carries: agent_id -> agent_configs.retell_agent_id -> tenant_id.
+  const agentId = call.agent_id ?? null;
+  if (!agentId) return null;
+  const agentRows = await sql<AgentConfigLookupRow>`
+    select ac.tenant_id, t.owner_test_phone
+    from public.agent_configs ac
+    join public.tenants t on t.id = ac.tenant_id
+    where ac.retell_agent_id = ${agentId}
     limit 1
   `;
-  return rows[0] ?? null;
+  const agentRow = agentRows[0];
+  if (!agentRow) return null;
+  return {
+    tenant_id: agentRow.tenant_id,
+    phone_number_id: null,
+    owner_test_phone: agentRow.owner_test_phone,
+    channel: "web_voice",
+  };
 }
 
 export async function handleCallStarted(
@@ -58,10 +108,11 @@ export async function handleCallStarted(
 
   await sql`
     insert into public.call_logs (
-      tenant_id, phone_number_id, retell_call_id, caller_number, direction, started_at, is_test_call
+      tenant_id, phone_number_id, retell_call_id, caller_number, direction, started_at, is_test_call, channel
     ) values (
       ${tenantRow.tenant_id}, ${tenantRow.phone_number_id}, ${call.call_id}, ${callerNumber},
-      'inbound', ${isoFromUnixSeconds(call.start_timestamp) ?? new Date().toISOString()}, ${isTestCall}
+      'inbound', ${isoFromUnixSeconds(call.start_timestamp) ?? new Date().toISOString()}, ${isTestCall},
+      ${tenantRow.channel}
     )
     on conflict (retell_call_id) do nothing
   `;
@@ -103,11 +154,11 @@ export async function handleCallEnded(
     const inserted = await sql<{ id: string; tenant_id: string; is_test_call: boolean }>`
       insert into public.call_logs (
         tenant_id, phone_number_id, retell_call_id, caller_number, direction,
-        started_at, ended_at, duration_seconds, disconnection_reason, is_test_call
+        started_at, ended_at, duration_seconds, disconnection_reason, is_test_call, channel
       ) values (
         ${tenantRow.tenant_id}, ${tenantRow.phone_number_id}, ${call.call_id}, ${callerNumber},
         'inbound', ${isoFromUnixSeconds(call.start_timestamp) ?? endedAt}, ${endedAt},
-        ${durationSeconds}, ${call.disconnection_reason ?? null}, ${isTestCall}
+        ${durationSeconds}, ${call.disconnection_reason ?? null}, ${isTestCall}, ${tenantRow.channel}
       )
       on conflict (retell_call_id) do update set ended_at = excluded.ended_at
       returning id, tenant_id, is_test_call

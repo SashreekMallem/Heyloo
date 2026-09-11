@@ -351,6 +351,18 @@ function tenantScopedTables(): TenantScopedTable[] {
       tenantColumn: "tenant_id",
       row: (t, u) => ({ tenant_id: t, entity_type: "booking", entity_id: u }),
     },
+    {
+      // Channels (BACKEND_SPEC §13, 20260911120000_text_conversations.sql —
+      // Cluster T's text-agent engine schema, per docs/audit/
+      // CHANNELS_REQUESTS.md item 1's resolution). text_conversation_
+      // messages depends on a conversation_id FK so it can't be a plain
+      // entry here — it's seeded/probed separately in seedTenant()/main()
+      // below, same pattern customer_addresses/waitlist_entries already
+      // use for their customer_id dependency.
+      table: "text_conversations",
+      tenantColumn: "tenant_id",
+      row: (t, u) => ({ tenant_id: t, phone_e164: `+1555${u}`, channel: "sms" }),
+    },
   ];
 }
 
@@ -398,6 +410,22 @@ async function seedTenant(tenant: TenantFixture): Promise<WriteProbeFixture> {
       tenant_id: tenant.tenantId,
       customer_id: customerId,
       window: "[2026-01-01T10:00:00Z,2026-01-01T11:00:00Z)",
+    });
+  }
+
+  // text_conversation_messages needs a text_conversations row (seeded
+  // above via tenantScopedTables()) to reference via conversation_id.
+  // (Was `text_messages` — that table was Cluster S's own text_
+  // conversations/text_messages design, superseded by Cluster T's
+  // text-agent engine; see docs/audit/CHANNELS_REQUESTS.md item 1 and
+  // 20260911100000_channels_text_conversations.sql's updated header.)
+  const conversationId = await fetchOneId("text_conversations", tenant.tenantId);
+  if (conversationId) {
+    await serviceInsert("text_conversation_messages", {
+      tenant_id: tenant.tenantId,
+      conversation_id: conversationId,
+      author: "ai",
+      body: "probe",
     });
   }
 
@@ -767,6 +795,21 @@ async function main(): Promise<void> {
   const tB = await tenantsTableCheck(tenantB, tenantA);
   if (tB) failures.push(tB);
 
+  // text_conversation_messages (dependent on text_conversations, seeded
+  // separately in seedTenant() above) — probed here the same way every
+  // plain tenantScopedTables() entry is, via the same probeAsUser()
+  // helper; row() is never called for a probe, only for seeding, so a
+  // no-op stub is fine.
+  const textMessagesTable: TenantScopedTable = {
+    table: "text_conversation_messages",
+    tenantColumn: "tenant_id",
+    row: () => ({}),
+  };
+  const aReadsBMsgs = await probeAsUser(tenantA, tenantB, textMessagesTable);
+  if (aReadsBMsgs) failures.push(aReadsBMsgs);
+  const bReadsAMsgs = await probeAsUser(tenantB, tenantA, textMessagesTable);
+  if (bReadsAMsgs) failures.push(bReadsAMsgs);
+
   // DB_AUDIT.md DB-H1 — write-path WITH CHECK ownership guards on
   // bookings/orders (see writeProbeCases()/probeWriteRejected() above).
   const writeCases = writeProbeCases();
@@ -810,7 +853,8 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `\nRLS cross-tenant probe PASSED — ${tables.length + 1} tables checked both directions, ` +
+    `\nRLS cross-tenant probe PASSED — ${tables.length + 1} tables checked both directions ` +
+      `(+ text_conversation_messages, a dependent table checked separately), ` +
       `${ADMIN_ONLY_VIEWS.length} admin-only views checked as anon + authenticated, ` +
       `${writeCases.length} DB-H1 write-path cases checked both directions, 0 rows leaked, ` +
       `0 cross-tenant writes accepted, impersonation read-only/edit-enabled boundary enforced.`,

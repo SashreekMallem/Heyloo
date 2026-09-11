@@ -109,7 +109,13 @@ export function CallsListClient({ tenantId }: { tenantId: string }) {
         { count: "exact" },
       )
       .eq("tenant_id", tenantId)
-      .order("started_at", { ascending: false })
+      // Voice-only surface: exclude the text-agent's shadow call_logs rows
+      // (channel 'sms'/'web_chat', started_at always null — see
+      // `20260911101000_channels_tenant_and_call_log_columns.sql`), which
+      // would otherwise sort to the top under Postgres's NULLS FIRST
+      // default for DESC and render as a blank "In progress" call.
+      .in("channel", ["phone", "web_voice"])
+      .order("started_at", { ascending: false, nullsFirst: false })
       .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
 
     if (classification !== "all") {

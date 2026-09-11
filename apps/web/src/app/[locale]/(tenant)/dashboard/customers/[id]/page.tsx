@@ -26,7 +26,11 @@ export default async function CustomerDetailPage({ params }: { params: Promise<{
       .select("id, started_at, classification")
       .eq("tenant_id", tenant.id)
       .eq("caller_number", customer.phone_e164)
-      .order("started_at", { ascending: false })
+      // Voice-only "Calls" history on the customer profile: exclude
+      // text-agent shadow rows (channel 'sms'/'web_chat', started_at
+      // always null) — same fix as calls-list-client.tsx.
+      .in("channel", ["phone", "web_voice"])
+      .order("started_at", { ascending: false, nullsFirst: false })
       .limit(10),
     supabase
       .from("bookings")

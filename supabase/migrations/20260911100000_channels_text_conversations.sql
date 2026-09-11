@@ -1,0 +1,26 @@
+-- Channels — SMS + web-chat conversations (Cluster S build task, 2026-09-11).
+-- SUPERSEDED — this file originally created `text_conversations`/
+-- `text_messages` here; that design collided outright with a concurrently-
+-- landed migration from Cluster T (text-agent engine),
+-- `20260911120000_text_conversations.sql`, which independently creates a
+-- `text_conversations` table with an incompatible shape (see
+-- `docs/audit/CHANNELS_REQUESTS.md` item 1 for the full comparison and
+-- verification, and `docs/BUILD_NOTES.md`'s Cluster S/T entries).
+--
+-- Resolution (integrator pass, 2026-09-11, applying the arbitration both
+-- Cluster S's own recommendation and Cluster T's item-6 follow-up already
+-- converged on): Cluster T's `text_conversations` design is the one kept —
+-- it is the design actually wired to working engine code
+-- (`_shared/text-agent/*.ts`, `webhooks-twilio-sms`, `api-text-chat`) and
+-- the one the dashboard (`apps/web/src/app/[locale]/(tenant)/dashboard/
+-- messages/**`, `packages/supabase-client/src/database.types.ts`'s
+-- `TextConversationRow`/`TextConversationMessageRow`) was already built
+-- against, per independent confirmation while resolving this collision.
+-- This file is left in place (never edit an applied migration; this one is
+-- additive-and-then-neutered, not deleted, to preserve the migration
+-- history/timestamp — CLAUDE.md Rule 2) but now creates nothing, since
+-- everything it used to create is superseded by
+-- `20260911120000_text_conversations.sql` /
+-- `20260911130000_text_conversation_messages.sql`.
+
+select 1; -- intentional no-op migration body (see header above)
