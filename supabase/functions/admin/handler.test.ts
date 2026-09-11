@@ -1106,6 +1106,34 @@ describe("routeAdminRequest — outreach group", () => {
     expect(calls[0]?.values).toContain("new");
   });
 
+  it("OUTREACH-2: sorts leads by phone_complaint_score when sort=score is passed", async () => {
+    const { sql, calls } = makeSql({
+      "from public.leads": [{ id: "l1", phone_complaint_score: 0.9 }],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-outreach/leads", query: { sort: "score" } }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    const call = calls.find((c) => c.text.includes("from public.leads"));
+    expect(call?.text).toContain("order by phone_complaint_score desc nulls last");
+  });
+
+  it("OUTREACH-2: filters leads by min_score", async () => {
+    const { sql, calls } = makeSql({
+      "from public.leads": [{ id: "l1", phone_complaint_score: 0.8 }],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-outreach/leads", query: { min_score: "0.6" } }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    const call = calls.find((c) => c.text.includes("from public.leads"));
+    expect(call?.values).toContain(0.6);
+  });
+
   it("adds a manual suppression entry", async () => {
     const { sql, calls } = makeSql();
     const result = await routeAdminRequest(

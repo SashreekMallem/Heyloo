@@ -157,6 +157,110 @@ describe("collectResearchBatch", () => {
     ).toBe(true);
   });
 
+  it("OUTREACH-2: instructs the hook write to reference the strongest phone-complaint snippet for a high-scoring lead", async () => {
+    const { sql, calls } = makeSql({
+      "from public.leads": [
+        {
+          id: "l1",
+          company_name: "Acme",
+          contact_name: "Jane Doe",
+          email: "jane@acme.com",
+          phone_complaint_score: 0.8,
+          phone_complaint_evidence: [{ snippet: "called three times and got voicemail" }],
+        },
+      ],
+      "from public.send_events": [{ id: "se1", campaign_id: "camp1" }],
+      "from public.campaigns": [{ external_campaign_id: "ext_1", provider: "smartlead" }],
+    });
+
+    let call = 0;
+    const hookSystemPrompts: string[] = [];
+    const anthropicFetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      call += 1;
+      if (call === 1) {
+        return jsonRes({ processing_status: "ended", results_url: "https://x/results" });
+      }
+      if (call === 2) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            `${JSON.stringify({
+              custom_id: "l1",
+              result: {
+                type: "succeeded",
+                message: { content: [{ type: "text", text: "Acme does great work." }] },
+              },
+            })}\n`,
+        } as unknown as Response;
+      }
+      const body = JSON.parse((init?.body as string) ?? "{}");
+      hookSystemPrompts.push(body.system);
+      return jsonRes({ content: [{ type: "text", text: "Saw you're hard to reach by phone." }] });
+    }) as never;
+    const smartleadFetch = vi.fn(async () => jsonRes({ added_count: 1 })) as never;
+
+    const result = await collectResearchBatch(sql, "batch_1", {
+      ...deps,
+      anthropicFetch,
+      smartleadFetch,
+    });
+
+    expect(result.collected).toBe(1);
+    expect(hookSystemPrompts[0]).toContain("called three times and got voicemail");
+    void calls;
+  });
+
+  it("OUTREACH-2: falls back directly to the complaint opener when the hook call fails for a high-scoring lead", async () => {
+    const { sql, calls } = makeSql({
+      "from public.leads": [
+        {
+          id: "l1",
+          company_name: "Acme",
+          contact_name: null,
+          email: "jane@acme.com",
+          phone_complaint_score: 0.9,
+          phone_complaint_evidence: [{ snippet: "never picked up the phone" }],
+        },
+      ],
+      "from public.send_events": [{ id: "se1", campaign_id: "camp1" }],
+      "from public.campaigns": [{ external_campaign_id: "ext_1", provider: "smartlead" }],
+    });
+
+    let call = 0;
+    const anthropicFetch = vi.fn(async () => {
+      call += 1;
+      if (call === 1)
+        return jsonRes({ processing_status: "ended", results_url: "https://x/results" });
+      if (call === 2) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            `${JSON.stringify({
+              custom_id: "l1",
+              result: {
+                type: "succeeded",
+                message: { content: [{ type: "text", text: "research text" }] },
+              },
+            })}\n`,
+        } as unknown as Response;
+      }
+      // Hook write call fails.
+      return jsonRes({}, false, 500);
+    }) as never;
+    const smartleadFetch = vi.fn(async () => jsonRes({ added_count: 1 })) as never;
+
+    await collectResearchBatch(sql, "batch_1", { ...deps, anthropicFetch, smartleadFetch });
+
+    const personalizationCall = calls.find((c) => c.text.includes("'personalization'"));
+    expect(
+      personalizationCall?.values.some(
+        (v) => typeof v === "string" && v.includes("never picked up the phone"),
+      ),
+    ).toBe(true);
+  });
+
   it("skips the Smartlead push when the lead has no email", async () => {
     const { sql, calls } = makeSql({
       "from public.leads": [{ id: "l1", company_name: "Acme", contact_name: null, email: null }],

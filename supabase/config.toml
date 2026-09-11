@@ -133,6 +133,10 @@ verify_jwt = false
 verify_jwt = false
 [functions.job-outreach-personalize-collect]
 verify_jwt = false
+# job-outreach-review-score (OUTREACH-2): phone-complaint review scoring,
+# same x-cron-secret auth boundary as every other job-* function here.
+[functions.job-outreach-review-score]
+verify_jwt = false
 # job-lead-callback-retry (FIX_REQUESTS.md): drains lead_callback_requests
 # rows stuck in deferred_quiet_hours once scheduled_for has passed — same
 # x-cron-secret auth boundary as every other job-* function below.

@@ -9333,3 +9333,205 @@ for this server-component pattern; a stale/foreign `address_id` on
 `create_order` (deleted address, or belongs to a different caller) is
 left alone rather than guessed at — it degrades to the pre-existing
 "no caller geocode, skip with a warning" path, never invents an address.
+
+## OUTREACH-2 — Phone-complaint review scoring for outreach leads
+
+Built the "review-mining phone-complaint filter" genuine-gap recommendation
+from `docs/research/CUSTOMER_ACQUISITION_TOOLS_2026.md` (§4 recommendation
+#2): a cheap Claude pass reads a lead's Google reviews and scores how
+strongly they signal "customers complain about phone access", re-ranking
+the outreach fetch batch and sharpening the personalized opener for
+high-scoring leads.
+
+**Task-instruction discrepancy (CLAUDE.md Rule 4 — documented, not
+redesigned):** the task named `docs/spec/API_AND_FLOWS.md` "flow 8" as the
+flow to update. Flow 8 in that file is "Tenant cancellation → port-out →
+data export → retention wind-down" — unrelated to outreach. The actual
+outreach flow (lead fetch → personalize → send → reply → demo → customer)
+is **Flow 5**, confirmed both by that flow's own numbered walkthrough and
+by every existing outreach code comment/doc cross-reference in the repo
+(`api-outreach-fetch-leads/handler.ts`, `job-outreach-personalize/
+handler.ts`, `docs/research/CUSTOMER_ACQUISITION_TOOLS_2026.md` itself,
+all of which cite "Flow 5"). Updated Flow 5 instead — inserted as new step
+"2b" (not renumbered into 3/4/5/etc.) specifically so the several existing
+cross-references to Flow 5's numeric steps elsewhere in this file and in
+API_AND_FLOWS.md's own A.5 section (step 1, step 4-5, step 7, step 8)
+stay correct without a repo-wide renumbering pass.
+
+**Design decision — standalone job, not a stage inside
+`job-outreach-personalize`.** The personalize submit/collect pair is
+already a two-phase Batches-API pipeline keyed on `status = 'queued'` AND
+gated on `research_batch_id`/`personalization` enrichment keys. Review
+scoring has an entirely independent selection query (`reviews_analyzed_at
+is null` + a Google place id, irrelevant to `status` — a lead is worth
+scoring before it's even queued for send) and a third provider
+(Outscraper) neither existing job touches. Folding it in would overload
+one handler with two unrelated selection/failure-mode contracts for no
+shared benefit — a new `job-outreach-review-score` (`supabase/functions/
+job-outreach-review-score/{handler,index}.ts`) owns its own hourly cron
+cadence and only ever writes `leads.phone_complaint_score`/
+`phone_complaint_evidence`/`reviews_analyzed_at`; `job-outreach-
+personalize-collect` reads (never writes) those columns to sharpen its own
+opening-line hook.
+
+**google_place_id gap discovered and fixed.** Neither `OutscraperPlace`
+nor `fromOutscraperPlace` (`api-outreach-fetch-leads/handler.ts`) captured
+a Google place id at all before this task, despite the Search endpoint's
+own response already returning one (`place.place_id`, confirmed against
+the official `outscraper` npm SDK's own bundled example) — meaning "leads
+with a Google place id" was previously an empty set. Fixed by adding
+`OutscraperPlace.place_id` and storing it into
+`leads.enrichment.google_place_id` at fetch time — a jsonb field, not a
+new dedicated column, matching this table's own existing pattern of
+parking non-core, per-source metadata (`full_address`, `category`,
+`rating`, `website`, `employees`, `org_phone`) in `enrichment` rather than
+adding a column per source-specific field.
+
+**Model env var.** Added `ANTHROPIC_OUTREACH_REVIEW_SCORE_MODEL` (default
+`claude-haiku-4-5`) rather than reusing `ANTHROPIC_OUTREACH_RESEARCH_MODEL`
+— the two are different prompts with different failure modes, and this
+codebase already gives every other outreach Anthropic call site its own
+dedicated var (`_RESEARCH_MODEL`, `_PERSONALIZE_MODEL`, `_CLASSIFY_MODEL`).
+`claude-haiku-4-5` confirmed as a real, current, cheapest-tier model id via
+`node_modules/@anthropic-ai/sdk`'s own `Model` union type (`messages.d.ts`).
+
+**pipeline_costs.category widened.** `pipeline_costs_category_check` had
+no bucket for this new spend line (Outscraper Reviews + Anthropic
+classification). Widened via an additive `DROP CONSTRAINT`/`ADD
+CONSTRAINT` (same allowed values plus `review_scoring`) in the same
+migration — safe pre-launch (no rows exist that the widened constraint
+wouldn't already satisfy).
+
+**Threshold is a judgment call, not sourced.** `PHONE_COMPLAINT_SCORE_
+THRESHOLD = 0.6` (`job-outreach-personalize-collect/handler.ts`) — the
+point at which a lead's complaint snippet gets worked into its opener — is
+a founder's-own-hypothesis constant, same caveat this codebase already
+attaches to its other unmeasured outreach-economics numbers (e.g. the
+~$0.02/lead personalization-cost estimate). Re-tune once real reply-rate
+data exists to compare complaint-flagged vs. unflagged sends.
+
+**Snippet-substring enforcement is code, not the zod schema.** The zod
+boundary (`_shared/schemas/review-score.ts`) validates each evidence
+snippet's SHAPE only (a bounded non-empty string) — it has no access to
+the original review text. The actual "never invent a snippet" guarantee
+is `filterFabricatedEvidence` in `job-outreach-review-score/handler.ts`:
+every snippet is checked against the lead's own fetched review texts
+(plain substring match) and silently dropped if not found verbatim —
+covered by a dedicated test with a prompt-injection-attempt fixture review
+(the model is told review text is untrusted data, never instructions, and
+even if it were tricked into echoing a fabricated complaint, the substring
+check still strips it).
+
+**Failure handling.** Matches every existing Anthropic call site's
+documented rule (API_AND_FLOWS.md A.5: never block, never fabricate). An
+Outscraper start-call failure or a poll that never reaches a terminal
+status leaves the lead unscored and retried next hourly run (no
+`reviews_analyzed_at` write, so no double-charge risk from re-running a
+call that never actually completed). A classification call
+failure/unparseable response/schema mismatch still marks
+`reviews_analyzed_at` (the Outscraper spend already happened — retrying
+that part forever on a persistently-failing Anthropic call would defeat
+the whole point of cost-bounding) but leaves `phone_complaint_score` null
+rather than guessing; `job-outreach-personalize-collect` already treats
+null the same as "below threshold". A place with zero reviews is marked
+analyzed with a confident `score: 0` (no Anthropic call needed — nothing
+to classify).
+
+**Admin UI field-casing gap discovered, fixed only for this task's own
+column.** `admin-outreach/leads` (`supabase/functions/admin/handler.ts`)
+returns raw Postgres rows (snake_case: `company_name`, `contact_name`,
+…), but `LeadTable`'s `LeadRowData` contract (`packages/ui/src/custom/
+lead-table.tsx`) is camelCase, and the existing `leads/page.tsx` passed
+the raw API response straight through with no mapping — meaning
+`companyName`/`contactName` (and now `phoneComplaintScore`) would render
+as "—" against real live data (single-word fields like `email`/`status`
+happened to work by coincidence). This is a PRE-EXISTING bug, not
+introduced here, and fixing every admin table's field-casing across the
+cockpit is out of this task's scope — but leaving the new Score column
+equally broken would make step 3 non-functional in practice, so
+`leads/page.tsx` now maps the raw row into `LeadRowData` explicitly
+(`toLeadRow`) before handing it to `LeadTable`. The broader mismatch (any
+other admin table built the same way) is not audited or fixed here.
+
+**Migration verification (LIVE-MINE-FIXES harness approach, applied
+fresh for this task).** Configured a real local PostgreSQL 16 cluster
+(`postgresql-16-cron` is installed as a system package in this
+environment, unlike prior sessions — `shared_preload_libraries = 'pg_cron'`
++ `cron.database_name` set, cluster restarted, `create extension pg_cron`
+succeeded for real) with minimal stub `auth`/`storage`/`realtime` schemas
+(a bare `auth.users` table + `auth.uid()`/`auth.jwt()` functions, empty
+`storage.buckets`/`storage.objects` tables, an empty `realtime.messages`
+table — the exact objects every `CREATE POLICY` statement in this repo's
+migrations references) and the pre-existing roles this Ubuntu package
+already provisions (`anon`/`authenticated`/`service_role`); only
+`supabase_storage_admin` needed creating. `pgmq`/`pg_net`/`supabase_vault`
+are genuinely unavailable as installable extensions here (no control
+file), so a throwaway copy of the migrations directory had their two
+`create extension` lines commented out for this local run only (matching
+this same section's own prior documented approach) — every downstream use
+of `pgmq.*`/`net.*` is already guarded by a `pg_extension` existence check
+before use, so nothing else needed trimming. All 50 pre-existing migration
+files plus this task's own 2 new ones applied cleanly, in order, from an
+empty database — zero errors. `pg_cron` being genuinely live (not just
+guard-skipped) let this pass exercise real `cron.schedule` upserts for
+every pg_net-independent job (5 DB-internal jobs registered for real);
+`job-outreach-review-score`'s own cron entry still guard-skips locally
+(pg_net/vault absent, same as every other HTTP-calling job) with the
+expected `NOTICE`, not a new limitation. Directly exercised: inserted
+leads with/without `enrichment.google_place_id`, ran the exact update
+statement `job-outreach-review-score` issues (score/evidence/
+`reviews_analyzed_at`), confirmed the job's own selection query correctly
+includes/excludes each lead, confirmed `idx_leads_phone_complaint_score`
+orders nulls-last, confirmed the widened `pipeline_costs_category_check`
+accepts `review_scoring`, and ran the admin route's literal sort/filter
+SQL (`order by phone_complaint_score desc nulls last`, `min_score`
+threshold) directly against real data. Harness and its throwaway
+migrations copy were session-only, never committed.
+
+**Tests** (all passing, summarized): `_shared/providers/outscraper.test.ts`
+(new — `startGoogleMapsReviews`/`pollGoogleMapsReviews`, `place_id`
+capture); `_shared/providers/anthropic.test.ts` (new —
+`buildReviewScoringPrompt`, `classifyPhoneComplaintScore` success/failure/
+untrusted-data framing); `job-outreach-review-score/handler.test.ts` (new
+— positive/negative/mixed/prompt-injection-attempt classifier fixtures,
+snippet-substring enforcement both ways, no-place-id skip, poll-timeout
+never-marks-analyzed, Outscraper-failure never-blocks, schema-mismatch
+leaves score null, zero-reviews scores 0 with no Anthropic call);
+`api-outreach-fetch-leads/handler.test.ts` (added — `place_id` ->
+`enrichment.google_place_id` capture); `job-outreach-personalize-collect/
+handler.test.ts` (added — high-score lead's snippet reaches the hook
+prompt, and is used directly as the fallback opener when the hook call
+fails); `admin/handler.test.ts` (added — `sort=score` ordering, `min_score`
+filter); `packages/ui/src/custom/lead-table.test.tsx` (new — Score column
+dash/percentage/visual-distinction); `apps/web`'s `leads/page.test.tsx`
+(new — raw-row-to-`LeadRowData` mapping, `buildLeadsQueryString` pure-
+function coverage for sort/min-score instead of driving a Radix `Select`'s
+pointer/scroll interactions through jsdom, which no test in this repo does
+anywhere else either; the min-score native `<input>` IS exercised via a
+real `userEvent.type` + refetch assertion). Incidental: lifted the
+existing `extractJsonObject` helper out of `api-menu-import/handler.ts`
+into a new shared `_shared/json-extract.ts` so the review-score classifier
+doesn't duplicate it — `api-menu-import/handler.test.ts` still passes
+unchanged (behavior-preserving).
+
+**Gates run for this whole task** (all green): `npx biome check --write`
+on every changed path (0 errors; 1 pre-existing warning surfaced in
+`admin/handler.test.ts` at a line this task did not touch — a git diff
+confirms the file's only change was 28 pure insertions); `pnpm -w
+typecheck` (21/21); `pnpm run lint` (0 errors, 43 pre-existing warnings
+repo-wide, none in any file this task touched); `pnpm -w test` (21/21 test
+tasks — `supabase/functions` 101 files/923 tests, `packages/ui` 20
+files/100 tests, `apps/web` 80 files/435 tests); `apps/web` production
+build (`next build --webpack`, exit 0, no errors).
+
+**Not done / explicitly out of scope:** a live Outscraper Reviews API call
+against a real account (docs/VERIFY.md's own MEDIUM-confidence flag on the
+per-review field names beyond `review_text`); auditing/fixing the broader
+admin-cockpit snake_case-vs-camelCase field mismatch beyond this task's own
+new Score column (flagged above, pre-existing, not introduced here); a live
+`supabase db push` deploy of the two new migrations (no live Supabase
+project reachable from this environment — verified locally instead, per
+the harness section above); re-deriving `docs/DEPLOY.md`'s own stale
+"21 cron jobs" running total (already stale before this task from several
+other jobs added since — flagged in that doc rather than silently
+recomputed).

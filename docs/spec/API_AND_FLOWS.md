@@ -719,6 +719,13 @@ call or cached).
 - **Failure handling:** scraped leads with no phone/email are dropped
   before dedup, not sent to Claude personalization (nothing to
   personalize toward).
+- **(OUTREACH-2) Reviews endpoint:** `GET /maps/reviews-v3` (same
+  `X-API-KEY` auth, same async `results_location`-poll pattern as the
+  Search endpoint above) takes the place id(s) the Search endpoint's own
+  `place_id` field returns and yields each place's `reviews_data` array
+  (`review_text`/`review_rating`/`review_datetime_utc`) — used by
+  `job-outreach-review-score` (Flow 5 step 2b) to feed the phone-complaint
+  scoring pass. Same `$3/1,000` pricing tier as Search (docs/VERIFY.md).
 
 ### Smartlead / Instantly (cold-email sender)
 
@@ -1300,9 +1307,28 @@ the exact table/function from `docs/spec/BACKEND_SPEC.md`).
    §1.8).
 2. Optional Apollo Enrichment call (credit-metered, A.5) fills phone/
    revenue/employee-count for scoring.
+2b. **(OUTREACH-2)** For an Outscraper-sourced lead with a Google place id
+   (`enrichment.google_place_id`, captured at step 1), `job-outreach-
+   review-score` (hourly, cost-bounded — N=20 reviews/lead, 25 leads/run)
+   fetches that place's Google reviews via Outscraper's Reviews endpoint
+   (A.5) and has Claude (`ANTHROPIC_OUTREACH_REVIEW_SCORE_MODEL`, cheapest
+   tier) score how strongly they signal "customers complain about phone
+   access" (unanswered calls, voicemail, no callback, on hold, hard to
+   reach) — `leads.phone_complaint_score` (0-1) + 1-3 verbatim-quoted
+   snippets in `leads.phone_complaint_evidence`, every snippet enforced in
+   code to be a real substring of an actual review (never invented). The
+   admin outreach leads UI (T8) sorts/filters by this score to re-rank the
+   fetch batch toward the highest-intent leads before step 3; costs
+   (Outscraper + Anthropic) recorded to `pipeline_costs` (category
+   `review_scoring`) exactly like step 1's list-cost recording.
 3. Claude Message Batches API call (A.5, `claude-sonnet-5`) drafts a
    personalized opening line per lead from scraped/enriched context —
-   batched since the send isn't latency-sensitive.
+   batched since the send isn't latency-sensitive. **(OUTREACH-2)** When a
+   lead's phone-complaint score clears a threshold (0.6), the strongest
+   quoted snippet from step 2b is worked into this opener (e.g. "One of
+   your reviews mentions calling three times and getting voicemail…"),
+   falling back to that same snippet directly (never the fully generic
+   opener) if the Claude hook-write call itself fails for that lead.
 4. Personalized leads pushed into the chosen sender platform (Smartlead or
    Instantly, A.5 — provider TBD, see A.5 note) via its campaign/lead-add
    API, personalization riding in as a custom field/variable; domain

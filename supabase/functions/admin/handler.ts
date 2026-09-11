@@ -1500,15 +1500,40 @@ async function handleOutreach(
     const status = query["status"];
     const vertical = query["vertical"];
     const source = query["source"];
-    const rows = await sql<Record<string, unknown>>`
-      select id, source, vertical, company_name, contact_name, email, phone, status, created_at
-      from public.leads
-      where (${status ?? null}::text is null or status = ${status ?? null})
-        and (${vertical ?? null}::text is null or vertical = ${vertical ?? null})
-        and (${source ?? null}::text is null or source = ${source ?? null})
-      order by created_at desc
-      limit 200
-    `;
+    // OUTREACH-2: `min_score` filters to leads scored at/above a threshold
+    // (nulls — unscored leads — never match a min_score filter, matching
+    // the "0-1 confidence, null = not yet scored" column contract);
+    // `sort=score` re-orders by phone_complaint_score first (nulls last)
+    // instead of the default newest-first, for the admin outreach UI's
+    // Score column sort control.
+    const minScoreRaw = query["min_score"];
+    const minScore = minScoreRaw !== undefined ? Number(minScoreRaw) : null;
+    const validMinScore = minScore !== null && Number.isFinite(minScore) ? minScore : null;
+    const sortByScore = query["sort"] === "score";
+
+    const rows = sortByScore
+      ? await sql<Record<string, unknown>>`
+          select id, source, vertical, company_name, contact_name, email, phone, status,
+                 phone_complaint_score, phone_complaint_evidence, reviews_analyzed_at, created_at
+          from public.leads
+          where (${status ?? null}::text is null or status = ${status ?? null})
+            and (${vertical ?? null}::text is null or vertical = ${vertical ?? null})
+            and (${source ?? null}::text is null or source = ${source ?? null})
+            and (${validMinScore}::numeric is null or phone_complaint_score >= ${validMinScore})
+          order by phone_complaint_score desc nulls last, created_at desc
+          limit 200
+        `
+      : await sql<Record<string, unknown>>`
+          select id, source, vertical, company_name, contact_name, email, phone, status,
+                 phone_complaint_score, phone_complaint_evidence, reviews_analyzed_at, created_at
+          from public.leads
+          where (${status ?? null}::text is null or status = ${status ?? null})
+            and (${vertical ?? null}::text is null or vertical = ${vertical ?? null})
+            and (${source ?? null}::text is null or source = ${source ?? null})
+            and (${validMinScore}::numeric is null or phone_complaint_score >= ${validMinScore})
+          order by created_at desc
+          limit 200
+        `;
     return { status: 200, body: { leads: rows } };
   }
 

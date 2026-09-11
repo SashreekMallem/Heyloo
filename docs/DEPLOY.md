@@ -524,6 +524,19 @@ specific signatures and sources. Still worth a final live check before
 go-live: re-verify `cron.job`/`pgmq.list_queues()` yourself against your own
 project's actual extension versions, per that same header's own caveat.
 
+**OUTREACH-2 addendum:** `20260911140100_job_outreach_review_score_cron_
+schedule.sql` (same follow-up pattern as `job-keep-warm` above, applied
+automatically by the same `supabase db push` once the two Vault secrets
+above exist) adds one more HTTP-calling job, `job-outreach-review-score`
+(hourly, `0 * * * *`) — the phone-complaint review-scoring pass. The job
+count in this section predates several other jobs added since it was
+written (`job-lead-callback-retry`, `job-commission-accrual`,
+`job-motel-deposit-hold-expiry` are also missing from the "17 HTTP-calling
+jobs" tally above) — treat `select count(*) from cron.job` against your
+own project as the source of truth rather than recomputing this doc's own
+running total; not re-derived here (out of this task's scope, flagged in
+docs/BUILD_NOTES.md OUTREACH-2).
+
 ### 3.7 Deploy `apps/web` to Vercel
 
 **Build `packages/widget` before `apps/web`** (`docs/audit/

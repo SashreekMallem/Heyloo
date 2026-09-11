@@ -24,7 +24,12 @@ export type PipelineCostCategory =
   | "list_cost"
   | "ai_personalization"
   | "sender_fee"
-  | "domain_warmup";
+  | "domain_warmup"
+  // OUTREACH-2: Outscraper Reviews + Anthropic classification spend for
+  // the phone-complaint scoring pass (job-outreach-review-score) — added
+  // via a widened `pipeline_costs_category_check` CHECK constraint,
+  // 20260911140000_leads_phone_complaint_score.sql.
+  | "review_scoring";
 
 export async function recordPipelineCost(
   sql: SqlClient,

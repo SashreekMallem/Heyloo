@@ -1,4 +1,5 @@
 import { htmlToPlainText } from "../_shared/html-text.ts";
+import { extractJsonObject } from "../_shared/json-extract.ts";
 import type { AnthropicContentBlock, AnthropicFetch } from "../_shared/providers/anthropic.ts";
 import { createMessageWithContent } from "../_shared/providers/anthropic.ts";
 import {
@@ -32,17 +33,6 @@ Rules:
 - modifiers are named add-ons/options with their own price (e.g. "Extra cheese" +$1.50), omit if none.
 - Include every distinct menu item you can identify. Do not invent items that aren't present.
 - Output ONLY the JSON object — no markdown fences, no commentary, no leading/trailing text.`;
-
-function extractJsonObject(text: string): unknown {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced?.[1] ?? text;
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  if (start === -1 || end === -1 || end < start) {
-    throw new Error("no_json_object_found");
-  }
-  return JSON.parse(candidate.slice(start, end + 1));
-}
 
 export interface MenuImportDeps {
   anthropicFetch: AnthropicFetch;

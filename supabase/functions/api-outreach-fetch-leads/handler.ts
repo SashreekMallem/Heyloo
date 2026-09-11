@@ -69,7 +69,16 @@ function fromOutscraperPlace(p: OutscraperPlace): NormalizedCandidate {
     email: null, // Google Maps listings never carry an email address.
     phone: p.phone ?? p.phone_1 ?? null,
     website: p.site ?? null,
-    extra: { full_address: p.full_address, category: p.category, rating: p.rating },
+    extra: {
+      full_address: p.full_address,
+      category: p.category,
+      rating: p.rating,
+      // OUTREACH-2: captured so `job-outreach-review-score` has a place id
+      // to fetch reviews for — Outscraper's own `/maps/search-v3` already
+      // returns this per result row (see OutscraperPlace.place_id's own
+      // docstring), it just wasn't kept anywhere before this task.
+      ...(p.place_id ? { google_place_id: p.place_id } : {}),
+    },
   };
 }
 

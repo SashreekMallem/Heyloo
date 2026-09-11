@@ -66,6 +66,39 @@ function genericOpener(companyName: string | null): string {
     : "I thought our AI answering service might be a good fit for your business.";
 }
 
+// OUTREACH-2: leads scored by `job-outreach-review-score` at or above this
+// confidence get their strongest phone-complaint review snippet worked
+// into the opener — a founder's own judgment call on where "the reviews
+// make this credible" outweighs "a borderline/noisy score", not a sourced
+// benchmark (docs/BUILD_NOTES.md OUTREACH-2 entry; re-tune once real reply
+// rates exist to compare against, same caveat this codebase already
+// attaches to every other unmeasured outreach-economics constant).
+const PHONE_COMPLAINT_SCORE_THRESHOLD = 0.6;
+
+/** `leads.phone_complaint_evidence` is jsonb — postgres.js deserializes it
+ * to a plain array already, but this is still untrusted data written by a
+ * PAST run of a different job (`job-outreach-review-score`), not
+ * guaranteed shape by this file's own types, so it's parsed defensively
+ * rather than cast. Returns the first (the classifier is prompted to put
+ * its strongest match first) snippet found, or null. */
+function strongestComplaintSnippet(evidence: unknown): string | null {
+  if (!Array.isArray(evidence)) return null;
+  const first = evidence[0];
+  if (!first || typeof first !== "object") return null;
+  const snippet = (first as Record<string, unknown>)["snippet"];
+  return typeof snippet === "string" && snippet.trim() !== "" ? snippet.trim() : null;
+}
+
+/** The literal opener pattern this task's own instruction names verbatim
+ * ("One of your reviews mentions calling three times and getting
+ * voicemail…") — used both as the strong, structured FALLBACK opener when
+ * a high-scoring lead's Anthropic hook call fails (never worse than the
+ * generic opener for a lead this promising) and folded into the hook
+ * prompt itself as the pattern to follow. */
+function complaintOpener(snippet: string): string {
+  return `One of your reviews mentions "${snippet}" — that's exactly the kind of missed call our AI answering service exists to catch.`;
+}
+
 function splitContactName(contactName: string | null): { first_name?: string; last_name?: string } {
   if (!contactName) return {};
   const parts = contactName.trim().split(/\s+/);
@@ -79,6 +112,8 @@ interface LeadForHookRow {
   company_name: string | null;
   contact_name: string | null;
   email: string | null;
+  phone_complaint_score: number | null;
+  phone_complaint_evidence: unknown;
 }
 
 async function pushLeadToSmartlead(
@@ -168,24 +203,50 @@ export async function collectResearchBatch(
 
   for (const line of results) {
     const leadRows = await sql<LeadForHookRow>`
-      select id, company_name, contact_name, email from public.leads where id = ${line.custom_id}
+      select id, company_name, contact_name, email, phone_complaint_score, phone_complaint_evidence
+      from public.leads where id = ${line.custom_id}
     `;
     const lead = leadRows[0];
     if (!lead) continue;
 
+    // OUTREACH-2: a lead `job-outreach-review-score` scored at/above
+    // threshold gets its strongest phone-complaint snippet worked into the
+    // opener (Flow 5 step 3, task step 3's own literal example phrasing).
+    const isHighComplaintScore =
+      lead.phone_complaint_score !== null &&
+      lead.phone_complaint_score >= PHONE_COMPLAINT_SCORE_THRESHOLD;
+    const complaintSnippet = isHighComplaintScore
+      ? strongestComplaintSnippet(lead.phone_complaint_evidence)
+      : null;
+
     const research = batchResultText(line);
     let openingLine: string;
     if (research) {
+      const complaintInstruction = complaintSnippet
+        ? ` This business has a review complaining about missed/unanswered phone calls — lead with ` +
+          `a natural reference to that specific complaint (quote or closely paraphrase: "${complaintSnippet}") ` +
+          `rather than the research context below, since it's a stronger, more specific hook.`
+        : "";
       const hook = await createMessage(deps.anthropicFetch, deps.anthropicApiKey, {
         model: deps.personalizeModel,
         maxTokens: 120,
         system:
           "Write ONE short, natural cold-email opening line (max 30 words, no greeting, no " +
           "signature) referencing the specific research context given. Return ONLY the line " +
-          "itself, nothing else.",
+          `itself, nothing else.${complaintInstruction}`,
         userMessage: `Company: ${lead.company_name ?? "their business"}\nResearch: ${research}`,
       });
-      openingLine = hook.ok && hook.text ? hook.text.trim() : genericOpener(lead.company_name);
+      openingLine =
+        hook.ok && hook.text
+          ? hook.text.trim()
+          : (complaintSnippet && complaintOpener(complaintSnippet)) ||
+            genericOpener(lead.company_name);
+    } else if (complaintSnippet) {
+      // No research text at all (no website, or the research batch item
+      // errored) but a strong complaint signal exists — the complaint
+      // snippet IS a personalized hook on its own, stronger than the
+      // fully-generic fallback below.
+      openingLine = complaintOpener(complaintSnippet);
     } else {
       // Errored/expired/canceled batch result for this lead — fall back
       // rather than block the send (API_AND_FLOWS.md A.5).

@@ -1641,3 +1641,47 @@ run-simulation}.ts`. The provider-side wrapper this shape describes,
 `packages/adapters/retell/src/tests-api.ts` (WAVE-2 integration pass — see
 this entry's update note above and `docs/audit/FIX_REQUESTS.md`'s matching
 entry).
+
+## OUTREACH-2 — Outscraper Google Maps Reviews API (`/maps/reviews-v3`)
+
+**Endpoint/params — HIGH confidence, confirmed against the official
+`outscraper` npm package (`outscraper-node@2.2.2`) fetched and inspected
+directly in this session (`index.js`'s own `googleMapsReviews(...)`
+method body, not a search snippet):** `GET /maps/reviews-v3`, `X-API-KEY`
+header auth, query params `query` (place id(s), comma-joined),
+`reviewsLimit`, `limit`, `sort`, `async` — same request shape as the
+already-integrated `/maps/search-v3` this codebase uses for lead fetch.
+Async envelope (`id`/`results_location`, terminal `status` strings
+`"Completed"`/`"Failed"`/`"Running"`) confirmed identical to the
+search endpoint by the SDK's own bundled
+`examples/Async Google Maps Reviews.md`. The response nests an array of
+place objects, each carrying a `reviews_data` array — confirmed by the
+SDK's own `examples/Google Maps Reviews.md` (`place.reviews_data.forEach(
+review => console.log(review.review_text))`). The Maps Search endpoint's
+own per-result `place_id` field (needed to know WHICH place id to pass to
+Reviews) is likewise confirmed from that same package's
+`examples/Google Maps.md` ("Scrap Places by Place Ids": `place.place_id`).
+
+**Per-review field names beyond `review_text` — MEDIUM confidence:**
+`review_rating`, `review_timestamp`, `review_datetime_utc`, and the
+place-level `google_id` were confirmed against outscraper.com's own public
+Google Maps Reviews API product page and pricing page, reached via this
+environment's page-fetch tool — which returns an AI-summarized
+reconstruction of the page's content, not raw HTML/byte inspection. The
+pricing figure ($3/1,000 reviews past a 500-review free tier, $1/1,000
+past 100k) matches the already-integrated Maps Search endpoint's
+confirmed rate exactly, which is corroborating but not independent
+confirmation of the review-specific field names. **Action before this
+scoring pass is trusted for anything beyond re-ranking (e.g. before
+`phone_complaint_evidence.rating`/`.date` are surfaced anywhere
+customer-facing):** make one real Outscraper Reviews API call against a
+live account and diff the actual response against
+`OutscraperReview`/`OutscraperPlaceReviews`
+(`supabase/functions/_shared/providers/outscraper.ts`) — every field is
+already typed `?:` optional and the classifier's own zod boundary
+(`_shared/schemas/review-score.ts`) never assumes a field is present, so a
+mismatch degrades to a missing field, not a crash, in the meantime.
+
+**Code:** `supabase/functions/_shared/providers/outscraper.ts`
+(`startGoogleMapsReviews`/`pollGoogleMapsReviews`),
+`supabase/functions/job-outreach-review-score/`.

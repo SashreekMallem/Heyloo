@@ -10,6 +10,10 @@ export interface LeadRowData {
   status: "new" | "queued" | "sent" | "replied" | "suppressed" | "converted";
   suppressed: boolean;
   isDuplicate: boolean;
+  /** OUTREACH-2: 0-1 phone-complaint confidence from `job-outreach-review-
+   * score`, or null/undefined when the lead has no Google place id or
+   * hasn't been analyzed yet. */
+  phoneComplaintScore?: number | null;
 }
 
 export const leadTableColumns: ColumnDef<LeadRowData, unknown>[] = [
@@ -24,6 +28,17 @@ export const leadTableColumns: ColumnDef<LeadRowData, unknown>[] = [
     cell: ({ row }) => row.original.contactName ?? "—",
   },
   { accessorKey: "email", header: "Email", cell: ({ row }) => row.original.email ?? "—" },
+  {
+    accessorKey: "phoneComplaintScore",
+    header: "Score",
+    cell: ({ row }) => {
+      const score = row.original.phoneComplaintScore;
+      if (score === null || score === undefined) return "—";
+      return (
+        <Badge variant={score >= 0.6 ? "warning" : "outline"}>{Math.round(score * 100)}%</Badge>
+      );
+    },
+  },
   {
     accessorKey: "status",
     header: "Status",

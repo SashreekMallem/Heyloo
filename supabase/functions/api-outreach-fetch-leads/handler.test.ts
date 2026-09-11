@@ -146,6 +146,35 @@ describe("handleFetchLeads (outscraper)", () => {
     expect(calls.some((c) => c.text.includes("insert into public.cac_events"))).toBe(true);
   });
 
+  it("OUTREACH-2: captures place_id into enrichment.google_place_id so job-outreach-review-score has something to fetch reviews for", async () => {
+    const { sql, calls } = makeSql({ "insert into public.leads": [{ id: "lead_1" }] });
+    const outscraperFetch = jsonFetch({
+      id: "req_1",
+      data: [[{ name: "Joe's Diner", phone: "+15551234567", place_id: "ChIJ_joes" }]],
+    });
+
+    await handleFetchLeads(
+      sql,
+      { source: "outscraper", vertical: "restaurant", query: "restaurants in Austin, TX" },
+      {
+        apolloFetch: vi.fn() as never,
+        apolloApiKey: "key",
+        outscraperFetch,
+        outscraperApiKey: "key",
+        logger: makeLogger(),
+        sleep: async () => {},
+        now: new Date("2026-01-01T00:00:00Z"),
+      },
+    );
+
+    const insertCall = calls.find((c) => c.text.includes("insert into public.leads"));
+    const enrichmentJson = insertCall?.values.find(
+      (v) => typeof v === "string" && v.includes("google_place_id"),
+    ) as string | undefined;
+    expect(enrichmentJson).toBeTruthy();
+    expect(JSON.parse(enrichmentJson as string).google_place_id).toBe("ChIJ_joes");
+  });
+
   it("polls results_location when the initial response has no inline data", async () => {
     const { sql } = makeSql({ "insert into public.leads": [{ id: "lead_1" }] });
     let call = 0;
