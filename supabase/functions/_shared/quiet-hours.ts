@@ -32,6 +32,44 @@ export function localHour(date: Date, timeZone: string): number {
   return Number(hourPart) % 24;
 }
 
+const DEFAULT_START_HOUR = 21;
+const DEFAULT_END_HOUR = 9;
+
+export interface QuietHoursWindow {
+  enabled: boolean;
+  startHour: number;
+  endHour: number;
+}
+
+function parseHour(hhmm: unknown): number | null {
+  if (typeof hhmm !== "string") return null;
+  const match = /^(\d{1,2}):\d{2}$/.exec(hhmm.trim());
+  if (!match) return null;
+  const hour = Number(match[1]);
+  return Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : null;
+}
+
+/**
+ * Resolves a tenant's `tenants.quiet_hours` jsonb column
+ * (`{"start":"21:00","end":"09:00","enabled":true}`, BACKEND_SPEC.md §13.2)
+ * into the `{enabled, startHour, endHour}` shape `isQuietHours` takes.
+ * Unset/unconfigured (`{}`, the column default) or malformed fields fall
+ * back to the MASTER_SPEC §3.6 default (9pm-9am, enabled) rather than
+ * disabling quiet-hours gating outright — a tenant must explicitly set
+ * `enabled: false` to opt all the way out. Used for PROACTIVE/unsolicited
+ * outbound only (booking reminders, campaigns) — a text-agent reply to a
+ * customer-initiated conversation is never gated by this at all (TCPA:
+ * replying inside an exchange the customer started is not "unsolicited"),
+ * per the CHANNELS-2 ratified decision.
+ */
+export function resolveQuietHoursWindow(raw: unknown): QuietHoursWindow {
+  const obj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const enabled = obj["enabled"] !== false;
+  const startHour = parseHour(obj["start"]) ?? DEFAULT_START_HOUR;
+  const endHour = parseHour(obj["end"]) ?? DEFAULT_END_HOUR;
+  return { enabled, startHour, endHour };
+}
+
 /** Next local time the quiet-hours window ends (for scheduling a deferred
  * send rather than dropping the reminder). Returns a Date in the same
  * absolute instant space, computed by walking forward hour-by-hour — bounded

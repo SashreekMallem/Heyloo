@@ -281,6 +281,52 @@ describe("createOrder", () => {
     });
   });
 
+  it("CHANNELS-2 item 10: checks the radius against the CALLER-CHOSEN saved address (address_id), not blindly their default", async () => {
+    const sql = makeStepSql([
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings lookup
+      {
+        rows: [
+          {
+            dynamic_variable_overrides: {
+              tenant_geocode: { lat: 40.7128, lng: -74.006 }, // NYC
+              delivery_radius_m: 5000,
+            },
+          },
+        ],
+      }, // agent_configs overrides
+      {
+        rows: [
+          {
+            street: "99 Far Ave",
+            city: "Philadelphia",
+            state: "PA",
+            zip: "19019",
+            geocode: { x: -75.1652, y: 39.9526 }, // Philadelphia — well outside a 5km NYC radius
+          },
+        ],
+      }, // address_id resolution — the NON-default address the caller picked
+    ]);
+    const result = await createOrder(
+      sql,
+      ctx,
+      {
+        ...pickupArgs,
+        fulfillment_type: "delivery",
+        delivery_address: { address_id: "addr_non_default" },
+      },
+      logger,
+    );
+    // Would confirm (well within radius) if this had used the tenant's
+    // default address instead — proves the CHOSEN address's own geocode
+    // was actually used for the check.
+    expect(result).toEqual({
+      confirmed: false,
+      reason: "out_of_delivery_radius",
+      pickup_offered: true,
+    });
+  });
+
   it("proceeds (with a logged warning) when a radius policy exists but the caller has no saved address geocode yet", async () => {
     const warnings: unknown[] = [];
     const spyLogger = {
@@ -337,6 +383,12 @@ describe("createOrder", () => {
         unsetDefaultCalled = true;
         return Promise.resolve([]);
       }
+      if (
+        text.includes("select id from public.customer_addresses") &&
+        text.includes("is_default = true")
+      ) {
+        return Promise.resolve([]); // no existing default yet — this is the customer's first
+      }
       if (text.includes("insert into public.customer_addresses")) {
         insertedAddress = values;
         return Promise.resolve([]);
@@ -365,9 +417,75 @@ describe("createOrder", () => {
     );
 
     expect(result).toMatchObject({ confirmed: true, order_id: "order_1" });
+    // this is the customer's first-ever saved address, so it becomes the
+    // default even with no explicit set_as_default — clearing beforehand
+    // is a harmless no-op since nothing was set yet.
     expect(unsetDefaultCalled).toBe(true);
     expect(insertedAddress).toContain("customer_1");
     expect(insertedAddress).toContain("123 Main St");
+    expect(insertedAddress).toContain(true); // is_default
+  });
+
+  it("CHANNELS-2 item 10(d): a second delivery address does NOT steal the caller's existing default (regression for the prior unconditional-overwrite bug)", async () => {
+    let insertedAddress: unknown[] | undefined;
+    let defaultWasCleared = false;
+    const steps: Step[] = [
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings lookup
+      { rows: [{ dynamic_variable_overrides: {} }] }, // agent_configs overrides
+      { rows: [{ id: "customer_2" }] }, // customer upsert
+      { rows: [{ id: "order_2" }] }, // order insert
+    ];
+    let i = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("lower(trim(street))")) {
+        return Promise.resolve([]); // different street — no match, a new address
+      }
+      if (text.includes("set is_default = false")) {
+        defaultWasCleared = true;
+        return Promise.resolve([]);
+      }
+      if (
+        text.includes("select id from public.customer_addresses") &&
+        text.includes("is_default = true")
+      ) {
+        // this customer ALREADY has a default address from a prior order.
+        return Promise.resolve([{ id: "addr_existing_default" }]);
+      }
+      if (text.includes("insert into public.customer_addresses")) {
+        insertedAddress = values;
+        return Promise.resolve([]);
+      }
+      if (text.includes("pgmq.send")) return Promise.resolve([]);
+      const step = steps[i];
+      i += 1;
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ results: [{ location: { lat: 30.2672, lng: -97.7431 } }] }), {
+        status: 200,
+      })) as unknown as (input: string, init?: RequestInit) => Promise<Response>;
+
+    const result = await createOrder(
+      sql,
+      ctx,
+      {
+        ...pickupArgs,
+        fulfillment_type: "delivery",
+        // a NEW address, different from the existing default, and no
+        // set_as_default — must be saved as an additional entry only.
+        delivery_address: { street: "99 New St", city: "Austin", state: "TX", zip: "78701" },
+      },
+      logger,
+      { geocode: { fetchImpl, apiKey: "test_key" } },
+    );
+
+    expect(result).toMatchObject({ confirmed: true, order_id: "order_2" });
+    expect(defaultWasCleared).toBe(false);
+    expect(insertedAddress).toContain("99 New St");
+    expect(insertedAddress).toContain(false); // is_default — never stole the existing default
   });
 
   it("never attempts a geocode/address save when no geocode dep is wired (GEOCODE_API_KEY unset)", async () => {
@@ -431,11 +549,18 @@ describe("createOrder", () => {
               a.customer_id === values[1] &&
               a.street.toLowerCase() === String(values[2]).toLowerCase(),
           );
-          return Promise.resolve(match ? [{ id: match.id }] : []);
+          return Promise.resolve(match ? [{ id: match.id, is_default: match.is_default }] : []);
         }
         if (text.includes("set is_default = false")) {
           for (const a of addresses) a.is_default = false;
           return Promise.resolve([]);
+        }
+        if (
+          text.includes("select id from public.customer_addresses") &&
+          text.includes("is_default = true")
+        ) {
+          const match = addresses.find((a) => a.customer_id === values[1] && a.is_default);
+          return Promise.resolve(match ? [{ id: match.id }] : []);
         }
         if (text.includes("insert into public.customer_addresses")) {
           const id = `addr_${nextAddressId}`;
@@ -445,7 +570,7 @@ describe("createOrder", () => {
             customer_id: values[1] as string,
             street: values[2] as string,
             geocode: { x: -97.7431, y: 30.2672 },
-            is_default: true,
+            is_default: values[values.length - 1] === true,
           });
           return Promise.resolve([]);
         }

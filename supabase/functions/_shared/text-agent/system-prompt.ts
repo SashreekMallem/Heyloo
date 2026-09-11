@@ -108,6 +108,20 @@ const GIVE_UP_LADDER_FRAGMENT =
   "the call, stop retrying that thread and move to a transfer or a take-message " +
   "fallback instead of guessing.";
 
+// Mirrors packages/templates/src/shared/fragments.ts's MULTI_ENTITY_FRAGMENT
+// (CHANNELS-2 item 10) — reused verbatim, never re-authored (parity-tested
+// against the canonical string in system-prompt.test.ts).
+const MULTI_ENTITY_FRAGMENT =
+  "lookup_customer can return SEVERAL saved vehicles/pets/addresses, most recent first, each " +
+  "flagged if it's the most recent or default one. None on file: ask and collect fresh. " +
+  'Exactly one: confirm it back briefly instead of asking from scratch ("still the 2019 ' +
+  'Civic?" / "is this for Bella?" / "still to 42 Oak St?"). Several: offer them by their ' +
+  'short label and ask which one ("the Civic or the F-150?" / "Max or Bella?" / "your home ' +
+  'address or your work address?") — never read a full street address back to a caller you ' +
+  "have not verified (MASTER_SPEC §3.7). If the caller mentions one not already on file, " +
+  "capture it as an ADDITIONAL entry, never a replacement — it becomes the new default only " +
+  "if the caller actually says so.";
+
 /** Composes one vertical's full text-agent system prompt — same composition
  * order as `buildTextSystemPrompt` in `packages/templates/src/shared/
  * text-persona.ts` (parity-tested). `vertical` unrecognized falls back to
@@ -124,6 +138,7 @@ export function buildTextSystemPrompt(vertical: string): string {
     WAITLIST_OFFER_FRAGMENT,
     ESCALATION_TRIGGERS_FRAGMENT,
     GIVE_UP_LADDER_FRAGMENT,
+    MULTI_ENTITY_FRAGMENT,
   ].join("\n\n");
 }
 

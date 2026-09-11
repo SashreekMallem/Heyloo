@@ -17,6 +17,7 @@ import { withCallOutcomeExtraction } from "../shared/extraction.js";
 import {
   CANCELLATION_POLICY_READOUT_FRAGMENT,
   CONSENT_ASK_FRAGMENT,
+  MULTI_ENTITY_FRAGMENT,
   WAITLIST_OFFER_FRAGMENT,
   WARM_TRANSFER_FRAGMENT,
 } from "../shared/fragments.js";
@@ -55,6 +56,7 @@ const SYSTEM_PROMPT = buildSystemPrompt(
   CONSENT_ASK_FRAGMENT,
   CANCELLATION_POLICY_READOUT_FRAGMENT,
   WAITLIST_OFFER_FRAGMENT,
+  MULTI_ENTITY_FRAGMENT,
 );
 
 const RED_FLAG_LIST =

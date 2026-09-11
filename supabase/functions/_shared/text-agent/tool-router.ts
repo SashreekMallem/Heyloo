@@ -44,6 +44,30 @@ import {
  * attempted number (e.g. "resend the code") never counts against this. */
 const MAX_DISTINCT_PHONES_PER_CONVERSATION = 3;
 
+/** Minimum spacing between two `verify_phone` sends to the SAME number,
+ * regardless of which conversation/session triggers them — closes the gap
+ * the other two caps leave open: `MAX_DISTINCT_PHONES_PER_CONVERSATION`
+ * only bounds one conversation's own spread of distinct numbers (an
+ * already-attempted number is deliberately exempt, for the legitimate
+ * "didn't get it, resend" case), and `verifyPhoneRateLimiter`'s 20/hour
+ * tenant-wide budget still lets an attacker who mints many fresh
+ * conversations/sessions burn the whole hour's budget on ONE victim number
+ * within seconds. Keyed on `tenantId:phone` (module-scope, in-process —
+ * same "cheap backstop, not cross-instance-exact" shape as
+ * `TextAgentRateLimiter`), independent of conversation/session identity so
+ * a fresh conversation targeting the same number doesn't reset it. */
+const VERIFY_PHONE_NUMBER_COOLDOWN_MS = 60_000;
+const lastVerifySendAtByNumber = new Map<string, number>();
+
+function checkAndRecordCooldown(key: string, nowMs: number): boolean {
+  const last = lastVerifySendAtByNumber.get(key);
+  if (last !== undefined && nowMs - last < VERIFY_PHONE_NUMBER_COOLDOWN_MS) {
+    return false;
+  }
+  lastVerifySendAtByNumber.set(key, nowMs);
+  return true;
+}
+
 function attemptedVerifyPhones(conversation: TextConversationRow): string[] {
   const raw = conversation.structuredState["verify_phone_attempts"];
   return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
@@ -82,6 +106,9 @@ export interface TextToolRouterDeps {
    * campaign isn't verified, so the tool simply isn't callable and the
    * model is told so via the tool_result instead of silently failing. */
   a2pVerified: boolean;
+  /** Injectable clock for `verify_phone`'s per-number cooldown (tests only —
+   * production callers omit this and get the real time). */
+  now?: () => Date;
 }
 
 async function buildCallContext(deps: TextToolRouterDeps): Promise<CallContext> {
@@ -150,6 +177,22 @@ async function runVerifyPhone(
         sent: false,
         reason: "rate_limited",
         note: "SMS verification is temporarily unavailable — tell the customer you can still help with a new booking, just not look up an existing one right now.",
+      }),
+      isError: false,
+    };
+  }
+
+  // Per-number cooldown — see VERIFY_PHONE_NUMBER_COOLDOWN_MS's docstring.
+  // Checked last (after the cheaper in-memory caps above), still before any
+  // send/DB write.
+  const cooldownKey = `${deps.conversation.tenantId}:${phone}`;
+  const nowMs = (deps.now?.() ?? new Date()).getTime();
+  if (!checkAndRecordCooldown(cooldownKey, nowMs)) {
+    return {
+      resultText: jsonResult({
+        sent: false,
+        reason: "cooldown",
+        note: "A verification code was just sent to that number — tell the customer to check their messages, or wait a bit before requesting another.",
       }),
       isError: false,
     };

@@ -17,7 +17,11 @@ let mockGetUser: () => Promise<{ data: { user: unknown } }> = async () => ({
   data: { user: null },
 });
 let callLogsResult: unknown = { data: [], error: null };
-const from = vi.fn((_table: string) => chain(callLogsResult));
+let lastChain: Record<string, unknown> | null = null;
+const from = vi.fn((_table: string) => {
+  lastChain = chain(callLogsResult);
+  return lastChain;
+});
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({
@@ -76,5 +80,17 @@ describe("GET /api/tenant/calls/export", () => {
     expect(body).toContain("started_at,caller_number,classification,duration_seconds,outcome");
     expect(body).toContain("+15551234567");
     expect(from).toHaveBeenCalledWith("call_logs");
+  });
+
+  it("filters call_logs to voice channels only (excludes sms/web_chat shadow rows, CHANNELS-2 item 3)", async () => {
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    callLogsResult = { data: [], error: null };
+    from.mockClear();
+
+    await GET(exportRequest("t1"));
+    expect(lastChain).not.toBeNull();
+    // biome-ignore lint/style/noNonNullAssertion: asserted above.
+    const inMock = lastChain!["in"] as ReturnType<typeof vi.fn>;
+    expect(inMock).toHaveBeenCalledWith("channel", ["phone", "web_voice"]);
   });
 });

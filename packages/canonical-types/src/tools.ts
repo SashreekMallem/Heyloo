@@ -251,10 +251,22 @@ export const FULFILLMENT_TYPES = ["pickup", "delivery", "dine_in"] as const;
 export type FulfillmentType = (typeof FULFILLMENT_TYPES)[number];
 
 export const zDeliveryAddressInput = z.object({
-  street: z.string().min(1),
-  city: z.string().min(1),
-  state: z.string().min(1),
-  zip: z.string().min(1),
+  /** CHANNELS-2 item 10: when the caller picked one of several saved
+   * addresses `lookup_customer` returned (by its short label), the model
+   * passes that saved row's id here instead of re-speaking the full
+   * address — `create_order.ts` resolves street/city/state/zip/geocode
+   * from the saved row server-side. Omitted for a brand-new address the
+   * caller speaks fresh, in which case `street`/etc are required (see the
+   * `.check()` below). */
+  address_id: z.string().min(1).optional(),
+  street: z.string().min(1).optional(),
+  city: z.string().min(1).optional(),
+  state: z.string().min(1).optional(),
+  zip: z.string().min(1).optional(),
+  /** Only set when the caller explicitly asked this address become their
+   * new default — merely using or adding an address must never silently
+   * replace an existing default (item 10(d)). */
+  set_as_default: z.boolean().optional(),
 });
 export type DeliveryAddressInput = z.infer<typeof zDeliveryAddressInput>;
 
@@ -280,6 +292,21 @@ export const zCreateOrderRequest = z
         message:
           "delivery orders REQUIRE address capture (MASTER_SPEC §3.0) — delivery_address is required " +
           "when fulfillment_type is 'delivery'",
+        input: ctx.value,
+        path: ["delivery_address"],
+      });
+    }
+    // CHANNELS-2 item 10: a delivery address must resolve to SOMETHING —
+    // either a saved address picked by id, or a freshly spoken street.
+    if (
+      ctx.value.fulfillment_type === "delivery" &&
+      ctx.value.delivery_address &&
+      !ctx.value.delivery_address.address_id &&
+      !ctx.value.delivery_address.street
+    ) {
+      ctx.issues.push({
+        code: "custom",
+        message: "delivery_address needs either address_id (a saved address) or street (a new one)",
         input: ctx.value,
         path: ["delivery_address"],
       });

@@ -9057,3 +9057,279 @@ partial-status list for the SMS text agent; nothing else was flagged as
 open. `scripts/ci/rls-cross-tenant-probe.ts` staying unrun in every sandbox
 pass (noted above) is a standing, previously-disclosed environment gap, not
 a new one.
+
+## CHANNELS-2 — Channels follow-up wave: rate limits, calls filters,
+## pricing merge, reply tracking, quiet hours, multi-entity (2026-09-11,
+## session_012xvcAnjqsMbPqitErDJQbR)
+
+Verified/fixed every item in `docs/audit/CHANNELS_REQUESTS.md`'s adversarial
+follow-up list against HEAD, per item below. Several were already fixed by
+prior repair passes (confirmed independently, not just re-asserted — every
+"already fixed" item below was re-run against its existing test before
+being left alone) and only needed a status check; the rest were real gaps,
+fixed with regression tests. A new item 10 (multiple saved vehicles/pets/
+addresses) was added mid-task by the coordinator and is its own section
+below.
+
+1. **Rate-limit bypass in api-text-chat (web_chat conversation-creation
+   reset)** — ALREADY FIXED (prior REPAIR pass, `engine.ts`'s
+   `WebChatTurnInput.sessionKey`, keyed by the caller's `widget_token` hash
+   rather than `conversation.id`). Confirmed via `engine.test.ts` ("keys
+   the web_chat limiter on the caller-supplied sessionKey...") and
+   `api-text-chat/handler.test.ts` — both still green, no changes needed.
+   A DB-side cap on conversations-created-per-tenant-per-minute (the
+   task's alternative phrasing of the same fix) was judged redundant once
+   the session-key fix closes the actual bypass — not added, to avoid a
+   second, overlapping rate-limit mechanism for the same threat.
+
+2. **verify_phone SMS-bombing relay** — PARTIALLY already fixed, ONE real
+   gap found and closed. Already in place: a per-conversation distinct-
+   phone-number cap (`MAX_DISTINCT_PHONES_PER_CONVERSATION = 3`) and a
+   tenant-wide hourly cap (`verifyPhoneRateLimiter`, 20/hour). Missing:
+   the task's own third requirement, a **cooldown per number** — nothing
+   stopped an attacker from minting many fresh conversations (each
+   individually under the distinct-number cap, and collectively still
+   under the tenant's 20/hour budget) all targeting the SAME victim
+   number in a rapid burst. Added `VERIFY_PHONE_NUMBER_COOLDOWN_MS`
+   (60s, keyed on `tenantId:phone`, independent of conversation/session
+   identity) in `tool-router.ts`'s `runVerifyPhone`, checked after the
+   other two caps, before any send. Regression tests (`tool-router.test.ts`):
+   a fresh conversation targeting an already-recently-texted number is
+   blocked (`reason: "cooldown"`) even though the distinct-number cap
+   alone wouldn't catch it; the existing "resend to an already-attempted
+   number" test was updated to advance a fake clock past the cooldown
+   first (it now legitimately tests the DISTINCT-NUMBER cap's own
+   exemption, not the interaction with the new cooldown).
+
+3. **Calls surfaces showing text/web-chat shadow call_logs rows** —
+   ALREADY FIXED (prior Cluster-repair pass) for `calls-list-client.tsx`,
+   `overview-client.tsx` (both queries — the widget AND the spam-deflected
+   count), the export route, and the customer-profile call history — all
+   four already filter `.in("channel", ["phone","web_voice"])`. The gap:
+   NO test existed for three of the four surfaces (BUILD_NOTES' own prior
+   entry says so explicitly: "no existing test exercises the touched query
+   chains directly... none broken"), so nothing would have caught a
+   regression. Added tests: `calls-list-client.test.tsx` (new file),
+   `overview-client.test.tsx` (new describe block covering both `call_logs`
+   queries), `export/route.test.ts` (new case asserting the `.in()` call
+   args). The customer-profile page (`dashboard/customers/[id]/page.tsx`)
+   is a server component with no existing test scaffold for this pattern
+   in the repo; left uncovered by an automated test (code confirmed
+   correct by inspection) — flagged here rather than silently skipped.
+
+4. **Admin Platform Settings pricing tab — merge, not replace** — ALREADY
+   FIXED (prior REPAIR pass): `platformPricingTableSchema`/
+   `PlatformPricingTableSchema` both carry `included_text_conversations`/
+   `text_conversation_overage_cents`, the admin handler spreads the
+   previously-stored value before overwriting known fields, and
+   `PricingTab` has the two inputs. Regression test
+   (`admin/handler.test.ts`, "merges a pricing save onto the previously-
+   stored value...") re-run, still green — confirmed, not re-fixed.
+
+5. **incrementTextMessagesOut exactly-once-per-sent-reply** — ALREADY
+   correct by construction (both SMS and web_chat route through the same
+   `handleInboundText`, which calls it from exactly two `sent: true`
+   branches — the verify-code auto-reply and the normal AI-reply path —
+   never from a `noReply(...)` branch). No dedicated regression test
+   existed proving this explicitly, though. Added
+   (`engine.test.ts`, new describe block "incrementTextMessagesOut
+   metering"): one test per channel proving exactly-one-call on a
+   successful reply, and one test driving all four suppression paths
+   (opted-out, human-handoff, A2P-pending, rate-limited) in sequence and
+   asserting zero calls across all of them.
+
+6. **Messages list merge (text_conversations newer than SMS-derived
+   row)** — ALREADY FIXED (CHANNELS-1's own integrator pass, the exact bug
+   this item describes). Regression test
+   (`messages-list-client.test.tsx`, "updates lastAt/preview from a
+   text_conversations row newer than the matching SMS row") re-run, still
+   green.
+
+7. **AI SMS reply delivery tracking (option (b))** — REAL GAP, now fixed.
+   The synchronous TwiML `<Message>` reply `webhooks-twilio-sms/handler.ts`
+   sends back to Twilio was never mirrored into `messages_outbound` at
+   all — the dashboard thread's delivery-status view had no record the
+   reply was ever sent. Fixed: `processInboundSms` now inserts a
+   `messages_outbound` row (`channel:'sms'`, `template_key:
+   'text_agent_reply'`, `status:'sent'` — never `'queued'`, since the send
+   already happened via TwiML and must never be picked up and re-sent by
+   the outbound queue worker — `sent_at: now()`, `payload:{body: <reply>}`)
+   for every reply actually sent, and never for a suppressed one.
+   `provider_message_id` is left null (Twilio never hands this webhook
+   response a SID for a TwiML-sent reply; only a future status-callback
+   handler could backfill it — out of scope here). `docs/spec/
+   BACKEND_SPEC.md` §13.1 updated with a new subsection documenting this.
+   Regression tests in `webhooks-twilio-sms/handler.test.ts`: asserts the
+   insert's shape on a real AI reply, and its absence when the engine
+   suppresses the reply.
+
+8. **Quiet hours — customer replies exempt, proactive sends gated** — the
+   text-agent-reply half was ALREADY correct (ratified by a prior repair
+   pass, no code change needed there — `handleInboundText` never reads
+   `tenants.quiet_hours` at all, by design). The gap: the task's own
+   second half ("make the engine read tenants.quiet_hours for any
+   proactive path") was NOT done — `job-reminder-scheduler/handler.ts`'s
+   proactive booking-reminder SMS used `isQuietHours`'s hardcoded 9pm-9am
+   default, never the tenant-configurable `tenants.quiet_hours` column
+   Cluster S added specifically for this. Fixed: added
+   `resolveQuietHoursWindow` (`_shared/quiet-hours.ts`) parsing
+   `{start,end,enabled}` from the jsonb column (falling back to the
+   platform default for an unconfigured tenant or a malformed field, only
+   skipping gating entirely on an explicit `enabled:false`);
+   `scheduleOneReminder` now selects `t.quiet_hours` and resolves it
+   instead of calling `isQuietHours` with implicit defaults. `docs/spec/
+   BACKEND_SPEC.md` §13.2 updated with a new subsection stating exactly
+   what this column gates and doesn't. Regression tests:
+   `quiet-hours.test.ts` (`resolveQuietHoursWindow` parsing/fallback
+   cases) and `job-reminder-scheduler/handler.test.ts` (a tenant's custom
+   narrower window is respected; `enabled:false` sends straight through
+   the platform-default window; an unconfigured tenant still gets the
+   platform default).
+
+9. **Widget voice calls resolve tenant by agent_id, channel='web_voice'**
+   — ALREADY FIXED (prior REPAIR pass: `voice-events/handler.ts`'s
+   `resolveTenantForCall` falls back to `agent_id -> agent_configs.
+   retell_agent_id -> tenant_id` when `to_number` is absent, both insert
+   paths tag `channel='web_voice'`). Regression tests in
+   `voice-events/handler.test.ts` re-run, still green — confirmed, not
+   re-fixed.
+
+**Edge functions changed in this pass** (redeploy needed):
+`_shared/text-agent/tool-router.ts` (verify_phone cooldown),
+`_shared/quiet-hours.ts` (resolveQuietHoursWindow),
+`job-reminder-scheduler/handler.ts` (reads tenants.quiet_hours),
+`webhooks-twilio-sms/handler.ts` (messages_outbound delivery-tracking
+insert), `voice-tools/tools/create_order.ts` (address_id resolution +
+default-preservation fix), `voice-tools/tools/lookup_customer.ts`
+(bounded/flagged vehicles/pets/addresses), `_shared/schemas/voice-tools.ts`
+(delivery_address address_id/set_as_default fields). No migration files
+were added or changed by this pass — every fix is application-layer.
+
+### Item 10 (owner priority, added mid-task) — multiple saved vehicles,
+### pets, and delivery addresses
+
+The data model already supported several saved vehicles/pets
+(`customers.metadata.vehicles[]`/`.pets[]`, appended-not-overwritten by
+`create_booking.ts`'s existing `extractMetadataMerge`) and several
+addresses (`customer_addresses`, one row per address), but the
+conversation layer only ever handled the single/default case — exactly
+the gap the task named (`restaurant.ts:150`'s old "still to 42 Oak St?"
+line, which silently assumed one saved address).
+
+**(a) `lookup_customer` bounded, most-recent-first, flagged.**
+`voice-tools/tools/lookup_customer.ts` now bounds vehicles/pets/addresses
+to 5 each. Addresses were already ordered `is_default desc, created_at
+desc`; added `limit 5` at the query level. Vehicles/pets are stored
+oldest-first in the metadata array (each booking appends) — added
+`boundRecurringEntries()`, which reverses to most-recent-first, slices to
+5, and flags entry 0 with `most_recent: true` (addresses don't need a
+separate flag — `is_default` already serves that role). Tests:
+`lookup_customer.test.ts` — bounds 7 vehicles to 5 most-recent-first with
+the flag on the right entry; a single saved vehicle still gets flagged
+(the exactly-one case the template fragment below depends on); the
+addresses query's `limit` argument is asserted directly.
+
+**(b) Shared template fragment.** New `MULTI_ENTITY_FRAGMENT`
+(`packages/templates/src/shared/fragments.ts`) encodes the exact rule:
+none on file → collect; exactly one → confirm back briefly ("still the
+2019 Civic?"); several → offer by short label and ask which ("the Civic or
+the F-150?"), never read a full address back to an unverified caller
+(MASTER_SPEC §3.7); a new one mentioned → capture as an ADDITIONAL entry,
+default only if the caller says so. Wired into the FOUR verticals whose
+caller can actually have more than one recurring entity —
+`auto-repair.ts` (vehicles), `veterinary.ts` (pets), `restaurant.ts` +
+`generic.ts` (delivery addresses) — deliberately NOT the other four
+(legal/dental/real_estate/motel have no recurring-entity concept, and
+adding it there would just be prompt bloat). Also mirrored into the
+text-agent persona on BOTH sides of the Deno/Node boundary
+(`packages/templates/src/shared/text-persona.ts` and its by-hand Deno
+mirror `_shared/text-agent/system-prompt.ts`, parity-tested by
+`system-prompt.test.ts`) — the text agent's `buildTextSystemPrompt` is a
+single composer for every vertical (no per-vertical fragment selection
+the way voice templates have), so it's included universally there. Also
+updated `restaurant.ts`'s `collect_delivery_address` state prompt to
+reference `address_id`/`set_as_default` instead of assuming one default
+address. Tests: `structural.test.ts` (new describe block) asserts the
+fragment's marker text is present on exactly the four verticals named
+above and absent from the other four (catches both under- and
+over-application); `single_prompt` word/tool budget test
+(`registry-consistency.test.ts`) re-run, still green (soft-warn only,
+generic was already over budget before this pass per its own comment —
+unchanged conclusion).
+
+**(c) create_booking/create_order carry the chosen entity.** For
+vehicles/pets, the existing `structured_payload` fields (`vehicle_year`/
+`make`/`model`, `pet_name`/`species`/`breed`) already ARE the chosen
+entity's label and already land on the booking (`bookings.
+structured_payload`, `call_logs.structured_booking_payload`) — no schema
+change needed there, only the persona fragment above so the model
+actually asks which one instead of guessing. For addresses — a real gap —
+added `address_id`/`set_as_default` to `delivery_address`
+(`packages/canonical-types/src/tools.ts`'s `zDeliveryAddressInput` +
+`.check()`, `_shared/schemas/voice-tools.ts`'s Deno mirror,
+`createOrderTool()`'s model-facing JSON schema in `shared/tools.ts`).
+`create_order.ts` resolves `address_id` server-side (scoped by the
+caller's own phone, same pattern the existing radius-check query already
+used) to the saved row's real street/city/state/zip/geocode BEFORE the
+delivery-radius check runs — fixing a real, separate bug in the same area
+while here: the radius check previously always used the caller's
+DEFAULT saved address's geocode regardless of which address was actually
+being delivered to, so a caller with multiple addresses picking a
+non-default one got checked against the wrong address entirely. Tests:
+`canonical-types/src/tools.test.ts` (address_id-only payload accepted, a
+payload with neither address_id nor street rejected);
+`create_order.test.ts` (radius check uses the CHOSEN address_id's own
+geocode, not the default's — proven by an address that would pass on the
+default's geocode but fails on the chosen one's).
+
+**(d) customer_addresses: adding an address never silently replaces the
+default.** A real, previously-shipped bug: `saveDeliveryAddress` (`create_
+order.ts`) unconditionally cleared every existing default and made
+whatever address was just spoken the new one, on EVERY delivery order —
+so a caller's second-ever delivery order to a genuinely different address
+silently stole their saved home address's default status. Fixed: an
+address becomes/stays the default only when (a) the caller explicitly set
+`set_as_default`, (b) it's already the default (correcting its own
+details never demotes it), or (c) the customer has no default yet (their
+first saved address). New `markAddressDefault()` handles the explicit-
+`set_as_default` case for a REUSED (`address_id`) address without
+re-geocoding it. Regression test (`create_order.test.ts`, "a second
+delivery address does NOT steal the caller's existing default") — a
+customer with an existing default placing an order to a different,
+unrelated address asserts the clearing UPDATE never runs and the new row
+inserts with `is_default: false`.
+
+**(e) Tests, summarized** (all passing, listed above inline): template
+structural tests for the fragment on all four verticals + the negative
+case on the other four; a voice-tools test for `lookup_customer` returning
+bounded/flagged multiples; an engine golden conversation
+(`engine.test.ts`, "asks which pet when lookup_customer returns more than
+one saved pet") driving a real two-turn tool-use loop (lookup_customer ->
+two pets -> the model's final reply asking "Max or Bella?"); the
+create_order address_id/radius-check and default-preservation tests above.
+
+**Gates run for this whole task** (all green): `npx biome check --write`
+on every changed path (0 errors, one pre-existing unsafe-fix warning in
+`webhooks-twilio-sms/handler.ts` left as-is, matching CHANNELS-1's own
+documented precedent for that exact file/line); `pnpm -w typecheck`
+(21/21, after rebuilding `packages/canonical-types` and `packages/
+templates` dist output so their Node-consuming parity tests picked up the
+source edits — dist output itself is gitignored, not committed);
+`pnpm run lint` (0 errors — 31 pre-existing warnings across the repo, none
+newly introduced); `pnpm -w test` (21/21 test tasks —
+`supabase/functions` 98 files/893 tests, `apps/web` 79 files/427 tests,
+`packages/templates` 8 files/368 tests, `packages/canonical-types` 44
+tests in the touched file alone, `packages/adapters/retell` 19 files/164
+tests, plus every other package); `apps/web` production build
+(`next build --webpack`, exit 0). `scripts/ci/rls-cross-tenant-probe.ts`
+not run — same standing, previously-disclosed sandbox limitation (no
+Docker/`supabase start` available here) as every prior pass; no schema
+changed by this task either, so nothing new depends on it.
+
+**Not done / explicitly out of scope:** a dedicated automated test for the
+customer-profile page's call-history channel filter (item 3) — code
+confirmed correct by inspection, no test scaffold exists in the repo yet
+for this server-component pattern; a stale/foreign `address_id` on
+`create_order` (deleted address, or belongs to a different caller) is
+left alone rather than guessed at — it degrades to the pre-existing
+"no caller geocode, skip with a warning" path, never invents an address.

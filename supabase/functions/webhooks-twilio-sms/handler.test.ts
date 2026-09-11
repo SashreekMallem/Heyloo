@@ -181,6 +181,54 @@ describe("processInboundSms", () => {
       expect(result.replyBody).toContain("Sure — what day works for you?");
       expect(result.replyBody).toContain("texting with Acme Dental's AI assistant");
       expect(calls.some((c) => c.includes("insert into public.messages_inbound"))).toBe(true);
+
+      // CHANNELS-2 item 7 (delivery-tracking option (b)): the AI reply
+      // synchronously handed back as TwiML must ALSO land a
+      // messages_outbound row so the dashboard thread/delivery status stay
+      // consistent — already 'sent' (the TwiML send already happened),
+      // never 'queued' (must not be re-sent by the outbound queue worker).
+      const outboundCall = calls.find((c) => c.includes("insert into public.messages_outbound"));
+      expect(outboundCall).toBeTruthy();
+      expect(outboundCall).toContain("'sms'");
+      expect(outboundCall).toContain("'text_agent_reply'");
+      expect(outboundCall).toContain("'sent'");
+    });
+
+    it("never inserts a messages_outbound row when the engine reply is suppressed", async () => {
+      const { sql, calls } = makeSql(
+        engineFixtures({
+          "from public.tenants t": [
+            {
+              business_name: "Acme Dental",
+              vertical: "dental",
+              timezone: "America/New_York",
+              a2p_status: "pending_verification",
+              assistant_name: null,
+              transfer_number: null,
+              dynamic_variable_overrides: {},
+              disclosure_line: "disclosure",
+            },
+          ],
+        }),
+      );
+      const fetchImpl = vi.fn();
+      const deps: TextAgentDeps = {
+        sql,
+        logger: silentLogger,
+        anthropicFetch: fetchImpl as unknown as typeof fetch,
+        anthropicApiKey: "key",
+        model: "claude-sonnet-5",
+        appBaseUrl: "https://heyloo.app",
+      };
+
+      const result = await processInboundSms(
+        sql,
+        { ...BASE_SMS, Body: "Can I book a cleaning?" },
+        deps,
+      );
+
+      expect(result.replyBody).toBeUndefined();
+      expect(calls.some((c) => c.includes("insert into public.messages_outbound"))).toBe(false);
     });
 
     it("archives without replying (no AI call) when the tenant's A2P campaign isn't verified", async () => {

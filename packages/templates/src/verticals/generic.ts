@@ -13,6 +13,7 @@ import { withCallOutcomeExtraction } from "../shared/extraction.js";
 import {
   CANCELLATION_POLICY_READOUT_FRAGMENT,
   CONSENT_ASK_FRAGMENT,
+  MULTI_ENTITY_FRAGMENT,
   WAITLIST_OFFER_FRAGMENT,
 } from "../shared/fragments.js";
 import {
@@ -66,6 +67,7 @@ const SYSTEM_PROMPT = buildSystemPrompt(
   CONSENT_ASK_FRAGMENT,
   CANCELLATION_POLICY_READOUT_FRAGMENT,
   WAITLIST_OFFER_FRAGMENT,
+  MULTI_ENTITY_FRAGMENT,
 );
 
 export const GENERIC_TEMPLATE: AgentTemplate = {

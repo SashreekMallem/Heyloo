@@ -117,10 +117,24 @@ export const CreateOrderArgsSchema = z
     fulfillment_type: z.enum(["pickup", "delivery", "dine_in"]),
     delivery_address: z
       .object({
-        street: z.string(),
+        // CHANNELS-2 item 10: when `lookup_customer` returned several saved
+        // addresses and the caller picked one by its short label, the
+        // model passes that saved row's id here INSTEAD of re-speaking the
+        // full street/city/state/zip — `street` is therefore optional when
+        // `address_id` is present (`create_order.ts` resolves the real
+        // address server-side from the saved row). A brand-new address the
+        // caller speaks fresh still requires `street` (enforced by the
+        // canonical `zCreateOrderRequest.check()`, not re-duplicated here).
+        address_id: z.string().optional(),
+        street: z.string().optional(),
         city: z.string().optional(),
         state: z.string().optional(),
         zip: z.string().optional(),
+        // Only meaningful for a caller-confirmed choice (new address or an
+        // existing one) that should become the NEW default — never implied
+        // by merely using/adding an address (CHANNELS-2 item 10(d): adding
+        // an address must never silently replace the default).
+        set_as_default: z.boolean().optional(),
         // lat/lng are never model-supplied — attached server-side from a
         // saved `customer_addresses` geocode (MASTER_SPEC §3.1, T1/Wave-3)
         // when one exists, hence `.passthrough()` rather than a typed field.

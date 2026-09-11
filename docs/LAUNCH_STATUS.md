@@ -1,5 +1,53 @@
 # Launch Status
 
+## Channels follow-up wave: rate limits, calls filters, pricing merge, reply tracking, quiet hours, multi-entity (CHANNELS-2, 2026-09-11)
+
+Follow-up pass over the Channels wave's adversarial-verifier findings
+(`docs/audit/CHANNELS_REQUESTS.md`) plus one owner-priority addition. Full
+per-item detail in `docs/BUILD_NOTES.md`'s `CHANNELS-2` entry; summary:
+
+- **Already fixed by a prior pass, confirmed (not re-fixed):** the
+  web_chat rate-limit bypass, the calls-surfaces channel filter (code —
+  three of four surfaces gained a NEW test, since none existed before),
+  the admin pricing-tab merge-not-replace fix, `incrementTextMessagesOut`
+  correctness (gained a new explicit test), the Messages-list merge bug,
+  and widget voice calls' `channel='web_voice'` tagging.
+- **Real gaps found and fixed:** `verify_phone` had no per-number
+  cooldown (an attacker could still burst many messages at one victim
+  number across fresh conversations) — added a 60s per-number cooldown.
+  The AI's synchronous SMS reply was never mirrored into
+  `messages_outbound`, so the dashboard's delivery-status view had no
+  record of it — fixed (inserted as `status:'sent'`, never `'queued'`).
+  `tenants.quiet_hours` (tenant-configurable) existed but nothing actually
+  read it — the booking-reminder scheduler used a hardcoded 9pm-9am
+  window regardless of what a tenant configured; now reads the real
+  column.
+- **Owner-priority addition (item 10):** multiple saved vehicles/pets/
+  delivery addresses are now handled end to end — `lookup_customer`
+  returns all of them (bounded to 5, most-recent-first, flagged), a new
+  shared prompt fragment teaches every relevant vertical (+ the text
+  agent) the none/one/several rule, `create_order` resolves a
+  caller-chosen saved address by id (fixing a related bug where the
+  delivery-radius check always used the caller's DEFAULT address's
+  geocode regardless of which address was actually being delivered to),
+  and a real bug where adding any new delivery address silently stole an
+  existing default is fixed.
+
+**Gates:** all green — `npx biome check --write`, `pnpm -w typecheck`
+(21/21), `pnpm run lint` (0 errors), `pnpm -w test` (21/21 test tasks —
+`supabase/functions` 98 files/893 tests, `apps/web` 79 files/427 tests,
+`packages/templates` 368 tests, `packages/adapters/retell` 164 tests),
+`apps/web` production build (`next build --webpack`, exit 0). Not run:
+`scripts/ci/rls-cross-tenant-probe.ts` (no Docker/`supabase start` in this
+sandbox, same standing gap every prior pass discloses; no schema changed
+by this task).
+
+**Edge functions changed this pass (redeploy needed):**
+`_shared/text-agent/tool-router.ts`, `_shared/quiet-hours.ts`,
+`job-reminder-scheduler/handler.ts`, `webhooks-twilio-sms/handler.ts`,
+`voice-tools/tools/create_order.ts`, `voice-tools/tools/lookup_customer.ts`,
+`_shared/schemas/voice-tools.ts`. No migrations added or changed.
+
 ## SMS text agent + website widget (CHANNELS-1, 2026-09-11)
 
 **New features shipped:** two new tenant-facing channels, both riding the

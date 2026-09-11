@@ -263,6 +263,26 @@ describe("create_order (MASTER_SPEC §3.0)", () => {
     ).toThrow();
   });
 
+  it("accepts a delivery order referencing a saved address by address_id, with no street (CHANNELS-2 item 10)", () => {
+    expect(
+      zCreateOrderRequest.parse({
+        ...baseOrder,
+        fulfillment_type: "delivery",
+        delivery_address: { address_id: "addr_1" },
+      }),
+    ).toBeTruthy();
+  });
+
+  it("REJECTS a delivery_address with neither address_id nor street", () => {
+    expect(() =>
+      zCreateOrderRequest.parse({
+        ...baseOrder,
+        fulfillment_type: "delivery",
+        delivery_address: { set_as_default: true },
+      }),
+    ).toThrow();
+  });
+
   it("rejects an order with zero items", () => {
     expect(() =>
       zCreateOrderRequest.parse({ ...baseOrder, items: [], fulfillment_type: "pickup" }),

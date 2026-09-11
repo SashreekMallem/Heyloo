@@ -30,6 +30,31 @@ interface CustomerAddressRow {
   is_default: boolean;
 }
 
+/** CHANNELS-2 item 10(a): a caller with a long history shouldn't get every
+ * vehicle/pet/address they've ever mentioned dumped back at them — bound
+ * to a handful, most-recent first, same shape for all three entity kinds. */
+const MAX_RECURRING_ENTRIES = 5;
+
+/**
+ * `customers.metadata.vehicles`/`.pets` are stored OLDEST-first (each
+ * booking's `extractMetadataMerge` appends a new entry to the end,
+ * `create_booking.ts`) — surfaces them MOST-RECENT-first instead, bounded
+ * to `MAX_RECURRING_ENTRIES`, with the most recent one flagged
+ * (`most_recent: true`) so the shared multi-entity template fragment (and
+ * the model) can say "your ... on file" for the single-entry case without
+ * re-deriving which entry is newest. Non-object entries (malformed/legacy
+ * data) pass through unflagged rather than throwing.
+ */
+function boundRecurringEntries(raw: unknown): unknown[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const mostRecentFirst = [...raw].reverse().slice(0, MAX_RECURRING_ENTRIES);
+  return mostRecentFirst.map((entry, i) =>
+    i === 0 && entry !== null && typeof entry === "object" && !Array.isArray(entry)
+      ? { ...(entry as Record<string, unknown>), most_recent: true }
+      : entry,
+  );
+}
+
 export type LookupCustomerResult =
   | { error: "unauthorized_lookup" }
   | { found: false }
@@ -89,21 +114,28 @@ export async function lookupCustomer(
   // `customers.metadata.addresses` — nothing writes that key, so reading it
   // would always be empty. Surfaced the same way `vehicles`/`pets` are:
   // omitted entirely when the customer has none saved.
+  // Bounded to MAX_RECURRING_ENTRIES, most-default/most-recent first
+  // (CHANNELS-2 item 10(a)) — `is_default` already flags the caller's
+  // default address explicitly, so no separate `most_recent` flag is
+  // needed here the way vehicles/pets (below) get one.
   const addressRows = await sql<CustomerAddressRow>`
     select id, label, street, city, state, zip, delivery_instructions, is_default
     from public.customer_addresses
     where tenant_id = ${ctx.tenantId} and customer_id = ${customer.id}
     order by is_default desc, created_at desc
+    limit ${MAX_RECURRING_ENTRIES}
   `;
 
   const metadata = customer.metadata ?? {};
+  const vehicles = boundRecurringEntries(metadata["vehicles"]);
+  const pets = boundRecurringEntries(metadata["pets"]);
   return {
     found: true,
     name: customer.name,
     segment: customer.segment,
     recent_bookings: bookingRows,
-    ...(metadata["vehicles"] !== undefined ? { vehicles: metadata["vehicles"] } : {}),
-    ...(metadata["pets"] !== undefined ? { pets: metadata["pets"] } : {}),
+    ...(vehicles !== undefined ? { vehicles } : {}),
+    ...(pets !== undefined ? { pets } : {}),
     ...(addressRows.length > 0 ? { addresses: addressRows } : {}),
   };
 }

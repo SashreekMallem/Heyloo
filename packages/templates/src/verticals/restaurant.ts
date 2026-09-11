@@ -24,6 +24,7 @@ import { withCallOutcomeExtraction } from "../shared/extraction.js";
 import {
   CANCELLATION_POLICY_READOUT_FRAGMENT,
   CONSENT_ASK_FRAGMENT,
+  MULTI_ENTITY_FRAGMENT,
   WAITLIST_OFFER_FRAGMENT,
 } from "../shared/fragments.js";
 import {
@@ -76,6 +77,7 @@ const SYSTEM_PROMPT = buildSystemPrompt(
   CONSENT_ASK_FRAGMENT,
   CANCELLATION_POLICY_READOUT_FRAGMENT,
   WAITLIST_OFFER_FRAGMENT,
+  MULTI_ENTITY_FRAGMENT,
 );
 
 export const RESTAURANT_TEMPLATE: AgentTemplate = {
@@ -146,11 +148,12 @@ export const RESTAURANT_TEMPLATE: AgentTemplate = {
       id: "collect_delivery_address",
       name: "Collect delivery address",
       prompt_fragment:
-        "Ask for the full delivery address (street, city, state, zip) and read it back. If " +
-        "lookup_customer already returned a saved default address for this caller, confirm it " +
-        'back instead of asking from scratch (e.g. "still to 42 Oak St?"). If create_order ' +
-        "later declines the order as out_of_delivery_radius, apologize and offer pickup " +
-        "instead — never argue about the radius or offer a discount to make up for it.",
+        "Resolve the delivery address per the saved-address rule (none/one/several). If the " +
+        "caller picks a saved address, pass its address_id on create_order — do not re-ask for " +
+        "the full street. If they give a brand-new address, read it back and pass street/city/" +
+        "state/zip instead. If create_order later declines the order as out_of_delivery_radius, " +
+        "apologize and offer pickup instead — never argue about the radius or offer a discount " +
+        "to make up for it.",
       allowed_tools: [],
     },
     {

@@ -317,10 +317,23 @@ export function createOrderTool(): CanonicalTool {
         delivery_address: {
           type: "object",
           properties: {
+            address_id: {
+              type: "string",
+              description:
+                "Set this INSTEAD of street/city/state/zip when the caller picked one of the " +
+                "saved addresses lookup_customer returned by its short label — never re-ask for " +
+                "the full address in that case.",
+            },
             street: { type: "string" },
             city: { type: "string" },
             state: { type: "string" },
             zip: { type: "string" },
+            set_as_default: {
+              type: "boolean",
+              description:
+                "Only true when the caller explicitly said to make this their new default " +
+                "address — never set this just because they used or added an address.",
+            },
           },
         },
         customer: {

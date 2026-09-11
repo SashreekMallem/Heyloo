@@ -38,6 +38,39 @@ describe("disclosure_line is present verbatim and identical across every templat
   }
 });
 
+// CHANNELS-2 item 10(b): the shared none/one/several multi-entity rule
+// (vehicles/pets/addresses) is wired into every vertical whose caller can
+// have more than one recurring entity on file — auto (vehicles), vet
+// (pets), restaurant + generic (delivery addresses) — never all eight, to
+// keep the other verticals' prompts free of an irrelevant rule.
+describe("MULTI_ENTITY_FRAGMENT (saved vehicles/pets/addresses) present on the verticals that need it", () => {
+  const VERTICALS_WITH_RECURRING_ENTITIES = ["auto_repair", "vet", "restaurant", "generic"];
+  // A phrase unique to the fragment (never appears in any other prompt
+  // content), so this also catches accidental duplication/drift.
+  const FRAGMENT_MARKER = "offer them by their short label and ask which one";
+
+  for (const key of VERTICALS_WITH_RECURRING_ENTITIES) {
+    it(`${key} carries the multi-entity rule in its system_prompt`, () => {
+      const def = TEMPLATE_DEFINITIONS.find((d) => d.key === key);
+      expect(def).toBeTruthy();
+      expect(def?.template.system_prompt).toContain(FRAGMENT_MARKER);
+    });
+  }
+
+  it("does not leak onto every other vertical (legal/dental/real_estate/motel have no recurring-entity concept)", () => {
+    const others = TEMPLATE_DEFINITIONS.filter(
+      (d) => !VERTICALS_WITH_RECURRING_ENTITIES.includes(d.key),
+    );
+    expect(others.length).toBeGreaterThan(0);
+    for (const { key, template } of others) {
+      expect(
+        template.system_prompt,
+        `${key} should not carry the multi-entity fragment`,
+      ).not.toContain(FRAGMENT_MARKER);
+    }
+  });
+});
+
 describe("global_intents (emergency/human_request/solicitor) present + reachable from every state", () => {
   const REQUIRED_INTENTS = ["emergency", "human_request", "solicitor"] as const;
 

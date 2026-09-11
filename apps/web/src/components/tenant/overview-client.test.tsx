@@ -1,3 +1,5 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 // overview-client.tsx pulls in `@/i18n/navigation` (next-intl) and a
@@ -12,9 +14,64 @@ vi.mock("@/i18n/navigation", () => ({
   ),
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
 }));
-vi.mock("@/lib/supabase/browser", () => ({ supabaseBrowserClient: { from: vi.fn() } }));
 
-import { usageDailyToTrend } from "./overview-client";
+function chain(result: unknown) {
+  const obj: Record<string, unknown> = {};
+  for (const method of ["select", "eq", "in", "gte", "order", "limit"]) {
+    obj[method] = vi.fn(() => obj);
+  }
+  // biome-ignore lint/suspicious/noThenProperty: intentional thenable mock of a Supabase query-builder chain.
+  (obj as { then: unknown }).then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
+    Promise.resolve(result).then(resolve, reject);
+  return obj;
+}
+
+const callLogsChains: Record<string, unknown>[] = [];
+
+vi.mock("@/lib/supabase/browser", () => ({
+  supabaseBrowserClient: {
+    from: vi.fn((table: string) => {
+      if (table === "usage_daily") return chain({ data: [], error: null });
+      if (table === "call_logs") {
+        const c = chain({ data: [], count: 0, error: null });
+        callLogsChains.push(c);
+        return c;
+      }
+      return chain({ data: [], error: null });
+    }),
+  },
+}));
+
+vi.mock("@/components/tenant/setup-progress-panel", () => ({
+  SetupProgressPanel: () => null,
+}));
+
+import { OverviewClient, usageDailyToTrend } from "./overview-client";
+
+function renderOverview() {
+  const client = new QueryClient();
+  return render(
+    <QueryClientProvider client={client}>
+      <OverviewClient tenantId="t1" hasPhoneNumber={true} hasAnyCallEver={true} liveNumber={null} />
+    </QueryClientProvider>,
+  );
+}
+
+describe("OverviewClient — call_logs channel filtering (CHANNELS-2 item 3)", () => {
+  it("filters both the spam-deflected count and the recent-calls widget to voice channels only", async () => {
+    global.fetch = vi.fn(async () => ({ ok: false }) as Response);
+    renderOverview();
+    await screen.findByText("Recent calls");
+    // Both call_logs queries (spam-deflected count inside the usage query,
+    // and the recent-calls widget) must exclude the text-agent's shadow
+    // rows — see calls-list-client.test.tsx for the same regression.
+    expect(callLogsChains.length).toBeGreaterThanOrEqual(2);
+    for (const c of callLogsChains) {
+      const inMock = c["in"] as ReturnType<typeof vi.fn>;
+      expect(inMock).toHaveBeenCalledWith("channel", ["phone", "web_voice"]);
+    }
+  });
+});
 
 describe("usageDailyToTrend", () => {
   it("maps usage_daily rows to the {label, value} shape TrendChart expects", () => {

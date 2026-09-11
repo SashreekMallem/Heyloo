@@ -120,6 +120,27 @@ export const WAITLIST_OFFER_FRAGMENT =
   "for this, so the request actually lands on the waitlist staff and the " +
   "automatic cancellation-triggered notification can match against it.";
 
+// ---------------------------------------------------------------------------
+// CHANNELS-2 item 10 — multiple saved vehicles/pets/addresses on file
+// (customers.metadata vehicles[]/pets[], customer_addresses). Reused by
+// every vertical whose caller can have more than one of a recurring entity
+// on file (auto/vehicles, vet/pets, restaurant+generic/addresses) AND by
+// the text-agent's own persona (`_shared/text-agent/system-prompt.ts`) —
+// authored once so the none/one/several rule and the identity-fallback
+// (MASTER_SPEC §3.7) tie-in never drift between the two.
+// ---------------------------------------------------------------------------
+
+export const MULTI_ENTITY_FRAGMENT =
+  "lookup_customer can return SEVERAL saved vehicles/pets/addresses, most recent first, each " +
+  "flagged if it's the most recent or default one. None on file: ask and collect fresh. " +
+  'Exactly one: confirm it back briefly instead of asking from scratch ("still the 2019 ' +
+  'Civic?" / "is this for Bella?" / "still to 42 Oak St?"). Several: offer them by their ' +
+  'short label and ask which one ("the Civic or the F-150?" / "Max or Bella?" / "your home ' +
+  'address or your work address?") — never read a full street address back to a caller you ' +
+  "have not verified (MASTER_SPEC §3.7). If the caller mentions one not already on file, " +
+  "capture it as an ADDITIONAL entry, never a replacement — it becomes the new default only " +
+  "if the caller actually says so.";
+
 /** Every general-purpose fragment above, concatenated for convenient embedding into a `system_prompt`. */
 export const QUALITY_AND_COLLECTION_FRAGMENT = [
   SILENCE_HANDLING_FRAGMENT,

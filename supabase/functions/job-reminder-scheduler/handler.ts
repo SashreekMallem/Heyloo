@@ -1,5 +1,5 @@
 import { enqueue, QUEUE_NAMES } from "../_shared/queue.ts";
-import { isQuietHours } from "../_shared/quiet-hours.ts";
+import { isQuietHours, resolveQuietHoursWindow } from "../_shared/quiet-hours.ts";
 import type { SqlClient } from "../_shared/types.ts";
 
 /**
@@ -26,6 +26,10 @@ export interface ReminderCandidateRow {
   consent_call: boolean;
   customer_phone: string | null;
   reminder_window_hours: number;
+  /** `tenants.quiet_hours` jsonb (BACKEND_SPEC.md §13.2) — a proactive
+   * booking reminder is exactly the "unsolicited/proactive" case that
+   * column exists to gate; resolved via `resolveQuietHoursWindow`. */
+  quiet_hours: unknown;
 }
 
 export async function findReminderCandidates(
@@ -38,6 +42,7 @@ export async function findReminderCandidates(
       b.tenant_id,
       b.start_at,
       t.timezone,
+      t.quiet_hours,
       coalesce((c.consent->>'sms')::boolean, false) as consent_sms,
       coalesce((c.consent->>'call')::boolean, false) as consent_call,
       c.phone_e164 as customer_phone,
@@ -63,7 +68,10 @@ export async function scheduleOneReminder(
 ): Promise<"sent" | "deferred_quiet_hours" | "no_consent" | "no_phone"> {
   if (!row.consent_sms && !row.consent_call) return "no_consent";
   if (!row.customer_phone) return "no_phone";
-  if (isQuietHours(now, row.timezone)) return "deferred_quiet_hours";
+  const window = resolveQuietHoursWindow(row.quiet_hours);
+  if (window.enabled && isQuietHours(now, row.timezone, window.startHour, window.endHour)) {
+    return "deferred_quiet_hours";
+  }
 
   const inserted = await sql<{ id: string }>`
     insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload, related_booking_id)

@@ -132,6 +132,49 @@ export async function createOrder(
   `;
   const overrides = configRows[0]?.dynamic_variable_overrides ?? {};
 
+  // CHANNELS-2 item 10: when the caller picked one of SEVERAL saved
+  // addresses (`lookup_customer`'s bounded, labeled list), the model sends
+  // that row's id instead of re-speaking street/city/state/zip — resolve
+  // it here, server-side, to the real saved fields/geocode. Deliberately
+  // scoped by phone (not `customerId`, which doesn't exist yet — the
+  // `customers` upsert runs later) the same way the pre-existing radius-
+  // check query below already is, so this never needs to reorder the
+  // customer-creation step to run early.
+  let resolvedDeliveryAddress: typeof args.delivery_address = args.delivery_address;
+  let resolvedGeocode: { x: number; y: number } | null = null;
+  if (args.fulfillment_type === "delivery" && args.delivery_address?.address_id) {
+    const savedRows = await sql<{
+      street: string;
+      city: string | null;
+      state: string | null;
+      zip: string | null;
+      geocode: { x: number; y: number } | null;
+    }>`
+      select ca.street, ca.city, ca.state, ca.zip, ca.geocode
+      from public.customer_addresses ca
+      join public.customers c on c.id = ca.customer_id
+      where c.tenant_id = ${ctx.tenantId} and c.phone_e164 = ${phone}
+        and ca.id = ${args.delivery_address.address_id}
+      limit 1
+    `;
+    const saved = savedRows[0];
+    if (saved) {
+      resolvedDeliveryAddress = {
+        address_id: args.delivery_address.address_id,
+        street: saved.street,
+        ...(saved.city ? { city: saved.city } : {}),
+        ...(saved.state ? { state: saved.state } : {}),
+        ...(saved.zip ? { zip: saved.zip } : {}),
+        ...(args.delivery_address.set_as_default ? { set_as_default: true } : {}),
+      };
+      resolvedGeocode = saved.geocode;
+    }
+    // A stale/foreign address_id (deleted, or belongs to a different
+    // caller) simply falls through with the id kept but no resolved
+    // fields — never invents an address, and the radius check below
+    // degrades to its existing "no caller geocode" skip-with-warning path.
+  }
+
   if (args.fulfillment_type === "delivery") {
     const minOrderCents =
       typeof overrides["min_order_cents"] === "number" ? overrides["min_order_cents"] : 0;
@@ -152,16 +195,22 @@ export async function createOrder(
     ) {
       // `customer_addresses.geocode` is a native `point` — postgres.js
       // returns it as `{x, y}` (x=lng, y=lat) per the Postgres point wire
-      // format.
-      const addressRows = await sql<{ geocode: { x: number; y: number } | null }>`
+      // format. Prefer the address the caller actually CHOSE (resolved
+      // above) over always defaulting to their saved default — a repeat
+      // caller with multiple addresses picking a non-default one must be
+      // checked against THAT address's radius, not their default's.
+      const callerGeocode =
+        resolvedGeocode ??
+        (
+          await sql<{ geocode: { x: number; y: number } | null }>`
         select ca.geocode
         from public.customer_addresses ca
         join public.customers c on c.id = ca.customer_id
         where c.tenant_id = ${ctx.tenantId} and c.phone_e164 = ${phone} and ca.geocode is not null
         order by ca.is_default desc, ca.created_at desc
         limit 1
-      `;
-      const callerGeocode = addressRows[0]?.geocode;
+      `
+        )[0]?.geocode;
 
       if (callerGeocode) {
         const within = isWithinRadius(
@@ -221,7 +270,7 @@ export async function createOrder(
         allergies, special_instructions
       ) values (
         ${ctx.tenantId}, ${customerId}, ${JSON.stringify(priced)}::jsonb, ${args.fulfillment_type},
-        ${args.delivery_address ? JSON.stringify(args.delivery_address) : null}::jsonb,
+        ${resolvedDeliveryAddress ? JSON.stringify(resolvedDeliveryAddress) : null}::jsonb,
         ${subtotalCents}, ${taxCents}, ${deliveryFeeCents}, ${totalCents}, ${ctx.callLogId}, ${idempotencyKey},
         ${args.allergies && args.allergies.length > 0 ? args.allergies : null},
         ${args.special_instructions ?? null}
@@ -278,13 +327,43 @@ export async function createOrder(
     `;
   }
 
-  if (
-    args.fulfillment_type === "delivery" &&
-    args.delivery_address?.street &&
-    customerId &&
-    deps?.geocode
-  ) {
-    await saveDeliveryAddress(sql, ctx, logger, customerId, args.delivery_address, deps.geocode);
+  if (args.fulfillment_type === "delivery" && customerId) {
+    const addressId = args.delivery_address?.address_id;
+    const setAsDefault = args.delivery_address?.set_as_default === true;
+    if (addressId) {
+      // Reused a saved address (resolved above) — nothing new to persist,
+      // only promote it to the default if the caller explicitly asked.
+      // A stale/unresolved address_id is left alone rather than guessed at
+      // (see the resolution block's own comment).
+      if (setAsDefault) {
+        await markAddressDefault(sql, ctx, customerId, addressId);
+      }
+    } else if (deps?.geocode) {
+      const street = args.delivery_address?.street;
+      if (street) {
+        // CHANNELS-2 item 10(d): a freshly spoken address is always saved
+        // as an ADDITIONAL entry (or updated in place if it matches an
+        // existing one by street) — it becomes the default only when this
+        // is the customer's first saved address at all, or the caller
+        // explicitly asked (`set_as_default`). See `saveDeliveryAddress`'s
+        // own docstring — this used to unconditionally clear and steal
+        // every existing default, a real bug this fixes.
+        await saveDeliveryAddress(
+          sql,
+          ctx,
+          logger,
+          customerId,
+          {
+            street,
+            city: args.delivery_address?.city,
+            state: args.delivery_address?.state,
+            zip: args.delivery_address?.zip,
+          },
+          deps.geocode,
+          setAsDefault,
+        );
+      }
+    }
   }
 
   const messageRows = await sql<{ id: string }>`
@@ -319,13 +398,44 @@ export async function createOrder(
 }
 
 /**
- * restaurant.md Finding B4: upserts the spoken delivery address onto
- * `customer_addresses`, matching an existing row by (customer, street —
- * case/whitespace-insensitive) and marking it (or a newly inserted row)
- * the caller's new default, so the NEXT order's radius check and
- * `lookup_customer`'s saved-address surface both have real data. Wrapped
- * so a geocode-provider or DB hiccup here never fails the order that's
- * already been confirmed and inserted above.
+ * CHANNELS-2 item 10(d): a caller explicitly setting an existing saved
+ * address as their new default — clears every other default first (a
+ * customer has at most one default address at a time), then marks this
+ * one. Never called just because an address was used/added; only on an
+ * explicit `set_as_default`.
+ */
+async function markAddressDefault(
+  sql: SqlClient,
+  ctx: CallContext,
+  customerId: string,
+  addressId: string,
+): Promise<void> {
+  await sql`
+    update public.customer_addresses
+    set is_default = false
+    where tenant_id = ${ctx.tenantId} and customer_id = ${customerId} and is_default = true
+  `;
+  await sql`
+    update public.customer_addresses
+    set is_default = true
+    where tenant_id = ${ctx.tenantId} and customer_id = ${customerId} and id = ${addressId}
+  `;
+}
+
+/**
+ * restaurant.md Finding B4 / CHANNELS-2 item 10(d): upserts a freshly
+ * SPOKEN delivery address onto `customer_addresses`, matching an existing
+ * row by (customer, street — case/whitespace-insensitive) so a caller who
+ * repeats the same address updates it in place rather than accumulating
+ * duplicates; a genuinely different address is always saved as an
+ * ADDITIONAL entry, never a replacement of any existing one. Becomes the
+ * customer's default only when (a) they have no default address yet (this
+ * is their first saved address), or (b) `setAsDefault` — the caller
+ * explicitly said to make this their new default. Otherwise an existing
+ * default is left completely untouched (this function used to
+ * unconditionally clear and steal it on every single delivery order — a
+ * real bug this fixes). Wrapped so a geocode-provider or DB hiccup here
+ * never fails the order that's already been confirmed and inserted above.
  */
 async function saveDeliveryAddress(
   sql: SqlClient,
@@ -339,6 +449,7 @@ async function saveDeliveryAddress(
     zip?: string | undefined;
   },
   geocode: { fetchImpl: GeocodeFetch; apiKey: string },
+  setAsDefault: boolean,
 ): Promise<void> {
   try {
     const geocoded = await geocodeAddress(geocode.fetchImpl, geocode.apiKey, address);
@@ -351,18 +462,32 @@ async function saveDeliveryAddress(
       return;
     }
 
-    const existing = await sql<{ id: string }>`
-      select id from public.customer_addresses
+    const existing = await sql<{ id: string; is_default: boolean }>`
+      select id, is_default from public.customer_addresses
       where tenant_id = ${ctx.tenantId} and customer_id = ${customerId}
         and lower(trim(street)) = lower(trim(${address.street}))
       limit 1
     `;
+    const existingIsAlreadyDefault = existing[0]?.is_default === true;
 
-    await sql`
-      update public.customer_addresses
-      set is_default = false
+    const defaultRows = await sql<{ id: string }>`
+      select id from public.customer_addresses
       where tenant_id = ${ctx.tenantId} and customer_id = ${customerId} and is_default = true
+      limit 1
     `;
+    const hasAnyDefault = !!defaultRows[0];
+    // This row becomes/stays the default when: the caller asked for it,
+    // it's already the default (correcting its own details never demotes
+    // it), or there simply isn't a default yet (first saved address).
+    const shouldBeDefault = setAsDefault || existingIsAlreadyDefault || !hasAnyDefault;
+
+    if (shouldBeDefault && !existingIsAlreadyDefault) {
+      await sql`
+        update public.customer_addresses
+        set is_default = false
+        where tenant_id = ${ctx.tenantId} and customer_id = ${customerId} and is_default = true
+      `;
+    }
 
     if (existing[0]) {
       await sql`
@@ -371,7 +496,7 @@ async function saveDeliveryAddress(
             state = ${address.state ?? null},
             zip = ${address.zip ?? null},
             geocode = point(${geocoded.point.lng}, ${geocoded.point.lat}),
-            is_default = true
+            is_default = ${shouldBeDefault}
         where id = ${existing[0].id}
       `;
     } else {
@@ -381,7 +506,7 @@ async function saveDeliveryAddress(
         ) values (
           ${ctx.tenantId}, ${customerId}, ${address.street},
           ${address.city ?? null}, ${address.state ?? null}, ${address.zip ?? null},
-          point(${geocoded.point.lng}, ${geocoded.point.lat}), true
+          point(${geocoded.point.lng}, ${geocoded.point.lat}), ${shouldBeDefault}
         )
       `;
     }

@@ -2267,6 +2267,32 @@ request/response through `api-text-chat`), so it only ever gets a
 text-agent/engine.ts`'s `handleInboundText` — not a follow-up item, already
 built and verified.
 
+**AI SMS reply delivery tracking (CHANNELS-2, option (b))**: an inbound
+SMS the text agent replies to is answered SYNCHRONOUSLY, inline in the
+Twilio webhook's own TwiML `<Message>` response (`webhooks-twilio-sms/
+index.ts`) — Twilio does not hand this webhook response back a
+`provider_message_id`/SID for that reply (one is only ever available
+later, if at all, via a separate Twilio status-callback webhook, not built
+here). Without a `messages_outbound` row, that reply was invisible to
+both the dashboard thread's delivery-status column and to anything reading
+`messages_outbound` as the SMS delivery-status source of truth above —
+`text_conversation_messages` alone (an `author='ai'` row, always written)
+records that the AI replied, never whether/how the SMS itself was
+delivered. Fixed: `webhooks-twilio-sms/handler.ts`'s `processInboundSms`
+now also inserts a `messages_outbound` row for every reply it actually
+sends — `channel:'sms'`, `template_key:'text_agent_reply'`,
+`status:'sent'` (never `'queued'`: the send already happened via TwiML, so
+this row must never also be picked up and re-sent by the
+`messages_outbound` queue worker), `sent_at: now()`, `payload:{body:
+<reply text>}`, `provider_message_id` left `null` (not available
+synchronously, per above — a future status-callback handler could
+backfill it onto this same row by matching `recipient`+`created_at`, out
+of scope here). Never inserted when the engine suppresses the reply
+(`sent: false` — human handoff, opt-out, A2P-pending, rate-limited).
+Regression tests: `webhooks-twilio-sms/handler.test.ts` (asserts the
+insert's `channel`/`template_key`/`status` on a real AI reply, and its
+absence when the reply is suppressed).
+
 RLS: tenant members `SELECT` their own tenant's rows (platform admins,
 every tenant's). Two narrow tenant-write paths back the human-takeover
 flow: `UPDATE` on `text_conversations` (role `owner|admin|member`, the only
@@ -2300,7 +2326,29 @@ sweep is a natural future extension of `fn_cron_internal_retention_sweep`
 |---|---|---|---|
 | `text_agent_enabled` | boolean | `false` | master switch, independent of voice |
 | `text_agent_persona` | jsonb | `{}` | tone/persona overrides; shape owned by the text-agent runtime, same "DB stores it, the runtime Zod-validates it" posture as `agent_configs.dynamic_variable_overrides` |
-| `quiet_hours` | jsonb | `{}` | `{"start":"21:00","end":"09:00","enabled":true}`, tenant-tz local; the text agent's own after-hours gate — deliberately distinct from `business_hours` (booking availability) |
+| `quiet_hours` | jsonb | `{}` | `{"start":"21:00","end":"09:00","enabled":true}`, tenant-tz local; gates PROACTIVE/unsolicited outbound text only (see below) — deliberately distinct from `business_hours` (booking availability) |
+
+**Quiet hours — what this column actually gates (CHANNELS-2, ratified
+decision)**: `quiet_hours` never delays a text-agent REPLY to a
+conversation the customer themselves started — SMS/web_chat, any hour —
+because that is a direct response inside an exchange the customer
+initiated, not unsolicited outbound (TCPA's quiet-hours concern is
+specifically unsolicited contact; answering someone who just texted in is
+not that). `_shared/text-agent/engine.ts`'s `handleInboundText` therefore
+never reads this column at all. It gates only genuinely PROACTIVE sends —
+today, `job-reminder-scheduler/handler.ts`'s booking-reminder SMS
+(`scheduleOneReminder`), which now reads `tenants.quiet_hours` (via
+`_shared/quiet-hours.ts`'s `resolveQuietHoursWindow`) instead of the
+hardcoded 9pm-9am `isQuietHours` default it used before this fix — the
+tenant-configurable column existed but nothing actually read it, so every
+tenant silently got the same fixed window regardless of what they'd
+configured. `resolveQuietHoursWindow` falls back to the platform default
+(9pm-9am, enabled) for an unconfigured tenant (`{}`, the column default)
+or a malformed field, and only skips gating entirely when a tenant
+explicitly sets `enabled: false`. Any future proactive text send
+(campaigns, etc.) must read this same column the same way — never
+hardcode a window, and never gate a reply to a customer-initiated
+conversation.
 | `widget_enabled` | boolean | `false` | master switch for the embeddable widget |
 | `widget_settings` | jsonb | `{"allowed_origins":[],"accent":null,"position":"bottom-right","greeting":null,"modes":["chat"]}` | `allowed_origins` gates embed pages (checked server-side against `Origin` at session-mint time); `modes` is a subset of `["voice","chat"]` |
 | `widget_public_key` | text, unique | `null` | opaque, rotatable, **client-visible** identifier embedded in the tenant's widget script tag — not itself a secret; see `WIDGET_TOKEN_SECRET` below for the actual session-signing key |

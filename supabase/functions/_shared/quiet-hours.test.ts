@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isQuietHours, localHour } from "./quiet-hours.ts";
+import { isQuietHours, localHour, resolveQuietHoursWindow } from "./quiet-hours.ts";
 
 const TZ = "America/New_York"; // EST = UTC-5 in January (no DST)
 
@@ -35,5 +35,44 @@ describe("isQuietHours (default 9pm-9am tenant-local, MASTER_SPEC §3.6)", () =>
     // 1pm-2pm local quiet window, non-wrapping.
     expect(isQuietHours(new Date("2026-01-15T18:30:00.000Z"), TZ, 13, 14)).toBe(true);
     expect(isQuietHours(new Date("2026-01-15T20:00:00.000Z"), TZ, 13, 14)).toBe(false);
+  });
+});
+
+describe("resolveQuietHoursWindow (tenants.quiet_hours jsonb, BACKEND_SPEC.md §13.2)", () => {
+  it("falls back to enabled/21/9 for the unconfigured default ({})", () => {
+    expect(resolveQuietHoursWindow({})).toEqual({ enabled: true, startHour: 21, endHour: 9 });
+  });
+
+  it("falls back to enabled/21/9 for null/undefined", () => {
+    expect(resolveQuietHoursWindow(null)).toEqual({ enabled: true, startHour: 21, endHour: 9 });
+    expect(resolveQuietHoursWindow(undefined)).toEqual({
+      enabled: true,
+      startHour: 21,
+      endHour: 9,
+    });
+  });
+
+  it("parses a tenant's custom start/end HH:MM into hours", () => {
+    expect(resolveQuietHoursWindow({ start: "22:00", end: "08:00", enabled: true })).toEqual({
+      enabled: true,
+      startHour: 22,
+      endHour: 8,
+    });
+  });
+
+  it("honors enabled: false, ignoring any start/end also present", () => {
+    expect(resolveQuietHoursWindow({ start: "22:00", end: "08:00", enabled: false })).toEqual({
+      enabled: false,
+      startHour: 22,
+      endHour: 8,
+    });
+  });
+
+  it("falls back to the default hour for a malformed start/end rather than throwing", () => {
+    expect(resolveQuietHoursWindow({ start: "not-a-time", end: 5 })).toEqual({
+      enabled: true,
+      startHour: 21,
+      endHour: 9,
+    });
   });
 });

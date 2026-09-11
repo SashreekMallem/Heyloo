@@ -35,6 +35,7 @@ import {
   ESCALATION_TRIGGERS_FRAGMENT,
   GIVE_UP_LADDER_FRAGMENT,
   IDENTITY_FALLBACK_FRAGMENT,
+  MULTI_ENTITY_FRAGMENT,
   WAITLIST_OFFER_FRAGMENT,
 } from "./fragments.js";
 
@@ -122,5 +123,6 @@ export function buildTextSystemPrompt(vertical: Vertical): string {
     WAITLIST_OFFER_FRAGMENT,
     ESCALATION_TRIGGERS_FRAGMENT,
     GIVE_UP_LADDER_FRAGMENT,
+    MULTI_ENTITY_FRAGMENT,
   ].join("\n\n");
 }

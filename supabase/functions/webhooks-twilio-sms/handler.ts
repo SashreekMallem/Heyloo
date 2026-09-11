@@ -204,5 +204,20 @@ export async function processInboundSms(
     phoneE164: fromNumber,
     message: sms.Body ?? "",
   });
-  return engineResult.sent && engineResult.reply ? { replyBody: engineResult.reply } : {};
+  if (!engineResult.sent || !engineResult.reply) return {};
+
+  // Delivery-tracking option (b) (docs/spec/BACKEND_SPEC.md §13): the sync
+  // TwiML `<Message>` reply above is what actually sends the AI's SMS back
+  // to the customer, but Twilio doesn't hand this webhook response a SID
+  // for it (that's only ever delivered later, if at all, via a status
+  // callback) — without a row here, the dashboard thread and the tenant's
+  // delivery-status view have no record this reply was ever sent at all.
+  // Insert it as already `'sent'` (never `'queued'`): the real send already
+  // happened via TwiML, so this must never also be picked up by the
+  // `messages_outbound` queue worker and sent a second time.
+  await sql`
+    insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload, status, sent_at)
+    values (${tenantId}, 'sms', ${fromNumber}, 'text_agent_reply', ${JSON.stringify({ body: engineResult.reply })}::jsonb, 'sent', now())
+  `;
+  return { replyBody: engineResult.reply };
 }

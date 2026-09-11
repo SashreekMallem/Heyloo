@@ -532,3 +532,141 @@ describe("resilience", () => {
     expect(result.reply).toContain("having trouble");
   });
 });
+
+// CHANNELS-2 item 10(e): a golden conversation proving the multi-entity
+// rule actually drives a real engine turn — the model looks up the caller,
+// sees TWO saved pets, and asks which one rather than guessing/assuming.
+describe("golden conversation: choosing between multiple saved pets", () => {
+  it("asks which pet when lookup_customer returns more than one saved pet", async () => {
+    vi.mocked(loadOrCreateSmsConversation).mockResolvedValue(
+      conversation({ disclosureSent: true }),
+    );
+    vi.mocked(resolveTenantTextContext).mockResolvedValue({ ...TENANT_CONTEXT, vertical: "vet" });
+    vi.mocked(dispatchTextTool).mockResolvedValueOnce({
+      resultText: JSON.stringify({
+        found: true,
+        name: "Jordan",
+        segment: "returning",
+        recent_bookings: [],
+        pets: [
+          { name: "Bella", species: "dog", most_recent: true },
+          { name: "Max", species: "cat" },
+        ],
+      }),
+      isError: false,
+    });
+    const { fetchImpl } = fakeAnthropicFetch([
+      toolUseBlock("lookup_customer", { phone: "+15551234567" }),
+      textBlock("Sure — is this for Max or Bella?"),
+    ]);
+
+    const result = await handleInboundText(baseDeps(fetchImpl), {
+      channel: "sms",
+      tenantId: "t1",
+      phoneE164: "+15551234567",
+      message: "I need to book a check-up",
+    });
+
+    expect(result.sent).toBe(true);
+    expect(result.reply).toContain("Max or Bella?");
+    expect(dispatchTextTool).toHaveBeenCalledWith(
+      expect.anything(),
+      "lookup_customer",
+      expect.any(Object),
+    );
+  });
+});
+
+// CHANNELS-2 item 5: `incrementTextMessagesOut` must fire exactly once per
+// AI reply actually SENT, on both channels, and never on a suppressed send
+// (opted-out, human-handoff, A2P-pending, rate-limited).
+describe("golden conversation: incrementTextMessagesOut metering", () => {
+  it("increments exactly once for a successful SMS reply", async () => {
+    vi.mocked(loadOrCreateSmsConversation).mockResolvedValue(
+      conversation({ disclosureSent: true }),
+    );
+    const { fetchImpl } = fakeAnthropicFetch([textBlock("Sure, what time works?")]);
+
+    const result = await handleInboundText(baseDeps(fetchImpl), {
+      channel: "sms",
+      tenantId: "t1",
+      phoneE164: "+15551234567",
+      message: "need to reschedule",
+    });
+
+    expect(result.sent).toBe(true);
+    expect(incrementTextMessagesOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("increments exactly once for a successful web_chat reply", async () => {
+    vi.mocked(loadWebChatConversationByToken).mockResolvedValue(
+      conversation({ channel: "web_chat", phoneE164: null, disclosureSent: true }),
+    );
+    const { fetchImpl } = fakeAnthropicFetch([textBlock("Sure, I can help with that.")]);
+
+    const result = await handleInboundText(baseDeps(fetchImpl), {
+      channel: "web_chat",
+      tenantId: "t1",
+      sessionToken: "tok_1",
+      message: "hi",
+    });
+
+    expect(result.sent).toBe(true);
+    expect(incrementTextMessagesOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("never increments when the reply is suppressed (opted-out, human-handoff, A2P-pending, or rate-limited)", async () => {
+    // opted-out (SMS)
+    vi.mocked(loadOrCreateSmsConversation).mockResolvedValue(
+      conversation({ disclosureSent: true }),
+    );
+    vi.mocked(isSmsOptedOut).mockResolvedValue(true);
+    let result = await handleInboundText(baseDeps(fakeAnthropicFetch([]).fetchImpl), {
+      channel: "sms",
+      tenantId: "t1",
+      phoneE164: "+15551234567",
+      message: "still there?",
+    });
+    expect(result.sent).toBe(false);
+    vi.mocked(isSmsOptedOut).mockResolvedValue(false);
+
+    // human handoff
+    vi.mocked(loadOrCreateSmsConversation).mockResolvedValue(conversation({ status: "human" }));
+    result = await handleInboundText(baseDeps(fakeAnthropicFetch([]).fetchImpl), {
+      channel: "sms",
+      tenantId: "t1",
+      phoneE164: "+15551234567",
+      message: "hello?",
+    });
+    expect(result.sent).toBe(false);
+
+    // A2P pending
+    vi.mocked(loadOrCreateSmsConversation).mockResolvedValue(
+      conversation({ disclosureSent: true }),
+    );
+    vi.mocked(resolveTenantTextContext).mockResolvedValue({
+      ...TENANT_CONTEXT,
+      a2pStatus: "pending_verification",
+    });
+    result = await handleInboundText(baseDeps(fakeAnthropicFetch([]).fetchImpl), {
+      channel: "sms",
+      tenantId: "t1",
+      phoneE164: "+15551234567",
+      message: "book me in",
+    });
+    expect(result.sent).toBe(false);
+    vi.mocked(resolveTenantTextContext).mockResolvedValue(TENANT_CONTEXT);
+
+    // rate limited
+    vi.mocked(textAgentRateLimiter.allow).mockReturnValue(false);
+    result = await handleInboundText(baseDeps(fakeAnthropicFetch([]).fetchImpl), {
+      channel: "sms",
+      tenantId: "t1",
+      phoneE164: "+15551234567",
+      message: "one more",
+    });
+    expect(result.sent).toBe(false);
+
+    expect(incrementTextMessagesOut).not.toHaveBeenCalled();
+  });
+});
