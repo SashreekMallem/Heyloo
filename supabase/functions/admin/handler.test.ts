@@ -596,8 +596,15 @@ describe("routeAdminRequest — cac group", () => {
 });
 
 describe("routeAdminRequest — templates group", () => {
+  // `id` is a real uuid here (ADMIN+PREVIEW-R6 / DESIGN-4: agent_templates.id
+  // is a uuid primary key, `vertical` a separate text column) — every real
+  // caller (cockpit/templates/page.tsx's row-click, the editor's GET, and
+  // its "Run publish gate" POST) sends the *vertical slug* as the path's
+  // `:key` segment, never this id, so most of the tests below exercise the
+  // by-vertical resolution path a bare `where id = $1` query could never
+  // satisfy.
   const templateRow = {
-    id: "tpl1",
+    id: "3f6e6b1a-2c1e-4f0a-9b1b-8f2e6b6f2a11",
     vertical: "auto",
     version: 1,
     compile_target: "conversation_flow",
@@ -618,11 +625,45 @@ describe("routeAdminRequest — templates group", () => {
     expect(result.status).toBe(200);
   });
 
-  it("returns 501 for publish when Retell deps aren't configured", async () => {
-    const { sql } = makeSql({ "from public.agent_templates where id": [templateRow] });
+  it("resolves GET /admin-templates/:vertical by vertical slug (not id) — the real caller shape", async () => {
+    const { sql, calls } = makeSql({
+      "from public.agent_templates where vertical": [templateRow],
+    });
+    const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-templates/auto" }), logger);
+    expect(result).toEqual({ status: 200, body: { template: templateRow } });
+    expect(
+      calls.some((c) => c.text.includes("where vertical") && !c.text.includes("where id")),
+    ).toBe(true);
+  });
+
+  it("still resolves GET /admin-templates/:id by id when the key is a real uuid", async () => {
+    const { sql, calls } = makeSql({
+      "from public.agent_templates where id": [templateRow],
+    });
     const result = await routeAdminRequest(
       sql,
-      baseCtx({ method: "POST", path: "/admin-templates/tpl1/publish" }),
+      baseCtx({ path: `/admin-templates/${templateRow.id}` }),
+      logger,
+    );
+    expect(result).toEqual({ status: 200, body: { template: templateRow } });
+    expect(calls.some((c) => c.text.includes("where id"))).toBe(true);
+  });
+
+  it("404s GET /admin-templates/:vertical for a vertical with no template rows at all", async () => {
+    const { sql } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-templates/nonexistent_vertical" }),
+      logger,
+    );
+    expect(result).toEqual({ status: 404, body: { error: "template_not_found" } });
+  });
+
+  it("returns 501 for publish when Retell deps aren't configured", async () => {
+    const { sql } = makeSql({ "from public.agent_templates where vertical": [templateRow] });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ method: "POST", path: "/admin-templates/auto/publish" }),
       logger,
     );
     expect(result.status).toBe(501);
@@ -630,11 +671,11 @@ describe("routeAdminRequest — templates group", () => {
 
   it("refuses to publish when the compiled output fails the disclosure gate", async () => {
     const { sql } = makeSql({
-      "from public.agent_templates where id": [{ ...templateRow, disclosure_line: "" }],
+      "from public.agent_templates where vertical": [{ ...templateRow, disclosure_line: "" }],
     });
     const result = await routeAdminRequest(
       sql,
-      baseCtx({ method: "POST", path: "/admin-templates/tpl1/publish" }),
+      baseCtx({ method: "POST", path: "/admin-templates/auto/publish" }),
       logger,
       {
         retell: {
@@ -647,8 +688,8 @@ describe("routeAdminRequest — templates group", () => {
     expect(result).toEqual({ status: 422, body: { error: "disclosure_gate_failed" } });
   });
 
-  it("publishes end to end: compiles, creates the flow + agent, publishes, and flips is_active", async () => {
-    const { sql, calls } = makeSql({ "from public.agent_templates where id": [templateRow] });
+  it("publishes end to end via the vertical slug the UI actually sends: compiles, creates the flow + agent, publishes, and flips is_active by the resolved uuid", async () => {
+    const { sql, calls } = makeSql({ "from public.agent_templates where vertical": [templateRow] });
     let callIndex = 0;
     const fetchImpl = (async (url: string) => {
       callIndex += 1;
@@ -665,7 +706,7 @@ describe("routeAdminRequest — templates group", () => {
     }) as never;
     const result = await routeAdminRequest(
       sql,
-      baseCtx({ method: "POST", path: "/admin-templates/tpl1/publish" }),
+      baseCtx({ method: "POST", path: "/admin-templates/auto/publish" }),
       logger,
       { retell: { fetchImpl, apiKey: "key", toolWebhookUrl: "https://x/voice-tools" } },
     );
@@ -673,13 +714,17 @@ describe("routeAdminRequest — templates group", () => {
       status: 200,
       body: {
         published: true,
-        template_id: "tpl1",
+        template_id: templateRow.id,
         retell_agent_id: "agent_1",
         retell_flow_id: "flow_1",
       },
     });
     expect(callIndex).toBe(3);
-    expect(calls.some((c) => c.text.includes("is_active = true"))).toBe(true);
+    // The two `is_active` flips must key off the *resolved* uuid, never the
+    // raw "auto" path segment — this is exactly the bug being guarded.
+    expect(
+      calls.some((c) => c.text.includes("is_active = true") && c.values.includes(templateRow.id)),
+    ).toBe(true);
     expect(calls.some((c) => c.text.includes("insert into public.admin_actions"))).toBe(true);
   });
 });

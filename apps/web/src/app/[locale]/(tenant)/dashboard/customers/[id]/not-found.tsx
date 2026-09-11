@@ -12,7 +12,7 @@ export default function CustomerNotFound() {
       action={
         <Link
           href="/dashboard/customers"
-          className="text-sm font-medium text-primary-hover underline underline-offset-2"
+          className="text-sm font-medium text-accent-text underline underline-offset-2"
         >
           Back to customers
         </Link>

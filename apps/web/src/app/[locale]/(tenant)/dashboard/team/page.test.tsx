@@ -31,6 +31,16 @@ describe("TeamPage", () => {
     expect(await screen.findByText("No teammates yet")).toBeInTheDocument();
   });
 
+  it("gives the Role select trigger an accessible name via the visible Label", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ members: [] })),
+    );
+    renderPage();
+    await screen.findByText("No teammates yet");
+    expect(screen.getByRole("combobox", { name: "Role" })).toBeInTheDocument();
+  });
+
   it("renders real teammates once loaded", async () => {
     vi.stubGlobal(
       "fetch",

@@ -25,7 +25,11 @@ export default async function BlogIndexPage({ params }: { params: Promise<{ loca
             >
               <div className="space-y-1.5">
                 <p className="font-mono text-micro text-muted-foreground">{post.date}</p>
-                <h2 className="text-h4 font-semibold transition-colors group-hover:text-primary">
+                {/* group-hover:text-accent-text, not text-primary: 18px/semibold
+                    falls just short of WCAG's "large text" bold threshold
+                    (14pt/18.66px), so the base accent-500's 3.57:1 doesn't
+                    clear AA's 4.5:1 for normal text here (DESIGN-4). */}
+                <h2 className="text-h4 font-semibold transition-colors group-hover:text-accent-text">
                   {post.title}
                 </h2>
                 <p className="text-small text-pretty text-muted-foreground">{post.excerpt}</p>

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { BpsInput } from "./bps-input.js";
+import { BpsInput, PercentInput } from "./bps-input.js";
 
 describe("BpsInput", () => {
   it("displays a bps value as its equivalent percentage", () => {
@@ -20,5 +20,11 @@ describe("BpsInput", () => {
     render(<BpsInput value={500} onChange={(bps) => (latest = bps)} />);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "" } });
     expect(latest).toBeUndefined();
+  });
+});
+
+describe("PercentInput (BpsInput alias, DESIGN-4)", () => {
+  it("is the same conversion, under the customer-facing name", () => {
+    expect(PercentInput).toBe(BpsInput);
   });
 });

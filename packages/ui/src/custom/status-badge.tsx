@@ -1,6 +1,12 @@
 import { Badge, type BadgeProps } from "../primitives/badge.js";
 
-export type StatusBadgeVariant = "call-class" | "booking" | "ticket" | "tenant" | "margin";
+export type StatusBadgeVariant =
+  | "call-class"
+  | "booking"
+  | "ticket"
+  | "tenant"
+  | "margin"
+  | "invoice";
 
 const CALL_CLASS_COLOR: Record<string, BadgeProps["variant"]> = {
   new_booking: "success",
@@ -48,6 +54,23 @@ const MARGIN_COLOR: Record<string, BadgeProps["variant"]> = {
   negative: "destructive",
 };
 
+// `billing_invoices.status`'s real check constraint (`draft`, `finalized`,
+// `paid`, `past_due`, `void` — supabase/migrations/20260907131000_money.sql)
+// — not Stripe's own `open`/`uncollectible` invoice-status names, which this
+// table's schema never actually stores (DESIGN-4: billing/page.tsx's
+// invoice-status pill was routed through `variant="tenant"` — the tenant
+// *lifecycle* palette, whose keys — trialing/active/past_due/paused/
+// canceled — share only "past_due" with an invoice's real status set, so
+// draft/finalized/paid/void invoices all silently fell through to the
+// same neutral "outline" default).
+const INVOICE_COLOR: Record<string, BadgeProps["variant"]> = {
+  draft: "outline",
+  finalized: "secondary",
+  paid: "success",
+  past_due: "warning",
+  void: "destructive",
+};
+
 const LABELS: Record<string, string> = {
   new_booking: "New booking",
   question_faq: "FAQ question",
@@ -74,7 +97,9 @@ function resolve(
           ? TICKET_COLOR
           : variant === "tenant"
             ? TENANT_COLOR
-            : MARGIN_COLOR;
+            : variant === "invoice"
+              ? INVOICE_COLOR
+              : MARGIN_COLOR;
   return {
     color: table[value] ?? "outline",
     label: LABELS[value] ?? value.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase()),
@@ -87,7 +112,7 @@ export interface StatusBadgeProps {
   className?: string;
 }
 
-/** Enum → color-coded badge: 12 call classes, booking lifecycle, ticket status, tenant status, margin health (FRONTEND_SPEC.md §1.3). */
+/** Enum → color-coded badge: 12 call classes, booking lifecycle, ticket status, tenant status, invoice status, margin health (FRONTEND_SPEC.md §1.3). */
 export function StatusBadge({ variant, value, className }: StatusBadgeProps) {
   const { color, label } = value
     ? resolve(variant, value)

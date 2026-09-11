@@ -1,5 +1,75 @@
 # Launch Status
 
+## Design: accent text contrast, touch targets, currency inputs, template-by-vertical fix (DESIGN-4, 2026-09-10)
+
+Round-7 punch list of 7 items (plus a mid-task addition investigating a
+reported tenant-Overview preview-mode loading-skeleton). Several items
+were already fixed by round 6/DESIGN-3 and only needed re-verification;
+real changes this pass: a dedicated `--accent-text` token (`packages/ui`)
+decoupling "the ember accent used as text/links" from `Button`'s hover-fill
+token, applied everywhere the accent was still used as normal-weight
+text; the Team page's Role `<Select>` properly `aria-labelledby`'d to its
+visible `<Label>` instead of a duplicate `aria-label`; `docs/
+DESIGN_SYSTEM.md` now documents `Button`'s existing 44px/36px
+breakpoint-based touch-target split (the split itself was already
+correct, just undocumented); `CurrencyInput`/`PercentInput` aliases added
+for the existing `CentsInput`/`BpsInput` (already used throughout Vertical
+Details, previously untested for the cents component specifically — now
+is); a **real, previously-flagged production bug fixed**:
+`/cockpit/templates/[vertical]` — `agent_templates.id` is a uuid, `.
+vertical` a separate text column, and the admin edge function's
+GET-by-id AND publish routes both did a literal `where id = <vertical
+slug>`, meaning the templates editor could never actually load or publish
+a template by vertical in production (flagged, not fixed, by
+`ADMIN+PREVIEW-R6`/DESIGN-3 as out of that pass's file ownership) — fixed
+with a by-vertical resolution helper in `supabase/functions/admin/
+handler.ts`; and a proper `StatusBadge` `"invoice"` variant (another
+DESIGN-3-flagged gap) replacing the mismatched `"tenant"`-lifecycle
+palette on `billing/page.tsx`'s invoice-status pills.
+
+Investigating the mid-task Overview report found the reported symptom
+does NOT reproduce under this project's own documented, tested
+preview-mode workflow (`UI_PREVIEW_MODE=1 next dev`) — verified with a
+real headless-Chromium screenshot showing fully-resolved KPI numbers,
+trend chart, and recent-calls data — but surfaced a separate, real,
+previously-undiscovered bug while checking whether the report instead
+reflected a production-shaped `next build --webpack` run: UI Preview
+Mode's build-time auth-session-mock aliasing silently never took effect
+under webpack at all (only under Turbopack/`next dev`), because this
+repo's `@/*` tsconfig path mapping gets resolved away by Next's SWC
+compiler before webpack's own `resolve.alias` ever sees the original
+specifier. Fixed in `apps/web/src/lib/preview/preview-mode-aliases.ts`
+(extracted out of `next.config.ts` for direct unit-testability) by also
+aliasing the resolved real absolute source path, confirmed to actually
+land via an instrumented before/after build. A full `next build --webpack
+&& next start` end-to-end screenshot of `/preview/dashboard` could not be
+completed in this sandbox (an unrelated build-worker OOM at ~130/174
+static pages, plus a Next.js 16.3.4 framework-internal crash on the
+built-in `/_global-error` page that reproduces even scoped away from this
+app's own code) — the required, unaffected gate (a plain `next build
+--webpack`, no `UI_PREVIEW_MODE`) passes clean regardless. Full detail:
+`docs/BUILD_NOTES.md`'s `DESIGN-4` section.
+
+**Gates:** all green — `npx biome check --write` (0 errors on touched
+paths, same 4 pre-existing intentional `!important` warnings as every
+prior round); `pnpm -w typecheck` (18/18); `pnpm run lint` (0 errors);
+`pnpm -w test` (`apps/web` 64 files/354 tests, `packages/ui` 19
+files/97 tests, `supabase/functions/admin` 80/80, up from DESIGN-3's
+63/351 + 17/73); `apps/web` production build (`next build --webpack`,
+exit 0, run both before and after this pass's changes). No build output,
+`.env*`, or screenshot/PNG artifacts in the tree.
+
+**New secrets needed:** none.
+
+**Owner to-do, added by this pass:** none blocking. The tenant-dashboard
+83/100 design-review score from DESIGN-3 is unchanged (not this pass's
+brief to chase new findings there); the UI-Preview-Mode webpack-build OOM
+and the `/_global-error` framework crash noted above are sandbox/
+Next.js-version fragility, not application bugs — worth a memory-tuned
+CI runner or a `next` upgrade if a genuine `next build --webpack &&
+next start` screenshot pipeline is wanted for UI Preview Mode reviews
+going forward, but out of this pass's scope to chase further.
+
 ## Design: round-6 shared-component fixes, tenant/admin polish, preview completeness (DESIGN-3, 2026-09-10)
 
 Integrated the uncommitted round-6 design wave (full per-cluster detail in

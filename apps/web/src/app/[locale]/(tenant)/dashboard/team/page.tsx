@@ -102,12 +102,16 @@ export default function TeamPage() {
               />
             </div>
             <div className="space-y-1">
-              <Label>Role</Label>
+              <Label id="invite-role-label">Role</Label>
               <Select value={role} onValueChange={(v) => setRole(v as "admin" | "member")}>
-                {/* The visible <Label> above isn't wired to this Radix trigger via
-                    htmlFor/aria-labelledby, so it has no accessible name on its own
-                    (axe button-name, critical — round-final tenant review). */}
-                <SelectTrigger className="w-32" aria-label="Role">
+                {/* aria-labelledby, not a second aria-label string: the
+                    visible <Label> above is the trigger's real accessible
+                    name now, not a duplicated copy of it (DESIGN-4 —
+                    previously the visible <Label> had no htmlFor/
+                    aria-labelledby wiring at all, so the trigger had no
+                    accessible name of its own; axe button-name, critical,
+                    round-final tenant review). */}
+                <SelectTrigger className="w-32" aria-labelledby="invite-role-label">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

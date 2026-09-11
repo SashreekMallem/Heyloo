@@ -55,3 +55,11 @@ export function BpsInput({ value, onChange, placeholder, disabled, id, ref }: Bp
     </div>
   );
 }
+
+/**
+ * Customer-facing alias (DESIGN-4): same rationale as `CurrencyInput` in
+ * `cents-input.tsx` — "a percent input", not the basis-points storage
+ * detail underneath.
+ */
+export const PercentInput = BpsInput;
+export type PercentInputProps = BpsInputProps;

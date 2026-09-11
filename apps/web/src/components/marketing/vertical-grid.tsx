@@ -26,7 +26,11 @@ export function VerticalGrid() {
               {vertical.heroStat}
             </p>
           </div>
-          <span className="mt-auto inline-flex items-center gap-1 text-small font-medium text-primary opacity-0 transition-opacity duration-(--duration-fast) group-hover:opacity-100 group-focus-visible:opacity-100">
+          <span
+            // text-accent-text, not text-primary: normal-weight text at the
+            // base accent-500 falls below WCAG AA's 4.5:1 (DESIGN-4).
+            className="mt-auto inline-flex items-center gap-1 text-small font-medium text-accent-text opacity-0 transition-opacity duration-(--duration-fast) group-hover:opacity-100 group-focus-visible:opacity-100"
+          >
             See what it handles
             <ArrowRight className="size-3.5" />
           </span>

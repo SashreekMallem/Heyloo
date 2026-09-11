@@ -138,6 +138,19 @@
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
+  /* Dedicated TEXT/LINK accent token (DESIGN-4) — distinct from
+   * `--primary`/`--primary-hover` (a BUTTON's fill/hover-fill, coincidentally
+   * the same accent-600 value) so "the ember accent used as text" is its
+   * own named concept, not a reused button state. `--primary` (accent-500)
+   * is for large/bold/filled UI only — normal-weight text/links at accent-500
+   * measure as low as 3.42-3.57:1 on `--surface`/`--card` (axe color-contrast,
+   * "serious"), below WCAG AA's 4.5:1. `--accent-text` resolves to accent-600,
+   * which clears AA in both themes (contrast.test.ts guards this pairing) —
+   * use `text-accent-text` for every text/link usage of the accent (call
+   * transcript speaker labels, "See what it handles" links, active nav
+   * labels, prose anchors, …); keep `bg-primary`/`text-primary` for filled
+   * buttons and large/display-sized accent moments only. */
+  --color-accent-text: var(--accent-text);
 
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
@@ -223,6 +236,7 @@
 
   --primary: var(--accent-500);
   --primary-hover: var(--accent-600);
+  --accent-text: var(--accent-600);
   --primary-foreground: oklch(0.16 0.02 35);
   --secondary: var(--neutral-100);
   --secondary-foreground: var(--neutral-800);
@@ -298,6 +312,7 @@
 
     --primary: var(--accent-500);
     --primary-hover: var(--accent-600);
+    --accent-text: var(--accent-600);
     --primary-foreground: oklch(0.16 0.02 35);
     --secondary: var(--neutral-200);
     --secondary-foreground: var(--neutral-900);
@@ -357,6 +372,7 @@
 
   --primary: var(--accent-500);
   --primary-hover: var(--accent-600);
+  --accent-text: var(--accent-600);
   --primary-foreground: oklch(0.16 0.02 35);
   --secondary: var(--neutral-200);
   --secondary-foreground: var(--neutral-900);
@@ -447,6 +463,7 @@ body {
   --popover-foreground: var(--neutral-900);
   --primary: var(--accent-500);
   --primary-hover: var(--accent-600);
+  --accent-text: var(--accent-600);
   --primary-foreground: oklch(0.16 0.02 35);
   --secondary: var(--neutral-100);
   --secondary-foreground: var(--neutral-800);
@@ -493,6 +510,7 @@ body {
   --popover-foreground: var(--neutral-900);
   --primary: var(--accent-500);
   --primary-hover: var(--accent-600);
+  --accent-text: var(--accent-600);
   --primary-foreground: oklch(0.16 0.02 35);
   --secondary: var(--neutral-200);
   --secondary-foreground: var(--neutral-900);

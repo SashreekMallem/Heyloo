@@ -42,7 +42,7 @@ const columns: ColumnDef<Invoice, unknown>[] = [
   {
     accessorKey: "status",
     header: "Status",
-    cell: ({ row }) => <StatusBadge variant="tenant" value={row.original.status} />,
+    cell: ({ row }) => <StatusBadge variant="invoice" value={row.original.status} />,
   },
 ];
 
@@ -163,7 +163,7 @@ export default function BillingPage() {
                 {row.period_start} – {row.period_end}
               </p>
               <p className="font-medium">{formatCentsUSD(row.total_cents)}</p>
-              <StatusBadge variant="tenant" value={row.status} className="mt-1" />
+              <StatusBadge variant="invoice" value={row.status} className="mt-1" />
             </div>
           )}
         />

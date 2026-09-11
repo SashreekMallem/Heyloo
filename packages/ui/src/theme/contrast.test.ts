@@ -97,3 +97,26 @@ describe("primary-hover-as-link-text contrast (WCAG AA, text-primary-hover call 
     }
   }
 });
+
+// `--accent-text` (DESIGN-4): the dedicated text/link accent token — every
+// text/link call site that colors itself with the accent (`text-accent-text`)
+// must resolve through this token, never bare `--primary`/`--accent-500`
+// (which is only AA-safe for large/bold text, not normal weight — see the
+// describe block above, which this one mirrors but against the token's own
+// name rather than `--primary-hover`, since the two happen to share a value
+// today but are conceptually independent — a future button-hover retune
+// must not silently drag text contrast down with it).
+describe("accent-text token contrast (WCAG AA, text-accent-text call sites)", () => {
+  for (const theme of THEMES) {
+    const block = extractBlock(theme.selector);
+
+    for (const surfaceToken of ["background", "surface", "card"]) {
+      it(`${theme.name}: accent-text vs ${surfaceToken} background clears ${AA_NORMAL_TEXT}:1`, () => {
+        const fg = parseOklch(resolveVar(block, "accent-text"));
+        const bg = parseOklch(resolveVar(block, surfaceToken));
+        const ratio = contrastRatio(bg, fg);
+        expect(ratio).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+      });
+    }
+  }
+});

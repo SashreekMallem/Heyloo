@@ -182,6 +182,25 @@ most cases. New this pass:
 No existing component prop/API was renamed — this was a re-theme + a few
 additive components, not a rewrite.
 
+### Touch targets (`Button`'s `default`/`lg` sizes)
+
+`Button`'s `default` size is `h-11` (44px) below the `lg` breakpoint
+(1024px) and `lg:h-9` (36px) at desktop/mouse widths — a responsive class
+on the size itself, not a `(pointer: coarse)` media query, because it's
+the simplest thing that's actually true here: every mobile/tablet
+viewport this app ships (390–1023px) is a touch surface, and `lg`+ is
+where a mouse-driven desktop layout starts, so the two coincide and a
+breakpoint is one fewer moving part than a pointer query for the same
+result. `size="lg"` is `h-11` unconditionally (already meets 44px at every
+width, so it doesn't need the responsive split); `size="sm"` (`h-8`) and
+`size="icon"` (`size-9`) are deliberately-compact affordances for dense
+inline contexts (a table-row action, an input-adjacent icon button) and
+are exempt — never use `size="sm"`/`size="icon"` for a page's primary CTA
+or a sticky bottom mobile action bar. Every page must read correctly
+unprefixed at 390px with ≥44px touch targets (see Breakpoints above) —
+`Button`'s `default`/`lg` sizes are how that guarantee is met without
+also bloating the reviewed 36px desktop density.
+
 ## UI Preview Mode
 
 `process.env.UI_PREVIEW_MODE === "1" && process.env.NODE_ENV !== "production"`

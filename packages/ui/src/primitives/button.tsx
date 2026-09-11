@@ -14,13 +14,15 @@ export const buttonVariants = cva(
         outline: "border border-border bg-background hover:bg-secondary",
         secondary: "bg-secondary text-secondary-foreground hover:opacity-90",
         ghost: "hover:bg-secondary",
-        // text-primary-hover (not text-primary): at normal link weight/size
+        // text-accent-text (not text-primary): at normal link weight/size
         // on a light background, the base accent-500 measures 3.57:1 — below
         // WCAG AA's 4.5:1 for normal text (axe color-contrast, round-final
-        // tenant review). accent-600 (the same token bg-primary's hover
-        // state already uses) clears AA in both themes (~4.99:1 light,
-        // ~7.73:1 dark) while staying the same hue.
-        link: "text-primary-hover underline-offset-4 hover:underline",
+        // tenant review). The dedicated text/link accent token — accent-600
+        // under the hood, same value bg-primary's hover state uses, but a
+        // separate semantic token so a button-hover retune can't silently
+        // drag link-text contrast down with it (DESIGN-4) — clears AA in
+        // both themes (~4.99:1 light, ~7.73:1 dark).
+        link: "text-accent-text underline-offset-4 hover:underline",
       },
       size: {
         // 44px (h-11) below the `lg` (1024px) breakpoint — the default size

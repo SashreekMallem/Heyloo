@@ -137,11 +137,12 @@ export function OrderDetailClient({ order }: { order: OrderDetailData }) {
                 {" — "}
                 <Link
                   href={`/dashboard/messages/${encodeURIComponent(order.customerPhone)}`}
-                  // text-primary-hover, not text-primary: base accent-500
+                  // text-accent-text, not text-primary: base accent-500
                   // measures 3.57:1 for this normal-weight link, below WCAG
                   // AA's 4.5:1 (axe color-contrast, round-final tenant
-                  // review). accent-600 clears AA in both themes.
-                  className="text-primary-hover underline underline-offset-2"
+                  // review). The dedicated accent-text token (accent-600)
+                  // clears AA in both themes (DESIGN-4).
+                  className="text-accent-text underline underline-offset-2"
                 >
                   Message
                 </Link>

@@ -7697,3 +7697,246 @@ after the ezyVet fixture-date fix above); `apps/web` production build
 (`next build --webpack`) — exit 0; the preview-mode-guard tests
 (`lib/preview/guard.test.ts`) pass. No PNG/scratch files or build output
 staged.
+
+## DESIGN-4 — accent text contrast, touch targets, currency inputs, template-by-vertical fix (2026-09-10, session_012xvcAnjqsMbPqitErDJQbR)
+
+Scope: `apps/web/**`, `packages/ui/**`, `supabase/functions/admin/**`. Task
+brief listed 7 items plus a mid-task addition (item 8, the tenant Overview
+preview-mode loading-skeleton report). Several of the 7 had already been
+fixed by round 6/`DESIGN-3` before this pass started; re-verified each
+rather than assuming, and only changed what was actually still broken.
+
+**1 — dedicated accent-text token**: added `--accent-text` (resolves to
+`accent-600`, same value `--primary-hover` already used, in `:root`, both
+dark blocks, and the two `/preview/system` `.heyloo-theme-*` scoped
+panels) bound to `--color-accent-text` → `text-accent-text` in
+`packages/ui/src/theme/globals.css`, decoupling "the accent used as text"
+from "a button's hover fill" as its own semantic concept per the task
+brief, even though the two happen to share a value today. Added a new
+`describe` block in `packages/ui/src/theme/contrast.test.ts` computing
+the ratio against `background`/`surface`/`card` in all 3 theme blocks
+(mirrors the existing `primary-hover-as-link-text` block, which is
+unchanged and still passes). Moved every real text/link use of the accent
+onto the new token: `TranscriptViewer`'s caller-speaker label, `Button`'s
+`link` variant, `MobileTabBar`'s active-tab label, `customer-detail-
+client`/`order-detail-client`'s "Message this customer" links, the 3
+tenant `not-found.tsx` pages, `bookings/page.tsx`, `vertical-grid.tsx`'s
+"See what it handles" link, `blog/page.tsx`'s title-hover link, and the
+`legal-page.tsx`/`blog/[slug]/page.tsx` prose `[&_a]` anchor color (all
+previously `text-primary-hover` or bare `text-primary`, both audited via
+grep). Left every icon-only `text-primary`/`text-accent` use alone
+(`VerticalIcon`/`Sparkles`/`Loader2` spinners, `RadioGroup`'s indicator
+dot, the admin/partner shell header icons) — these are graphical UI
+objects subject to WCAG's 3:1 non-text threshold, not 4.5:1, and
+`accent-500` already clears that.
+
+**2 — Team page Role `<Select>` accessible name**: was `aria-label="Role"`
+directly on the trigger (a round-6 fix that worked but duplicated the
+adjacent visible `<Label>Role</Label>` text as a second, invisible copy).
+Wired the two together properly instead: `id="invite-role-label"` on the
+`<Label>`, `aria-labelledby="invite-role-label"` on the `SelectTrigger` —
+matches the task brief's literal ask (htmlFor/id or aria-labelledby) and
+removes the duplication. Audited every other `SelectTrigger` under
+`(tenant)/dashboard/**` (`agent/language/page.tsx`: a bare `aria-label`
+with no adjacent visible label to associate instead — already correct as
+written; `setup/resources/page.tsx`: shadcn's `FormLabel`/`FormControl`
+pattern already wires `htmlFor`/`id` correctly, confirmed `<button>` is a
+labelable element per the HTML spec so `<label for>` on a Radix
+`SelectTrigger` button is a real, valid association) — no other gaps
+found. New test in `team/page.test.tsx`:
+`screen.getByRole("combobox", { name: "Role" })`.
+
+**3 — Button touch targets**: already `h-11` (44px) below `lg` (1024px),
+`lg:h-9` (36px) at desktop — a round-6 fix, kept as the "cleanest
+approach" (a breakpoint split, not a `(pointer: coarse)` media query,
+since every viewport this app ships below `lg` is touch and `lg`+ is
+where the mouse-driven desktop layout starts, so the two coincide and a
+breakpoint is one fewer moving part for the same result). What was
+missing: `docs/DESIGN_SYSTEM.md` never actually documented this decision
+— added a "Touch targets" subsection under Components explaining the
+breakpoint choice and which sizes are exempt (`sm`/`icon`, dense inline
+contexts only, never a page's primary CTA). Audited for a "sticky mobile
+primary action" bar per the brief's explicit check — none exists in the
+app today (`MobileTabBar` is bottom navigation, not a primary-action bar;
+grepped for `fixed…bottom-0` and `sticky` app-wide) — nothing to fix
+there. Added 2 new `button.test.tsx` cases asserting the default size's
+class list contains `h-11`/`lg:h-9` and that `size="lg"` stays `h-11`
+unconditionally, as the regression guard the brief asked for (no existing
+snapshot tests to update — none exist for `Button`).
+
+**4 — vertical-details currency/percent inputs**: `CentsInput`/`BpsInput`
+(round 6) already fully replace every raw cents/bps `<Input
+type="number">` in `agent/vertical-details/page.tsx` with friendly-labeled
+dollar/percent controls (labels already jargon-free — "Late-cancellation
+fee (optional)", "Delivery fee", "Sales tax rate", no "(cents)"/"(basis
+points)" left anywhere) — re-verified, nothing left to change on the form
+itself. Two real gaps: no `cents-input.test.tsx` existed at all (only
+`bps-input.test.tsx` did) — added one covering both conversion directions
+plus the empty/non-numeric-input cases, mirroring `BpsInput`'s existing
+test shape. And the task brief's literal naming ask — "a CurrencyInput /
+PercentInput" — didn't exist under those names; added `CurrencyInput`
+(`cents-input.tsx`) and `PercentInput` (`bps-input.tsx`) as exported
+aliases of the existing components (same conversion, same tests via
+`expect(CurrencyInput).toBe(CentsInput)`) rather than renaming the
+existing, already-correct, already-tested components and churning every
+call site for a naming preference alone.
+
+**5 — preview messages-detail link**: `routes.ts` already points
+`/preview/dashboard/messages/[phone]` at the real seeded thread
+(`%2B15125551000`, round 6) — re-verified, the registry test
+(`routes.test.ts`) still green, no change needed.
+
+**6 — REAL bug, `/cockpit/templates/[vertical]` (`ADMIN+PREVIEW-R6`,
+found-but-not-fixed there per that pass's own scope note)**: confirmed
+still present. `TemplatesListPage` always links to `/cockpit/templates/
+${row.vertical}` (a text slug, e.g. `"auto_repair"`) and the editor's GET
++ its "Run publish gate" POST both send that same slug straight through
+to `admin-templates/:key` — but `handleTemplates`'s GET-by-id AND
+`.../publish` branches both did a literal `where id = ${templateId}`
+against `agent_templates.id`, a real `uuid` primary key (`vertical` a
+separate `text` column, `unique(vertical, version)`, multiple rows per
+vertical across published versions) — every real call from this page
+either 500s on `invalid input syntax for type uuid` or, worse for
+publish, silently updates/queries the wrong row. Fixed in
+`supabase/functions/admin/handler.ts` with a shared `resolveTemplateByKey`
+helper: a genuine uuid (regex-checked) still resolves by `id` (kept for
+any future direct-by-id caller); anything else — every real caller today
+— resolves to that vertical's highest-`version` row (deliberately NOT
+filtered to `is_active`, unlike the task brief's literal example query:
+an `is_active`-only filter would make a vertical's very first,
+not-yet-published draft permanently invisible to the one page that's
+supposed to let an admin open and publish it — chosen after finding this
+chicken-and-egg gap, documented here per CLAUDE.md Rule 4 rather than
+following the example query verbatim). Used for both the GET-by-id branch
+(the editor's initial load) and the `.../publish` branch (previously the
+*exact same* `where id = ${templateId}` bug, undiscovered by the earlier
+pass since it only audited the GET branch — publish would have keyed its
+two `is_active` flip statements and its Retell `agent_name` off the raw
+vertical slug too). `PATCH` (unreachable from any real caller today) is
+left strictly id-based on purpose — it edits one specific version row,
+where "resolve by vertical" would be the wrong semantics. No frontend
+change was needed: the page already sends the vertical slug in both
+places, which is now handled correctly; chose in-place resolution over a
+dedicated `admin-templates/by-vertical/:vertical` route so nothing on the
+`apps/web` side had to change. 5 new `handler.test.ts` cases (resolves by
+vertical; still resolves a genuine uuid by id; 404s for a vertical with no
+rows; the disclosure-gate-failure and full publish-success cases updated
+to send the vertical slug like the real caller does, with the
+publish-success case asserting the two `is_active` updates key off the
+*resolved* uuid, not the raw slug — the bug this guards).
+
+**7 — billing invoice status pill**: `billing/page.tsx` routed both the
+desktop column and the mobile-card invoice-status pill through
+`StatusBadge variant="tenant"` — the tenant *lifecycle* palette
+(`trialing`/`active`/`past_due`/`paused`/`canceled`), which shares only
+`past_due` with `billing_invoices.status`'s real value set. Added a
+proper `"invoice"` `StatusBadgeVariant` to `packages/ui/src/custom/
+status-badge.tsx`, colored against the REAL check constraint
+(`supabase/migrations/20260907131000_money.sql`: `draft`/`finalized`/
+`paid`/`past_due`/`void` — not Stripe's own `open`/`uncollectible` naming
+the task brief's example list used, which this table's schema never
+actually stores; adapted the variant to the schema that's actually
+queried rather than the brief's example verbatim, documented per Rule 4):
+`draft` outline, `finalized` secondary, `paid` success, `past_due`
+warning, `void` destructive. New `status-badge.test.tsx` (didn't exist for
+this component at all before) covering all 5 labels, a
+distinct-not-shared-default color check, and the unrecognized-value
+fallback.
+
+**8 — tenant Overview "loading skeletons" report + a real UI-Preview-Mode
+build bug found investigating it**: Reproduced and root-caused with a
+real headless-Chromium run (Playwright, cached browsers under
+`/opt/pw-browsers`, no network fetch needed) against a live `UI_PREVIEW_
+MODE=1 next dev` server. `/preview/dashboard` at 1440 renders completely
+correctly — Calls today/Bookings today/Minutes used/Spam deflected KPI
+tiles, the 14-day trend chart, and all 8 seeded "Recent calls" rows all
+resolved with real numbers, zero console errors. `OverviewClient`'s
+`usage_daily`/`call_logs` queries and `SetupProgressPanel`'s own
+`data.steps` shape-guard (a round-3 finding, already fixed) are correct
+as written — no change needed to either, and no reproduction of the
+reported symptom under the project's own documented, tested preview-mode
+activation path (`docs/DESIGN_SYSTEM.md`/`next.config.ts`'s own comments:
+"confirmed by running `UI_PREVIEW_MODE=1 next dev`").
+
+Investigating whether the report instead reflected a genuine `next build
+--webpack && next start` run (this repo's actual `build`/`start` scripts)
+surfaced a real, separate, previously-undiscovered bug: **UI Preview
+Mode's build-time module aliasing never took effect under webpack at
+all** — confirmed by instrumenting `next.config.ts`'s `webpack()` hook
+during a real `UI_PREVIEW_MODE=1 next build --webpack`: the alias table
+it received was exactly correct (`@/lib/auth/require-tenant-session` →
+the mock file, etc.), yet the compiled server bundle's own stack traces
+for `(tenant)`/`(admin)`/`(preview)` routes showed the REAL, cookies()-
+throwing `src/lib/auth/require-tenant-session.ts`/`require-admin-
+session.ts` executing, never the mock. Root cause: this repo's tsconfig
+maps `@/*` → `./src/*`, and Next's SWC compiler resolves that mapping to
+a real, on-disk relative import specifier DURING transpilation — BEFORE
+webpack's own `resolve.alias` ever sees the original `@/lib/auth/<name>`
+string at all, making that alias key a silent no-op. Turbopack doesn't
+have this problem (confirmed working, per above) because its
+`resolveAlias` is consulted against the pre-rewrite specifier — the
+project's own doc comment only ever claimed to have "confirmed" the
+config via `next dev` (Turbopack), never a real webpack build. Fixed in
+`apps/web/src/lib/preview/preview-mode-aliases.ts` (`previewModeAliases`,
+extracted out of `next.config.ts` itself so it's unit-testable without
+importing `@sentry/nextjs`/`next-intl` — confirmed importing
+`next.config.ts` directly under Vitest throws inside `@sentry/
+server-utils`'s bundler-plugin resolution, an unrelated import-time side
+effect): the webpack branch now ALSO aliases the already-resolved real
+absolute source path (`src/lib/auth/<name>.ts`) — the form webpack's
+resolver actually receives post-SWC-rewrite — to the same mock target,
+alongside the pre-existing (harmless, but ineffective on its own) `@/...`
+specifier alias. Verified the fix directly: re-running the same
+instrumented `next build --webpack UI_PREVIEW_MODE=1` afterward produced
+ZERO `"Static generation failed due to dynamic usage ... reason: cookies"`
+messages for any `require*Session` call (there were dozens before, one
+per real/preview route) — the mocks are now genuinely used. New
+`next.config.test.ts` unit-tests `previewModeAliases` directly for both
+bundler kinds (turbopack: single `@/...`-keyed entry; webpack: BOTH the
+`@/...` key and the resolved-real-source-path key, both pointing at the
+same mock target — the exact pairing this bug needed).
+
+Not fully resolved: a complete, successful `next build --webpack
+UI_PREVIEW_MODE=1 && next start` end-to-end screenshot of `/preview/
+dashboard` (the literal ask) could not be completed in this session —
+the build's own "Generating static pages" phase OOMs in this sandbox
+partway through its ~174 static pages (each of 3 parallel build-worker
+child processes hits Node's default ~2GB heap ceiling; `NODE_OPTIONS
+--max-old-space-size` on the parent process doesn't propagate to them),
+and, separately, a scoped single-route build (`--debug-build-paths`, to
+dodge the OOM) hit an apparent Next.js 16.3.4 framework bug of its own on
+the built-in `/_global-error` page (`useContext(LayoutRouterContext)`
+returning `null`) unrelated to anything in this app's own code or to the
+aliasing fix above (the ORIGINAL, unfixed build also failed early on
+`/_not-found`/`/en/preview/cockpit/outreach` before ever reaching
+`/dashboard`, with the identical opaque digest, so this class of
+build-time fragility predates this pass and isn't specific to Overview).
+The required gate (`apps/web` production build, `next build --webpack`,
+no `UI_PREVIEW_MODE`) is unaffected and passes clean (exit 0, confirmed
+both before and after every change in this pass). The aliasing fix itself
+is real, verified, and committed regardless of whether the full
+build+start round-trip completes in this sandbox — it is the actual root
+cause behind webpack-mode UI Preview Mode never using its own fixture
+data, and the fix is unit-tested directly.
+
+**Gates**: `npx biome check --write` on every path touched (0 errors, the
+same 4 pre-existing `!important` warnings in the `prefers-reduced-motion`
+block noted by every prior round — left as-is, same call made every time);
+`pnpm -w typecheck` (18/18 packages); `pnpm run lint` (0 errors,
+pre-existing warnings elsewhere unchanged); `pnpm -w test` — `apps/web`
+64 files/354 tests (up from DESIGN-3's 63/351: +1 file/+2 tests for the
+new `next.config.test.ts`, +1 test for the team-page Select accessible
+name), `packages/ui` 19 files/97 tests (up from 17/73: new
+`status-badge.test.tsx` (7 tests) and `cents-input.test.tsx` (5 tests,
+including the `CurrencyInput` alias check), +1 test each in
+`bps-input.test.tsx` (`PercentInput` alias) and `button.test.tsx` (the 2
+touch-target regression tests), +9 tests from the new `contrast.test.ts`
+describe block — 3 theme blocks × 3 surface tokens), `supabase/functions/
+admin` 80/80 (+3 new GET-by-vertical/by-id/404 template-resolution tests
+over this session's own pre-fix baseline, plus the existing publish/
+disclosure-gate tests updated in place to send the vertical slug the real
+caller actually sends) — all green; `apps/web` production build (`next
+build --webpack`,
+no `UI_PREVIEW_MODE`) exit 0, run twice (before and after every change in
+this pass) to isolate the item-8 finding above from the required gate.
+No PNG/scratch files, `.next`, or other build output staged.

@@ -51,3 +51,13 @@ export function CentsInput({ value, onChange, placeholder, disabled, id, ref }: 
     </div>
   );
 }
+
+/**
+ * Customer-facing alias (DESIGN-4): every real call site (vertical-details'
+ * fee/deposit/delivery fields) wants "a currency input", not the storage
+ * detail that it happens to hold cents underneath — same component, same
+ * cents<->dollars conversion, just named for what the person filling out
+ * the form is looking at rather than for the wire representation.
+ */
+export const CurrencyInput = CentsInput;
+export type CurrencyInputProps = CentsInputProps;

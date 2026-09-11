@@ -1210,6 +1210,43 @@ function toCompilerTemplate(row: Record<string, unknown>): CompilerAgentTemplate
   };
 }
 
+// A real uuid (agent_templates.id's actual type) vs. anything else, which
+// every real caller of admin-templates/:key sends instead — see
+// resolveTemplateByKey below.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * `admin-templates/:key`'s `:key` segment is a vertical *slug* (e.g.
+ * `"auto_repair"`) in every real caller — `cockpit/templates/page.tsx`
+ * always links to `/cockpit/templates/${row.vertical}`, and the editor's
+ * GET + its "Run publish gate" POST both send that same slug straight
+ * through — but `agent_templates.id` is a real `uuid` primary key, a
+ * separate `vertical` text column (`unique (vertical, version)`, multiple
+ * rows per vertical across versions). A literal `where id = $1` given a
+ * vertical slug always errors or 404s in production (documented
+ * docs/BUILD_NOTES.md ADMIN+PREVIEW-R6 — a real bug, not preview-only).
+ * Resolve either shape: a genuine uuid still looks up by id (kept for any
+ * future direct-by-id caller); anything else resolves to that vertical's
+ * highest-`version` row (not filtered to `is_active` — the editor must
+ * still be able to open and publish a vertical's very first, not-yet-
+ * active draft, which an `is_active`-filtered query would never surface).
+ */
+async function resolveTemplateByKey(
+  sql: SqlClient,
+  key: string,
+): Promise<Record<string, unknown> | undefined> {
+  if (UUID_RE.test(key)) {
+    return (
+      await sql<Record<string, unknown>>`select * from public.agent_templates where id = ${key}`
+    )[0];
+  }
+  return (
+    await sql<Record<string, unknown>>`
+      select * from public.agent_templates where vertical = ${key} order by version desc limit 1
+    `
+  )[0];
+}
+
 async function handleTemplates(
   sql: SqlClient,
   ctx: AdminRequestContext,
@@ -1227,11 +1264,7 @@ async function handleTemplates(
   }
 
   if (ctx.method === "GET" && templateId && parts[2] === undefined) {
-    const row = (
-      await sql<
-        Record<string, unknown>
-      >`select * from public.agent_templates where id = ${templateId}`
-    )[0];
+    const row = await resolveTemplateByKey(sql, templateId);
     if (!row) return { status: 404, body: { error: "template_not_found" } };
     return { status: 200, body: { template: row } };
   }
@@ -1344,12 +1377,13 @@ async function handleTemplates(
   }
 
   if (ctx.method === "POST" && templateId && parts[2] === "publish") {
-    const row = (
-      await sql<
-        Record<string, unknown>
-      >`select * from public.agent_templates where id = ${templateId}`
-    )[0];
+    const row = await resolveTemplateByKey(sql, templateId);
     if (!row) return { status: 404, body: { error: "template_not_found" } };
+    // `row.id` is the real uuid primary key from here on — `templateId`
+    // itself is the raw path segment (a vertical slug for every real
+    // caller, see resolveTemplateByKey above) and is never a safe `id`
+    // value to write back into `agent_templates` with.
+    const resolvedId = row["id"] as string;
     if (!deps.retell) return { status: 501, body: { error: "retell_publish_not_configured" } };
 
     const template = toCompilerTemplate(row);
@@ -1383,7 +1417,7 @@ async function handleTemplates(
         ? { type: "conversation-flow", conversation_flow_id: flowId }
         : { type: "retell-llm", llm_id: flowId };
     const agentResult = await createAgent(deps.retell.fetchImpl, deps.retell.apiKey, {
-      agent_name: `heyloo-template-${templateId}-v${row["version"]}`,
+      agent_name: `heyloo-template-${resolvedId}-v${row["version"]}`,
       voice_id: row["voice_id"],
       response_engine: responseEngine,
     });
@@ -1405,15 +1439,15 @@ async function handleTemplates(
       return { status: 502, body: { error: "retell_publish_failed" } };
     }
 
-    await sql`update public.agent_templates set is_active = false where vertical = ${row["vertical"] as string} and id <> ${templateId}`;
-    await sql`update public.agent_templates set is_active = true where id = ${templateId}`;
+    await sql`update public.agent_templates set is_active = false where vertical = ${row["vertical"] as string} and id <> ${resolvedId}`;
+    await sql`update public.agent_templates set is_active = true where id = ${resolvedId}`;
 
     if (ctx.adminUserId) {
       await writeAdminAction(sql, {
         adminUserId: ctx.adminUserId,
         action: "template_publish",
         targetType: "agent_template",
-        targetId: templateId,
+        targetId: resolvedId,
         before: { is_active: row["is_active"] },
         after: { is_active: true, retell_agent_id: agentBody.agent_id, retell_flow_id: flowId },
         ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
@@ -1425,7 +1459,7 @@ async function handleTemplates(
       status: 200,
       body: {
         published: true,
-        template_id: templateId,
+        template_id: resolvedId,
         retell_agent_id: agentBody.agent_id,
         retell_flow_id: flowId,
       },

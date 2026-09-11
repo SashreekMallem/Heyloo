@@ -1,7 +1,7 @@
-import { fileURLToPath } from "node:url";
 import { withSentryConfig } from "@sentry/nextjs";
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
+import { previewModeAliases } from "./src/lib/preview/preview-mode-aliases";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
@@ -19,32 +19,17 @@ const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
  *
  * Both bundlers are aliased because `next dev` defaults to Turbopack and
  * `next build` in this repo runs `--webpack` (package.json) — whichever is
- * actually active picks up its matching config; the other is inert.
- *
- * The two bundlers want the alias TARGET in different forms (confirmed by
- * running `UI_PREVIEW_MODE=1 next dev` against this exact config):
- * Turbopack's `resolveAlias` treats a leading `/` as an (unsupported)
- * "server-relative" import and rejects it — it wants a plain path relative
- * to this config file (`./src/...`); webpack's `resolve.alias` wants a
- * real absolute filesystem path.
+ * actually active picks up its matching config; the other is inert. The
+ * alias TABLE itself (and exactly why webpack additionally needs a
+ * resolved-real-source-path entry per mock, on top of the `@/lib/auth/
+ * <name>` specifier Turbopack is satisfied with alone) lives in
+ * `./src/lib/preview/preview-mode-aliases.ts` — split out of this file so
+ * `next.config.test.ts` can unit-test it directly without importing
+ * `@sentry/nextjs`/`next-intl` (confirmed: importing this file itself
+ * under Vitest throws inside `@sentry/server-utils`' bundler-plugin
+ * resolution, an unrelated import-time side effect neither package needs
+ * for the alias table's own correctness).
  */
-const PREVIEW_MODE_MOCK_NAMES = [
-  "require-tenant-session",
-  "require-admin-session",
-  "require-partner-session",
-] as const;
-
-function previewModeAliases(kind: "turbopack" | "webpack"): Record<string, string> {
-  const aliases: Record<string, string> = {};
-  for (const name of PREVIEW_MODE_MOCK_NAMES) {
-    aliases[`@/lib/auth/${name}`] =
-      kind === "turbopack"
-        ? `./src/lib/preview/mocks/${name}.ts`
-        : fileURLToPath(new URL(`./src/lib/preview/mocks/${name}.ts`, import.meta.url));
-  }
-  return aliases;
-}
-
 const previewModeActive =
   process.env.UI_PREVIEW_MODE === "1" && process.env.NODE_ENV !== "production";
 

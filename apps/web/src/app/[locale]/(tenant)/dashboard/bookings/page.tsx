@@ -417,7 +417,7 @@ export default function BookingsPage() {
               {detailQuery.data?.customerPhone && (
                 <Link
                   href={`/dashboard/messages/${encodeURIComponent(detailQuery.data.customerPhone)}`}
-                  className="text-sm text-primary-hover underline underline-offset-2"
+                  className="text-sm text-accent-text underline underline-offset-2"
                 >
                   Message this customer
                 </Link>

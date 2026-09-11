@@ -36,7 +36,10 @@ export function MobileTabBarLabel({ item, isActive }: { item: NavItem; isActive:
     <span
       className={cn(
         "flex flex-col items-center gap-0.5 py-2 text-[11px]",
-        isActive ? "text-primary" : "text-muted-foreground",
+        // text-accent-text, not text-primary: this 11px active-tab label is
+        // real text, and the base accent-500 falls below WCAG AA's 4.5:1
+        // for normal-weight text (DESIGN-4).
+        isActive ? "text-accent-text" : "text-muted-foreground",
       )}
     >
       {Icon && <Icon className="size-5" />}
