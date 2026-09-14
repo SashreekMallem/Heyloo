@@ -15,6 +15,26 @@ the live dashboard → the owner's phone buzzes. Every 3D/motion moment in
 this brief exists to advance that one story — nothing decorative-only
 survives review.
 
+> **Companion doc — read this too**: `docs/design/FABLE5_SITE_TECHNIQUES.md`
+> is a parallel research pass cataloging the Aug–Sep 2026 wave of cinematic
+> "world-class" sites built with Claude Fable 5 / Claude Code — concrete
+> examples (most unverified clickbait, a few independently confirmed —
+> see its §1), a technique catalog (scroll-linked morphs, sticky-scroll
+> storytelling, Three.js material/lighting, performance tricks — §2), a
+> cross-referenced anti-slop tells list (§3), prompt patterns (§4), and
+> versioned library recommendations (§5). Its findings are folded into
+> this brief inline, cited as **[FABLE5]** or by section reference,
+> wherever they sharpened or corrected something here — most notably: the
+> Lenis + pinned-`ScrollTrigger` incompatibility (§3, §6), GPU/DPR/
+> offscreen-pause runtime discipline (§6), the automated scroll-state
+> verification pattern (§6), `SplitText`/`MorphSVG` now shipping free with
+> GSAP (§6), and several additional anti-slop tells (§7). **ENGINE, PAGES,
+> POLISH, and REVIEW agents should still read the companion doc directly**
+> before starting their task — this brief cites its most load-bearing
+> points but is not a substitute for its full technique catalog and
+> sources index. The REVIEWER grades against both this brief's §7 and the
+> companion doc's own §3 tells.
+
 ---
 
 ## 0. References studied
@@ -358,9 +378,11 @@ continuous morph chain, four states, matching narrative beats 1→5:
 - **Geometry/rendering layer** (WebGL, qualifying devices only): a
   `react-three-fiber` `<Canvas>` containing ONE `THREE.Line`/
   `THREE.TubeGeometry` object whose control points are driven by a
-  `useFrame`-read scroll progress (from Lenis, not from React state, to
-  avoid re-render cost) — this is the "waveform straightening into a
-  handset silhouette, then into text-baseline strokes" object.
+  `useFrame`-read scroll progress (read from `ScrollTrigger`'s own
+  progress value on native scroll, not from React state — see the
+  Lenis correction below — to avoid re-render cost) — this is the
+  "waveform straightening into a handset silhouette, then into
+  text-baseline strokes" object.
   `@react-three/drei`'s `Line` + a custom vertex-shader-free geometry
   morph (lerp between two point-sets) is sufficient; no external glTF
   model needed for this object — it's authored as data, not imported
@@ -375,11 +397,18 @@ continuous morph chain, four states, matching narrative beats 1→5:
   final dashboard row as an actual `CallFeedItem`.
 - **Orchestration**: GSAP `ScrollTrigger` with `pin: true` on the hero
   section for the 250vh scroll distance, driving a single GSAP timeline
-  whose labels correspond to the four states above; Lenis provides the
-  smoothed scroll value ScrollTrigger reads (`lenis.on('scroll',
-  ScrollTrigger.update)` per GSAP's documented Lenis integration — verify
-  the exact hook name against gsap.com's current ScrollTrigger + Lenis
-  guide at build time per Rule 1, this is an external API surface).
+  whose labels correspond to the four states above, reading **native
+  browser scroll directly** — **do not wrap the pinned hero in Lenis.**
+  `docs/design/FABLE5_SITE_TECHNIQUES.md` §5.1 (citing `dappasol.com`'s
+  build-path writeup) states plainly that Lenis "breaks stacked and
+  pinned ScrollTriggers"; the same doc's §6.1 build checklist calls the
+  single pinned 0→1 timeline the single highest-leverage technique in
+  the whole survey, so it's not worth risking on an incompatible smooth-
+  scroll layer. If Lenis is used anywhere on the marketing site (optional
+  — see §6's package table), it is scoped to pages/sections with **no**
+  pinned `ScrollTrigger`, never the hero or the dashboard-reveal section.
+  Verify current GSAP `ScrollTrigger` pin behavior against gsap.com's own
+  docs at build time per Rule 1 regardless.
 - **Reveal choreography**: opacity/transform only cross the WebGL/DOM
   boundary — e.g. the transcript text fades in over the canvas rather
   than the canvas itself drawing text, so accessibility tooling always
@@ -553,16 +582,24 @@ confirmed current as of this research pass, Sept 2026):
 | `three` | `0.186.0` | Current stable; paired with r3f 9 below. |
 | `@react-three/fiber` | `9.7.0` | r3f 9.x is the React-19-only line (repo is on React `19.2.8`); confirmed compatible with React 19.0–19.2. |
 | `@react-three/drei` | `10.7.8` | drei 10.x is the companion line for r3f 9 / React 19 (peer range `^19`). |
-| `gsap` | `3.15.0` | Includes `ScrollTrigger`; all GSAP plugins are free for commercial use since 3.13. |
-| `lenis` | `1.3.26` | Package was renamed from `@studio-freight/lenis` — install `lenis`, not the old scoped name. |
+| `gsap` | `3.15.0` | Includes `ScrollTrigger`, and — confirmed by `docs/design/FABLE5_SITE_TECHNIQUES.md` §5.1 — `SplitText`, `MorphSVG`, `DrawSVG`, and `ScrollSmoother` ship free with core GSAP now (all former Club plugins freed ~Apr 2025 after Webflow's GreenSock acquisition); use `SplitText` for the hero's per-character disclosure-text reveal (§3) instead of hand-rolling span-splitting. |
+| `lenis` | `1.3.26` | Package was renamed from `@studio-freight/lenis` — install `lenis`, not the old scoped name. **Scope it to non-pinned sections only** (see §3's hero-orchestration note): `docs/design/FABLE5_SITE_TECHNIQUES.md` §5.1, citing `dappasol.com`, states Lenis "breaks stacked and pinned ScrollTriggers." If nothing on the marketing site needs smooth-scroll outside the hero/dashboard-reveal pins, it's fine to drop this dependency entirely and rely on native scroll + `ScrollTrigger` everywhere. |
 
 Do **not** add `framer-motion`/`motion` as a second animation runtime —
-GSAP + Lenis covers scroll orchestration end to end per the standard's own
-stack line ("GSAP ScrollTrigger ... for scroll orchestration"); mixing a
-second tween engine only grows the JS budget for no narrative gain. Small
-DOM entrance fades (trust strip, business-type cards, pricing teaser) can
-be done with plain CSS transitions/`@starting-style` or a handful of GSAP
-tweens — no separate library needed for those.
+GSAP covers scroll orchestration (pinning, timelines, text/SVG morphs) end
+to end per the standard's own stack line ("GSAP ScrollTrigger ... for
+scroll orchestration") and per `docs/design/FABLE5_SITE_TECHNIQUES.md`
+§5.1's own read that Motion (the renamed Framer Motion) is "a good fit for
+component-level micro-interactions... not a replacement for GSAP's
+scroll-timeline/pin muscle" — i.e. not a reason to run two tween engines
+on one page. Small DOM entrance fades (trust strip, business-type cards,
+pricing teaser) should prefer plain CSS — `animation-timeline: scroll()`
+where the reveal is a simple entry fade/translate (native, ~84% global
+support per the companion doc's §2.2, zero JS cost) or a `@starting-style`
+transition, with GSAP reserved for the two sections that actually need
+pinning/camera-path-grade choreography (per the companion doc's own
+closing recommendation, §6.7: "keep JS payload proportional to what's
+earning its keep").
 
 ### Load strategy
 1. **First paint**: server-rendered marketing HTML (unchanged — the home
@@ -576,8 +613,9 @@ tweens — no separate library needed for those.
    three.js/r3f/drei bundle and swap the hero's WebGL layer in — this is
    the mechanism that keeps initial JS under budget: the ~150-250KB(gz)
    r3f+three+drei bundle is NEVER part of the initial route chunk.
-3. **GSAP core + ScrollTrigger + Lenis** (small, ~30-40KB gz combined) can
-   load slightly earlier than the WebGL bundle (they drive the DOM-layer
+3. **GSAP core + ScrollTrigger** (small, ~25-30KB gz; add `lenis` only if
+   §6's package-table condition for keeping it is actually true) can load
+   slightly earlier than the WebGL bundle (they drive the DOM-layer
    entrance animations too, which run on every tier including mobile),
    but still via dynamic import so a visitor with JS disabled or a slow
    connection gets the static page with no broken half-loaded animation
@@ -612,14 +650,55 @@ tweens — no separate library needed for those.
    (`docs/FRONTEND_STACK.md`) to capture WebGL-context-creation failures
    and Core Web Vitals regressions on the home route specifically, given
    this is the highest-risk-for-regression page in the whole app.
+8. **Runtime GPU discipline** (per `docs/design/FABLE5_SITE_TECHNIQUES.md`
+   §2.7, cross-referenced as "the single highest-leverage GPU-memory fix"
+   and the named, concrete cause of "looks amazing on the recording, janky
+   in your hand" failures) — all three apply to the hero's WebGL layer:
+   - **Cap `renderer.setPixelRatio`** to ~1.5–2 rather than the raw
+     `devicePixelRatio`, especially on high-DPI mobile/tablet.
+   - **Pause the render loop** (`renderer.setAnimationLoop(null)`
+     equivalent) whenever the hero canvas leaves the viewport
+     (`IntersectionObserver`) or the tab is hidden (`visibilitychange`) —
+     never animate an unseen canvas.
+   - **Dynamic quality scaling as a tiered response**, not all-or-nothing:
+     on a detected frame-rate drop, first reduce DPR, then disable any
+     postprocessing, then simplify the line geometry's segment count —
+     in that order.
+   - Test on a real mid-range phone, not only desktop Chrome — the
+     companion doc calls this out explicitly as a failure desktop testing
+     does not catch.
+9. **Automated scroll-motion verification** (per
+   `docs/design/FABLE5_SITE_TECHNIQUES.md` §2.7/§4.5/§6.6): a canvas
+   mid-animation reads back as black to a naive screenshot, so expose the
+   hero's `ScrollTrigger` instance and a small debug object on `window`
+   (dev/test builds only) so a Playwright test can programmatically set
+   scroll position, call `.update()`, and assert each story beat (ring /
+   answer / book / land) reaches its target transform/opacity/text state
+   — wire this into the existing Playwright smoke-test plan
+   (`docs/FRONTEND_STACK.md`) as a real regression test of the scroll
+   story, not only a manual screenshot check during authoring. This is
+   also how the "render + reduced-motion fallback" component tests this
+   task requires should verify the hero/dashboard-reveal set pieces
+   specifically, alongside a simple render test for everything else.
 
 ---
 
 ## 7. Anti-slop checklist (binding — grade every set piece against this)
 
+The task brief's own forbidden list is below, extended with the concrete,
+cross-referenced tells from `docs/design/FABLE5_SITE_TECHNIQUES.md` §3
+(four independent write-ups converged on nearly the same list) — items
+marked **[FABLE5]** are additions or sharpenings sourced from that doc; the
+REVIEWER grades against this full combined list, not just the task
+brief's original wording.
+
 - [ ] No stock/generic robot imagery, anywhere, in any asset.
 - [ ] No purple/neon gradient blobs or gradient meshes used as
-      background decoration.
+      background decoration. **[FABLE5]** Purple-to-blue/indigo gradient
+      specifically is called out as *the single most common* "this was
+      AI-generated" tell across every source in the companion doc's
+      survey — treat any purple or indigo anywhere on the hero as an
+      automatic fail, not just "decorative gradients" generally.
 - [ ] No glowing orbs, no particle clouds used for their own sake (a
       particle IS allowed only if it's a literal, labeled data point —
       e.g. never here).
@@ -628,6 +707,31 @@ tweens — no separate library needed for those.
       "technology" or "AI" with no connection to the real product.
 - [ ] No emoji anywhere in shipped copy or UI (matches
       `docs/DESIGN_SYSTEM.md`'s icon rule — `lucide-react` only).
+- [ ] **[FABLE5]** No system sans (Inter, Roboto, Arial) used as a
+      *display*/headline face — this is moot for Heyloo already (Fraunces
+      is the display face per `docs/DESIGN_SYSTEM.md`, Inter is body-only
+      by design), but any new component must not quietly reach for
+      `font-sans` on an `h1`/hero headline out of convenience.
+- [ ] **[FABLE5]** No row of 3+ visually-identical cards (same
+      border-radius, one icon + heading + two lines, no hierarchy between
+      them) — the business-types grid (`VerticalGrid`) already avoids this
+      via its hover-reveal "See what it handles" affordance and per-card
+      `heroStat` copy; any new card row must keep genuine per-item
+      distinction, not just swap the icon.
+- [ ] **[FABLE5]** No uniformly-applied, single-opacity shadow across
+      every elevated surface — `docs/DESIGN_SYSTEM.md`'s `shadow-xs`→
+      `shadow-xl` stepped system already avoids this; don't flatten it to
+      one ad-hoc `box-shadow` value in new set-piece markup.
+- [ ] **[FABLE5]** No vague, could-apply-to-any-SaaS headline copy — every
+      headline on the page names the actual thing that happens (a call
+      answered, a booking captured), matching the existing home H1
+      ("Every call answered. Every booking captured.") as the bar; any new
+      headline is graded against that same specificity.
+- [ ] **[FABLE5]** No more than one visual effect firing at once in any
+      single moment (no glow + gradient + parallax + particles stacked
+      together) — each set piece's beat gets exactly the technique that
+      beat needs (a morph, a count-up, a shared-element slide), never a
+      combination "for richness."
 - [ ] No lorem/placeholder copy in anything that ships — every line of
       transcript/booking/dashboard content in a set piece is either real
       fixture data already in the codebase (`VERTICAL_CONTENT`,
