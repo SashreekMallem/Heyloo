@@ -1,6 +1,7 @@
 "use client";
 
-import { Button, DataState, MarginWaterfall, PageHeader, type WaterfallSegment } from "@heyloo/ui";
+import { Button, DataState, PageHeader } from "@heyloo/ui";
+import { MarginWaterfall, type WaterfallSegment } from "@heyloo/ui/charts";
 import { useState } from "react";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
 

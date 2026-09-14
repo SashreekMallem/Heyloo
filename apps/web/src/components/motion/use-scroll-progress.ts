@@ -10,6 +10,17 @@ export interface UseScrollProgressOptions {
   target: RefObject<HTMLElement | null>;
   /** Pin `target` in place for the scroll distance in `end` (the hero and dashboard-reveal set pieces; WEBSITE_CREATIVE_BRIEF.md §3). */
   pin?: boolean;
+  /**
+   * ScrollTrigger `pinSpacing` — default `true` (GSAP's own default:
+   * insert a spacer that reserves the pin distance automatically).
+   * `hero-scroll-scene.tsx` passes `false` and reserves that space
+   * itself instead, as a plain sibling element present continuously
+   * from before the pin ever activates (CLS: GSAP's own spacer only
+   * exists once its async chunk loads and `.create()` has actually run,
+   * so relying on it means the page's height jumps the moment it
+   * activates — a real, measured regression, see that file's comment).
+   */
+  pinSpacing?: boolean;
   /** ScrollTrigger `start`. Defaults to `"top top"` when pinned, `"top bottom"` otherwise. */
   start?: string;
   /** ScrollTrigger `end` (e.g. `"+=150%"`). Defaults to `"+=150%"` when pinned, `"bottom top"` otherwise. */
@@ -74,6 +85,7 @@ function clearDebugScrollTrigger(key: string) {
 export function useScrollProgress({
   target,
   pin = false,
+  pinSpacing,
   start,
   end,
   scrub = 0.5,
@@ -82,6 +94,7 @@ export function useScrollProgress({
   debugKey,
 }: UseScrollProgressOptions): void {
   const onUpdateRef = useRef(onUpdate);
+  // eslint-disable-next-line react-hooks/refs -- deliberate "latest callback ref" sync so the effect below can read a fresh `onUpdate` every rAF/scrub tick without re-subscribing ScrollTrigger on every render
   onUpdateRef.current = onUpdate;
 
   useEffect(() => {
@@ -99,6 +112,7 @@ export function useScrollProgress({
         start: start ?? (pin ? "top top" : "top bottom"),
         end: end ?? (pin ? "+=150%" : "bottom top"),
         pin,
+        pinSpacing,
         scrub,
         onUpdate: (self) => onUpdateRef.current?.(self.progress),
       });
@@ -110,5 +124,5 @@ export function useScrollProgress({
       scrollTrigger?.kill();
       if (debugKey) clearDebugScrollTrigger(debugKey);
     };
-  }, [target, pin, start, end, scrub, disabled, debugKey]);
+  }, [target, pin, pinSpacing, start, end, scrub, disabled, debugKey]);
 }

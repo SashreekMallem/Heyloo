@@ -1,12 +1,7 @@
 "use client";
 
-import {
-  AppShell,
-  AppSidebarNav,
-  CommandPalette,
-  type CommandPaletteCommand,
-  TopBar,
-} from "@heyloo/ui";
+import { AppShell, AppSidebarNav, TopBar } from "@heyloo/ui";
+import { CommandPalette, type CommandPaletteCommand } from "@heyloo/ui/command";
 import { Gauge, Radar, ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, usePathname, useRouter } from "@/i18n/navigation";

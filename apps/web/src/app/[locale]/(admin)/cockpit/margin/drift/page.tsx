@@ -1,12 +1,7 @@
 "use client";
 
-import {
-  DataState,
-  DriftLineChart,
-  type DriftMarker,
-  type DriftPoint,
-  PageHeader,
-} from "@heyloo/ui";
+import { DataState, PageHeader } from "@heyloo/ui";
+import { DriftLineChart, type DriftMarker, type DriftPoint } from "@heyloo/ui/charts";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
 
 export default function RepricingDriftPage() {

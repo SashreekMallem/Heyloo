@@ -8,10 +8,10 @@ import {
   CardTitle,
   DataState,
   EmptyState,
-  FunnelChart,
   MetricCard,
   PageHeader,
 } from "@heyloo/ui";
+import { FunnelChart } from "@heyloo/ui/charts";
 import { Link } from "@/i18n/navigation";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
 

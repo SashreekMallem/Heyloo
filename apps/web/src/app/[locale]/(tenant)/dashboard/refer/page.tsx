@@ -8,9 +8,9 @@ import {
   CardHeader,
   CardTitle,
   DataState,
-  FunnelChart,
   PageHeader,
 } from "@heyloo/ui";
+import { FunnelChart } from "@heyloo/ui/charts";
 import { useQuery } from "@tanstack/react-query";
 import { Copy } from "lucide-react";
 import { toast } from "sonner";

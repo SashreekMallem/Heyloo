@@ -8,8 +8,8 @@ import {
   type DateRangePreset,
   MetricCard,
   PageHeader,
-  TrendChart,
 } from "@heyloo/ui";
+import { TrendChart } from "@heyloo/ui/charts";
 import { useState } from "react";
 import type { TenantPlanResponse } from "@/app/api/platform-settings/tenant-plan/route";
 import { SetupProgressPanel } from "@/components/tenant/setup-progress-panel";

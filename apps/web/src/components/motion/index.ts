@@ -19,6 +19,7 @@ export {
   type HeroStageRange,
   resolveHeroStage,
 } from "./hero-story";
+export { HeroStoryOverlay, type HeroStoryOverlayProps } from "./hero-story-overlay";
 export { LazyWebglBoundary, type LazyWebglBoundaryProps } from "./lazy-webgl-boundary";
 export {
   ScrollOrchestrationProvider,

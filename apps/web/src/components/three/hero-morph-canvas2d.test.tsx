@@ -15,12 +15,15 @@ describe("HeroMorphCanvas2d", () => {
       <HeroMorphCanvas2d progressRef={progressRef} className="hero-canvas" />,
     );
 
+    // eslint-disable-next-line testing-library/no-container, testing-library/no-node-access -- <canvas> has no accessible role/text for a Testing-Library query
     const canvas = container.querySelector("canvas");
     expect(canvas).toBeInTheDocument();
     // aria-hidden lives on the wrapper, never on the canvas itself — a
     // focusable element with aria-hidden confuses screen readers even
     // when nothing inside is meant to be focusable in practice.
+    // eslint-disable-next-line testing-library/no-node-access -- the wrapper is aria-hidden by design (the test's own point), so it's excluded from every role-based Testing-Library query
     expect(canvas?.parentElement).toHaveAttribute("aria-hidden", "true");
+    // eslint-disable-next-line testing-library/no-node-access -- same aria-hidden wrapper as above, asserting its class has no role/text query equivalent
     expect(canvas?.parentElement).toHaveClass("hero-canvas");
   });
 

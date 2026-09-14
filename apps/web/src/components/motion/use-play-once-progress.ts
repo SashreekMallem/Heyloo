@@ -47,6 +47,7 @@ export function usePlayOnceProgress({
   threshold = DEFAULT_THRESHOLD,
 }: UsePlayOnceProgressOptions): void {
   const onUpdateRef = useRef(onUpdate);
+  // eslint-disable-next-line react-hooks/refs -- deliberate "latest callback ref" sync so the rAF loop below can read a fresh `onUpdate` every frame without re-subscribing the IntersectionObserver on every render
   onUpdateRef.current = onUpdate;
 
   useEffect(() => {

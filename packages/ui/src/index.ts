@@ -5,10 +5,29 @@
  * a runtime dependency) plus the custom components named in §1.3.
  * `./styles.css` (see package.json exports) carries the Tailwind v4 theme
  * tokens — import it once from the app root.
+ *
+ * Charts (`recharts`) are deliberately NOT re-exported from here — import
+ * them from `@heyloo/ui/charts` instead (a separate `exports` subpath,
+ * `package.json`). SITE REPAIR finding: the marketing home route's
+ * initial JS measured 955.2KB gz against a 250KB budget, with a single
+ * 292KB gz chunk containing `recharts`/`date-fns`/`zod` pulled in purely
+ * by `DashboardPreview` (a marketing-route component) importing OTHER,
+ * unrelated named exports from this same barrel (`MetricCard`,
+ * `CallFeedItem`, etc.) — `"sideEffects": false` (package.json) plus
+ * Next's `optimizePackageImports` were both added first and neither
+ * fully eliminated it in a real measured build; physically keeping
+ * `charts/*` out of this entry point's own module graph is the fix that
+ * actually guarantees it, regardless of bundler tree-shaking heuristics.
+ *
+ * Same pattern, same finding's own documented follow-up: the admin ⌘K
+ * palette (`cmdk`) and the MFA OTP input (`input-otp`) are likewise NOT
+ * re-exported from here — import from `@heyloo/ui/command` /
+ * `@heyloo/ui/input-otp` instead. Both were confirmed present (by
+ * literal string-marker search) in the home route's built chunks despite
+ * having zero marketing-route call sites.
  */
 export const UI_PACKAGE_VERSION = "0.1.0" as const;
 
-export * from "./charts/index.js";
 export * from "./custom/index.js";
 export * from "./forms/index.js";
 export * from "./icons/index.js";

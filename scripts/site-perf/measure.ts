@@ -56,10 +56,25 @@ const BUILD_ENV_DEFAULTS: Record<string, string> = {
   APP_BASE_URL: ORIGIN,
 };
 
-function resolvePlaywright() {
+/**
+ * `@playwright/test`'s published `index.js` is CJS with a single
+ * `module.exports = {...}` (no named-export markers cjs-module-lexer can
+ * synthesize) — confirmed by inspecting what a dynamic `import()` of its
+ * resolved path actually yields (CLAUDE.md Rule 1): every named export
+ * this module "has" under a normal static `import { chromium } from
+ * "@playwright/test"` (which Next/TS's bundler-aware resolution handles
+ * for us elsewhere) collapses here to a single `default` key holding the
+ * real exports object — `import("...").then(({chromium}) => ...)` silently
+ * destructures `undefined` instead of throwing, so this went unnoticed
+ * until `chromium.launch()` failed at runtime. Unwrap `.default` here,
+ * once, so every call site can keep destructuring `{ chromium }` like the
+ * static-import shape it's typed against.
+ */
+async function resolvePlaywright() {
   const webRequire = createRequire(path.join(WEB_DIR, "package.json"));
   const entry = webRequire.resolve("@playwright/test");
-  return import(entry) as Promise<typeof import("@playwright/test")>;
+  const mod = (await import(entry)) as { default: typeof import("@playwright/test") };
+  return mod.default;
 }
 
 function run(command: string, args: string[], extraEnv: Record<string, string> = {}) {
@@ -79,7 +94,18 @@ function run(command: string, args: string[], extraEnv: Record<string, string> =
 
 /** Starts `next start -p PORT` detached (so it outlives this function) and resolves once it's actually answering. */
 async function startServer() {
-  const child = spawn("pnpm", ["run", "start", "--", "-p", String(PORT)], {
+  // NOT `pnpm run start -- -p PORT`: confirmed against this repo's pnpm
+  // (CLAUDE.md Rule 1 — verified by running it directly, not assumed) that
+  // the `--` separator is forwarded to the underlying `next start` script
+  // literally instead of being stripped, so Next's CLI parses the arg
+  // right after it (`-p`) as the positional `[directory]` argument and
+  // fails with "Invalid project directory provided, no such directory:
+  // .../apps/web/-p" — the server then never starts and this function's
+  // own poll loop below times out after 60s with a misleading "did not
+  // start" error that hides the real cause. `pnpm exec next start -p
+  // PORT` calls the `next` binary directly with no script-passthrough
+  // involved, so there's no `--` to mishandle.
+  const child = spawn("pnpm", ["exec", "next", "start", "-p", String(PORT)], {
     cwd: WEB_DIR,
     stdio: "inherit",
     env: { ...BUILD_ENV_DEFAULTS, ...process.env },
@@ -117,16 +143,44 @@ async function measureRoute(
     // "a mid-range laptop", not this CI runner's own cloud-grade CPU.
     await cdp.send("Emulation.setCPUThrottlingRate", { rate: CPU_THROTTLE_RATE });
 
+    // Real wire-transfer byte accounting via CDP's `Network.loadingFinished`
+    // `encodedDataLength` — NOT a `response.headers()["content-length"]`
+    // sum (what this used to do): confirmed by curling a real `next
+    // start` chunk with `Accept-Encoding: gzip` (CLAUDE.md Rule 1) that
+    // Next's production server answers every same-origin JS chunk as
+    // `Transfer-Encoding: chunked` + `Content-Encoding: gzip` with NO
+    // `Content-Length` header at all whenever the request declares gzip
+    // support — which every real browser, Chromium included, always
+    // does — so the old `Content-Length`-sum silently totalled ~0 bytes
+    // for every real script response (a Home-route run reported "1.5KB"
+    // total, when the actual initial JS is far larger) and the budget
+    // check would PASS regardless of actual payload size, defeating its
+    // entire purpose without ever erroring. `encodedDataLength` is what
+    // Chrome DevTools' own Network panel and Lighthouse report as
+    // "transferred size" — actual bytes over the wire, encoding included
+    // — and is populated unconditionally, with no dependence on which
+    // response headers a given server happens to send.
     let jsBytes = 0;
-    page.on("response", (response) => {
-      const url = response.url();
-      if (!url.startsWith(ORIGIN)) return; // same-origin only — no third-party script counts against this budget
-      const resourceType = response.request().resourceType();
-      if (resourceType !== "script") return;
-      const lengthHeader = response.headers()["content-length"];
-      // `Content-Length` on a compressed response is the wire (gzip/br) size — see budgets.ts's docstring on `initialJsBytesGz`. Next's production server (`next start`) gzips by default.
-      if (lengthHeader) jsBytes += Number.parseInt(lengthHeader, 10) || 0;
+    const scriptRequestIds = new Set<string>();
+    cdp.on("Network.responseReceived", (event) => {
+      const { requestId, response, type } = event as {
+        requestId: string;
+        response: { url: string };
+        type: string;
+      };
+      // same-origin only — no third-party script counts against this budget
+      if (type === "Script" && response.url.startsWith(ORIGIN)) {
+        scriptRequestIds.add(requestId);
+      }
     });
+    cdp.on("Network.loadingFinished", (event) => {
+      const { requestId, encodedDataLength } = event as {
+        requestId: string;
+        encodedDataLength: number;
+      };
+      if (scriptRequestIds.has(requestId)) jsBytes += encodedDataLength;
+    });
+    await cdp.send("Network.enable");
 
     await page.addInitScript(collectWebVitals);
     await page.goto(`${ORIGIN}${budget.path}`, { waitUntil: "load" });

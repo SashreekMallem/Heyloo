@@ -80,7 +80,15 @@ export function DashboardPreview() {
   const answerRate = useCountUp(100, settled);
 
   return (
-    <div className="[perspective:1000px]">
+    // `isolate`: establishes a new stacking context around the 3D-transformed
+    // panel below (SITE REPAIR review flagged a faint "ghosted duplicate" of
+    // the preceding section's copy bleeding through the top edge during this
+    // panel's tilt-and-settle entrance in one capture) — without it, a
+    // `perspective`+`preserve-3d` ancestor can let a partially-transparent,
+    // in-flight `translateZ`'d descendant composite against paint from
+    // outside its own subtree on some engines; isolating the stacking
+    // context guarantees this panel only ever paints over its own contents.
+    <div className="isolate [perspective:1000px]">
       <div
         ref={panelRef}
         className={cn(
@@ -102,7 +110,12 @@ export function DashboardPreview() {
         <div className="grid gap-4 p-4 sm:p-6 lg:grid-cols-[1.6fr_1fr] lg:gap-6">
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
-              <MetricCard label="Calls today" value={Math.round(calls)} format="number" delta={12.4} />
+              <MetricCard
+                label="Calls today"
+                value={Math.round(calls)}
+                format="number"
+                delta={12.4}
+              />
               <MetricCard
                 label="Bookings today"
                 value={Math.round(bookings)}

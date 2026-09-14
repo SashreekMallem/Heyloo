@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useIsomorphicLayoutEffect } from "./use-isomorphic-layout-effect";
 
 const QUERY = "(prefers-reduced-motion: reduce)";
 
@@ -15,11 +16,18 @@ const QUERY = "(prefers-reduced-motion: reduce)";
  * story once this hook (client-side) reports `false` is confirmed, so a
  * `false`-until-mounted default never causes an unwanted motion flash —
  * see `hero-scroll-scene.tsx`.
+ *
+ * Resolves via `useIsomorphicLayoutEffect` (before the browser's first
+ * paint), not a plain `useEffect` (after it): `hero-scroll-scene.tsx`
+ * derives its pin-qualification (`qualifies`) from this value, and needs
+ * it settled pre-paint so its own CLS-safe placeholder reservation can
+ * land in the SAME first frame rather than causing a reflow of its own
+ * once this flips a frame later.
  */
 export function useReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false);
 
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const mql = window.matchMedia(QUERY);
     setReduced(mql.matches);

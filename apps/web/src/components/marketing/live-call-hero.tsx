@@ -3,24 +3,14 @@
 import { cn } from "@heyloo/ui";
 import { Calendar, Check, Mic, Phone, Wrench } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import {
+  HERO_CALL_BOOKING,
+  HERO_CALL_TOOL_CALL,
+  HERO_CALL_TURNS,
+} from "@/content/marketing/hero-call";
 import { prefersReducedMotion, useInView } from "@/lib/marketing/use-in-view";
 
-interface Turn {
-  speaker: "caller" | "ai";
-  text: string;
-}
-
-const TURNS: Turn[] = [
-  { speaker: "caller", text: "Hi — my check engine light just came on, can someone look at it?" },
-  {
-    speaker: "ai",
-    text: "This is Riverside Auto's AI receptionist — this call is recorded. I can get that booked. What's the year, make, and model?",
-  },
-  { speaker: "caller", text: "2019 Honda Civic." },
-  { speaker: "ai", text: "Got it — one moment while I check tomorrow's bay availability." },
-  { speaker: "ai", text: "We have 10:30 tomorrow morning open. Want me to hold that for you?" },
-  { speaker: "caller", text: "Yes, please — that works." },
-];
+const TURNS = HERO_CALL_TURNS;
 
 // One index per visible frame of the story: how many transcript turns are
 // shown, whether the tool-call badge is up, and whether the booking has
@@ -61,17 +51,34 @@ const FRAME_MS = 1500;
  * motion renders the resolved final frame immediately, matching the
  * brief's hero-specific reduced-motion rule: "show the outcome, skip the
  * journey" — no interval ever starts.
+ *
+ * `frame` starts at a fixed `0` (never a lazy initializer that calls
+ * `prefersReducedMotion()`, which reads `window.matchMedia` — unavailable
+ * during SSR, so it always resolves `false` there but can already resolve
+ * `true` on the client's very first render, before hydration completes,
+ * under a real reduced-motion preference). That mismatch between the
+ * server tree (frame 0) and the client's first paint (the final frame)
+ * threw a React hydration error on every load with reduced motion on —
+ * the exact failure mode `use-in-view.ts`'s `useInView` already documents
+ * and avoids. The reduced-motion jump to the final frame instead happens
+ * in the effect below, post-mount, matching that fix.
  */
 export function LiveCallHero() {
   const [ref, inView] = useInView<HTMLDivElement>({ threshold: 0.3 });
-  const [frame, setFrame] = useState(() => (prefersReducedMotion() ? FRAMES.length - 1 : 0));
+  const [frame, setFrame] = useState(0);
   const startedRef = useRef(false);
 
   useEffect(() => {
-    // Reduced motion already rendered the resolved final frame from the
-    // lazy initial state above — nothing to start, and no `setFrame` call
-    // belongs here for that case.
-    if (!inView || startedRef.current || prefersReducedMotion()) return;
+    if (startedRef.current) return;
+
+    if (prefersReducedMotion()) {
+      startedRef.current = true;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only reduced-motion check (window.matchMedia), see the SSR/hydration-mismatch comment above this component
+      setFrame(FRAMES.length - 1);
+      return;
+    }
+
+    if (!inView) return;
     startedRef.current = true;
 
     let index = 0;
@@ -87,7 +94,9 @@ export function LiveCallHero() {
     return () => clearInterval(id);
   }, [inView]);
 
-  const { turns, tool, booking } = FRAMES[Math.min(frame, FRAMES.length - 1)] as (typeof FRAMES)[number];
+  const { turns, tool, booking } = FRAMES[
+    Math.min(frame, FRAMES.length - 1)
+  ] as (typeof FRAMES)[number];
   const visibleTurns = TURNS.slice(0, turns);
 
   return (
@@ -155,7 +164,7 @@ export function LiveCallHero() {
             <div className="flex animate-[heyloo-fade-up_0.35s_var(--ease-out)_backwards] justify-end">
               <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-micro font-mono text-muted-foreground">
                 <Wrench className="size-3" />
-                check_availability()
+                {HERO_CALL_TOOL_CALL}
               </span>
             </div>
           )}
@@ -200,8 +209,8 @@ export function LiveCallHero() {
                     <Calendar className="size-3.5" />
                   </span>
                   <div>
-                    <p className="text-small font-medium">2019 Honda Civic</p>
-                    <p className="text-micro text-muted-foreground">Check engine diagnostic</p>
+                    <p className="text-small font-medium">{HERO_CALL_BOOKING.vehicle}</p>
+                    <p className="text-micro text-muted-foreground">{HERO_CALL_BOOKING.service}</p>
                   </div>
                 </div>
                 <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-micro font-medium text-success">
@@ -209,7 +218,9 @@ export function LiveCallHero() {
                   Confirmed
                 </span>
               </div>
-              <p className="mt-2 font-mono text-micro text-muted-foreground">Tomorrow · 10:30 AM</p>
+              <p className="mt-2 font-mono text-micro text-muted-foreground">
+                {HERO_CALL_BOOKING.time}
+              </p>
             </div>
           ) : (
             <div className="flex h-[4.75rem] items-center gap-2 rounded-lg border border-dashed border-border p-3 text-micro text-muted-foreground">

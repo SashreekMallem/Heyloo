@@ -25,12 +25,15 @@ export interface RouteBudget {
   /** Cumulative Layout Shift budget (unitless, windowed score). */
   cls: number;
   /**
-   * Initial same-origin JS transferred (gzip/br-encoded — i.e. the
-   * `Content-Length` actually sent over the wire, not decompressed
-   * size), in bytes, for everything loaded during first paint/hydration
-   * of THIS route — a lazy-loaded chunk (the 3D engine, GSAP) that only
-   * fetches after a later scroll/interaction is correctly excluded,
-   * matching the brief's own "lazy-loaded after first paint" carve-out.
+   * Initial same-origin JS transferred (gzip/br-encoded wire size, via
+   * CDP's `Network.loadingFinished` `encodedDataLength` — see
+   * `measure.ts`'s `measureRoute` docstring on why a
+   * `Content-Length`-header sum undercounts this to near-zero against a
+   * real `next start`, not decompressed size), in bytes, for everything
+   * loaded during first paint/hydration of THIS route — a lazy-loaded
+   * chunk (the 3D engine, GSAP) that only fetches after a later
+   * scroll/interaction is correctly excluded, matching the brief's own
+   * "lazy-loaded after first paint" carve-out.
    */
   initialJsBytesGz: number;
 }

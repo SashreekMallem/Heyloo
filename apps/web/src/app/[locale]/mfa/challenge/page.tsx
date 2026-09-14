@@ -1,7 +1,8 @@
 "use client";
 
 import { mfaChallengeSchema } from "@heyloo/canonical-types";
-import { Button, InputOTP, InputOTPGroup, InputOTPSlot } from "@heyloo/ui";
+import { Button } from "@heyloo/ui";
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@heyloo/ui/input-otp";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { toast } from "sonner";

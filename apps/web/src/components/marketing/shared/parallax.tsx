@@ -31,6 +31,22 @@ export interface ParallaxProps {
  * `prefers-reduced-motion`: renders children with no transform and never
  * starts the scroll loop at all (WEBSITE_CREATIVE_BRIEF.md's adaptive
  * rule — "prefers-reduced-motion → static composition").
+ *
+ * `reduced` is real React state, never a value computed by calling
+ * `prefersReducedMotion()` directly in the render body — that reads
+ * `window.matchMedia`, always `false` during SSR but possibly already
+ * `true` on the client's very first render (before hydration completes)
+ * under a real reduced-motion preference, which would make the inline
+ * `transform`/`willChange` style disagree between the server tree and the
+ * client's first paint (the same mismatch `use-in-view.ts` documents and
+ * `LiveCallHero`/`Sticky` are fixed for). Both start non-reduced; the real
+ * check happens inside the SAME effect that would otherwise start
+ * observing — not a separate earlier effect — specifically so a reduced-
+ * motion visitor's `IntersectionObserver` is never created at all, not
+ * created-then-immediately-torn-down a tick later: `window.matchMedia` is
+ * always safe to call from an effect body (effects only ever run
+ * post-mount, client-side, so there's no SSR value to disagree with) —
+ * only the RENDER output needed to stop branching on it directly.
  */
 export function Parallax({
   children,
@@ -40,11 +56,15 @@ export function Parallax({
   invert = false,
 }: ParallaxProps) {
   const ref = useRef<HTMLDivElement>(null);
-  const reduced = prefersReducedMotion();
+  const [reduced, setReduced] = useState(false);
   const [offset, setOffset] = useState(0);
 
   useEffect(() => {
-    if (reduced) return;
+    if (prefersReducedMotion()) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only reduced-motion check (window.matchMedia); must run post-mount to avoid an SSR/hydration mismatch
+      setReduced(true);
+      return;
+    }
     if (typeof window === "undefined" || typeof IntersectionObserver === "undefined") return;
     const node = ref.current;
     if (!node) return;
@@ -83,7 +103,11 @@ export function Parallax({
       cancelAnimationFrame(rafId);
       observer.disconnect();
     };
-  }, [reduced, strength, invert]);
+    // `reduced` deliberately not a dependency — it's only ever SET here,
+    // never read (the fresh `prefersReducedMotion()` check above is the
+    // source of truth every time this effect runs), so including it
+    // would only cause one redundant extra run with nothing to clean up.
+  }, [strength, invert]);
 
   return (
     <div

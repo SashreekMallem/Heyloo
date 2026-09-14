@@ -1,7 +1,8 @@
 "use client";
 
 import { mfaEnrollSchema } from "@heyloo/canonical-types";
-import { Button, InputOTP, InputOTPGroup, InputOTPSlot } from "@heyloo/ui";
+import { Button } from "@heyloo/ui";
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@heyloo/ui/input-otp";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { AuthShell } from "@/components/marketing/auth-shell";

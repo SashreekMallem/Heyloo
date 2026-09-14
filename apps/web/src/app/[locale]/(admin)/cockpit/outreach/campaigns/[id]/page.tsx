@@ -7,11 +7,11 @@ import {
   CardTitle,
   DataState,
   EmptyState,
-  FunnelChart,
   LeadTable,
   PageHeader,
   StatusBadge,
 } from "@heyloo/ui";
+import { FunnelChart } from "@heyloo/ui/charts";
 import { use } from "react";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
 

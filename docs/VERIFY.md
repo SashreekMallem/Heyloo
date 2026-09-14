@@ -1685,3 +1685,67 @@ mismatch degrades to a missing field, not a crash, in the meantime.
 **Code:** `supabase/functions/_shared/providers/outscraper.ts`
 (`startGoogleMapsReviews`/`pollGoogleMapsReviews`),
 `supabase/functions/job-outreach-review-score/`.
+
+## SITE REPAIR (2026-09-14) — deferred Sentry/PostHog init
+
+**Endpoint/feature:** `@sentry/nextjs`'s `Sentry.init()` (browser SDK,
+`apps/web/instrumentation-client.ts`) and `posthog-js` (via
+`@heyloo/analytics`, invoked from `apps/web/src/app/providers.tsx`) —
+both moved from an eager, module-scope call to a dynamic `import()`
+deferred until the visitor's first interaction or a 4s fallback timeout
+(`apps/web/src/lib/perf/defer-non-critical.ts`), to bring the home
+route's initial JS back under the creative brief's binding 250KB gz
+budget (measured 955.2KB gz before this change, Sentry the single
+largest contributor).
+
+**Assumed shape / tradeoff:** Sentry's own docs (fetched live,
+docs.sentry.io/platforms/javascript/guides/nextjs/configuration/build,
+plus the SDK's GitHub issue tracker) confirm dynamic-`import()`
+code-splitting is a valid, documented way to keep the SDK's weight out of
+an initial bundle, but are explicit that deferring `Sentry.init()` means
+errors that occur before it initializes are missed and tracing data can
+lose some accuracy — an accepted tradeoff here for the binding perf
+budget, not an oversight. No page specifically titled a
+"lazy-loading Sentry.init" guide was found on docs.sentry.io as of this
+session (a fetch of a guessed URL 404'd) — **VERIFY before relying on
+this further:** re-check docs.sentry.io/platforms/javascript/guides/nextjs
+for a first-party lazy-init pattern (e.g. a lighter loader script) that
+might supersede this dynamic-import approach.
+
+**Code:** `apps/web/instrumentation-client.ts`,
+`apps/web/src/app/providers.tsx`,
+`apps/web/src/lib/perf/defer-non-critical.ts`.
+
+## SITE REPAIR (2026-09-14, 2nd pass) — Sentry moved out of the global
+## client instrumentation file entirely; marketing/signup lose browser
+## error monitoring
+
+**Endpoint/feature:** `@sentry/nextjs`'s `Sentry.init()`, browser side.
+The deferred-`import()` above was real and correct, but a further
+measurement found it insufficient on its own: `instrumentation-client.ts`
+is a Next.js convention loaded on EVERY route unconditionally (Next's own
+docs: "this file runs before your application becomes interactive"), so
+the SDK stayed reachable from the marketing route's build-time module
+graph regardless of when the code inside it actually ran. `Sentry.init()`
+now lives in a new component, `apps/web/src/lib/perf/sentry-init.tsx`'s
+`<SentryInit>` (same deferred-`import()`/first-interaction pattern),
+mounted only from the `(tenant)`/`(admin)`/`(partner)` root layouts —
+never from `(marketing)/layout.tsx` or the shared `[locale]/layout.tsx`.
+`instrumentation-client.ts` itself is now `export {}` — no
+`@sentry/nextjs` reference anywhere in it.
+
+**Tradeoff (deliberate, not an oversight):** marketing pages — the
+homepage, pricing, demo, and every page under `signup/**` (the signup
+flow lives inside the `(marketing)` route group) — no longer get
+browser-side Sentry error monitoring at all. Server-side error capture
+(`apps/web/instrumentation.ts`, Node runtime) is unaffected — this is
+strictly a client-side/browser-JS-error gap. If this tradeoff is
+reconsidered later, the DSN/env wiring in `sentry-init.tsx` is unchanged
+from the original `instrumentation-client.ts` code, so re-enabling it
+marketing-wide is a matter of mounting `<SentryInit>` from
+`[locale]/layout.tsx` instead (accepting the JS-budget cost that was the
+whole reason it was moved) rather than any new integration work.
+
+**Code:** `apps/web/instrumentation-client.ts`,
+`apps/web/src/lib/perf/sentry-init.tsx`,
+`apps/web/src/app/[locale]/{(tenant),(admin),(partner)}/layout.tsx`.

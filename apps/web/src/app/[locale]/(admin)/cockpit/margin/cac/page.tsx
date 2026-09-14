@@ -1,6 +1,7 @@
 "use client";
 
-import { DataState, PageHeader, TrendChart } from "@heyloo/ui";
+import { DataState, PageHeader } from "@heyloo/ui";
+import { TrendChart } from "@heyloo/ui/charts";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
 
 interface CacPoint {

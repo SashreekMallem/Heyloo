@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { TenantShellClient } from "@/components/tenant/tenant-shell-client";
 import { Link } from "@/i18n/navigation";
 import { requireTenantSession } from "@/lib/auth/require-tenant-session";
+import { SentryInit } from "@/lib/perf/sentry-init";
 import { TenantRealtimeProvider } from "@/lib/realtime/tenant-realtime-provider";
 
 /**
@@ -14,7 +15,9 @@ import { TenantRealtimeProvider } from "@/lib/realtime/tenant-realtime-provider"
  * docs/BUILD_NOTES.md T5 entry). "paused"/"canceled" render the static
  * notice IN PLACE (never a redirect to a `/dashboard/suspended` sub-route —
  * that sub-route would sit inside this same guarded layout and loop,
- * exactly what §0.2 says never to do).
+ * exactly what §0.2 says never to do). Mounts `<SentryInit>` (see that
+ * file's docstring) in both branches — error monitoring is route-group-
+ * scoped, never reachable from the marketing bundle.
  */
 export default async function TenantLayout({ children }: { children: ReactNode }) {
   const { tenant } = await requireTenantSession("/dashboard");
@@ -24,6 +27,7 @@ export default async function TenantLayout({ children }: { children: ReactNode }
   if (tenant.status === "paused" || tenant.status === "canceled") {
     return (
       <div className="mx-auto flex min-h-svh max-w-md flex-col items-center justify-center gap-4 p-6 text-center">
+        <SentryInit />
         <h1 className="font-display text-h3 font-semibold">Your account is paused</h1>
         <p className="text-body text-muted-foreground">
           {tenant.status === "canceled"
@@ -46,6 +50,7 @@ export default async function TenantLayout({ children }: { children: ReactNode }
   return (
     <TenantRealtimeProvider tenantId={tenant.id}>
       <div className="heyloo-tenant-branded">
+        <SentryInit />
         <BrandingProvider
           branding={{
             logoUrl: branding.logo_url,

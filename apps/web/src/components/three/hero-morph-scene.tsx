@@ -93,6 +93,7 @@ export function HeroMorphScene({
   const [frameloop, setFrameloop] = useState<"always" | "never">("always");
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- readCssColor() needs a real mounted `document`/DOM element to resolve the computed color (see read-css-color.ts); cannot run during SSR or in a lazy initializer
     setColor(readCssColor(strokeColorVar));
   }, [strokeColorVar]);
 
@@ -128,7 +129,19 @@ export function HeroMorphScene({
       <Canvas
         orthographic
         dpr={[1, MAX_DPR]}
-        camera={{ position: [0, 0, 10], zoom: 260 }}
+        // r3f's default orthographic frustum is exactly the canvas's CSS
+        // pixel size (`camera.left/right/top/bottom = ±size.width/2,
+        // ±size.height/2` — @react-three/fiber's own camera setup), so
+        // the world-space view is `size.width/zoom` × `size.height/zoom`.
+        // The authored morph geometry (`morph-geometry.ts`) spans
+        // x:[-1.1,1.1]/y:[-0.4,0.4] across its four keyframes (2.2 × 0.8
+        // world units) — this hero visual's box
+        // (`hero-scroll-section.tsx`'s `HERO_VISUAL_CLASSNAME`) is
+        // ~450-650px wide at every qualifying viewport, so `zoom: 170`
+        // renders the line at ~375-390px wide (2.2 × 170), comfortably
+        // inside even the narrowest box with margin on every side, at
+        // every stage of the morph.
+        camera={{ position: [0, 0, 10], zoom: 170 }}
         gl={{ antialias: true, alpha: true }}
         frameloop={frameloop}
       >

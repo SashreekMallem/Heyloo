@@ -5,12 +5,25 @@
   "description": "Shared UI components for the tenant dashboard, admin cockpit, and partner portal (FRONTEND_SPEC.md §1) — shadcn/ui primitives (Radix + Tailwind v4, generated in place per FRONTEND_STACK.md) plus the custom components named in §1.3.",
   "type": "module",
   "license": "UNLICENSED",
+  "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./charts": {
+      "types": "./dist/charts/index.d.ts",
+      "default": "./dist/charts/index.js"
+    },
+    "./command": {
+      "types": "./dist/command-entry.d.ts",
+      "default": "./dist/command-entry.js"
+    },
+    "./input-otp": {
+      "types": "./dist/primitives/input-otp.d.ts",
+      "default": "./dist/primitives/input-otp.js"
     },
     "./styles.css": "./src/theme/globals.css"
   },

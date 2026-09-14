@@ -212,6 +212,19 @@ production build against these (`.github/workflows/ci.yml`'s
 `pnpm --filter web exec playwright install chromium` once first) before
 adding anything heavy to a marketing route, not just at review time.
 
+**Current measured status** (docs/BUILD_NOTES.md's SITE-1 integrator
+entry has the full trace): LCP and CLS both PASS with wide margin
+(~376ms, 0.003). Initial JS is an honest, re-confirmed 396.1KB gz — over
+the 250KB target — after every lazy-load/defer lever available from
+`apps/web/**`/`packages/ui/**` alone (GSAP, the WebGL scene, error
+monitoring) has already been applied; ~130KB of that is React/Next's own
+client runtime, unavoidable without a stack-level change (partial
+hydration, dropping a route-global provider onto marketing, etc.) outside
+any single task's file ownership. Treat 250KB as the target to keep
+approaching, not a gate a change here can still make green alone — flag a
+new regression above 396.1KB, but don't chase the pre-existing gap below
+it from a marketing-component change.
+
 ### Adding a section without breaking it
 
 Reach for these in order — each one costs more than the last, so stop as
@@ -250,6 +263,22 @@ soon as the section reads right:
    competes with the home route's 250KB budget. Only pull this in for a
    genuine multi-beat scrubbed set piece (the brief calls for 3-4 total,
    not per-section) — `Sticky` (tier 2) covers a simple single-stage pin.
+
+**Design tokens inside the WebGL tier**: a `THREE.Color`/canvas element
+never hardcodes a hex value — it reads the live `--accent-*`/`--neutral-*`
+custom property via `components/three/read-css-color.ts`'s
+`readCssColor(customProperty)`, so a theme/token change (including the
+light/dark swap) is picked up with zero duplicated color math. That
+function resolves the token through a real DOM element's
+`getComputedStyle(...).color` (never a hand-rolled parse of the raw
+custom-property string), then rasterizes the result through a 1x1
+`<canvas>` and reads the pixel back as a plain `rgb()`/`rgba()` string —
+`packages/ui/src/theme/globals.css`'s tokens are `oklch()`, which current
+Chromium's CSSOM now serializes computed `color` values back as (rather
+than always normalizing to `rgb()`), and neither `THREE.Color`'s nor a
+2D canvas context's own CSS-string parser accepts `oklch()` directly. Any
+new WebGL/Canvas2D color read should go through this same helper, not a
+fresh `getComputedStyle` call.
 
 ### Images and video
 

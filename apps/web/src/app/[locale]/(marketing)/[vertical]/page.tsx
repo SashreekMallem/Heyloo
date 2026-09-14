@@ -118,7 +118,11 @@ export default async function VerticalPage({
                 fixture transcript — same TranscriptViewer-styled markup as
                 the home hero, different words, no new visual system, and
                 not a second pinned set piece (a single entrance fade). */}
-            <Reveal delayMs={ENTRANCE_STAGGER_MS.grid * 2} durationMs={MOTION_DURATIONS_MS.slow} translateY={10}>
+            <Reveal
+              delayMs={ENTRANCE_STAGGER_MS.grid * 2}
+              durationMs={MOTION_DURATIONS_MS.slow}
+              translateY={10}
+            >
               <div className="rounded-xl border border-border bg-card p-5 shadow-sm">
                 <p className="mb-3 text-micro font-medium uppercase tracking-wide text-muted-foreground">
                   A typical call

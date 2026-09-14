@@ -254,6 +254,28 @@ non-qualifying visitor's initial JS out of this budget; a qualifying
 visitor's IS still bounded by the same 250KB number for everything that
 loads before first paint/hydration, before that lazy chunk fetches).
 
+## Update: the perf budget above was never actually run — it was broken
+
+Re-entering this cluster to act on the "re-run it" note above found that
+`measure.ts` had never successfully completed a run: the server-start
+command and the Playwright module resolution each had a real bug (one
+made the script always report a misleading timeout, the other threw once
+the first was fixed). A THIRD bug survived both of those and is the one
+that matters: the initial-JS byte counter was reading `Content-Length`
+headers that Next's production server doesn't send on a real gzip'd
+script response, so it silently summed to ~0 bytes and the budget check
+would have reported PASS regardless of actual bundle size, forever, with
+no error. Fixed all three (server spawn, module unwrap, byte accounting
+now via CDP's real wire-transfer `encodedDataLength`) — full detail,
+including the actual measured number (751.2KB gz, 3x budget, dominated by
+`@sentry/nextjs`'s browser SDK, NOT the still-unwired hero) and the
+in-ownership mitigation applied, is in `docs/BUILD_NOTES.md`'s
+"POLISH+PERF — perf-budget script was silently broken" entry
+(2026-09-14). The budget miss itself needs a decision in
+`apps/web/instrumentation-client.ts` (Sentry init) — outside every
+cluster's file ownership recorded in this document — flagged there for
+whoever picks that up next, rather than redesigned here.
+
 # ENGINE cluster — finished component, final API
 
 Owned by cluster **ENGINE** (this section only). Answers both PAGES' and
@@ -340,6 +362,43 @@ import { HeroScrollScene } from "@/components/motion/hero-scroll-scene";
   in non-production builds (`use-scroll-progress.ts`'s `debugKey`) — a
   Playwright test can set scroll position, call `.update()`, and assert
   the resulting story beat.
+
+## SITE REPAIR → ENGINE: GSAP's eager load is the next lever on the JS budget, if you want it
+
+A 2nd-pass SITE REPAIR review (2026-09-14) found the home route's real
+dominant JS contributors were the WebGL hero engine and viewport-prefetch
+of other routes — NOT Sentry, which the review itself had hypothesized
+(see `docs/BUILD_NOTES.md`'s "SITE REPAIR — 2nd pass" entry for the full
+writeup, including why the Sentry hypothesis was a false lead). Both were
+fixed from SITE REPAIR's own ownership (`lazy-webgl-boundary.tsx`,
+`marketing-header.tsx`), taking the route from 686.9KB → 440.7KB gz —
+still over the 250KB budget, and the next-largest identified item is
+`gsap`/`ScrollTrigger`'s own ~46KB gz, which is ALSO loading eagerly
+(within ~500ms of hydration, confirmed via a CDP network capture split on
+the page's `load` event) because `hero-scroll-scene.tsx`'s
+`useScrollProgress` call creates its `ScrollTrigger` pin unconditionally
+on mount, with nothing gating it on the visitor actually scrolling toward
+the hero.
+
+SITE REPAIR deliberately did NOT attempt deferring this: `Scene`'s own
+mount (the WebGL fix above) was safe to gate independently because the
+pin/CLS-reservation logic in `hero-scroll-scene.tsx` doesn't depend on
+`Scene` having mounted — but the GSAP `ScrollTrigger` creation IS that
+pin/CLS-reservation logic, the exact thing this file's own CLS fix (0.230
+→ 0.003, multiple documented failed attempts already on record in
+`docs/BUILD_NOTES.md`) was built around. Deferring `useScrollProgress`'s
+GSAP load the same way (first scroll/interaction, or a short fallback)
+would very likely still work — scroll hasn't started yet, so there's
+nothing for the pin to track regardless — but risks reopening that CLS
+regression if the timing interacts with `HERO_PIN_RESERVE_CLASSNAME`'s
+CSS-only reservation in a way that isn't obvious without another full
+measurement cycle, which is why this is a request rather than a fix:
+whoever next touches this file is much better positioned to make that
+change safely, with the full context of why the CSS-only reservation
+exists in the first place. Even a full 46KB win only gets to ~395KB, not
+250KB — the framework floor (React/Next/next-intl/Radix, ~380KB before
+GSAP) is the larger remaining gap and isn't fixable from `components/
+motion/**` alone.
 
 ## POLISH+PERF: re-run the perf budget now
 

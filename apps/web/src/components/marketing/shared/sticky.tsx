@@ -43,6 +43,23 @@ export interface StickyProps {
  * document flow, no `position: sticky`, no scroll listening at all —
  * a user who has asked for reduced motion should not get a pinned
  * scroll section, even one whose own internal morph is off.
+ *
+ * `reduced` is real React state, never a value computed by calling
+ * `prefersReducedMotion()` directly in the render body — that call reads
+ * `window.matchMedia`, which always resolves `false` during SSR but can
+ * already resolve `true` on the client's very first render (before
+ * hydration completes) under a real reduced-motion preference, so
+ * branching JSX structure on it directly is the same SSR/client mismatch
+ * `use-in-view.ts`'s `useInView` documents and `LiveCallHero` was fixed
+ * for. Both the server tree and the client's first paint therefore start
+ * non-reduced (pinned/scroll-linked); the real check happens inside the
+ * SAME effect that would otherwise start observing — not a separate
+ * earlier effect — specifically so a reduced-motion visitor's
+ * `IntersectionObserver` is never created at all, not created-then-
+ * immediately-torn-down a tick later: `window.matchMedia` is always safe
+ * to call from an effect body (effects only ever run post-mount,
+ * client-side, so there's no SSR value to disagree with) — only the
+ * RENDER output needed to stop branching on it directly.
  */
 export function Sticky({
   children,
@@ -52,12 +69,18 @@ export function Sticky({
   topOffsetPx = 0,
 }: StickyProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const reduced = prefersReducedMotion();
   const isRenderProp = typeof children === "function";
-  const [progress, setProgress] = useState(reduced ? 1 : 0);
+  const [reduced, setReduced] = useState(false);
+  const [progress, setProgress] = useState(0);
 
   useEffect(() => {
-    if (reduced || !isRenderProp) return;
+    if (prefersReducedMotion()) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only reduced-motion check (window.matchMedia); must run post-mount to avoid an SSR/hydration mismatch, see this component's doc comment above
+      setReduced(true);
+      setProgress(1);
+      return;
+    }
+    if (!isRenderProp) return;
     if (typeof window === "undefined" || typeof IntersectionObserver === "undefined") return;
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
@@ -94,7 +117,10 @@ export function Sticky({
       cancelAnimationFrame(rafId);
       observer.disconnect();
     };
-  }, [reduced, isRenderProp]);
+    // `reduced` deliberately not a dependency — it's only ever SET here,
+    // never read (the fresh `prefersReducedMotion()` check above is the
+    // source of truth every time this effect runs).
+  }, [isRenderProp]);
 
   const content = isRenderProp ? (children as (progress: number) => ReactNode)(progress) : children;
 

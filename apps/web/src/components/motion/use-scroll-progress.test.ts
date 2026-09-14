@@ -58,6 +58,19 @@ describe("useScrollProgress", () => {
     expect(onUpdate).toHaveBeenCalledWith(0.42);
   });
 
+  it("passes pinSpacing through to ScrollTrigger.create() (undefined by default — GSAP's own default applies)", async () => {
+    const target = createRef<HTMLDivElement>();
+    target.current = document.createElement("div");
+
+    renderHook(() =>
+      useScrollProgress({ target, pin: true, pinSpacing: false, onUpdate: vi.fn() }),
+    );
+
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const config = create.mock.calls[0]?.[0] as { pinSpacing?: boolean };
+    expect(config.pinSpacing).toBe(false);
+  });
+
   it("kills the ScrollTrigger on unmount", async () => {
     const target = createRef<HTMLDivElement>();
     target.current = document.createElement("div");

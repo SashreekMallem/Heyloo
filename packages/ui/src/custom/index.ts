@@ -4,7 +4,16 @@ export * from "./booking-calendar.js";
 export * from "./call-feed-item.js";
 export * from "./callout.js";
 export * from "./carrier-forwarding-card.js";
-export * from "./command-palette.js";
+// `CommandPalette` (admin topbar ⌘K, the only consumer) is deliberately
+// NOT re-exported from here — import it from `@heyloo/ui/command` instead
+// (a separate `exports` subpath, package.json). Same fix as the `charts`
+// barrel-leakage fix (`../index.ts`'s own header comment): this component
+// pulls in `cmdk` transitively via `../primitives/command.js`, and SITE
+// REPAIR's follow-up measurement found that chunk's string markers
+// present in the marketing home route's built output even though no
+// marketing route uses it — physically keeping it out of this barrel's
+// module graph is what actually guarantees it stays out, the same way
+// plain tree-shaking wasn't sufficient for `charts` either.
 export * from "./connection-lifecycle-card.js";
 export * from "./data-list.js";
 export * from "./data-state.js";

@@ -247,7 +247,21 @@
 
   --destructive: oklch(0.55 0.2 25);
   --destructive-foreground: oklch(0.99 0 0);
-  --success: oklch(0.52 0.13 155);
+  /* Was oklch(0.52 ...) — measured 5.16:1 as text-success on --card by our
+   * own math (packages/ui/src/theme/contrast.ts), which should clear AA's
+   * 4.5:1, but axe-core on the real built page flagged a "serious"
+   * color-contrast violation (3 nodes) for exactly this usage — MetricCard's
+   * positive-delta text (SITE REPAIR review, medium). The likely gap: our
+   * contrast.ts clamps out-of-gamut oklch() per-channel rather than doing
+   * the CSS Color 4 gamut-mapping browsers actually use, so a color this
+   * close to sRGB's edge can render slightly lighter than our math assumes.
+   * Darkened well past the line (0.44) for a real margin against that
+   * uncertainty rather than chasing the exact boundary; --success-foreground
+   * (used only on the solid pill, `Badge variant="success"`) is unaffected
+   * and stays comfortably AA either way. Dark theme was already passing with
+   * headroom and is unchanged. See contrast.test.ts's new
+   * "status text tokens as plain text" describe block. */
+  --success: oklch(0.44 0.13 155);
   --success-foreground: oklch(0.99 0 0);
   /* Was oklch(0.62 ...) — too light for `text-warning` on `bg-warning/10`
    * (axe color-contrast, serious, every light-mode page via the UI Preview

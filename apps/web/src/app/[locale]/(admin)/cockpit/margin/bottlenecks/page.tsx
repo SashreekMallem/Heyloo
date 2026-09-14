@@ -1,6 +1,7 @@
 "use client";
 
-import { DataState, LatencyPercentileChart, type LatencyPoint, PageHeader } from "@heyloo/ui";
+import { DataState, PageHeader } from "@heyloo/ui";
+import { LatencyPercentileChart, type LatencyPoint } from "@heyloo/ui/charts";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
 
 export default function BottlenecksPage() {

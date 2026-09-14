@@ -4,7 +4,7 @@ import { ENTRANCE_STAGGER_MS, MOTION_DURATIONS_MS, VerticalIcon } from "@heyloo/
 import { ArrowRight } from "lucide-react";
 import { type MouseEvent, useState } from "react";
 import { Reveal } from "@/components/marketing/reveal";
-import { type VerticalContent, VERTICAL_CONTENT } from "@/content/marketing/verticals";
+import { VERTICAL_CONTENT, type VerticalContent } from "@/content/marketing/verticals";
 import { Link } from "@/i18n/navigation";
 
 /** Icon shifts at most this many px opposite the cursor within a card (DESIGN BRIEF §2: "≤4px"). */

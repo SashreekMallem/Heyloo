@@ -9,15 +9,14 @@ import {
   CardHeader,
   CardTitle,
   Input,
-  MarginWaterfall,
   PageHeader,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-  type WaterfallSegment,
 } from "@heyloo/ui";
+import { MarginWaterfall, type WaterfallSegment } from "@heyloo/ui/charts";
 import { useState } from "react";
 import { toast } from "sonner";
 

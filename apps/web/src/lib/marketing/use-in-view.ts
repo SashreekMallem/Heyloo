@@ -46,14 +46,24 @@ export function useInView<T extends Element>(
 ): [React.RefObject<T | null>, boolean] {
   const { threshold = 0.2, rootMargin = "0px", once = true } = options;
   const ref = useRef<T | null>(null);
-  // Lazy initializer, not a `setState` call inside the effect below: the
-  // "nothing to observe" case is knowable synchronously at mount, so it's
-  // the element's real initial state, not a state update in response to an
-  // effect running.
-  const [inView, setInView] = useState(() => skipObserving());
+  // ALWAYS `false` on both the server render and the client's first
+  // render — `skipObserving()` reads `window`/`matchMedia`, which are
+  // unavailable during SSR (`false`) but ARE available by the time the
+  // client's very first render runs (often evaluating `true`, e.g. under
+  // `prefers-reduced-motion`). A lazy initializer that calls it directly
+  // (the previous implementation) therefore returns a different value on
+  // the server than on the client's first paint — a textbook React
+  // hydration mismatch (#418), reproducible on every load. The real
+  // "should this already be visible" check can only run once mounted, so
+  // it happens in the effect below instead, never in the initializer.
+  const [inView, setInView] = useState(false);
 
   useEffect(() => {
-    if (skipObserving()) return; // already resolved to `true` at mount — see above
+    if (skipObserving()) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only check (window.matchMedia/IntersectionObserver support); must run post-mount to avoid an SSR/hydration mismatch, see the state comment above
+      setInView(true); // resolves post-mount — see the state comment above
+      return;
+    }
     const node = ref.current;
     if (!node) return;
 

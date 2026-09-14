@@ -120,3 +120,36 @@ describe("accent-text token contrast (WCAG AA, text-accent-text call sites)", ()
     }
   }
 });
+
+// `--success`/`--destructive` used as plain TEXT color (`text-success`,
+// `text-destructive` — e.g. `MetricCard`'s positive/negative delta,
+// packages/ui/src/custom/metric-card.tsx), as distinct from the
+// PILL_PAIRS describe block above which only covers them as a SOLID
+// badge background paired with their own `-foreground` token. axe-core on
+// the real built site flagged a "serious" violation for exactly this text
+// usage (`text-success` on `--card`, home page's dashboard-preview
+// MetricCards, SITE REPAIR review) even though this repo's own oklch math
+// (contrast.ts) measured the pre-fix value at 5.16:1 — comfortably over
+// AA's 4.5:1 — a reminder that this file's simplified per-channel gamut
+// clamping isn't a perfect stand-in for a real browser's CSS Color 4
+// gamut mapping, so token choices here should keep real margin, not sit
+// right at the line. Guards `--success` (and, defensively, `--destructive`,
+// which uses the same call-site pattern) against regressing back under AA
+// as plain text on either everyday surface a metric/status text color
+// might sit on.
+describe("status text tokens as plain text (WCAG AA, text-success/text-destructive call sites)", () => {
+  for (const theme of THEMES) {
+    const block = extractBlock(theme.selector);
+
+    for (const token of ["success", "destructive"]) {
+      for (const surfaceToken of ["background", "card"]) {
+        it(`${theme.name}: text-${token} vs ${surfaceToken} background clears ${AA_NORMAL_TEXT}:1`, () => {
+          const fg = parseOklch(resolveVar(block, token));
+          const bg = parseOklch(resolveVar(block, surfaceToken));
+          const ratio = contrastRatio(bg, fg);
+          expect(ratio).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+        });
+      }
+    }
+  }
+});

@@ -1,7 +1,7 @@
 "use client";
 
-import { useInView } from "@/lib/marketing/use-in-view";
 import { HOME_CONTENT } from "@/content/marketing/home";
+import { useInView } from "@/lib/marketing/use-in-view";
 
 /**
  * "How it works" — three-step numbered list (DESIGN BRIEF §2, "How it
@@ -32,7 +32,15 @@ export function HowItWorks() {
   );
 }
 
-function Step({ index, title, description }: { index: number; title: string; description: string }) {
+function Step({
+  index,
+  title,
+  description,
+}: {
+  index: number;
+  title: string;
+  description: string;
+}) {
   const [ref, pulsed] = useInView<HTMLSpanElement>({
     threshold: 0,
     rootMargin: "-45% 0px -45% 0px",

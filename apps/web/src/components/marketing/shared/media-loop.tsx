@@ -61,7 +61,17 @@ export interface MediaLoopProps {
  * - `prefers-reduced-motion`: never mounts a `<video>` at all — the
  *   poster `<picture>` is the complete, permanent, correct rendering
  *   (WEBSITE_CREATIVE_BRIEF.md's "static composition with crossfades
- *   only" rule), and zero video bytes are ever requested.
+ *   only" rule), and zero video bytes are ever requested. `reduced` is
+ *   real React state, never a value computed by calling
+ *   `prefersReducedMotion()` directly in the render body — that reads
+ *   `window.matchMedia`, always `false` during SSR but possibly already
+ *   `true` on the client's very first render (before hydration
+ *   completes) under a real reduced-motion preference, which would make
+ *   the `<video>`'s presence and the poster `<img>`'s style disagree
+ *   between the server tree and the client's first paint (the same
+ *   mismatch `use-in-view.ts` documents and `LiveCallHero`/`Sticky`/
+ *   `Parallax` are fixed for). Both start non-reduced; the real check
+ *   runs post-mount in an effect.
  */
 export function MediaLoop({
   sources,
@@ -73,7 +83,12 @@ export function MediaLoop({
 }: MediaLoopProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const reduced = prefersReducedMotion();
+  const [reduced, setReduced] = useState(false);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only reduced-motion check (window.matchMedia); must run post-mount to avoid an SSR/hydration mismatch
+    if (prefersReducedMotion()) setReduced(true);
+  }, []);
   // `priority`, or no `IntersectionObserver` support (SSR, some test
   // environments) — resolved synchronously in the initial state itself
   // (same "skip observing" pattern `lib/marketing/use-in-view.ts` uses),
@@ -84,8 +99,14 @@ export function MediaLoop({
   );
 
   // Mount gate — lazy `IntersectionObserver`, skipped entirely for `priority` (or already resolved true above).
+  // A fresh `prefersReducedMotion()` check here (not the `reduced` state
+  // above) — `reduced` is set by a separate effect and, within the same
+  // commit, this effect can run before that state update is applied,
+  // which would create-then-immediately-tear-down an observer for a
+  // reduced-motion visitor instead of never creating one at all; a
+  // synchronous re-check (always safe post-mount) closes that gap.
   useEffect(() => {
-    if (reduced || mounted) return;
+    if (prefersReducedMotion() || mounted) return;
     const node = containerRef.current;
     if (!node) return;
     const observer = new IntersectionObserver(
@@ -99,11 +120,12 @@ export function MediaLoop({
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [reduced, mounted]);
+  }, [mounted]);
 
   // Play/pause gate — once mounted, stop spending CPU/battery once it scrolls off screen.
+  // Same fresh-check reasoning as the mount gate above, not the `reduced` state.
   useEffect(() => {
-    if (reduced || !mounted) return;
+    if (prefersReducedMotion() || !mounted) return;
     if (typeof window === "undefined" || typeof IntersectionObserver === "undefined") return;
     const node = containerRef.current;
     const video = videoRef.current;
@@ -122,7 +144,7 @@ export function MediaLoop({
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [reduced, mounted]);
+  }, [mounted]);
 
   return (
     <div ref={containerRef} className={className} style={{ width, height, position: "relative" }}>

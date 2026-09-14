@@ -1,12 +1,5 @@
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  FunnelChart,
-  MetricCard,
-  PageHeader,
-} from "@heyloo/ui";
+import { Card, CardContent, CardHeader, CardTitle, MetricCard, PageHeader } from "@heyloo/ui";
+import { FunnelChart } from "@heyloo/ui/charts";
 import type { Metadata } from "next";
 import { ensurePartnerReferralLink } from "@/app/api/partner/_lib/ensure-referral-link";
 import { CopyLinkButton } from "@/components/partner/copy-link-button";

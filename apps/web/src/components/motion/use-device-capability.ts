@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useIsomorphicLayoutEffect } from "./use-isomorphic-layout-effect";
 
 export type DeviceTier = "webgl" | "canvas2d";
 
@@ -17,7 +18,8 @@ export interface DeviceCapability {
   ready: boolean;
 }
 
-const MIN_QUALIFYING_WIDTH = 768;
+/** Exported so `hero-scroll-scene.tsx`'s CSS-only space reservation (see its own comment on why this gate can't be JS-driven) mirrors this exact breakpoint. */
+export const MIN_QUALIFYING_WIDTH = 768;
 const MIN_DEVICE_MEMORY_GB = 4;
 
 interface NavigatorWithHeuristics extends Navigator {
@@ -67,6 +69,22 @@ function qualifiesForWebgl(): boolean {
  * tier a set piece should render. See `qualifiesForWebgl` for the exact
  * checks; see `hero-scroll-scene.tsx` for how `useReducedMotion` is checked
  * separately, first, ahead of this.
+ *
+ * Resolves via `useIsomorphicLayoutEffect` (before the browser's own next
+ * paint) rather than a plain `useEffect` (after it) — cheap insurance
+ * against an unnecessary extra re-render on a pure client-side mount.
+ * That said, `hero-scroll-scene.tsx`'s CLS fix does NOT rely on this
+ * timing: on a real SSR'd page load the browser paints the server-
+ * rendered HTML (necessarily computed with `ready: false`, since SSR has
+ * no `window`) before ANY client JS — including this hook's effect —
+ * has run at all, so "resolve before the browser's next paint" cannot
+ * retroactively change what already painted first. Confirmed empirically
+ * (a real Playwright run measuring actual `layout-shift` entries): a
+ * JS/state-driven reservation here still produces a large, real shift
+ * once hydration completes and this resolves to `qualifies: true` a
+ * couple seconds later, regardless of which effect hook is used — see
+ * `hero-scroll-scene.tsx`'s own comment for the CSS-only fix that
+ * actually closes this gap.
  */
 export function useDeviceCapability(): DeviceCapability {
   const [capability, setCapability] = useState<DeviceCapability>({
@@ -74,7 +92,7 @@ export function useDeviceCapability(): DeviceCapability {
     ready: false,
   });
 
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     setCapability({ tier: qualifiesForWebgl() ? "webgl" : "canvas2d", ready: true });
   }, []);
 

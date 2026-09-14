@@ -1,10 +1,11 @@
 import { Button, Container, Section } from "@heyloo/ui";
-import { Sparkles } from "lucide-react";
+import { PhoneCall } from "lucide-react";
 import type { Metadata } from "next";
 import { setRequestLocale } from "next-intl/server";
 import { Suspense } from "react";
 import { DashboardPreview } from "@/components/marketing/dashboard-preview";
 import { DemoIconCycle } from "@/components/marketing/demo-icon-cycle";
+import { HeroScrollSection } from "@/components/marketing/hero-scroll-section";
 import { HowItWorks } from "@/components/marketing/how-it-works";
 import { LiveCallHero } from "@/components/marketing/live-call-hero";
 import { Reveal } from "@/components/marketing/reveal";
@@ -34,10 +35,13 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
       {/* Hero */}
       <Section spacing="spacious" className="pt-12 md:pt-16">
         <Container size="wide">
-          <div className="grid items-center gap-10 lg:grid-cols-2 lg:gap-16">
+          <HeroScrollSection
+            className="grid items-center gap-10 lg:grid-cols-2 lg:gap-16"
+            visualFallback={<LiveCallHero />}
+          >
             <div className="space-y-6 text-center lg:text-left">
               <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary px-3 py-1 text-small font-medium text-secondary-foreground">
-                <Sparkles className="size-3.5 text-primary" aria-hidden="true" />
+                <PhoneCall className="size-3.5 text-primary" aria-hidden="true" />
                 AI receptionist for real businesses
               </span>
               <h1 className="font-display text-display font-semibold text-balance">
@@ -61,9 +65,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
                 </Button>
               </div>
             </div>
-
-            <LiveCallHero />
-          </div>
+          </HeroScrollSection>
         </Container>
       </Section>
 

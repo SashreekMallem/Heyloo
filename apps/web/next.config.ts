@@ -49,6 +49,30 @@ const nextConfig: NextConfig = {
     // Vercel's fluid-compute pricing model FRONTEND_STACK.md cites depends on
     // this staying on for anything server-rendered per-request.
     serverActions: { bodySizeLimit: "2mb" },
+    /**
+     * SITE REPAIR finding (blocker): the home route's initial JS pulled
+     * in a "dashboard-oriented recharts/date-fns/zod vendor chunk" that
+     * marketing has no use for. Root cause: `packages/ui/src/index.ts`
+     * is ONE barrel (`export * from "./charts/index.js"` alongside
+     * `./primitives`, `./custom`, etc.) — a marketing component doing
+     * `import { Button, Container } from "@heyloo/ui"` pulls in that
+     * whole barrel's module graph, including the chart components'
+     * `recharts`/`date-fns` imports, unless something rewrites the
+     * import to reach the individual module directly.
+     * `optimizePackageImports` (verified against this exact Next
+     * version's shipped docs,
+     * node_modules/next/dist/docs/.../optimizePackageImports.md —
+     * CLAUDE.md Rule 1) is Next's own documented answer to precisely
+     * this "large barrel file" problem: it rewrites a named-import
+     * statement against a listed package to import only the modules
+     * actually used, with zero call-site change needed. `recharts` and
+     * `date-fns` are already in Next's OWN always-on default list (so a
+     * *direct* `import {...} from "recharts"` was never the problem) —
+     * `@heyloo/ui` itself, a workspace package Next has no built-in
+     * knowledge of, needs to be listed explicitly to get the same
+     * treatment for its own barrel.
+     */
+    optimizePackageImports: ["@heyloo/ui"],
   },
   // Image loading strategy (WEBSITE_CREATIVE_BRIEF.md perf budget —
   // "LCP < 2.5s ... assets AVIF/WebP"). Verified against
@@ -116,4 +140,40 @@ export default withSentryConfig(withNextIntl(nextConfig), {
   // VERIFY (CLAUDE.md Rule 1): org/project slugs come from SENTRY_ORG/
   // SENTRY_PROJECT at build time via the Sentry CLI env vars, not hardcoded
   // here — see .env.example.
+  /**
+   * Perf budget (docs/DESIGN_SYSTEM.md, `scripts/site-perf/budgets.ts`):
+   * re-running the perf-budget script for real (fixing two bugs in
+   * `measure.ts` that had been silently masking its own measurement —
+   * see that file's history) surfaced the home route's initial JS at
+   * ~751KB gz against the brief's 250KB budget, almost entirely
+   * `@sentry/nextjs`'s browser bundle (confirmed by grepping the built
+   * `.next/static/chunks/*.js` for `sentry-`/`sentry.browser.*` string
+   * markers — the two largest chunks, ~292KB and ~147KB gz, are
+   * overwhelmingly Sentry). `apps/web/instrumentation-client.ts` (NOT
+   * this cluster's file — its own ownership is next.config.ts,
+   * layout.tsx's font/preload/theme, globals.css, packages/ui's 4
+   * primitives, components/marketing/shared, scripts/site-perf, and the
+   * CI perf job only) calls only
+   * `Sentry.init({ dsn, tracesSampleRate: 0.1 })` — no
+   * `replayIntegration()` anywhere — so every Session Replay
+   * tree-shaking flag below is a pure, behavior-unchanged size win (the
+   * SDK's own docs: "this has no effect if you did not add
+   * replayIntegration"), verified against this exact `@sentry/nextjs`
+   * version's shipped `config/types.d.ts` (Rule 1) before adding.
+   * `excludeTracing` is deliberately NOT set — `tracesSampleRate: 0.1`
+   * means tracing genuinely is in use, and the SDK's own docs warn
+   * against tree-shaking it out from under that. The remaining bundle
+   * (Sentry's core + tracing/OpenTelemetry) is the actual dominant
+   * contributor to the budget miss and is NOT fixable from this file
+   * alone — flagged in `docs/BUILD_NOTES.md` (POLISH+PERF) for whoever
+   * owns `instrumentation-client.ts` to decide the tracing/bundle-size
+   * tradeoff (e.g. a marketing-route-only lazy/no-op init) rather than
+   * redesigned here, out of ownership (CLAUDE.md Rule 4).
+   */
+  bundleSizeOptimizations: {
+    excludeDebugStatements: true,
+    excludeReplayIframe: true,
+    excludeReplayShadowDom: true,
+    excludeReplayWorker: true,
+  },
 });

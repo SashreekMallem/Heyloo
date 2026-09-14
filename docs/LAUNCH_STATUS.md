@@ -1,5 +1,58 @@
 # Launch Status
 
+## Design: flagship marketing site — scroll-driven 3D narrative, motion engine, assets (SITE-1, 2026-09-14)
+
+Shipped the flagship marketing site the creative brief specced
+(`docs/design/WEBSITE_CREATIVE_BRIEF.md`): a scroll-driven, pinned WebGL
+hero (react-three-fiber line-art morph, cross-faded with a real DOM
+transcript/booking overlay so the qualifying tier shows actual product
+content, not just an abstract shape) with a play-once/static fallback on
+every non-qualifying tier (mobile, `prefers-reduced-motion`, no-WebGL),
+a full GSAP `ScrollTrigger`-driven motion engine (`components/motion/`)
+deferred behind real visitor interaction, and the supporting asset/token
+pipeline. Full build history — including three prior review-driven
+repair passes — is `docs/BUILD_NOTES.md`'s `PAGES`, `POLISH+PERF`,
+`RECONCILE`, three `SITE REPAIR` entries, and this final `SITE-1`
+integrator entry.
+
+**This pass (integrator, 4th-round review at 71/100)**: fixed the
+review's one real blocker — `THREE.Color`/Canvas2D couldn't parse the
+`oklch()` computed-color string current Chromium now hands back from
+`getComputedStyle` for a design token declared in `oklch()`
+(`packages/ui/src/theme/globals.css`); `read-css-color.ts` now rasterizes
+the resolved color through a 1x1 canvas and reads the actual pixel back
+as `rgb()`/`rgba()`, verified gone in a live browser console capture.
+Re-confirmed the review's other blocker — initial JS 396.1KB gz vs. the
+250KB budget — is the same honest architectural floor the prior repair
+pass had already root-caused and flagged (CLAUDE.md Rule 4): ~130KB of
+it alone is React/Next's own client runtime, unavoidable without a
+stack-level decision outside this task's file ownership; LCP (~376ms)
+and CLS (0.003) both pass with wide margin and are unaffected. Also
+brought `pnpm run lint` (not part of the review's own Playwright-based
+scoring) from 44 ESLint errors to 0 — scoped, justified
+`eslint-disable` comments on intentional SSR-hydration-safe
+`setState`-in-effect and "latest ref" patterns this codebase already
+uses that pattern for elsewhere, plus real mechanical
+`testing-library/prefer-find-by` fixes.
+
+**Gates**: `npx biome check --write` clean; `pnpm -w typecheck` clean
+(21/21 packages); `pnpm run lint` 0 errors; `pnpm -w test` 543/543
+green; `apps/web` production build (`next build --webpack`) clean, all
+183 routes; `scripts/site-perf/measure.ts` — LCP PASS, CLS PASS, initial
+JS FAIL (396.1KB vs. 250KB budget, documented floor, not a regression);
+axe (wcag2a/wcag2aa) 0 violations across all 4 marketing pages in the
+review's own capture; no file >2MB; `apps/web/public/site` 344KB (budget
+8MB); lockfile untouched (no new dependencies this pass).
+
+**Known gap, not fixable from this task's ownership**: the 250KB
+initial-JS budget itself. Closing the remaining ~146KB needs either a
+revised budget for a hydrated Next.js 16 + React 19 marketing route, or a
+stack-level change (partial hydration/islands, moving `@tanstack/
+react-query`'s root-layout provider off marketing routes specifically,
+dropping/replacing a framework-level dependency) — see
+`docs/BUILD_NOTES.md`'s `SITE-1` entry and `docs/DESIGN_SYSTEM.md`'s
+Performance budget section for the full chunk-level trace.
+
 ## Channels follow-up wave: rate limits, calls filters, pricing merge, reply tracking, quiet hours, multi-entity (CHANNELS-2, 2026-09-11)
 
 Follow-up pass over the Channels wave's adversarial-verifier findings
