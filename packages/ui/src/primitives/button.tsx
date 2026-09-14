@@ -5,7 +5,19 @@ import type { ButtonHTMLAttributes, Ref } from "react";
 import { cn } from "../lib/utils.js";
 
 export const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-[background-color,border-color,color,opacity,box-shadow] duration-(--duration-fast) ease-(--ease-out) disabled:pointer-events-none disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&_svg]:size-4 [&_svg]:shrink-0",
+  // Micro-interaction (WEBSITE_CREATIVE_BRIEF.md "magnetic buttons ok" /
+  // DESIGN_SYSTEM.md "premium restraint"): a barely-there press (98%
+  // scale) and lift (-1px), `transform` added to the existing transition
+  // list so both animate on the same duration/ease tokens as the
+  // color/shadow changes already here — CSS-only (no JS, no "use client"
+  // needed), so every existing server-rendered call site keeps working
+  // unchanged. `active:` fires on both mouse and touch; the lift is
+  // skipped on `disabled`/`loading` (already `pointer-events-none`, so it
+  // never fires) and on `variant="link"` (a lift would fight its
+  // underline-on-hover affordance). Collapses to nothing under
+  // `prefers-reduced-motion` via the blanket rule in
+  // packages/ui/src/theme/globals.css — no per-component opt-out needed.
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-[background-color,border-color,color,opacity,box-shadow,transform] duration-(--duration-fast) ease-(--ease-out) disabled:pointer-events-none disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 hover:-translate-y-px active:translate-y-0 active:scale-[0.98] [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
@@ -22,7 +34,11 @@ export const buttonVariants = cva(
         // separate semantic token so a button-hover retune can't silently
         // drag link-text contrast down with it (DESIGN-4) — clears AA in
         // both themes (~4.99:1 light, ~7.73:1 dark).
-        link: "text-accent-text underline-offset-4 hover:underline",
+        // No lift/press here — `link` reads as inline text, not a
+        // raised surface, so it keeps only its underline-on-hover
+        // affordance (`hover:translate-y-0`/`active:scale-100` cancel
+        // the base variant's lift/press for this one).
+        link: "text-accent-text underline-offset-4 hover:underline hover:translate-y-0 active:scale-100",
       },
       size: {
         // 44px (h-11) below the `lg` (1024px) breakpoint — the default size

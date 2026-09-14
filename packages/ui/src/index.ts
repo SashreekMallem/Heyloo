@@ -15,4 +15,5 @@ export * from "./icons/index.js";
 export * from "./layout/index.js";
 export * from "./lib/format-phone.js";
 export * from "./lib/utils.js";
+export * from "./motion-tokens.js";
 export * from "./primitives/index.js";

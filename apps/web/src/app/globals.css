@@ -13,3 +13,28 @@
 body {
   min-height: 100svh;
 }
+
+/*
+ * `.defer-offscreen` — the one perf primitive this file adds (see
+ * docs/DESIGN_SYSTEM.md's "add a section without breaking the budget"
+ * note for the full guidance). Wrap a heavy below-the-fold marketing
+ * section (a set piece, a `MediaLoop`, a `Sticky` scroll story) in it to
+ * tell the browser to skip layout/paint/style work for that subtree
+ * entirely until it's near the viewport — the same mechanism behind
+ * Chrome's own "distance from viewport" image lazy-loading, generalized
+ * to any block. `contain-intrinsic-size` reserves a placeholder box (its
+ * value is a rough, deliberately generous estimate — an under-estimate
+ * causes a layout shift the moment the section IS measured, which is
+ * exactly the CLS regression this class exists to avoid) so nothing
+ * shifts once the real content is laid out; a section significantly
+ * shorter/taller than ~640px on entry should pass its own inline
+ * `contain-intrinsic-size` instead of relying on this default.
+ * `content-visibility` degrades to "always visible" in browsers that
+ * don't support it (no feature-detection needed) and is skipped
+ * automatically inside a browser's find-in-page/print flow, so this is
+ * additive-only — never a correctness risk, only a paint-cost one.
+ */
+.defer-offscreen {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 640px;
+}

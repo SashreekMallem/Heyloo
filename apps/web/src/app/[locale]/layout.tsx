@@ -81,6 +81,17 @@ export default async function LocaleLayout({
       className={`${fraunces.variable} ${inter.variable} ${ibmPlexMono.variable}`}
     >
       <head>
+        {/*
+         * Tells the browser's own UA chrome (scrollbars, form controls,
+         * the mobile status-bar/pull-to-refresh background) that BOTH
+         * themes are supported and to pick one immediately from
+         * `prefers-color-scheme` — this paints correctly on the very
+         * first frame, before the bootstrap script below even runs,
+         * instead of a light-UA-chrome flash under a dark system theme
+         * (docs/DESIGN_SYSTEM.md's "system preference via
+         * prefers-color-scheme, default — no toggle needed").
+         */}
+        <meta name="color-scheme" content="light dark" />
         {/* biome-ignore lint/security/noDangerouslySetInnerHtml: static, non-user-controlled bootstrap script — see comment above. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
       </head>

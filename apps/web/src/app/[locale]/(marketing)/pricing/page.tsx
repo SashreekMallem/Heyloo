@@ -10,11 +10,13 @@ import {
   CardHeader,
   CardTitle,
   Container,
+  MOTION_DURATIONS_MS,
   Section,
 } from "@heyloo/ui";
 import { Check } from "lucide-react";
 import type { Metadata } from "next";
 import { setRequestLocale } from "next-intl/server";
+import { Reveal } from "@/components/marketing/reveal";
 import { Link } from "@/i18n/navigation";
 
 export const metadata: Metadata = {
@@ -76,28 +78,42 @@ export default async function PricingPage({ params }: { params: Promise<{ locale
         </Container>
 
         <Container size="wide">
+          {/* No 3D, no scroll-scrub (DESIGN BRIEF §4, "/pricing"): this is
+              a decision page — a fast, once, on-enter fade/slide per
+              plan card, staggered, matching the home page's pricing-teaser
+              treatment. Premium here means clarity and legibility, not
+              motion. */}
           <div className="mx-auto mt-12 grid max-w-3xl gap-6 sm:grid-cols-2">
-            {PLANS.map((plan) => (
-              <Card key={plan.name} className="flex flex-col">
-                <CardHeader className="space-y-2">
-                  <Badge
-                    variant={plan.badge === "Most popular" ? "default" : "secondary"}
-                    className="w-fit"
-                  >
-                    {plan.badge}
-                  </Badge>
-                  <CardTitle className="font-display text-h3 font-semibold">{plan.name}</CardTitle>
-                  <p className="text-small text-muted-foreground">{plan.tagline}</p>
-                </CardHeader>
-                <CardContent className="flex-1 space-y-2.5 text-small">
-                  {plan.features.map((f) => (
-                    <p key={f} className="flex items-start gap-2">
-                      <Check className="mt-0.5 size-4 shrink-0 text-success" />
-                      {f}
-                    </p>
-                  ))}
-                </CardContent>
-              </Card>
+            {PLANS.map((plan, index) => (
+              <Reveal
+                key={plan.name}
+                delayMs={index * 60}
+                durationMs={MOTION_DURATIONS_MS.base}
+                translateY={8}
+              >
+                <Card className="flex h-full flex-col">
+                  <CardHeader className="space-y-2">
+                    <Badge
+                      variant={plan.badge === "Most popular" ? "default" : "secondary"}
+                      className="w-fit"
+                    >
+                      {plan.badge}
+                    </Badge>
+                    <CardTitle className="font-display text-h3 font-semibold">
+                      {plan.name}
+                    </CardTitle>
+                    <p className="text-small text-muted-foreground">{plan.tagline}</p>
+                  </CardHeader>
+                  <CardContent className="flex-1 space-y-2.5 text-small">
+                    {plan.features.map((f) => (
+                      <p key={f} className="flex items-start gap-2">
+                        <Check className="mt-0.5 size-4 shrink-0 text-success" />
+                        {f}
+                      </p>
+                    ))}
+                  </CardContent>
+                </Card>
+              </Reveal>
             ))}
           </div>
         </Container>

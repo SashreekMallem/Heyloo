@@ -2,7 +2,8 @@
 
 import { cn } from "@heyloo/ui";
 import { Calendar, Check, Mic, Phone, Wrench } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { prefersReducedMotion, useInView } from "@/lib/marketing/use-in-view";
 
 interface Turn {
   speaker: "caller" | "ai";
@@ -21,10 +22,17 @@ const TURNS: Turn[] = [
   { speaker: "caller", text: "Yes, please — that works." },
 ];
 
-// One index per visible frame of the loop: how many transcript turns are
+// One index per visible frame of the story: how many transcript turns are
 // shown, whether the tool-call badge is up, and whether the booking has
 // landed in the mini dashboard — a hand-authored storyboard, not real call
 // data (DESIGN BRIEF: "a hero component that shows a live-feeling call").
+// This is the interim/fallback tier for the flagship hero set piece
+// (DESIGN BRIEF §3): the full pinned WebGL waveform→handset→transcript→
+// card→row morph is the ENGINE cluster's deliverable (three/r3f/drei/gsap
+// — new deps out of this cluster's ownership); until it ships, this DOM/
+// CSS storyboard IS the shown experience on every tier, already matching
+// the brief's own described mobile/reduced-tier fallback content model —
+// see docs/audit/SITE_REQUESTS.md for the swap-in contract.
 const FRAMES: { turns: number; tool: boolean; booking: boolean }[] = [
   { turns: 1, tool: false, booking: false },
   { turns: 2, tool: false, booking: false },
@@ -32,9 +40,6 @@ const FRAMES: { turns: number; tool: boolean; booking: boolean }[] = [
   { turns: 3, tool: true, booking: false },
   { turns: 4, tool: true, booking: false },
   { turns: 5, tool: true, booking: false },
-  { turns: 6, tool: true, booking: true },
-  { turns: 6, tool: true, booking: true },
-  { turns: 6, tool: true, booking: true },
   { turns: 6, tool: true, booking: true },
 ];
 
@@ -47,27 +52,47 @@ const FRAME_MS = 1500;
  * client state + CSS transitions, no external asset, no real call. Purely
  * decorative/demonstrative: `aria-hidden` on the animated internals, the
  * surrounding hero copy (h1 + subhead) carries the real message for
- * assistive tech. Respects `prefers-reduced-motion` via the global
- * transition-collapse rule in packages/ui/src/theme/globals.css.
+ * assistive tech.
+ *
+ * Motion (DESIGN BRIEF §2, "Hero"): plays ONCE as the hero scrolls into
+ * view, then holds on the final (booking-confirmed) frame — "a perpetual
+ * background loop is exactly the kind of motion-for-its-own-sake the
+ * standard forbids ... it should play its story once and rest." Reduced
+ * motion renders the resolved final frame immediately, matching the
+ * brief's hero-specific reduced-motion rule: "show the outcome, skip the
+ * journey" — no interval ever starts.
  */
 export function LiveCallHero() {
-  const [frame, setFrame] = useState(0);
+  const [ref, inView] = useInView<HTMLDivElement>({ threshold: 0.3 });
+  const [frame, setFrame] = useState(() => (prefersReducedMotion() ? FRAMES.length - 1 : 0));
+  const startedRef = useRef(false);
 
   useEffect(() => {
+    // Reduced motion already rendered the resolved final frame from the
+    // lazy initial state above — nothing to start, and no `setFrame` call
+    // belongs here for that case.
+    if (!inView || startedRef.current || prefersReducedMotion()) return;
+    startedRef.current = true;
+
+    let index = 0;
     const id = setInterval(() => {
-      setFrame((f) => (f + 1) % FRAMES.length);
+      index += 1;
+      if (index >= FRAMES.length - 1) {
+        setFrame(FRAMES.length - 1);
+        clearInterval(id);
+        return;
+      }
+      setFrame(index);
     }, FRAME_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [inView]);
 
-  // `frame` is always produced by `% FRAMES.length` (or the initial 0), so
-  // it's always in bounds — `noUncheckedIndexedAccess` can't prove that
-  // statically for a computed index.
-  const { turns, tool, booking } = FRAMES[frame % FRAMES.length] as (typeof FRAMES)[number];
+  const { turns, tool, booking } = FRAMES[Math.min(frame, FRAMES.length - 1)] as (typeof FRAMES)[number];
   const visibleTurns = TURNS.slice(0, turns);
 
   return (
     <div
+      ref={ref}
       aria-hidden="true"
       className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 sm:items-stretch sm:gap-5"
     >

@@ -201,6 +201,78 @@ unprefixed at 390px with ≥44px touch targets (see Breakpoints above) —
 `Button`'s `default`/`lg` sizes are how that guarantee is met without
 also bloating the reviewed 36px desktop density.
 
+## Performance budget
+
+The marketing site's binding perf budget (`docs/design/WEBSITE_CREATIVE_BRIEF.md`
+STANDARD): LCP < 2.5s on a mid-range laptop, CLS < 0.05, initial JS for the
+home route < 250KB gz. `scripts/site-perf/measure.ts` checks the real
+production build against these (`.github/workflows/ci.yml`'s
+`site-perf-budget` job) — run it locally with
+`node --experimental-strip-types scripts/site-perf/measure.ts` (needs
+`pnpm --filter web exec playwright install chromium` once first) before
+adding anything heavy to a marketing route, not just at review time.
+
+### Adding a section without breaking it
+
+Reach for these in order — each one costs more than the last, so stop as
+soon as the section reads right:
+
+1. **CSS-only reveal/hover.** `Button`/`Card`/`Badge`'s `interactive`
+   micro-interaction props (hover lift, press scale — `transform`/
+   `box-shadow` only, main-thread-cheap) and `NavItem`'s underline-grow
+   (all `packages/ui/src/primitives`) cost nothing extra — no JS, no
+   client-component boundary forced on the call site, correct under
+   `prefers-reduced-motion` automatically via the blanket rule at the
+   bottom of `theme/globals.css`. Reach for these first.
+2. **`apps/web/src/components/marketing/shared`'s scroll primitives** —
+   `Reveal` (entrance fade/slide, `IntersectionObserver`-driven),
+   `Parallax` (subtle scroll-linked drift, ≤~12px default), `Sticky` (a
+   CSS `position: sticky` pin with an optional scroll-progress render
+   prop) — each is `requestAnimationFrame`-driven and gated by
+   `IntersectionObserver` so it costs nothing off screen, and each
+   collapses to a correct static composition (no transform, no pin, no
+   scroll listening at all) under `prefers-reduced-motion`. This is the
+   right tier for nearly every section — reach for it before adding a
+   new dependency.
+3. **`MediaLoop`** (`components/marketing/shared/media-loop.tsx`) for a
+   short muted/looping background clip: mounts the `<video>` lazily
+   (`IntersectionObserver`, `rootMargin: "200px"`) unless `priority` is
+   set, pauses it off screen, and — under `prefers-reduced-motion` —
+   never mounts a `<video>` element at all, only its AVIF/WebP poster.
+   Keep the source loop itself under 2MB (docs/design/ASSETS.md has the
+   encoding recipe) and always pass real `width`/`height` (CLS budget).
+4. **`components/motion/` + `components/three/`'s GSAP `ScrollTrigger`
+   pin / react-three-fiber scene** — the flagship hero/dashboard-reveal
+   machinery. Both load lazily (`gsap-loader.ts`'s dynamic import,
+   `lazy-webgl-boundary.tsx`'s device-qualification gate) specifically
+   so mounting one doesn't cost every OTHER route anything — but a
+   second section reaching for this tier on the SAME route directly
+   competes with the home route's 250KB budget. Only pull this in for a
+   genuine multi-beat scrubbed set piece (the brief calls for 3-4 total,
+   not per-section) — `Sticky` (tier 2) covers a simple single-stage pin.
+
+### Images and video
+
+`next.config.ts`'s `images.formats` is `["image/avif", "image/webp"]`
+(Next's own default is WebP only — AVIF is opt-in) — every `next/image`
+usage gets the smaller AVIF encode automatically for a supporting
+browser, WebP fallback next, original format last. Mark the actual LCP
+element `priority` (skips lazy-loading and preloads it); every other
+image lazy-loads by default — don't override that. A background loop's
+poster still (already AVIF/WebP, pre-optimized — see `MediaLoop` above)
+intentionally bypasses `next/image` — it's already a right-sized static
+file, so the optimizer would only add request overhead.
+
+For a below-the-fold section heavy enough that even its LAYOUT cost
+matters before it's ever scrolled to, wrap it in `.defer-offscreen`
+(`apps/web/src/app/globals.css`) — `content-visibility: auto` skips
+layout/paint work for that subtree until it's near the viewport. Pass
+the section its own `contain-intrinsic-size` inline if it's
+significantly shorter/taller than the class's ~640px default estimate —
+an under-estimate there causes a layout shift the moment the browser
+finally measures the real content, which is exactly the CLS regression
+this exists to avoid.
+
 ## UI Preview Mode
 
 `process.env.UI_PREVIEW_MODE === "1" && process.env.NODE_ENV !== "production"`

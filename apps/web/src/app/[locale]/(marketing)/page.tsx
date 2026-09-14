@@ -1,10 +1,13 @@
-import { Button, Container, Section, VerticalIcon } from "@heyloo/ui";
+import { Button, Container, Section } from "@heyloo/ui";
 import { Sparkles } from "lucide-react";
 import type { Metadata } from "next";
 import { setRequestLocale } from "next-intl/server";
 import { Suspense } from "react";
 import { DashboardPreview } from "@/components/marketing/dashboard-preview";
+import { DemoIconCycle } from "@/components/marketing/demo-icon-cycle";
+import { HowItWorks } from "@/components/marketing/how-it-works";
 import { LiveCallHero } from "@/components/marketing/live-call-hero";
+import { Reveal } from "@/components/marketing/reveal";
 import { TrustStrip } from "@/components/marketing/trust-strip";
 import { VerticalGrid } from "@/components/marketing/vertical-grid";
 import { RoleGuardToast } from "@/components/shared/role-guard-toast";
@@ -95,17 +98,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
           <h2 className="text-center font-display text-h1 font-semibold text-balance">
             How it works
           </h2>
-          <div className="mt-12 grid gap-8 sm:grid-cols-3 sm:gap-6">
-            {HOME_CONTENT.howItWorks.map((step, index) => (
-              <div key={step.title} className="space-y-3 text-center sm:text-left">
-                <span className="mx-auto flex size-10 items-center justify-center rounded-full bg-primary font-display text-h4 font-semibold text-primary-foreground sm:mx-0">
-                  {index + 1}
-                </span>
-                <h3 className="text-h4 font-semibold">{step.title}</h3>
-                <p className="text-small text-pretty text-muted-foreground">{step.description}</p>
-              </div>
-            ))}
-          </div>
+          <HowItWorks />
         </Container>
       </Section>
 
@@ -127,38 +120,44 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
         </Container>
       </Section>
 
-      {/* Pricing teaser */}
+      {/* Pricing teaser — static card, single fast fade/slide-up entrance
+          only (DESIGN BRIEF §2: "this is a pause-and-decide moment; motion
+          here would undercut it"). */}
       <Section spacing="default">
         <Container size="wide">
-          <div className="rounded-2xl border border-border bg-card p-8 text-center shadow-sm sm:p-12">
-            <h2 className="font-display text-h2 font-semibold">Starting at $299/mo</h2>
-            <p className="mx-auto mt-2 max-w-md text-small text-pretty text-muted-foreground">
-              No per-call penalty. See the plan built for your business type at signup.
-            </p>
-            <div className="mt-6 flex justify-center">
-              <Button asChild>
-                <Link href="/pricing">See pricing</Link>
-              </Button>
+          <Reveal>
+            <div className="rounded-2xl border border-border bg-card p-8 text-center shadow-sm sm:p-12">
+              <h2 className="font-display text-h2 font-semibold">Starting at $299/mo</h2>
+              <p className="mx-auto mt-2 max-w-md text-small text-pretty text-muted-foreground">
+                No per-call penalty. See the plan built for your business type at signup.
+              </p>
+              <div className="mt-6 flex justify-center">
+                <Button asChild>
+                  <Link href="/pricing">See pricing</Link>
+                </Button>
+              </div>
             </div>
-          </div>
+          </Reveal>
         </Container>
       </Section>
 
       {/* Demo CTA */}
       <Section spacing="default" className="pb-24">
         <Container size="wide">
-          <div className="rounded-2xl border border-primary/25 bg-primary/5 p-8 text-center sm:p-12">
-            <VerticalIcon vertical="generic" className="mx-auto size-8 text-primary" />
-            <h2 className="mt-4 font-display text-h2 font-semibold">Hear it for yourself</h2>
-            <p className="mx-auto mt-2 max-w-md text-small text-pretty text-muted-foreground">
-              A personalized demo agent, built from your own website, in under a minute.
-            </p>
-            <div className="mt-6 flex justify-center">
-              <Button size="lg" asChild>
-                <Link href="/demo">Try a live demo</Link>
-              </Button>
+          <Reveal>
+            <div className="rounded-2xl border border-primary/25 bg-primary/5 p-8 text-center sm:p-12">
+              <DemoIconCycle className="mx-auto" />
+              <h2 className="mt-4 font-display text-h2 font-semibold">Hear it for yourself</h2>
+              <p className="mx-auto mt-2 max-w-md text-small text-pretty text-muted-foreground">
+                A personalized demo agent, built from your own website, in under a minute.
+              </p>
+              <div className="mt-6 flex justify-center">
+                <Button size="lg" asChild>
+                  <Link href="/demo">Try a live demo</Link>
+                </Button>
+              </div>
             </div>
-          </div>
+          </Reveal>
         </Container>
       </Section>
     </>

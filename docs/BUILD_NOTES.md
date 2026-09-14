@@ -9535,3 +9535,71 @@ the harness section above); re-deriving `docs/DEPLOY.md`'s own stale
 "21 cron jobs" running total (already stale before this task from several
 other jobs added since — flagged in that doc rather than silently
 recomputed).
+
+## PAGES — website creative-brief storyboard composed into (marketing) (2026-09-14, session_012xvcAnjqsMbPqitErDJQbR)
+
+Composed `docs/design/WEBSITE_CREATIVE_BRIEF.md`'s §2 storyboard into the
+existing `(marketing)` routes/components, within this cluster's ownership
+(`apps/web/src/app/[locale]/(marketing)/**`, `apps/web/src/components/marketing/**`,
+`apps/web/src/lib/marketing/**`) — no new npm dependencies, no route/form/
+analytics-event/signup-flow changes. Full detail and the ENGINE hand-off
+contract are in `docs/audit/SITE_REQUESTS.md` (new); summary here per
+Rule 4.
+
+**New**: `lib/marketing/use-in-view.ts` (shared `IntersectionObserver`
+entrance primitive, resolves to "visible" under reduced motion/no IO
+support/SSR), `lib/marketing/use-count-up.ts` (dashboard metric count-up),
+`components/marketing/reveal.tsx` (the shared fade/slide-up entrance,
+`as="div"|"li"`), `components/marketing/how-it-works.tsx` (extracted from
+the home page's inline JSX, added the per-step center-crossing scale
+pulse), `components/marketing/demo-icon-cycle.tsx` (the demo-CTA's
+off-screen-only icon cycle that permanently settles on `generic`).
+
+**Changed**: `trust-strip.tsx` (150ms entrance fade), `vertical-grid.tsx`
+(40ms-staggered entrance + ≤4px desktop pointer-parallax on each card's
+icon, now a client component), `dashboard-preview.tsx` (CSS-3D
+tilt-and-settle panel entrance, metric count-up, 50ms-staggered call
+rows — no WebGL, a `perspective`+`rotateX`/`translateZ` transform per the
+brief's own "this is a transform, not a scene"), `live-call-hero.tsx`
+(was a perpetual `setInterval` loop; now plays once on scroll-into-view
+and holds the resolved frame, matching the brief's explicit rule against
+background-loop motion; reduced motion renders the resolved frame
+immediately, no timer). `page.tsx` (home), `[vertical]/page.tsx`, and
+`pricing/page.tsx` wired the above in and gave the pricing-teaser/demo-CTA/
+plan-card/pain-stat/intake-list sections the brief's "entrance-stagger,
+no scroll-scrub" treatment. All motion timing constants (durations,
+stagger intervals) reconciled against `packages/ui/src/motion-tokens.ts`
+(`MOTION_DURATIONS_MS`, `ENTRANCE_STAGGER_MS`) once that file appeared
+mid-session from the ENGINE cluster's concurrent work in the same tree —
+PAGES' hand-picked values already matched it exactly, so components were
+switched to import the shared constants rather than repeat the literals.
+
+**Not done (explicitly out of scope, documented in SITE_REQUESTS.md)**:
+the flagship pinned-WebGL hero morph itself (§3) — needs `three`/
+`@react-three/fiber`/`@react-three/drei`/`gsap`, outside this cluster's
+file ownership; ENGINE's building blocks for it
+(`components/motion/**`, `components/three/**`) appeared mid-session but
+with no finished top-level component to integrate against yet, so
+`LiveCallHero`'s DOM/CSS storyboard (retimed to play-once, per above)
+remains the shipped experience on every tier — this already matches the
+brief's own described fallback content model, not a stand-in. `/demo`'s
+loading-state hero treatment (§4) — lives in `components/demo/demo-flow.tsx`,
+outside this cluster's ownership. The generated OG still
+(`docs/design/ASSETS.md` item 4) was not swapped in for the code-generated
+`opengraph-image.tsx` — the brief only asks for that swap after a review
+that didn't happen this pass; both stay available for a future decision.
+
+**Gates run for this task**: `pnpm eslint` scoped to every path this
+cluster touched (0 errors); `pnpm typecheck` (`apps/web`, `tsc -b`) — the
+files this cluster owns compile cleanly, but the whole-repo build
+currently fails on `apps/web/src/components/three/hero-morph-scene.tsx`
+(`TS4111`, index-signature access), an ENGINE-cluster file this task never
+touched (confirmed via `git status`: untracked, not among this task's
+edits) — flagged in `docs/audit/SITE_REQUESTS.md` for ENGINE rather than
+fixed here (out of ownership); `pnpm vitest run` scoped to
+`src/components/marketing` + `src/lib/marketing` (7 files/17 tests, all
+new/changed components: a real render plus an explicit
+`prefers-reduced-motion` fallback test each) — all green. A whole-repo
+`pnpm vitest run` also surfaces 3 pre-existing failures in
+`components/three/read-css-color.test.ts` (also ENGINE, also untouched by
+this task, also flagged in SITE_REQUESTS.md rather than fixed here).

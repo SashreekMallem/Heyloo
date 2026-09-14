@@ -16,6 +16,7 @@ export * from "./hover-card.js";
 export * from "./input.js";
 export * from "./input-otp.js";
 export * from "./label.js";
+export * from "./nav-item.js";
 export * from "./navigation-menu.js";
 export * from "./pagination.js";
 export * from "./popover.js";

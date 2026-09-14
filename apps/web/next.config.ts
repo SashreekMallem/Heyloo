@@ -50,8 +50,28 @@ const nextConfig: NextConfig = {
     // this staying on for anything server-rendered per-request.
     serverActions: { bodySizeLimit: "2mb" },
   },
+  // Image loading strategy (WEBSITE_CREATIVE_BRIEF.md perf budget —
+  // "LCP < 2.5s ... assets AVIF/WebP"). Verified against
+  // node_modules/next/dist/docs/01-app/03-api-reference/02-components/image.md
+  // and .../05-config/01-next-config-js/images.md (CLAUDE.md Rule 1 — this
+  // app pins `next@16.3.4`, whose docs ship in-repo, so that's the current
+  // source of truth rather than a remembered older default):
+  //  - `formats` defaults to `["image/webp"]` ONLY — AVIF is opt-in, not a
+  //    Next.js default, so it must be listed explicitly to get the smaller
+  //    AVIF encode (~20% smaller than WebP per the same doc) for browsers
+  //    that support it, with WebP as the automatic fallback (array ORDER
+  //    is the preference order the docs describe) and the original format
+  //    as the final fallback for anything older.
+  //  - `minimumCacheTTL` raised from the 4-hour default to 31 days: the
+  //    brief's marketing assets (hero stills, OG image, dashboard-preview
+  //    screenshots) are long-lived, hashed-by-content static files, not
+  //    frequently-replaced user content — a short TTL only means needless
+  //    re-optimization work under `/ _next/image` for no correctness
+  //    benefit here.
   images: {
     remotePatterns: [{ protocol: "https", hostname: "**.supabase.co" }],
+    formats: ["image/avif", "image/webp"],
+    minimumCacheTTL: 2678400,
   },
   // `packages/widget/dist/*.global.js` (the embeddable widget's built
   // bundles) are read from disk at request time by

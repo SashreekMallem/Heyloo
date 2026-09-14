@@ -341,3 +341,33 @@ jobs:
       - name: No migrations yet
         if: steps.migrations.outputs.count == '0'
         run: echo "::notice::No migrations in supabase/migrations/ yet (T1) — nothing to check. Placeholder job, no-op."
+
+  site-perf-budget:
+    name: Site perf budget (marketing home)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # `scripts/site-perf/measure.ts` resolves this same
+      # `@playwright/test` copy at runtime (`node:module`'s
+      # `createRequire`, see that file's own docstring) — installing the
+      # Chromium browser once here, exactly like the `e2e` job above,
+      # covers both.
+      - name: Install Playwright Chromium
+        run: pnpm --filter web exec playwright install --with-deps chromium
+      # Same "unreachable placeholder" values the `e2e` job above sets
+      # (apps/web/src/lib/env.ts) — a production `next build`/`next
+      # start` needs *some* value for these, never a real project.
+      # `measure.ts` also defaults them itself (for a local run outside
+      # CI), so this is belt-and-suspenders, not load-bearing here.
+      - name: WEBSITE_CREATIVE_BRIEF.md perf budget (LCP / CLS / initial JS)
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: "https://placeholder.supabase.co"
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_placeholder"
+          SIGNUP_DRAFT_SECRET: "ci-placeholder-secret-not-for-prod"
+        run: node --experimental-strip-types scripts/site-perf/measure.ts

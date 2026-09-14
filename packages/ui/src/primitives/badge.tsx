@@ -21,8 +21,26 @@ export const badgeVariants = cva(
 
 export interface BadgeProps
   extends HTMLAttributes<HTMLSpanElement>,
-    VariantProps<typeof badgeVariants> {}
+    VariantProps<typeof badgeVariants> {
+  /**
+   * Micro-interaction for a badge used as a clickable filter/toggle chip
+   * (not the default status-pill usage, which stays static) — a subtle
+   * hover/press scale, CSS-only. Default `false`; existing status-badge
+   * call sites (booking status, call outcome, …) are unaffected.
+   */
+  interactive?: boolean;
+}
 
-export function Badge({ className, variant, ...props }: BadgeProps) {
-  return <span className={cn(badgeVariants({ variant }), className)} {...props} />;
+export function Badge({ className, variant, interactive = false, ...props }: BadgeProps) {
+  return (
+    <span
+      className={cn(
+        badgeVariants({ variant }),
+        interactive &&
+          "cursor-pointer transition-[background-color,color,transform] duration-(--duration-fast) ease-(--ease-out) hover:-translate-y-px active:translate-y-0 active:scale-95",
+        className,
+      )}
+      {...props}
+    />
+  );
 }

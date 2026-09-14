@@ -34,4 +34,18 @@ describe("Button", () => {
     render(<Button size="lg">Save</Button>);
     expect(screen.getByRole("button", { name: "Save" }).className).toContain("h-11");
   });
+
+  it("carries a subtle CSS-only hover lift + press scale (no JS, collapses under prefers-reduced-motion via the global rule)", () => {
+    render(<Button>Save</Button>);
+    const button = screen.getByRole("button", { name: "Save" });
+    expect(button.className).toContain("hover:-translate-y-px");
+    expect(button.className).toContain("active:scale-[0.98]");
+  });
+
+  it("variant='link' cancels the lift/press — it reads as inline text, not a raised surface", () => {
+    render(<Button variant="link">Learn more</Button>);
+    const button = screen.getByRole("button", { name: "Learn more" });
+    expect(button.className).toContain("hover:translate-y-0");
+    expect(button.className).toContain("active:scale-100");
+  });
 });

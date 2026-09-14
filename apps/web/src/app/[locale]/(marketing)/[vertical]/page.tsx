@@ -1,8 +1,16 @@
-import { Button, Container, Section, VerticalIcon } from "@heyloo/ui";
+import {
+  Button,
+  Container,
+  ENTRANCE_STAGGER_MS,
+  MOTION_DURATIONS_MS,
+  Section,
+  VerticalIcon,
+} from "@heyloo/ui";
 import { Check } from "lucide-react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { setRequestLocale } from "next-intl/server";
+import { Reveal } from "@/components/marketing/reveal";
 import { getVerticalContent, VERTICAL_CONTENT } from "@/content/marketing/verticals";
 import { Link } from "@/i18n/navigation";
 
@@ -59,16 +67,23 @@ export default async function VerticalPage({
         </Container>
       </Section>
 
+      {/* Same "entrance stagger, no scroll-scrub" grammar as the home
+          page's business-types grid (DESIGN BRIEF §4) — not a second
+          set piece, just a consistent motion vocabulary. */}
       <Section spacing="default" className="border-y border-border bg-muted/30">
         <Container size="wide">
           <div className="grid gap-4 sm:grid-cols-3">
-            {content.painStats.map((stat) => (
-              <div
+            {content.painStats.map((stat, index) => (
+              <Reveal
                 key={stat}
-                className="rounded-xl border border-border bg-card p-5 text-small text-pretty shadow-xs"
+                delayMs={index * ENTRANCE_STAGGER_MS.grid}
+                durationMs={MOTION_DURATIONS_MS.base}
+                translateY={8}
               >
-                {stat}
-              </div>
+                <div className="rounded-xl border border-border bg-card p-5 text-small text-pretty shadow-xs">
+                  {stat}
+                </div>
+              </Reveal>
             ))}
           </div>
         </Container>
@@ -82,32 +97,46 @@ export default async function VerticalPage({
                 What your AI receptionist handles
               </h2>
               <ul className="mt-5 space-y-3">
-                {content.intakeSummary.map((item) => (
-                  <li key={item} className="flex items-start gap-2.5 text-small">
+                {content.intakeSummary.map((item, index) => (
+                  <Reveal
+                    key={item}
+                    as="li"
+                    delayMs={index * ENTRANCE_STAGGER_MS.grid}
+                    durationMs={MOTION_DURATIONS_MS.base}
+                    translateY={6}
+                    className="flex items-start gap-2.5 text-small"
+                  >
                     <Check className="mt-0.5 size-4 shrink-0 text-success" />
                     {item}
-                  </li>
+                  </Reveal>
                 ))}
               </ul>
             </div>
 
-            <div className="rounded-xl border border-border bg-card p-5 shadow-sm">
-              <p className="mb-3 text-micro font-medium uppercase tracking-wide text-muted-foreground">
-                A typical call
-              </p>
-              <div className="space-y-2.5">
-                <p className="max-w-[90%] rounded-lg bg-muted px-3 py-2 text-small">
-                  Hi, do you have anything available this week?
+            {/* The "book"/"land" states only of the hero's morph language
+                (DESIGN BRIEF §4), pre-filled with this business type's own
+                fixture transcript — same TranscriptViewer-styled markup as
+                the home hero, different words, no new visual system, and
+                not a second pinned set piece (a single entrance fade). */}
+            <Reveal delayMs={ENTRANCE_STAGGER_MS.grid * 2} durationMs={MOTION_DURATIONS_MS.slow} translateY={10}>
+              <div className="rounded-xl border border-border bg-card p-5 shadow-sm">
+                <p className="mb-3 text-micro font-medium uppercase tracking-wide text-muted-foreground">
+                  A typical call
                 </p>
-                <p className="ml-auto max-w-[90%] rounded-lg bg-primary/10 px-3 py-2 text-small">
-                  This is your AI receptionist — this call is recorded. I can check that for you
-                  now.
-                </p>
-                <p className="max-w-[90%] rounded-lg bg-muted px-3 py-2 text-small">
-                  Great, let&apos;s book it.
-                </p>
+                <div className="space-y-2.5">
+                  <p className="max-w-[90%] rounded-lg bg-muted px-3 py-2 text-small">
+                    Hi, do you have anything available this week?
+                  </p>
+                  <p className="ml-auto max-w-[90%] rounded-lg bg-primary/10 px-3 py-2 text-small">
+                    This is your AI receptionist — this call is recorded. I can check that for you
+                    now.
+                  </p>
+                  <p className="max-w-[90%] rounded-lg bg-muted px-3 py-2 text-small">
+                    Great, let&apos;s book it.
+                  </p>
+                </div>
               </div>
-            </div>
+            </Reveal>
           </div>
         </Container>
       </Section>
