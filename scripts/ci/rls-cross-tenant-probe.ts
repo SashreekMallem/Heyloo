@@ -393,7 +393,14 @@ async function seedTenant(tenant: TenantFixture): Promise<WriteProbeFixture> {
   for (const spec of tenantScopedTables()) {
     // A short random suffix keeps unique columns (e164, retell_call_id, ...)
     // collision-free across the two fixtures and across repeated CI runs.
-    const unique = tenant.tenantId.replace(/-/g, "").slice(0, 12);
+    // DIGITS ONLY: it is interpolated into E.164 columns (`+1555${u}`),
+    // whose CHECK constraints (20260909120000_live_mining_hardening.sql,
+    // `^\+[1-9]\d{1,14}$`) reject hex — 10 digits keeps `+1555` + 10
+    // within the 15-digit E.164 maximum.
+    const unique = BigInt(`0x${tenant.tenantId.replace(/-/g, "").slice(0, 12)}`)
+      .toString()
+      .padStart(10, "0")
+      .slice(-10);
     await serviceInsert(spec.table, spec.row(tenant.tenantId, unique));
   }
 

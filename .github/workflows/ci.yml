@@ -67,7 +67,15 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Same unreachable placeholders the e2e/site-perf jobs set: `next build`
+      # prerenders /login etc., whose client bundle constructs the Supabase
+      # browser client at module scope from these NEXT_PUBLIC_* values —
+      # @supabase/ssr throws on an empty URL/key (first main CI run, 2026-09-15).
       - run: pnpm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: "https://placeholder.supabase.co"
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_placeholder"
+          SIGNUP_DRAFT_SECRET: "ci-placeholder-secret-not-for-prod"
       # Clean-build assertion (T9): a real build must never write a
       # tracked-and-then-modified file, or drop a new untracked file
       # outside the already-gitignored build-output directories
@@ -152,6 +160,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Install Playwright Chromium
         run: pnpm --filter web exec playwright install --with-deps chromium
+      # `next build` from apps/web resolves workspace packages through their
+      # built `dist/` (package.json `main`), which only the turbo graph
+      # produces — build apps/web's dependencies (and only those) first.
+      # First main CI run (2026-09-15) failed here with
+      # "Module not found: Can't resolve '@heyloo/canonical-types'".
+      - name: Build apps/web workspace dependencies
+        run: pnpm exec turbo run build --filter='@heyloo/web^...'
       # Deliberately NOT running `supabase start` here (T9) — the
       # authenticated specs (dashboard-realtime, forwarding-wizard,
       # admin-aal2-authenticated) self-skip whenever
@@ -362,6 +377,13 @@ jobs:
       # covers both.
       - name: Install Playwright Chromium
         run: pnpm --filter web exec playwright install --with-deps chromium
+      # `next build` from apps/web resolves workspace packages through their
+      # built `dist/` (package.json `main`), which only the turbo graph
+      # produces — build apps/web's dependencies (and only those) first.
+      # First main CI run (2026-09-15) failed here with
+      # "Module not found: Can't resolve '@heyloo/canonical-types'".
+      - name: Build apps/web workspace dependencies
+        run: pnpm exec turbo run build --filter='@heyloo/web^...'
       # Same "unreachable placeholder" values the `e2e` job above sets
       # (apps/web/src/lib/env.ts) — a production `next build`/`next
       # start` needs *some* value for these, never a real project.

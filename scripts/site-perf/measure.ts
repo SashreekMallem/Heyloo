@@ -77,10 +77,15 @@ async function resolvePlaywright() {
   return mod.default;
 }
 
-function run(command: string, args: string[], extraEnv: Record<string, string> = {}) {
+function run(
+  command: string,
+  args: string[],
+  extraEnv: Record<string, string> = {},
+  cwd: string = WEB_DIR,
+) {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, {
-      cwd: WEB_DIR,
+      cwd,
       stdio: "inherit",
       env: { ...BUILD_ENV_DEFAULTS, ...process.env, ...extraEnv },
     });
@@ -239,6 +244,10 @@ function report(results: MeasuredRoute[]): boolean {
 
 async function main() {
   console.log(`Building apps/web (production)...`);
+  // Build apps/web's workspace dependencies first (their `dist/` is what
+  // `next build` resolves via package.json `main`); a fresh clone / CI
+  // runner has none of them yet. `^...` = dependencies only, not web itself.
+  await run("pnpm", ["exec", "turbo", "run", "build", "--filter=@heyloo/web^..."], {}, REPO_ROOT);
   await run("pnpm", ["run", "build"]);
 
   console.log(`Starting apps/web on ${ORIGIN}...`);
