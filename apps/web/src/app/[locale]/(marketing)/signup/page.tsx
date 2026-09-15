@@ -1,5 +1,6 @@
 import type { Vertical } from "@heyloo/canonical-types";
-import { Container, Section } from "@heyloo/ui";
+import { Container } from "@heyloo/ui/layout/container";
+import { Section } from "@heyloo/ui/layout/section";
 import type { Metadata } from "next";
 import { BusinessTypeForm } from "@/components/signup/business-type-form";
 import { getVerticalContent } from "@/content/marketing/verticals";

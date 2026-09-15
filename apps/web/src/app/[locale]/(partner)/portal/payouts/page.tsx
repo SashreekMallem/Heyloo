@@ -1,4 +1,4 @@
-import { PageHeader } from "@heyloo/ui";
+import { PageHeader } from "@heyloo/ui/layout/page-header";
 import type { Metadata } from "next";
 import { type PayoutRow, PayoutsTableClient } from "@/components/partner/payouts-table-client";
 import { requirePartnerSession } from "@/lib/auth/require-partner-session";

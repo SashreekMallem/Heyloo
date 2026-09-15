@@ -1,4 +1,4 @@
-import type { NavSection } from "@heyloo/ui";
+import type { NavSection } from "@heyloo/ui/layout/app-sidebar-nav";
 import {
   AlertTriangle,
   Bell,

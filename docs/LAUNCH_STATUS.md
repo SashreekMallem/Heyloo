@@ -1,5 +1,34 @@
 # Launch Status
 
+## Design: cinematic scroll-scrubbed hero film, owner-phone payoff beat, home-route JS budget closed for real (SITE-2, 2026-09-15)
+
+Replaced the WebGL/react-three-fiber hero line-morph (`SITE-1`, below)
+with a `<canvas>` 2D scroll-scrubbed frame-sequence film (97 pre-rendered
+WebP frames per theme, Higgsfield/Seedance 2.5) plus a new closing beat
+("Reach the owner" — the same booking reaching the owner's own phone).
+Root-caused and fully closed the home-route initial-JS budget that
+`SITE-1` had left as an honest, documented floor (396.1KB gz): it was a
+`@heyloo/ui` barrel-optimizer regression, not an unavoidable framework
+cost — one `export const` in the package's index defeated Next's barrel
+optimizer, so any Server Component importing from the barrel pulled
+every reachable `"use client"` primitive into the route. Fixed at the
+package level and extended to every Server Component in the app (not
+just the home route), with a permanent CI guard
+(`scripts/check-server-barrel-imports.ts`) so it can't silently return.
+Full trace, frame/beat mapping, and a real `next.config.ts` bug found and
+fixed along the way: `docs/BUILD_NOTES.md`'s `SITE-2` entry.
+
+**Gates**: `npx biome check --write` clean; `pnpm -w typecheck` clean
+(21/21); `pnpm run lint` 0 errors; `pnpm -w test` 572/572 (web) + 124/124
+(ui) green; `apps/web` production build clean, all 183 routes;
+`scripts/check-server-barrel-imports.ts` 0 violations;
+`scripts/site-perf/measure.ts` — **LCP PASS (492ms), CLS PASS (0.000),
+initial JS PASS (224.1KB gz vs. 250KB budget)** — all three green for
+the first time this wave; no file >2MB; `apps/web/public/site` 2.45MB
+(8MB budget); lockfile untouched.
+
+**Status**: 95/100 review, pass, no open findings.
+
 ## Design: flagship marketing site — scroll-driven 3D narrative, motion engine, assets (SITE-1, 2026-09-14)
 
 Shipped the flagship marketing site the creative brief specced

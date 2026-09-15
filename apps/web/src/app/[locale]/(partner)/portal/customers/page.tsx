@@ -1,5 +1,7 @@
 import { formatCentsUSD } from "@heyloo/canonical-types";
-import { Badge, type BadgeProps, Card, CardContent, PageHeader } from "@heyloo/ui";
+import { PageHeader } from "@heyloo/ui/layout/page-header";
+import { Badge, type BadgeProps } from "@heyloo/ui/primitives/badge";
+import { Card, CardContent } from "@heyloo/ui/primitives/card";
 import type { Metadata } from "next";
 import { requirePartnerSession } from "@/lib/auth/require-partner-session";
 import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-role";

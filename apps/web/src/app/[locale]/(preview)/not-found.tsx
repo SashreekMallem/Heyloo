@@ -1,4 +1,6 @@
-import { Button, Container, Section } from "@heyloo/ui";
+import { Container } from "@heyloo/ui/layout/container";
+import { Section } from "@heyloo/ui/layout/section";
+import { Button } from "@heyloo/ui/primitives/button";
 import { Compass } from "lucide-react";
 import { Link } from "@/i18n/navigation";
 

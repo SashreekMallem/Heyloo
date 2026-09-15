@@ -1,4 +1,4 @@
-import { Skeleton } from "@heyloo/ui";
+import { Skeleton } from "@heyloo/ui/primitives/skeleton";
 
 export default function CockpitLoading() {
   return (

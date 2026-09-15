@@ -212,18 +212,27 @@ production build against these (`.github/workflows/ci.yml`'s
 `pnpm --filter web exec playwright install chromium` once first) before
 adding anything heavy to a marketing route, not just at review time.
 
-**Current measured status** (docs/BUILD_NOTES.md's SITE-1 integrator
-entry has the full trace): LCP and CLS both PASS with wide margin
-(~376ms, 0.003). Initial JS is an honest, re-confirmed 396.1KB gz — over
-the 250KB target — after every lazy-load/defer lever available from
-`apps/web/**`/`packages/ui/**` alone (GSAP, the WebGL scene, error
-monitoring) has already been applied; ~130KB of that is React/Next's own
-client runtime, unavoidable without a stack-level change (partial
-hydration, dropping a route-global provider onto marketing, etc.) outside
-any single task's file ownership. Treat 250KB as the target to keep
-approaching, not a gate a change here can still make green alone — flag a
-new regression above 396.1KB, but don't chase the pre-existing gap below
-it from a marketing-component change.
+**Current measured status** (docs/BUILD_NOTES.md's `SITE-2` integrator
+entry has the full trace): LCP, CLS, and initial JS all **PASS** —
+LCP 492ms, CLS 0.000, initial JS 224.1KB gz, under the 250KB budget with
+margin. This was a real architectural fix, not a budget change: the
+prior 396.1KB (`SITE-1`) / 379.2KB (`SITE-2`, pre-fix) figures were a
+`@heyloo/ui` barrel-optimizer regression (one `export const` in
+`packages/ui/src/index.ts` defeated Next's barrel optimizer for the
+whole package, so any Server Component importing from the barrel pulled
+every reachable `"use client"` primitive — Radix, `react-hook-form`,
+`@tanstack/table-core`, `zod`, `recharts`, … — into the route), not an
+unavoidable framework floor. Fixed by making the package index a pure
+re-export barrel plus deep-importing every Server Component to its
+export's real defining module (`@heyloo/ui/primitives/button`, not
+`@heyloo/ui`) — see `docs/BUILD_NOTES.md`'s `SITE-2` entry for the full
+before/after trace. **Keep it fixed**: `scripts/check-server-barrel-
+imports.ts` (`pnpm run check:server-barrels`, wired into CI's `lint`
+job) fails the build if any non-`"use client"` file under `apps/web/src`
+imports the bare `@heyloo/ui`/`@heyloo/ui/primitives`/`@heyloo/ui/custom`
+barrel — always deep-import in a Server Component, never in a
+Client Component (their imports tree-shake correctly either way, so the
+barrel is fine there).
 
 ### Adding a section without breaking it
 
@@ -254,31 +263,39 @@ soon as the section reads right:
    never mounts a `<video>` element at all, only its AVIF/WebP poster.
    Keep the source loop itself under 2MB (docs/design/ASSETS.md has the
    encoding recipe) and always pass real `width`/`height` (CLS budget).
-4. **`components/motion/` + `components/three/`'s GSAP `ScrollTrigger`
-   pin / react-three-fiber scene** — the flagship hero/dashboard-reveal
-   machinery. Both load lazily (`gsap-loader.ts`'s dynamic import,
-   `lazy-webgl-boundary.tsx`'s device-qualification gate) specifically
-   so mounting one doesn't cost every OTHER route anything — but a
-   second section reaching for this tier on the SAME route directly
-   competes with the home route's 250KB budget. Only pull this in for a
-   genuine multi-beat scrubbed set piece (the brief calls for 3-4 total,
-   not per-section) — `Sticky` (tier 2) covers a simple single-stage pin.
+4. **`components/motion/`'s GSAP `ScrollTrigger` pin / canvas frame-
+   sequence film** — the flagship hero/dashboard-reveal machinery
+   (SITE-2 replaced the earlier react-three-fiber WebGL line-morph
+   scene, `components/three/*`, now removed, with a `<canvas>` 2D
+   scroll-scrubbed pre-rendered frame sequence — `hero-film-scrubber.tsx`
+   + `hero-film-frames.ts`'s pure frame-mapping math, see
+   `docs/BUILD_NOTES.md`'s `SITE-2` entry). GSAP loads lazily
+   (`gsap-loader.ts`'s dynamic import) and the film's own frames load in
+   a priority/idle-deferred order (see `hero-film-frames.ts`'s
+   `computeHeroFilmLoadOrder`), so mounting this tier doesn't cost every
+   OTHER route anything — but a second section reaching for this tier on
+   the SAME route directly competes with the home route's 250KB budget.
+   Only pull this in for a genuine multi-beat scrubbed set piece (the
+   brief calls for 3-4 total, not per-section) — `Sticky` (tier 2) covers
+   a simple single-stage pin.
 
-**Design tokens inside the WebGL tier**: a `THREE.Color`/canvas element
-never hardcodes a hex value — it reads the live `--accent-*`/`--neutral-*`
-custom property via `components/three/read-css-color.ts`'s
-`readCssColor(customProperty)`, so a theme/token change (including the
-light/dark swap) is picked up with zero duplicated color math. That
-function resolves the token through a real DOM element's
-`getComputedStyle(...).color` (never a hand-rolled parse of the raw
-custom-property string), then rasterizes the result through a 1x1
-`<canvas>` and reads the pixel back as a plain `rgb()`/`rgba()` string —
-`packages/ui/src/theme/globals.css`'s tokens are `oklch()`, which current
-Chromium's CSSOM now serializes computed `color` values back as (rather
-than always normalizing to `rgb()`), and neither `THREE.Color`'s nor a
-2D canvas context's own CSS-string parser accepts `oklch()` directly. Any
-new WebGL/Canvas2D color read should go through this same helper, not a
-fresh `getComputedStyle` call.
+**Design tokens and the film tier**: the WebGL tier's dynamic
+`THREE.Color`/canvas token read (`components/three/read-css-color.ts`) is
+gone along with `components/three/*` — the frame-sequence film is a set
+of pre-rendered WebP images (`docs/design/ASSETS.md`'s "Item 6"), so its
+colors are baked in at generation time, once per theme (a light-theme
+take and a dark-theme take, not a single take recolored), rather than
+read live from a CSS custom property at runtime. Any FUTURE canvas
+element that DOES need to read a live design token at runtime (rather
+than draw a pre-rendered asset) still needs the same care the removed
+helper documented: `packages/ui/src/theme/globals.css`'s tokens are
+`oklch()`, which current Chromium's CSSOM serializes computed `color`
+values back as (rather than always normalizing to `rgb()`), and neither
+`THREE.Color`'s nor a 2D canvas context's own CSS-string parser accepts
+`oklch()` directly — resolve the token via a real DOM element's
+`getComputedStyle(...).color`, then rasterize it through a 1×1 `<canvas>`
+and read the pixel back as a plain `rgb()`/`rgba()` string, rather than
+hand-rolling a parse of the raw custom-property string.
 
 ### Images and video
 

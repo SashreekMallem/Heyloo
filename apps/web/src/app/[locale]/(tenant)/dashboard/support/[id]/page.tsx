@@ -1,4 +1,6 @@
-import { Card, CardContent, PageHeader, StatusBadge } from "@heyloo/ui";
+import { StatusBadge } from "@heyloo/ui/custom/status-badge";
+import { PageHeader } from "@heyloo/ui/layout/page-header";
+import { Card, CardContent } from "@heyloo/ui/primitives/card";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { SupportReplyForm } from "@/components/tenant/support-reply-form";

@@ -1,4 +1,6 @@
-import { Container, Section, VerticalIcon } from "@heyloo/ui";
+import { VerticalIcon } from "@heyloo/ui/icons";
+import { Container } from "@heyloo/ui/layout/container";
+import { Section } from "@heyloo/ui/layout/section";
 import { Check } from "lucide-react";
 import type { Metadata } from "next";
 import { DemoFlow } from "@/components/demo/demo-flow";

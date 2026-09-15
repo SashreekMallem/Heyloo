@@ -1,4 +1,4 @@
-import { PageHeader } from "@heyloo/ui";
+import { PageHeader } from "@heyloo/ui/layout/page-header";
 import type { Metadata } from "next";
 import { PhoneSetupWizard } from "@/components/phone-setup/phone-setup-wizard";
 import { requireTenantSession } from "@/lib/auth/require-tenant-session";

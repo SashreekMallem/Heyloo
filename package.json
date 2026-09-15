@@ -17,7 +17,8 @@
     "format:check": "biome format .",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
-    "clean": "turbo run clean && rm -rf node_modules"
+    "clean": "turbo run clean && rm -rf node_modules",
+    "check:server-barrels": "node --experimental-strip-types scripts/check-server-barrel-imports.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.12",

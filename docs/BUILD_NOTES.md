@@ -11108,3 +11108,170 @@ Full production-build screenshots at every reviewer-named spot (11-stop
 hero sweep × 2 themes, plus the split-timing repro) confirming the
 hero-freeze fix; an 80-frame slow-scroll sweep × 2 themes confirming the
 owner-phone-reveal minor is not a real defect.
+
+## SITE-2 — Integrator pass: cinematic scroll-scrubbed hero film, owner-phone
+## payoff beat, home-route JS budget closed for real (2026-09-15,
+## session_012xvcAnjqsMbPqitErDJQbR)
+
+Final integration over the SITE-2 wave banked mid-container-restart as
+`fcd7124` (review 48/100, JS budget open) and carried forward by three
+follow-up commits (`4d128ea`, `d532ed3`, `447da01`) that root-caused and
+fixed the home route's JS-budget blocker. This pass extends that same
+fix to every remaining Server Component in the app, adds a permanent CI
+guard so it can't silently regress, fixes a real bug found in
+`next.config.ts` along the way, and re-confirms the whole gate set clean.
+
+**The film technique.** `three/*` (react-three-fiber line-art morph) is
+gone, replaced by a `<canvas>` 2D frame-sequence scrubber
+(`hero-film-scrubber.tsx` + the pure-function math in
+`hero-film-frames.ts`): 97 pre-rendered WebP frames per theme
+(`apps/web/public/site/hero-film/{light,dark}/f001.webp`…`f097.webp`,
+1440×810, generated via Higgsfield/Seedance 2.5 — see
+`docs/design/ASSETS.md`). `frameForProgress(progress)` maps raw 0-1
+scroll progress to an exact frame via a PIECEWISE-linear function pinned
+at `hero-story.ts`'s own stage boundaries (`resolveHeroStage`), never one
+global ease across the full 1-97 range — this is what keeps the DOM
+story overlay (`hero-story-overlay.tsx`, driven by the identical
+`resolveHeroStage`) in lockstep with the drawn frame at every scroll
+position. Frames load in a binary-subdivision prefetch order
+(`computeHeroFilmLoadOrder`: `1, 97, 49, 25, 73, …`) so a visitor who
+scrolls straight to any point in the timeline is never more than a
+shrinking handful of frames from one already loaded; the first 12 of
+that order (`HERO_FILM_EAGER_FRAME_COUNT`) load immediately post-
+hydration, the rest deferred to idle/interaction. Each frame is drawn
+with `background-size: cover`-equivalent placement math
+(`computeHeroFilmCoverFit`) so the canvas always fully covers its box
+regardless of viewport aspect, centered, cropping overflow — pure
+functions, unit-tested with no DOM/browser needed.
+
+**Frame → beat mapping** (`HERO_FILM_STAGE_FRAMES`, cross-checked against
+`hero-story.ts`'s 0-1 scroll-progress beat ranges by opening the actual
+committed frames, not estimated): `ring` frames 1–30 (progress 0–0.2, the
+phone rests then rings/lifts/tilts), `answer` frames 30–66 (0.2–0.55, the
+ember sound-ribbon undulates under the lifted phone — AI talking),
+`book` frames 66–82 (0.55–0.8, the ribbon straightens/thickens and
+resolves into the white booking card), `land` frames 82–97 (0.8–1.0, the
+card settles flat/centred-low as the phone drifts out of frame).
+Confirmed within the brief's own ±3-frame tolerance in BOTH `light/` and
+`dark/` frame sets — one shared table drives both, no per-theme
+divergence needed. `HERO_FILM_CARD_RECT` (measured per-theme off the
+actual `f090`/`f097` pixels, not guessed) is where `hero-story-overlay`'s
+"book"/"land" DOM panels are positioned so the real booking-card content
+lands visually ON the film's own white card.
+
+**Beat 6 — "Reach the owner"** (`owner-phone-reveal.tsx`,
+WEBSITE_CREATIVE_BRIEF.md §1's 6th and closing beat, placed directly
+after `DashboardPreview` per the round-4 review/SITE-1 note): a CSS-only
+phone (fixed near-black chassis, not a themed `--neutral-*` token, so it
+reads as the SAME physical object the hero film itself renders) rises
+and tilts in from below on a `once: true` GSAP `ScrollTrigger` entrance
+(no scroll-scrubbed middle state — this beat has no meaningful
+in-between, same reasoning `how-it-works.tsx` gives for its own
+once-per-view pulse), then a notification card slides down showing the
+SAME booking (`HOME_CONTENT.booking`, shared with `DashboardPreview`)
+that opened the hero's story — closing the loop: a call rings, the AI
+answers, a booking lands in the dashboard, and now reaches the owner's
+own phone.
+
+**The barrel-leak root cause** (already diagnosed by `4d128ea`/`d532ed3`,
+restated here since this pass finishes the fix): a single
+`export const UI_PACKAGE_VERSION` literal in `packages/ui/src/index.ts`
+defeated Next's barrel optimizer for the WHOLE `@heyloo/ui` package —
+not just that one export. Once the optimizer bailed, any Server
+Component importing ANYTHING from the `@heyloo/ui` barrel (even just
+`Button`) registered every reachable `"use client"` module (all ~25
+Radix-backed primitives, `react-hook-form`, `@tanstack/table-core`,
+`zod` via `price-card`, `recharts`, `cmdk`, `react-day-picker`, …) as a
+client dependency of that page, regardless of whether the page actually
+rendered any of them. `4d128ea` made the index a pure re-export barrel
+(export moved to its own `./version.js` subpath) and marked
+`canonical-types`/`@heyloo/ui` `"sideEffects": false`; `d532ed3` deep-
+imported the home route's own Server Components to real defining
+modules (`@heyloo/ui/primitives/button`, `@heyloo/ui/layout/container`,
+etc.) and added the per-module subpath exports those imports resolve
+against.
+
+**This pass's own work — closing the gap for the REST of the app.** The
+prior fix only touched the home route's Server Components; every other
+Server Component across the marketing/tenant/partner/admin/preview
+surfaces still imported the `@heyloo/ui` barrel (harmless for THEIR own
+routes today, since Next's optimizer now works again post-`4d128ea`, but
+a silent trap: the barrel import itself still resolves and compiles, so
+nothing fails until someone's route happens to reach a heavy barrel
+member). Converted all ~30 remaining Server Component barrel imports to
+the same deep-module-path pattern: `(marketing)/[vertical]`,
+`(marketing)/blog/*`, `(marketing)/demo`, `(marketing)/intake/[token]`,
+`(marketing)/not-found`, `(marketing)/pricing`, `(marketing)/signup/*`,
+`(partner)/portal/*`, `(preview)/*`, `(tenant)/dashboard/*`,
+`(tenant)/layout.tsx`, `(admin)/cockpit/loading.tsx`,
+`components/admin/admin-nav-sections.ts`. Added
+`scripts/check-server-barrel-imports.ts` — a dependency-free script
+(same `node --experimental-strip-types`, no-workspace-membership
+convention as `scripts/site-perf/measure.ts`) that scans every non-
+`"use client"` `.ts`/`.tsx` file under `apps/web/src` for a bare
+`@heyloo/ui`/`@heyloo/ui/primitives`/`@heyloo/ui/custom` barrel import
+and fails with the exact file list + fix instructions if it finds one;
+wired as `pnpm run check:server-barrels` and a new CI step in
+`.github/workflows/ci.yml`'s `lint` job, so this class of regression
+now fails CI immediately instead of silently reappearing the next time
+someone adds a Server Component that reaches for a `@heyloo/ui` import.
+
+**Real bug found and fixed along the way**: `apps/web/next.config.ts`
+carried an uncommitted "TEMP DIAGNOSTIC" `webpack()` block, explicitly
+commented "reverted before commit" but never actually reverted. Two real
+problems with it, both fixed by deleting the block: (1) it hardcoded a
+PREVIOUS agent session's own `/tmp/claude-.../scratchpad/webpack-
+stats.json` path — any build in a different session/environment/CI
+runner would `ENOENT`-crash the instant webpack's `done` hook fired,
+since that directory does not exist outside the session that wrote it;
+(2) the object literal defined the `webpack` key TWICE — once inside
+`...(previewModeActive && { webpack(config) {...} })` (sets the preview-
+mode module-resolution aliases) and again as a later plain property (the
+diagnostic stats dump) — in a JS object literal a later key silently
+wins over an earlier one even when the earlier one arrived via spread,
+so the diagnostic block was unconditionally clobbering and completely
+disabling `UI_PREVIEW_MODE`'s webpack aliasing whenever both were
+active. Removed the diagnostic block entirely; the single
+`previewModeActive`-gated `webpack()` is now the only one defined.
+`npx biome check --write` also caught (and fixed, formatting-only) a
+long-line violation in this same file plus an export-ordering violation
+in `packages/ui/src/index.ts`'s already-committed barrel — both were
+pre-existing `pnpm run lint` blockers this pass needed clean before
+committing.
+
+**Measured numbers** (`scripts/site-perf/measure.ts`, CPU-throttled 4x,
+real production build, home route): the wave's own trace —
+379.2KB gz → 335.5KB gz (pure barrel, `4d128ea`) → 224.3KB gz PASS (home-
+route deep imports, `d532ed3`). This pass's own re-run after extending
+the fix app-wide and adding the CI guard: **LCP 492ms, CLS 0.000, initial
+JS 224.1KB gz — all PASS** (250KB budget), consistent with the review's
+own 224.1-224.3KB gz reference measurements; run-to-run LCP/CLS noise
+(other capture methods this task's review cites: 316-908ms LCP,
+0.0007-0.007 CLS) is all comfortably inside the 2500ms/0.05 budgets
+regardless.
+
+**Gates this pass**: `npx biome check --write` on every changed path —
+clean (2 pre-existing formatting/ordering errors found and fixed, see
+above). `pnpm -w typecheck` — clean, 21/21 packages. `pnpm run lint` — 0
+errors (43 pre-existing warnings elsewhere, unchanged baseline, none in
+files this pass touched). `pnpm -w test` — 572/572 web + 124/124 ui
+green. `apps/web` production build (`next build --webpack`, placeholder
+`.env.local`) — clean, all 183 routes; note for future runs in a sandbox
+with a TLS-intercepting egress proxy: Turborepo 2.x defaults to
+`envMode: "strict"`, which strips `NODE_EXTRA_CA_CERTS`/`HTTPS_PROXY`
+from the task's environment and breaks `next/font`'s Google Fonts fetch
+with a `self-signed certificate in certificate chain` error — this is a
+local sandbox artifact only (a real GitHub Actions runner has direct
+internet access, no interception proxy), reproduced and root-caused via
+`npx turbo run build --dry=json` (`envMode: "strict"` confirmed) and
+worked around locally with `--env-mode=loose`; no repo file needed
+changing for it. `scripts/check-server-barrel-imports.ts` — 0
+violations (the guard this pass added). `node --experimental-strip-types
+scripts/site-perf/measure.ts` — PASS/PASS/PASS, see numbers above. No
+file >2MB; `apps/web/public/site` 2.45MB (8MB budget, unchanged this
+pass — no new assets); `pnpm-lock.yaml` untouched, `pnpm install
+--frozen-lockfile` clean.
+
+**Review score / status**: 95/100, pass, `"open": []` — no outstanding
+findings from the review this pass integrates. Nothing left incomplete
+from this task's own scope.

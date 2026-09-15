@@ -1,4 +1,4 @@
-import { EmptyState } from "@heyloo/ui";
+import { EmptyState } from "@heyloo/ui/custom/empty-error-state";
 import { FileQuestion } from "lucide-react";
 import { Link } from "@/i18n/navigation";
 

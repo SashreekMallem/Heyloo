@@ -40,6 +40,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run lint
+      - name: Server barrel-import guard
+        run: pnpm run check:server-barrels
 
   test:
     name: Test

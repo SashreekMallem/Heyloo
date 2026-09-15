@@ -1,4 +1,9 @@
-import { Badge, Card, CardContent, Container, PageHeader, Section, ThemeToggle } from "@heyloo/ui";
+import { Container } from "@heyloo/ui/layout/container";
+import { PageHeader } from "@heyloo/ui/layout/page-header";
+import { Section } from "@heyloo/ui/layout/section";
+import { ThemeToggle } from "@heyloo/ui/layout/theme-toggle";
+import { Badge } from "@heyloo/ui/primitives/badge";
+import { Card, CardContent } from "@heyloo/ui/primitives/card";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { PREVIEW_ROUTES } from "@/lib/preview/routes";

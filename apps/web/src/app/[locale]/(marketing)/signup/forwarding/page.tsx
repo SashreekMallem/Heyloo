@@ -1,4 +1,5 @@
-import { Container, Section } from "@heyloo/ui";
+import { Container } from "@heyloo/ui/layout/container";
+import { Section } from "@heyloo/ui/layout/section";
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { PhoneSetupWizard } from "@/components/phone-setup/phone-setup-wizard";

@@ -1,18 +1,15 @@
+import { Container } from "@heyloo/ui/layout/container";
+import { Section } from "@heyloo/ui/layout/section";
+import { MOTION_DURATIONS_MS } from "@heyloo/ui/motion-tokens";
 import {
   Accordion,
   AccordionContent,
   AccordionItem,
   AccordionTrigger,
-  Badge,
-  Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  Container,
-  MOTION_DURATIONS_MS,
-  Section,
-} from "@heyloo/ui";
+} from "@heyloo/ui/primitives/accordion";
+import { Badge } from "@heyloo/ui/primitives/badge";
+import { Button } from "@heyloo/ui/primitives/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@heyloo/ui/primitives/card";
 import { Check } from "lucide-react";
 import type { Metadata } from "next";
 import { setRequestLocale } from "next-intl/server";

@@ -1,4 +1,6 @@
-import { Container, Section, Skeleton } from "@heyloo/ui";
+import { Container } from "@heyloo/ui/layout/container";
+import { Section } from "@heyloo/ui/layout/section";
+import { Skeleton } from "@heyloo/ui/primitives/skeleton";
 
 export default function SignupLoading() {
   return (

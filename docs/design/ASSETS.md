@@ -10,7 +10,11 @@ Per the brief's own "asset budget discipline" note in §5: only items 2
 (hero loop) and 4 (OG still) are in scope for v1. Item 3 (dashboard-reveal
 background texture) ships procedural-only by default; item 5 (vertical
 icons) is explicitly "do nothing new." Both are recorded below as
-**not generated**, matching the brief.
+**not generated**, matching the brief. Item 6 (hero scroll-scrubbed frame
+sequence) is a SITE-2-wave addition, generated after the brief's own §3
+"scroll-driven, cinematic hero" direction superseded item 2's original
+role as the hero's own background loop — item 2 itself is unaffected and
+still ships as-is for its own non-qualifying-tier fallback use.
 
 All assets are an *enhancement layer* per the brief — the procedural/code
 fallback described in the brief remains the shipped default in each
@@ -185,6 +189,55 @@ do here; recorded for completeness against the full §5 list.
 
 ---
 
+## Item 6 — Hero scroll-scrubbed frame-sequence film (generated, adopted, SITE-2)
+
+Not one of the original brief's 5 §5 items — added for the SITE-2 wave's
+scroll-scrubbed hero (replacing the WebGL/three.js line-morph scene,
+which is removed) after the brief's own "scroll-driven, cinematic hero"
+direction (§3). Same anti-slop review discipline (§7) as every other
+item here.
+
+**Generation:**
+- Model: `seedance_2_5` (Bytedance Seedance 2.5, t2v/i2v), the same
+  general-purpose video model item 2 used, chosen for the same reason —
+  a literal object (a phone; a booking card) rather than an abstract
+  metaphor.
+- Params: `resolution: 1080p`, `duration: 8` (seconds), muted
+  (`generate_audio: false`) — generated once per theme (light/dark), the
+  chassis/card colors swapped between passes so each theme gets a native
+  take rather than a single take color-graded twice.
+- Delivered: two 1920×1080 8s clips (light, dark), no audio — reviewed
+  against §7 before accepting in both themes: the ring → answer → book →
+  land morph beat progression (see `docs/BUILD_NOTES.md`'s `SITE-2`
+  entry for the exact frame-range mapping) reads clearly, no
+  robots/blobs/orbs/particles, matte-black phone chassis identical
+  across both theme takes (deliberately not a themed illustration — the
+  same physical object recurring through beat 6's `owner-phone-reveal`
+  payoff too).
+
+**Extraction → shipped files** (`apps/web/public/site/hero-film/{light,dark}/`):
+every second frame extracted at 1440×810 WebP q76 (chosen over shipping
+the source video directly so the scrubber can seek to an exact frame
+per scroll pixel with zero decode latency, which a `<video>` element's
+`currentTime` seeking cannot guarantee frame-accurately across browsers)
+— 97 frames per theme (`f001.webp`…`f097.webp`), plus each theme's
+`poster.webp` (frame 1) and `final.webp`/`final-720.webp` (frame 97, full
++ mobile-width) for the non-scrubbing fallback tiers. ~1.3MB (light) /
+~1.4MB (dark), ~2.15MB combined — the single largest item in this
+budget, still well inside the 8MB `/public/site` ceiling with headroom.
+
+**Anti-slop check (§7):** no robots/blobs/orbs/sparkles/cubes/particles/
+emoji; a literal product artifact (phone, booking card), not a generic
+tech metaphor; muted/neutral chassis colors, ember/accent used only
+where the design system already reserves it (the sound-ribbon/booking-
+card accent moments), not as ambient decoration.
+
+**Licence**: same note as the top of this file (Higgsfield help-center
++ ToS §4.3/§4.4, verified 2026-09-14) — the generating account owns
+these outputs, commercial use is permitted, no separate licence needed.
+
+---
+
 ## Total `apps/web/public/site/` budget
 
 | File | Size |
@@ -197,7 +250,9 @@ do here; recorded for completeness against the full §5 list.
 | `og-still.webp` | 12KB |
 | `og-still@2x.avif` | 27KB |
 | `og-still@2x.webp` | 31KB |
-| **Total** | **~332KB** |
+| `hero-film/light/*` (97 frames + poster + final + final-720) | ~1.3MB |
+| `hero-film/dark/*` (97 frames + poster + final + final-720) | ~1.4MB |
+| **Total** | **~2.45MB** |
 
 Well inside the 8MB `/public/site` budget and the brief's own "~2.5MB
 before compression" ceiling for items 2+4 combined (actual: nowhere near

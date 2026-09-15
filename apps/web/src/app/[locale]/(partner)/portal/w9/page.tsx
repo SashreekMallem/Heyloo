@@ -1,12 +1,7 @@
-import {
-  Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  PageHeader,
-  W9StatusBadge,
-} from "@heyloo/ui";
+import { W9StatusBadge } from "@heyloo/ui/custom/w9-status-badge";
+import { PageHeader } from "@heyloo/ui/layout/page-header";
+import { Button } from "@heyloo/ui/primitives/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@heyloo/ui/primitives/card";
 import type { Metadata } from "next";
 import { requirePartnerSession } from "@/lib/auth/require-partner-session";
 

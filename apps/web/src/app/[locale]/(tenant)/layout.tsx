@@ -1,4 +1,5 @@
-import { BrandingProvider, Button } from "@heyloo/ui";
+import { BrandingProvider } from "@heyloo/ui/layout/branding-provider";
+import { Button } from "@heyloo/ui/primitives/button";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import { TenantShellClient } from "@/components/tenant/tenant-shell-client";

@@ -39,7 +39,6 @@
 // which leaked every "use client" primitive reachable from this barrel into
 // the marketing home route's initial JS (Radix, react-hook-form, table-core,
 // zod via price-card → canonical-types) — measured ~120KB gz of dead weight.
-export { UI_PACKAGE_VERSION } from "./version.js";
 
 export * from "./custom/index.js";
 export * from "./forms/index.js";
@@ -49,3 +48,4 @@ export * from "./lib/format-phone.js";
 export * from "./lib/utils.js";
 export * from "./motion-tokens.js";
 export * from "./primitives/index.js";
+export { UI_PACKAGE_VERSION } from "./version.js";
