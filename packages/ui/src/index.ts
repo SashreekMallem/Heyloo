@@ -32,7 +32,14 @@
  * overview's date-range filter) is likewise NOT re-exported from here —
  * import from `@heyloo/ui/date-range` instead.
  */
-export const UI_PACKAGE_VERSION = "0.1.0" as const;
+// Kept in its own module so this file stays a PURE re-export barrel: Next's
+// `optimizePackageImports` barrel optimizer (next.config.ts) only rewrites
+// `import { X } from "@heyloo/ui"` into direct module imports when the entry
+// contains nothing but re-exports. One `export const` here made it bail,
+// which leaked every "use client" primitive reachable from this barrel into
+// the marketing home route's initial JS (Radix, react-hook-form, table-core,
+// zod via price-card → canonical-types) — measured ~120KB gz of dead weight.
+export { UI_PACKAGE_VERSION } from "./version.js";
 
 export * from "./custom/index.js";
 export * from "./forms/index.js";
