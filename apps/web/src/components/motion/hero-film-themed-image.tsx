@@ -1,4 +1,4 @@
-import { cn } from "@heyloo/ui";
+import { cn } from "@heyloo/ui/lib/utils";
 import type { CSSProperties } from "react";
 
 /**
