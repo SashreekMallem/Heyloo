@@ -349,7 +349,14 @@ function tenantScopedTables(): TenantScopedTable[] {
     {
       table: "airtable_sync_state",
       tenantColumn: "tenant_id",
-      row: (t, u) => ({ tenant_id: t, entity_type: "booking", entity_id: u }),
+      // `entity_id` is a real `uuid` column (20260907131200_supporting_
+      // tables.sql) with no FK — the shared `u` suffix (digits, shaped for
+      // the E.164 columns above) is not a valid uuid, so mint one here.
+      row: (t) => ({
+        tenant_id: t,
+        entity_type: "booking",
+        entity_id: globalThis.crypto.randomUUID(),
+      }),
     },
     {
       // Channels (BACKEND_SPEC §13, 20260911120000_text_conversations.sql —
