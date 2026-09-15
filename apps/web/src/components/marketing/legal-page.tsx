@@ -1,4 +1,5 @@
-import { Container, Section } from "@heyloo/ui";
+import { Container } from "@heyloo/ui/layout/container";
+import { Section } from "@heyloo/ui/layout/section";
 import { MDXRemote } from "next-mdx-remote/rsc";
 import type { getLegalDoc } from "@/lib/content/legal";
 

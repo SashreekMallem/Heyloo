@@ -1,4 +1,7 @@
-import { Button, Container, cn, Section } from "@heyloo/ui";
+import { Container } from "@heyloo/ui/layout/container";
+import { Section } from "@heyloo/ui/layout/section";
+import { cn } from "@heyloo/ui/lib/utils";
+import { Button } from "@heyloo/ui/primitives/button";
 import { PhoneCall } from "lucide-react";
 import type { Metadata } from "next";
 import { setRequestLocale } from "next-intl/server";

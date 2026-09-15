@@ -1,6 +1,6 @@
 "use client";
 
-import { Toaster } from "@heyloo/ui";
+import { Toaster } from "@heyloo/ui/primitives/sonner";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
 import { deferUntilInteraction } from "@/lib/perf/defer-non-critical";

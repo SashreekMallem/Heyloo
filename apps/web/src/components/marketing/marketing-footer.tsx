@@ -1,4 +1,5 @@
-import { Container, VerticalIcon } from "@heyloo/ui";
+import { VerticalIcon } from "@heyloo/ui/icons";
+import { Container } from "@heyloo/ui/layout/container";
 import { Phone } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { VERTICAL_CONTENT } from "@/content/marketing/verticals";
