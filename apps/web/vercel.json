@@ -1,5 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
-  "buildCommand": "cd ../.. && pnpm exec turbo run build --filter=@heyloo/web"
+  "buildCommand": "cd ../.. && pnpm exec turbo run build --filter=@heyloo/web",
+  "git": {
+    "deploymentEnabled": {
+      "claude/*": false
+    }
+  }
 }
