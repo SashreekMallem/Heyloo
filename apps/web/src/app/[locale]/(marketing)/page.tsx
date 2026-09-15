@@ -1,4 +1,4 @@
-import { Button, Container, Section } from "@heyloo/ui";
+import { Button, Container, cn, Section } from "@heyloo/ui";
 import { PhoneCall } from "lucide-react";
 import type { Metadata } from "next";
 import { setRequestLocale } from "next-intl/server";
@@ -8,6 +8,7 @@ import { DemoIconCycle } from "@/components/marketing/demo-icon-cycle";
 import { HeroScrollSection } from "@/components/marketing/hero-scroll-section";
 import { HowItWorks } from "@/components/marketing/how-it-works";
 import { LiveCallHero } from "@/components/marketing/live-call-hero";
+import { OwnerPhoneReveal } from "@/components/marketing/owner-phone-reveal";
 import { Reveal } from "@/components/marketing/reveal";
 import { TrustStrip } from "@/components/marketing/trust-strip";
 import { VerticalGrid } from "@/components/marketing/vertical-grid";
@@ -32,11 +33,35 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
         <RoleGuardToast />
       </Suspense>
 
-      {/* Hero */}
-      <Section spacing="spacious" className="pt-12 md:pt-16">
+      {/* Hero — `overflow-x-clip`: the visual column bleeds to the right
+          viewport edge on `lg:` (see the `HeroScrollSection` className
+          below), which can round a stray sub-pixel past 100vw against a
+          scrollbar; clip it here rather than let it scroll the page. */}
+      <Section spacing="spacious" className="overflow-x-clip pt-12 md:pt-16">
         <Container size="wide">
           <HeroScrollSection
-            className="grid items-center gap-10 lg:grid-cols-2 lg:gap-16"
+            className={cn(
+              "grid items-center gap-10 lg:grid-cols-2 lg:gap-16",
+              // Full-bleed-right for the visual column only, `lg:` and up
+              // (SITE REPAIR round 4, docs/BUILD_NOTES.md SITE-1: "the
+              // visual column may extend past the Container ... use a
+              // negative right margin / grid column that ends at 100vw"
+              // — while the text column stays on the grid). Targets the
+              // grid's 2nd child specifically, and only when it's NOT
+              // `aria-hidden` — the qualifying-tier WebGL visual wrapper
+              // (`hero-scroll-section.tsx`'s `HeroScrollScene.Visual`,
+              // HERO-FILM's file) never carries that attribute itself,
+              // while `LiveCallHero` (the non-qualifying/reduced-motion
+              // fallback rendered in the SAME DOM position) marks its own
+              // root `aria-hidden="true"` — so a desktop visitor on the
+              // reduced-motion/no-WebGL fallback tier keeps its normal,
+              // Container-width two-panel layout instead of being dragged
+              // off past the edge. The margin math mirrors `Container`'s
+              // own `size="wide"` (`packages/ui/src/layout/container.tsx`:
+              // `max-w-(--breakpoint-xl)` = 90rem, `lg:px-8` = 2rem) —
+              // update both together if either changes.
+              "lg:[&>*:nth-child(2):not([aria-hidden])]:mr-[calc(-1*max(2rem,(100vw_-_90rem)/2_+_2rem))]",
+            )}
             visualFallback={<LiveCallHero />}
           >
             <div className="space-y-6 text-center lg:text-left">
@@ -119,6 +144,15 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
           <div className="mt-10">
             <DashboardPreview />
           </div>
+        </Container>
+      </Section>
+
+      {/* Owner phone reveal — beat 6, "Reach the owner" (DESIGN BRIEF §1):
+          closes the loop the hero opened. Same visual language as the
+          dashboard-reveal panel above it, so the story doesn't reset. */}
+      <Section spacing="spacious" className="border-y border-border bg-muted/30">
+        <Container size="wide">
+          <OwnerPhoneReveal />
         </Container>
       </Section>
 

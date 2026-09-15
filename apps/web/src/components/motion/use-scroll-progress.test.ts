@@ -6,6 +6,7 @@ import { useScrollProgress } from "./use-scroll-progress";
 
 const registerPlugin = vi.fn();
 const kill = vi.fn();
+const refresh = vi.fn();
 const create = vi.fn((config: { onUpdate?: (self: { progress: number }) => void }) => ({
   kill,
   progress: 0,
@@ -13,7 +14,7 @@ const create = vi.fn((config: { onUpdate?: (self: { progress: number }) => void 
 }));
 
 vi.mock("gsap", () => ({ gsap: { registerPlugin } }));
-vi.mock("gsap/ScrollTrigger", () => ({ default: { create } }));
+vi.mock("gsap/ScrollTrigger", () => ({ default: { create, refresh } }));
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -56,6 +57,23 @@ describe("useScrollProgress", () => {
 
     config.onUpdate({ progress: 0.42 });
     expect(onUpdate).toHaveBeenCalledWith(0.42);
+  });
+
+  it("calls ScrollTrigger.refresh(true) right after create() — a trigger created lazily (post-interaction) needs to re-sync against whatever the visitor has already scrolled to, not the stale position cached at create time", async () => {
+    const target = createRef<HTMLDivElement>();
+    target.current = document.createElement("div");
+
+    renderHook(() => useScrollProgress({ target, pin: true, onUpdate: vi.fn() }));
+
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledWith(true);
+    // refresh() must run AFTER this instance exists, not before/instead.
+    const [createOrder] = create.mock.invocationCallOrder;
+    const [refreshOrder] = refresh.mock.invocationCallOrder;
+    expect(createOrder).toBeDefined();
+    expect(refreshOrder).toBeDefined();
+    expect(createOrder as number).toBeLessThan(refreshOrder as number);
   });
 
   it("passes pinSpacing through to ScrollTrigger.create() (undefined by default — GSAP's own default applies)", async () => {

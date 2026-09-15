@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  AudioPlayer,
   Badge,
   Button,
   Card,
@@ -15,6 +14,7 @@ import {
   type TranscriptTurn,
   TranscriptViewer,
 } from "@heyloo/ui";
+import { AudioPlayer } from "@heyloo/ui/audio-player";
 import { useState } from "react";
 import { Link } from "@/i18n/navigation";
 

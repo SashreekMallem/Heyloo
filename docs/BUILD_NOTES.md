@@ -10547,3 +10547,564 @@ whatever weight the review placed on the now-fixed oklch defect; every
 other review dimension (LCP, CLS, console errors, axe a11y, WebGL
 correctness, horizontal scroll, long-task/scroll smoothness) was already
 passing and remains so.
+
+## CLUSTER HERO-FILM (Wave 2) — WebGL line morph → scroll-scrubbed frame-sequence film
+
+**What was built**
+
+- `apps/web/src/components/motion/hero-film-frames.ts`: pure frame math
+  (no DOM) — `frameForProgress` (piecewise-linear progress→frame map
+  pinned at `hero-story.ts`'s own stage boundaries: ring 0–0.2→frames
+  1–30, answer 0.2–0.55→30–66, book 0.55–0.8→66–82, land 0.8–1→82–97, per
+  this task's own mapping, cross-checked against the actual committed
+  frames — see below); `computeHeroFilmLoadOrder` (binary-subdivision
+  prefetch order, verified to match `1,97,49,25,73,13,37,61,85,…`);
+  `computeHeroFilmCoverFit` (background-size:cover-equivalent
+  `drawImage` placement math); asset path builders; and
+  `HERO_FILM_CARD_RECT` — the screen rect the film's white card settles
+  into, MEASURED (not estimated) via a thresholded pixel scan of the
+  committed `f090.webp`/`f097.webp` in both themes (script run, not
+  committed) and cross-checked by eye. The two themes' rects genuinely
+  differ (dark's card sits higher/wider in frame than light's) — encoded
+  as two independently-measured rects, not one shared guess.
+- `hero-film-scrubber.tsx`: the real set piece — a `<canvas>` drawn from
+  `progressRef` inside a `requestAnimationFrame` loop (paused offscreen/
+  tab-hidden, same discipline as the old `hero-morph-scene.tsx`), frames
+  decoded via `fetch`+`createImageBitmap` (falls back to a plain
+  `new Image()` when `createImageBitmap` is unavailable), first 12 in
+  binary-subdivision priority order immediately post-mount, the rest
+  deferred behind `deferUntilInteraction` + `requestIdleCallback`.
+  `hero-film-themed-image.tsx` renders BOTH theme's `poster`/`final`
+  `<img>` unconditionally (identical server/client markup) and lets pure
+  CSS (`:root[data-theme]`/`prefers-color-scheme`, the same dual-guard
+  pattern `packages/ui/theme/globals.css` already uses for color tokens)
+  pick the visible one — zero-flash on first paint with no theme cookie,
+  since nothing about which `<img>` is *rendered* ever depends on
+  client-only state.
+- `use-resolved-theme.ts`: resolves light/dark the same way
+  `app/[locale]/layout.tsx`'s bootstrap script does
+  (`data-theme` attribute, else `prefers-color-scheme`), reactive via
+  `MutationObserver` + a `matchMedia` change listener — used only to
+  decide which theme's frame *files* to fetch (pure client-side effect
+  work, no render-time server/client mismatch to cause).
+- `hero-story-overlay.tsx`: repositioned per this task's brief — the
+  "answer" panel now floats top-right instead of centred; the "book"/
+  "land" panels are positioned at `HERO_FILM_CARD_RECT[theme]` (absolute
+  inset from the measured rect, not a centred flex box) and reshaped
+  from a tall stacked card into a single flat row so they actually fit
+  that rect's real (wide, short) aspect ratio — verified by Playwright
+  screenshot: at progress 1.0 the DOM "New booking" row sits pixel-exact
+  on the film's own white card in both themes. Added a
+  `window.__heylooScrollDebug`-gated dashed-rect debug overlay
+  (`[data-hero-debug="card-rect"]`) per this task's instructions — note
+  it's a no-op in a `next build` production bundle (same
+  `NODE_ENV==="production"` gate `use-scroll-progress.ts`'s own debug
+  publish already uses), so it only actually renders under `next dev`.
+- `hero-film-static.tsx`: `HeroFilmFinalImage` (theming final.webp +
+  final-720.webp, generated via `sharp` into the same committed
+  `hero-film/{theme}/` directory — the two new files this task added
+  are the ONLY frame-directory changes; every `f0NN.webp`/`poster.webp`/
+  `final.webp` is untouched) and `HeroFilmStatic` (that image +
+  `HeroStoryOverlay` pinned at `progress: 1`, for the
+  `prefers-reduced-motion` tier).
+- `hero-scroll-scene.tsx`: three tiers in priority order —
+  `prefers-reduced-motion` (any width) → `HeroFilmStatic`; desktop/
+  tablet ≥768px → the real `HeroFilmScrubber` + `HeroStoryOverlay`,
+  mounted together with no separate "engaged" gate (the old
+  `LazyWebglBoundary` stacking concern doesn't apply: the scrubber shows
+  its own theme-correct poster while frames load, never a competing
+  full-content fallback); everything else (mobile) → `LiveCallHero`
+  (unchanged) with `HeroFilmFinalImage` placed above it, no per-frame
+  downloads. Pin/CSS-reservation/engagement-gate machinery for
+  `ScrollTrigger` itself is unchanged from the prior pass (round-4
+  review verified it; nothing here touches it).
+- `use-device-capability.ts` simplified to width + `prefers-reduced-
+  motion` only (`qualifiesForFilm`) — the old WebGL-context/
+  `deviceMemory`/`connection.saveData` probes were specific to needing a
+  GPU context for `three`/r3f; a 2D canvas and `fetch` have no such
+  gate, so those checks were dead weight, not a missing feature.
+- Deleted: `components/three/**` (the whole old morph — scene, Canvas2D
+  fallback, geometry, color-reading — none of it salvageable, the new
+  film IS the geometry now) and `lazy-webgl-boundary.{tsx,test.tsx}`
+  (WebGL-bundle-specific, no film equivalent needed). Removed
+  `three`/`@react-three/fiber`/`@react-three/drei`/`@types/three` from
+  `apps/web/package.json`, `pnpm install`'d (lockfile: pure removal, 460
+  lines, no unrelated churn).
+- `hero-scroll-section.tsx`'s visual-slot box changed from `aspect-[4/3]`
+  to `aspect-video` (16:9) — matches the film's authored 1440×810 frames
+  exactly, so the canvas's cover-fit never crops, which is what lets the
+  overlay's rect-based positioning map straight onto the box's own edges
+  with no separate crop-offset math.
+
+**Known rough edge (not a regression, inherited crossfade design)**: the
+"book" DOM panel starts fading in at the "book" stage's own start
+(progress 0.55, `CROSSFADE_WIDTH` ≈0.035 later) and is at full opacity
+for most of that stage — but the film's own card doesn't finish forming
+until roughly frame 74–78 of that stage's 66–82 range (verified by
+screenshot at progress 0.6: the DOM row is correctly positioned at the
+FINAL rect, but the underlying film is still mid-morph, a still-forming
+bar, not yet a card, so the two don't visually read as one object for
+roughly the first third of the "book" stage). The stage-boundary
+crossfade timing itself is inherited from the pre-existing
+`hero-story-overlay.tsx`/`hero-story.ts` design (this task repositioned
+the panels' X/Y, not their fade timing) — CLAUDE.md Rule 4: flagged
+here rather than redesigning the crossfade curve, which is out of this
+task's assigned scope. A future pass could fade the "book" panel in on
+a frame-index-aware curve (e.g. weighted toward `frameForProgress`
+crossing ~74 rather than the raw 0.55 stage start) instead of a fixed
+`CROSSFADE_WIDTH`. The FINAL, held state (land, 0.8–1.0 — where the
+visitor's eye actually rests, per round-4's own "the hand-off IS the set
+piece" framing) is pixel-matched in both themes; only the brief
+mid-transition window is affected.
+
+**Gates run**: `pnpm --filter @heyloo/web typecheck` — clean; `pnpm
+--filter @heyloo/web test` — 566/566 tests green across 110 files
+(includes new suites for every pure-math/theme/component module listed
+above: frame-index mapping at exact stage boundaries, load-order
+generator against the documented `1,97,49,…` sequence + permutation
+invariant, cover-fit math incl. zero-size degradation, theme resolution
+incl. live `data-theme`/system-preference changes, reduced-motion static
+path, unmount-aborts-in-flight-fetches); `pnpm --filter @heyloo/web
+build` (`next build --webpack`, production, placeholder Supabase env) —
+clean, compiled + typechecked + all pages generated. Playwright
+verification (uncommitted script, chromium at `/opt/pw-browsers/
+chromium`, 1440×900): built+started the production server, computed the
+pin's real scrollY range from `.hero-pin-reserve`'s own DOM position,
+scrolled 0/10/…/100% of it, screenshotted every step in light theme plus
+a 0/50/100% spot-check in dark theme, plus a reduced-motion pass and a
+390×844 mobile pass — 0 console errors/warnings across all of it.
+Visually confirmed: no hard-edged backdrop rectangle in either theme
+(the `mask-image` radial-gradient dissolve works), the overlay panels
+track the phone/card through every stage, and the "land" state's DOM row
+sits exactly on the film's own white card in both themes.
+
+Also ran `node --experimental-strip-types scripts/site-perf/measure.ts`
+(the formal LCP/CLS/initial-JS budget harness) against a fresh
+production build+`next start`: Home route — LCP 864ms PASS (budget
+2500ms), CLS 0.003 PASS (budget 0.05), Initial JS 444.3KB **FAIL**
+(budget 250KB). LCP/CLS are comfortably inside budget (the poster `<img>`
+as the LCP element, explicit width/height, works as intended). The JS
+FAIL is a known pre-existing gap this cluster did not create and cannot
+fully close: the prior review pass (see this file's own entry above)
+already measured 396.1KB FAIL on the SAME budget with the OLD
+three/r3f/drei-based hero and traced the overage to eagerly-initialized
+Sentry/PostHog (a different cluster's ownership), not the hero visual —
+this pass's 444.3KB is higher than that 396.1KB baseline, but the two
+numbers aren't a clean A/B (no isolated before/after was measured on
+identical other-code within this session; other agents' concurrent work
+on the shared branch could account for some or all of the delta).
+`HeroFilmScrubber`/`HeroFilmStatic` are deliberately NOT
+`next/dynamic`-code-split the way the old `HeroMorphScene` was: this
+task's own spec requires the first 12 frames to start loading
+immediately post-hydration (not gated behind a scroll/interaction
+engagement signal, unlike the old WebGL chunk), so their small amount of
+component code is CORRECTLY part of the initial bundle by design, not a
+missed code-splitting opportunity — code-splitting it further would only
+help if paired with an engagement gate, which would reintroduce a
+flash-of-nothing before the poster's replacement canvas can draw,
+regressing the "poster paints before any JS" LCP guarantee this pass
+was built around. Flagging the 444.3KB number honestly rather than
+re-baselining it away; closing the gap needs the Sentry/PostHog
+deferral work already named in the prior entry, not more hero-cluster
+changes.
+
+**Files changed this pass**: new —
+`apps/web/src/components/motion/{hero-film-frames,hero-film-scrubber,
+hero-film-static,hero-film-themed-image,use-resolved-theme}.{ts,tsx}`
++ matching `.test.{ts,tsx}` for each; `apps/web/public/site/hero-film/
+{light,dark}/final-720.webp` (generated via `sharp`, the only new frame-
+directory assets). Modified —
+`apps/web/src/components/motion/{hero-scroll-scene,hero-story-overlay,
+use-device-capability,index}.ts(x)` + their tests,
+`apps/web/src/components/marketing/hero-scroll-section.tsx` + test,
+`apps/web/package.json`, `pnpm-lock.yaml`. Deleted —
+`apps/web/src/components/three/**` (8 files),
+`apps/web/src/components/motion/lazy-webgl-boundary.{tsx,test.tsx}`.
+
+## CLUSTER GLUE+PERF — hero-film/PAGES-2 reconciliation + perf-budget re-run (2026-09-14)
+
+Found HERO-FILM and PAGES-2's work already merged cleanly in the shared
+tree on arrival: `hero-scroll-scene.tsx` renders `HeroFilmScrubber` +
+`HeroStoryOverlay` on the qualifying tier, `hero-scroll-section.tsx` uses
+`aspect-video`, and `page.tsx` renders `<OwnerPhoneReveal />` directly
+after `<DashboardPreview />` — all matching this task's own reconciliation
+brief. No merge conflicts to resolve.
+
+**Fixed**: two `testing-library` lint errors (`dashboard-preview.test.tsx`'s
+`render()` result named `first` → renamed `view`;
+`owner-phone-reveal.test.tsx`'s `container.querySelector('[aria-hidden="true"]')`
+→ added the same `eslint-disable-next-line testing-library/no-container,
+testing-library/no-node-access` pattern `hero-film-static.test.tsx`/
+`hero-story-overlay.test.tsx` already use for the identical
+"element-under-test-is-aria-hidden" case).
+
+**Also fixed — two real visual defects found by actually looking at the
+Playwright screenshots, not just checking for console errors** (full
+writeup with root causes in `docs/audit/SITE_REQUESTS.md`'s GLUE+PERF
+section):
+1. `hero-story-overlay.tsx`'s "book" stage panel was illegible for its
+   entire ~55%-80% scroll range — the vehicle/service text rendered as a
+   single truncated character ("2." / "C.") because its not-yet-revealed
+   sibling fields stayed mounted (just `opacity-0`) and permanently
+   claimed most of the narrow card rect's width. Fixed by conditionally
+   MOUNTING each field on its reveal threshold instead of opacity-hiding
+   it, matching the "answer" panel's own already-correct pattern one
+   panel up in the same file.
+2. `hero-film-themed-image.tsx` — the "zero-flash theme-correct image"
+   component used everywhere except the scrubber's own canvas (reduced-
+   motion tier, mobile final-frame, the scrubber's poster before its
+   first frame decodes) — showed the DARK theme's image ALWAYS,
+   regardless of the viewer's real theme, because its shared inline
+   `style` object set `display: "block"` on both the light and dark
+   `<img>`; an inline style always beats a stylesheet rule regardless of
+   selector specificity, so the component's own CSS (meant to hide the
+   inactive theme) was silently inert since it was written. Fixed by
+   moving `display` out of the inline style; added a regression-guard
+   test asserting neither `<img>`'s inline style sets `display` at all,
+   since the existing test suite only checked the CSS *text* for the
+   right rule, never whether it could actually win against the inline
+   style — which is exactly how this got through HERO-FILM's own
+   (otherwise thorough) verification pass undetected.
+
+Both fixes are minimal, scoped to the two files that had the bug, and
+re-verified with a fresh Playwright pass (per-shot isolated browser
+contexts, to rule out any test-harness state bleed) showing correct
+content/theme in every case: `pnpm --filter @heyloo/web
+typecheck`/`test` (567/567, 110 files — one more than before: the new
+regression-guard test)/`build` (183 routes, webpack, production) all
+clean; `npx biome check --write` on every changed file (0 fixes);
+`pnpm run lint` (0 errors, 32 pre-existing unrelated warnings).
+
+**Perf budget re-run** (`node --experimental-strip-types
+scripts/site-perf/measure.ts` against a fresh production build of the
+merged tree): LCP 464ms PASS, CLS 0.000 PASS, Initial JS 444.3KB FAIL
+(budget 250KB) — identical to HERO-FILM's own already-recorded number,
+confirming the PAGES-2 merge added zero measurable regression. Re-verified
+this task's named levers against the merged tree (three/r3f/drei absent
+from both `package.json` and every initial-window chunk; GSAP confirmed
+behind the engagement gate for both `hero-scroll-scene.tsx` and
+`owner-phone-reveal.tsx`; Sentry confirmed unreachable from the marketing
+route's client graph via `instrumentation-client.ts`; no PostHog string in
+any initial chunk) and pulled a real per-chunk table via an uncommitted
+Playwright/CDP script (`Network.loadingFinished` `encodedDataLength`,
+same methodology `measure.ts` itself uses — total matched 444.3KB
+exactly). The two largest chunks (68.7KB Next.js App Router client
+runtime + 63.9KB React/ReactDOM, ~132.6KB gz together) are pure framework
+floor, not this cluster's code — full table and reasoning in
+`docs/audit/SITE_REQUESTS.md`'s new "GLUE+PERF cluster" section. Root
+cause unchanged from two prior independent measurements (ENGINE's
+"~380KB before GSAP" finding, HERO-FILM's own 444.3KB): closing this gap
+needs a framework-level decision outside `apps/web/**`/`packages/ui/**`,
+per CLAUDE.md Rule 4 — documented and deferred, not redesigned.
+
+Files touched this cluster: `apps/web/src/components/marketing/dashboard-preview.test.tsx`,
+`apps/web/src/components/marketing/owner-phone-reveal.test.tsx`,
+`apps/web/src/components/motion/hero-story-overlay.tsx` (book-panel
+conditional-mount fix), `apps/web/src/components/motion/hero-film-themed-image.tsx`
+(inline-style `display` fix), `apps/web/src/components/motion/hero-film-themed-image.test.tsx`
+(updated + new regression-guard test), `docs/audit/SITE_REQUESTS.md`,
+this entry.
+
+## CLUSTER SITE-REPAIR-3 — hero scroll-freeze fix, dental icon, corrected JS-budget root cause (2026-09-14)
+
+Third repair pass against the reviewer's 64/100 findings (blockers only —
+majors/minors not in this list were unaffected). All three fixes verified
+against a fresh production build + `next start`, not just unit tests.
+
+**1. Hero pin intermittent freeze (blocker) — FIXED.** Root cause
+confirmed via GSAP's own docs (`gsap.com/docs/v3/Plugins/ScrollTrigger/
+static.refresh()`, CLAUDE.md Rule 1) and community guidance: a
+`ScrollTrigger` created dynamically — here, `use-scroll-progress.ts`'s
+`ScrollTrigger.create()`, deferred behind `deferUntilInteraction` and
+often firing on the visitor's very first "scroll" event, i.e. already
+mid-gesture — caches its start/end pixel positions at the moment
+`.create()` runs; if the browser hasn't finished a DOM/layout pass by
+then, or the scrollbar has already moved further by the time the
+deferred `gsap` chunk resolves, those cached positions go stale and
+`onUpdate`'s progress reads ~0 (the "ring" frame) for most of the pin's
+scroll distance, only catching up right at the end. Fixed by calling
+`ScrollTrigger.refresh(true)` immediately after `.create()` in
+`use-scroll-progress.ts` (the `true`/"safe" mode waits a rAF tick, up to
+~200ms, for layout to settle first) — exactly GSAP's own documented fix
+for this class of bug. Applied the same fix to
+`owner-phone-reveal.tsx`'s own separate `ScrollTrigger.create()` (see
+finding 3) for consistency, since it has the identical "created lazily,
+sometimes mid-scroll" shape.
+
+Verified two ways: (a) a unit test asserting `ScrollTrigger.refresh(true)`
+is called, and called after `.create()` (`use-scroll-progress.test.ts`);
+(b) a 12-run repeated Playwright probe (not committed — ad hoc, per the
+reviewer's own "not a single spot-check" instruction) against a real
+production build: fresh browser context each run, wheel-scroll to
+~scrollY 1200 (the reviewer's own repro position, ≈53% through the
+250vh desktop pin), read the `data-hero-stage` panels' live inline
+`style.opacity` in `hero-story-overlay.tsx`. Before the fix this
+reproduced the freeze (ring panel stuck near opacity 1, answer/book at
+0) in roughly half of runs, matching the reviewer's own "coin-flip"
+description; after the fix, 0/12 runs froze — every run correctly showed
+`ring: 0, answer: 1` (or further, depending on exactly where the wheel
+scroll landed) at the mid-pin position.
+
+**2. Dental vertical icon = `Sparkles` (blocker) — FIXED.**
+`VERTICAL_ICONS.dental` in `packages/ui/src/icons/index.tsx` swapped from
+`Sparkles` (an AI-sparkle-coded glyph, forbidden by WEBSITE_CREATIVE_
+BRIEF.md §7's anti-slop checklist) to `Smile` — a literal, non-abstract
+glyph matching the other seven verticals' literal-object convention.
+**Important build-hygiene note for whoever touches `packages/ui` next**:
+`@heyloo/ui`'s `package.json` `main`/`exports` point at `./dist/index.js`
+(a prebuilt output), not `src` — editing `src/icons/index.tsx` alone does
+NOT change what `apps/web` actually bundles until `pnpm --filter
+@heyloo/ui build` (`tsc -b`) regenerates `dist/`. This bit this exact fix
+once during this pass: the first post-fix screenshot of the nav dropdown
+still showed the old sparkle glyph because `dist/icons/index.js` was
+stale from before the edit; rebuilding `@heyloo/ui` and then rebuilding
+`apps/web` produced the correct `Smile` glyph. Re-verified with fresh
+screenshots (production build) at all three named placements: the global
+nav "Business types" dropdown, the home page's business-types grid
+("Dental Practices" card), and the `/dental` page's own hero icon badge
+— all three now show `Smile`, not `Sparkles`.
+
+**3. Home route initial JS 444.2KB vs 250KB budget (blocker) —
+PARTIALLY FIXED, with a corrected root-cause analysis.** The prior
+GLUE+PERF entry's diagnosis ("Sentry/PostHog init," carried forward into
+this round's reviewer text) was re-checked against a live per-chunk
+network capture (CDP `Network.loadingFinished` `encodedDataLength`,
+same methodology `measure.ts` uses) and confirmed **still correct that
+neither is the cause**: every chunk's "sentry" string hit is
+`@sentry/webpack-plugin`'s few-hundred-byte build-time debug-ID stamp
+(`_sentryDebugIds`), injected into literally every chunk for source-map
+association — not the real SDK, which remains unreachable from the
+marketing route's client graph (confirmed via `instrumentation-client.ts`
+and `sentry-init.tsx` as before). No PostHog string anywhere in any
+initial chunk either. That diagnosis was stale; this pass found and
+fixed the REAL, currently-reproducible cause instead:
+
+`gsap`/`ScrollTrigger` (~46KB gz — three chunks, 20.0+17.6+8.5KB,
+confirmed via the same per-chunk capture) was loading on every single
+passive page load, contradicting `hero-scroll-scene.tsx`'s own documented
+"GSAP never loads until first interaction" invariant, from two places:
+  - `scroll-orchestration-provider.tsx`'s idle-prefetch fired
+    `requestIdleCallback` unconditionally on mount — on a real page load
+    the main thread goes idle almost immediately, so this ran within
+    ~1s of first paint regardless of any interaction. Fixed by wrapping
+    it in the same `deferUntilInteraction` gate every other GSAP
+    consumer already uses.
+  - `owner-phone-reveal.tsx` (the closing "reach the owner" phone-buzz
+    beat, rendered directly on the home route) called `loadGsap()`
+    unconditionally from its setup effect on every mount — this was the
+    larger and more direct culprit, since it doesn't depend on idle
+    timing at all. Fixed the same way: gated behind
+    `deferUntilInteraction`, plus added the same `ScrollTrigger.
+    refresh(true)` fix as finding 1 (its own `ScrollTrigger.create()` has
+    the identical "created lazily, possibly after the visitor has
+    already scrolled past its `once: true` entrance trigger" shape).
+
+Both fixes verified with the full before/after per-chunk capture: home
+route initial JS dropped from **444.2KB → 398.2KB gz** (measured twice,
+byte-identical both times) — the three gsap chunks are gone from the
+initial-load network capture entirely on a passive load, confirming the
+root cause. Re-ran the project's own budget harness (`node
+--experimental-strip-types scripts/site-perf/measure.ts`, fresh
+production build): Home — LCP 596ms PASS, CLS 0.000 PASS, Initial JS
+398.2KB **still FAIL** (budget 250KB, 59% over, down from 78% over).
+Cross-checked LCP/CLS on the other 3 routes with a separate
+PerformanceObserver probe: dental LCP 340ms, pricing 132ms, demo 184ms,
+all CLS 0.000 — no regression.
+
+**Remaining gap, honestly not closed this pass**: ~398.2KB is still
+~150KB over budget. Of that, ~129.5KB is confirmed pure framework floor
+(Next.js App Router client runtime + React/ReactDOM, identified via
+`react-dom`/`createRoot`/`hydrateRoot`/`Scheduler` string markers in the
+two largest chunks) — not fixable without dropping React/Next, out of
+scope. The remaining ~270KB is spread across many small-to-medium
+vendor/component chunks (Radix UI primitives used by the marketing
+header's nav/dropdowns — present across a dozen+ separate chunks;
+`@formatjs/intl-pluralrules` from `next-intl`'s i18n runtime; `zod` and
+`date-fns`, source not yet traced to a specific home-page import). Fully
+closing the budget would mean route-level code-splitting of Radix-heavy
+interactive nav chrome and/or an i18n-runtime trim — a real architectural
+lever, not a bug fix, and outside this task's scope per CLAUDE.md Rule 4
+("do not redesign"). Flagging as the next concrete lever for whoever
+picks up the JS-budget gap next, rather than re-asserting the
+already-disproven Sentry/PostHog diagnosis.
+
+**Files changed this pass**: `apps/web/src/components/motion/
+use-scroll-progress.ts` (+`.test.ts`) — `ScrollTrigger.refresh(true)`
+after `.create()`; `apps/web/src/components/motion/hero-scroll-scene.
+test.tsx`, `apps/web/src/components/marketing/hero-scroll-section.
+test.tsx` — mock updates for the new `refresh` call;
+`apps/web/src/components/motion/scroll-orchestration-provider.tsx`
+(+`.test.tsx`) — idle-prefetch gated behind `deferUntilInteraction`;
+`apps/web/src/components/marketing/owner-phone-reveal.tsx` (+`.test.tsx`)
+— `loadGsap()` gated behind `deferUntilInteraction`, `ScrollTrigger.
+refresh(true)` added; `packages/ui/src/icons/index.tsx` — `dental:
+Sparkles` → `dental: Smile`; `packages/ui/dist/**` — rebuilt (`pnpm
+--filter @heyloo/ui build`) so the icon fix actually reaches `apps/web`;
+this entry.
+
+**Verification**: `pnpm --filter @heyloo/web typecheck` / `pnpm --filter
+@heyloo/ui typecheck` clean. `pnpm --filter @heyloo/web test` 571/571
+(110 files, +3 from this pass's new/expanded tests), `pnpm --filter
+@heyloo/ui test` 124/124 — both clean, no regressions. `pnpm --filter
+@heyloo/web lint` 0 errors, 32 pre-existing unrelated warnings (unchanged
+baseline). `npx biome check` on every changed file: 0 fixes needed.
+`pnpm --filter @heyloo/web build` (webpack, production): clean. Full
+production-build screenshots taken at every reviewer-named spot (nav
+dropdown, home business-types grid, `/dental` hero badge) confirming the
+icon fix; 24 total repeated-run Playwright probes (12 pre-fix-style
+repro + 12 post-fix) confirming the hero-freeze fix.
+
+## SITE REPAIR — 4th pass, 40/100 review: the REAL hero-freeze root
+cause, and a second barrel-leakage fix (2026-09-15)
+
+**1. Hero pin scroll-freeze (blocker) — the PREVIOUS fix (SITE-REPAIR-3
+finding 1, `ScrollTrigger.refresh(true)`) was necessary but not
+sufficient; a second, independent bug produced the identical symptom and
+is what this review actually caught. FIXED.**
+
+Root-caused against a genuinely clean, single-process production build
+(the flaky repro that looked like the ScrollTrigger-timing bug was
+partly an artifact of this shared sandbox running stale/concurrent
+`next-server`/`next build` processes against the same `.next` dir —
+always `rm -rf apps/web/.next` and confirm only one `next-server` is
+running before trusting a "still broken" repro here). With that isolated,
+a temporary diagnostic (`console.log` in `use-scroll-progress.ts`'s
+`onUpdate`, removed before this commit) proved `ScrollTrigger`'s own
+`self.progress` tracks real scroll position correctly the whole time —
+the previous round's fix holds. The freeze is downstream: `hero-story-
+overlay.tsx`'s and `hero-film-scrubber.tsx`'s rAF loops each gate on an
+`IntersectionObserver` to pause when off-screen, and GSAP's `pin: true`
+setup (`use-scroll-progress.ts`) reparents the pinned element into a
+spacer wrapper EVEN with `pinSpacing: false` — this briefly detaches
+these components' containers (both are descendants of the pinned
+element) from the document. Per spec (developer.mozilla.org/en-US/docs/
+Web/API/IntersectionObserverEntry/rootBounds, CLAUDE.md Rule 1 — a
+detached target still fires a callback), that detach delivers a
+`isIntersecting: false` / `rootBounds: null` / zero-area
+`boundingClientRect` entry — confirmed via a live production-build probe
+(console-logged entries, removed before this commit): it fired exactly
+once, right as `ScrollTrigger.create()` ran, and the browser never
+delivered a follow-up "back to true" reading afterward even though the
+pin's own `position: fixed` box was genuinely on-screen for the rest of
+the scroll (confirmed separately via `getComputedStyle`/
+`getBoundingClientRect`). Both loops treated that one stale reading as
+"left the viewport" and never restarted — freezing the hero at frame 1 /
+the "ring" stage for the entire pin, matching every symptom in the
+review (the DOM overlay panels stuck at `ring: 1`, the film canvas never
+advancing past its poster frame) even though `self.progress` itself was
+fine the whole time.
+
+Fix: in both files' `IntersectionObserver` callback, an entry with
+`rootBounds === null` while the element is ACTUALLY still
+`document.contains`-connected (as opposed to a genuine unmount, which
+the existing cleanup already handles) is exactly that detach-artifact,
+never a real viewport exit — re-observe instead of trusting it, so the
+next real reading isn't lost either. Verified against a fresh, single-
+process production build + `next start`, reproducing the review's own
+repro methodology: (a) the exact split-timing repro that reliably froze
+it before the fix (a tiny scroll to trigger `engaged`, THEN a separate
+`window.scrollTo` jump — the shape that most reliably hit the detach
+race) now correctly reads `answer: 1` instead of stuck `ring: 1`; (b) an
+11-position `scrollY` sweep (65→2315, the reviewer's own pin bounds) at
+1440px in BOTH themes, screenshotted at every position — the DOM overlay
+panels now correctly cross-fade ring→answer→book→land in sync with the
+film's own frame advancing (transcript bubbles + tool-call badge at
+30-50%, the booking card assembling on the film's white card at 60-70%,
+the dashboard-row hand-off at 90-100% — the full physical-to-UI set
+piece, in both light and dark); (c) `diag1`-style repeated wheel-scroll
+sweeps (10 stops, scrollY 0→3200) show the same correct progression.
+Also re-ran the full `apps/web` test suite (571/571) and `@heyloo/ui`
+(124/124) — no regressions.
+
+**2. Home route initial JS 398.3KB vs 250KB budget (blocker) — PARTIALLY
+FIXED (398.3KB → 379.2KB gz), same root-cause class as SITE-REPAIR-3
+finding 3, not yet fully closed.** Re-measured fresh via `node
+--experimental-strip-types scripts/site-perf/measure.ts` against a truly
+clean build: confirmed the reviewer's 398.3KB gz exactly (LCP 424-532ms
+and CLS 0.000 both comfortably pass throughout, unaffected). Traced the
+overshoot with a live per-chunk CDP capture (`Network.loadingFinished`
+`encodedDataLength`, same method as `measure.ts`) cross-referenced
+against literal string-marker search in each chunk: found a NEW instance
+of the exact `@heyloo/ui` barrel-leakage class SITE-REPAIR-3 already
+fixed for `charts`/`cmdk`/`input-otp` (that entry's own header comment,
+`packages/ui/src/index.ts`) — nobody had yet found it for `Calendar`.
+`primitives/calendar.tsx` (`react-day-picker`, which pulls in `date-fns`)
+was still re-exported from the main `@heyloo/ui` barrel via `primitives/
+index.ts` → `forms/date-range-picker.tsx` → `custom/date-range-pills.tsx`
+→ `custom/index.ts`, even though its ONLY real call site in the entire
+app is the tenant dashboard overview's date-range filter
+(`apps/web/src/components/tenant/overview-client.tsx`) — confirmed via
+exhaustive grep, zero other consumers anywhere in `apps/web` or
+`packages/ui`. Same fix as the established precedent: carved the whole
+chain (`Calendar`, `DateRangePicker`, `DateRangePills`) out of the
+default barrel into a new `@heyloo/ui/date-range` subpath export
+(`packages/ui/src/date-range-entry.ts`, mirroring `command-entry.ts`'s
+shape exactly), updated `overview-client.tsx`'s one import, rebuilt
+`@heyloo/ui`. Verified: `date-fns`/`react-day-picker` string markers now
+present in ONE dashboard-only chunk (loads on `/dashboard`, confirmed via
+the same chunk-content search) and ABSENT from every marketing-route
+chunk; re-measured with `measure.ts` against a from-scratch build: **PASS
+LCP 516ms, PASS CLS 0.000, FAIL Initial JS 379.2KB** (down from 398.3KB,
+budget 250.0KB).
+
+**Remaining gap, honestly not closed this pass**: still ~129KB over
+budget. Investigated the reviewer's two named levers specifically:
+`marketing-header.tsx` does NOT use a Radix dropdown (it's a plain CSS
+`group-hover` menu — confirmed by reading the file), so "split the
+header's Radix dropdown" isn't a valid lever as literally stated; the
+REAL Radix cost (confirmed via the same chunk-content search: `radix`
+string markers across 8 separate chunks, ~89KB gz combined) comes from
+`primitives/index.ts` re-exporting every one of the ~25 Radix-backed
+primitives (accordion, dialog, select, sheet, tabs, tooltip, etc.) from
+the SAME barrel `Button`/`ThemeToggle` need — the same barrel-leakage
+class as the `date-range`/`charts`/`command` fixes, but auditing all 25
+for real marketing-route reachability (several — `dropdown-menu`,
+`popover`, `hover-card` — likely ARE used by non-marketing consumers
+across the admin/tenant/partner apps and would need their own careful
+per-primitive carve-out, not a blanket exclusion) is a substantially
+larger, multi-file architectural pass than fits this review-fix task
+per CLAUDE.md Rule 4 ("do not redesign"). `@formatjs/intl-pluralrules`
+(next-intl's polyfill) was checked too — no direct app-level import
+found; it's pulled in by `next-intl` itself, not something this task's
+files can trim without an `next-intl` version/config change outside
+`apps/web`/`packages/ui`/`scripts/site-perf`'s file ownership. Flagging
+the Radix-barrel audit specifically (which primitive, which real
+consumer, which can safely move to its own subpath) as the next concrete
+lever — the SAME pattern already proven twice (`charts`, `date-range`),
+just bigger.
+
+**3. `owner-phone-reveal.tsx` entrance animation (minor) — checked, no
+defect found, no code change made.** Per the review's own instruction
+("no code change indicated unless a real freeze is found"): drove a
+REAL, slow, incremental wheel-scroll (30px steps, 90ms real waits — not
+a synthetic jump) through the section in both themes, screenshotting
+every step (80 frames total) from just before the section enters view
+through well past it. Every single frame shows either the fully-settled
+state (phone chassis + notification card complete) or the section not
+yet visible — never a stuck intermediate/half-tweened frame in either
+theme. No change made.
+
+**Files changed this pass**: `apps/web/src/components/motion/
+hero-story-overlay.tsx`, `apps/web/src/components/motion/
+hero-film-scrubber.tsx` — the `IntersectionObserver` detach-artifact
+guard (finding 1); `apps/web/src/components/tenant/overview-client.tsx`
+— import path update to `@heyloo/ui/date-range`; `packages/ui/src/
+index.ts`, `packages/ui/src/primitives/index.ts`, `packages/ui/src/
+forms/index.ts`, `packages/ui/src/custom/index.ts` — barrel exclusions +
+comments; `packages/ui/src/date-range-entry.ts` (new) — the new subpath
+entry; `packages/ui/package.json` — new `./date-range` export;
+`packages/ui/dist/**` — rebuilt; this entry.
+
+**Verification**: `pnpm --filter @heyloo/web typecheck` clean, `pnpm
+--filter @heyloo/ui typecheck` clean. `pnpm --filter @heyloo/web test`
+571/571 (110 files), `pnpm --filter @heyloo/ui test` 124/124 — both
+clean, no regressions. `pnpm --filter @heyloo/web lint` 0 errors, 32
+pre-existing unrelated warnings (unchanged baseline). `npx biome check`
+on every changed file: 0 fixes needed. `pnpm --filter @heyloo/web build`
+(webpack, production, from a clean `.next`): clean. `node
+--experimental-strip-types scripts/site-perf/measure.ts` against that
+build: LCP/CLS PASS, Initial JS FAIL at 379.2KB (down from 398.3KB).
+Full production-build screenshots at every reviewer-named spot (11-stop
+hero sweep × 2 themes, plus the split-timing repro) confirming the
+hero-freeze fix; an 80-frame slow-scroll sweep × 2 themes confirming the
+owner-phone-reveal minor is not a real defect.

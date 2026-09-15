@@ -116,6 +116,29 @@ export function useScrollProgress({
         scrub,
         onUpdate: (self) => onUpdateRef.current?.(self.progress),
       });
+      /**
+       * SITE REPAIR finding (blocker): this trigger is created lazily,
+       * behind `disabled`/`deferUntilInteraction` (see this file's own
+       * "gsap/ScrollTrigger load lazily" docstring above and
+       * `hero-scroll-scene.tsx`'s `ENGAGE_FALLBACK_MS` comment) — often
+       * from the visitor's very FIRST "scroll" event, i.e. while a scroll
+       * gesture is already under way. `ScrollTrigger.create()` caches its
+       * start/end pixel positions at the moment it runs; GSAP's own
+       * guidance (gsap.com/docs/v3/Plugins/ScrollTrigger/static.refresh())
+       * is that a trigger created dynamically — after user interaction,
+       * mid-scroll, or before the browser has finished rendering DOM/
+       * layout changes — can cache stale measurements, which reproduces
+       * exactly as observed: progress reads ~0 (the "ring" frame) for
+       * most of the pin's scroll distance, only catching up right at the
+       * very end once the scrollbar has moved far enough to cross the
+       * (stale, too-late) cached end. `refresh(true)` is the documented
+       * fix — it re-measures from the current DOM/scroll state (the
+       * `true` "safe" mode waits a rAF tick, up to ~200ms, for any
+       * in-flight layout to settle first) and re-syncs `onUpdate` to the
+       * scroll position as it actually is right now, rather than as it
+       * was assumed to be when `.create()` was called.
+       */
+      ScrollTrigger.refresh(true);
       if (debugKey) publishDebugScrollTrigger(debugKey, scrollTrigger);
     });
 

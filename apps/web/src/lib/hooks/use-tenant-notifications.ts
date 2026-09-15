@@ -1,6 +1,6 @@
 "use client";
 
-import type { NotificationItem } from "@heyloo/ui";
+import type { NotificationItem } from "@heyloo/ui/notification";
 import { useQuery } from "@tanstack/react-query";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 

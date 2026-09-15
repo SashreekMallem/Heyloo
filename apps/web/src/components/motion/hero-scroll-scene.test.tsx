@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HERO_CALL_BUSINESS_NAME } from "@/content/marketing/hero-call";
+import { HERO_CALL_BUSINESS_NAME, HERO_CALL_TOOL_CALL } from "@/content/marketing/hero-call";
 import { __resetGsapLoaderForTests } from "./gsap-loader";
 import { HeroScrollScene } from "./hero-scroll-scene";
 
@@ -19,21 +19,15 @@ const scrollTriggerCreate = vi.fn(
 );
 
 vi.mock("gsap", () => ({ gsap: { registerPlugin } }));
-vi.mock("gsap/ScrollTrigger", () => ({ default: { create: scrollTriggerCreate } }));
-// The real `HeroMorphScene` mounts an actual react-three-fiber `<Canvas>`,
-// which needs a real `ResizeObserver` — unavailable under jsdom. Every
-// test in this file that reaches the qualifying tier only cares about
-// the SIZING/WIRING around the canvas slot, never the WebGL content
-// itself, so stub the scene out entirely.
-vi.mock("@/components/three/hero-morph-scene", () => ({
-  default: () => <div data-testid="hero-morph-scene-stub" />,
+vi.mock("gsap/ScrollTrigger", () => ({
+  default: { create: scrollTriggerCreate, refresh: vi.fn() },
 }));
 
-function stubMatchMedia(matches: boolean) {
+function stubMatchMedia(reducedMotion: boolean) {
   vi.stubGlobal(
     "matchMedia",
     vi.fn().mockImplementation((query: string) => ({
-      matches,
+      matches: query.includes("prefers-reduced-motion") ? reducedMotion : false,
       media: query,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -41,11 +35,15 @@ function stubMatchMedia(matches: boolean) {
   );
 }
 
-/** Makes the device-capability + reduced-motion gate resolve to `qualifies: true` (SITE REPAIR's pinned-hero tests need the qualifying tier, not just the fallback). */
+/** Makes the device-capability + reduced-motion gate resolve to `qualifies: true` (the pinned-hero tests need the film tier, not a fallback). */
 function stubQualifyingDevice() {
   stubMatchMedia(false);
-  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as WebGLRenderingContext);
   Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
+}
+
+function stubNarrowDevice() {
+  stubMatchMedia(false);
+  Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
 }
 
 function FallbackHero() {
@@ -53,12 +51,10 @@ function FallbackHero() {
 }
 
 /**
- * SITE REPAIR: `ScrollTrigger.create()` (and the `gsap` chunk behind it)
- * is now deferred until the visitor engages — first scroll/pointer/key,
- * or a fallback timer (`ENGAGE_FALLBACK_MS`) — same mechanism
- * `lazy-webgl-boundary.test.tsx` already exercises for `Scene`'s own
- * deferred mount. Every qualifying-tier test that asserts on the created
- * `ScrollTrigger` needs to fire this first.
+ * `ScrollTrigger.create()` (and the `gsap` chunk behind it) is deferred
+ * until the visitor engages — first scroll/pointer/key, or a fallback
+ * timer (`ENGAGE_FALLBACK_MS`). Every qualifying-tier test that asserts
+ * on the created `ScrollTrigger` needs to fire this first.
  */
 function dispatchScroll() {
   act(() => {
@@ -85,11 +81,10 @@ describe("HeroScrollScene", () => {
     );
 
     expect(screen.getByTestId("headline")).toHaveTextContent("Every call answered.");
-    expect(await screen.findByTestId("fallback-hero")).toBeInTheDocument();
   });
 
-  it("Visual renders `fallback` under jsdom (no WebGL context available) and never mounts a canvas", async () => {
-    stubMatchMedia(false);
+  it("Visual renders `fallback` on a narrow (mobile) viewport, alongside the film's final-frame image, never a canvas", async () => {
+    stubNarrowDevice();
     render(
       <HeroScrollScene>
         <HeroScrollScene.Visual fallback={<FallbackHero />} />
@@ -98,13 +93,14 @@ describe("HeroScrollScene", () => {
     expect(await screen.findByTestId("fallback-hero")).toBeInTheDocument();
     // eslint-disable-next-line testing-library/no-node-access -- <canvas> has no accessible role/text for a Testing-Library query
     expect(document.querySelector("canvas")).not.toBeInTheDocument();
+    // The mobile tier still shows the film's product object, just as a
+    // static final-frame <img>, not the scrubbed sequence.
+    // eslint-disable-next-line testing-library/no-node-access -- asserting on the themed final-frame <img> has no role/text query equivalent
+    expect(document.querySelector('img[data-heyloo-theme-img="light"]')).toBeInTheDocument();
   });
 
-  it("Visual renders `fallback` under prefers-reduced-motion, even on a device that would otherwise qualify", async () => {
+  it("Visual renders the static final-frame tier (not `fallback`) under prefers-reduced-motion, even on a device that would otherwise qualify", async () => {
     stubMatchMedia(true);
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
-      {} as WebGLRenderingContext,
-    );
     Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
 
     render(
@@ -112,7 +108,13 @@ describe("HeroScrollScene", () => {
         <HeroScrollScene.Visual fallback={<FallbackHero />} />
       </HeroScrollScene>,
     );
-    expect(await screen.findByTestId("fallback-hero")).toBeInTheDocument();
+    expect(screen.queryByTestId("fallback-hero")).not.toBeInTheDocument();
+    expect(
+      await waitFor(
+        // eslint-disable-next-line testing-library/no-node-access -- asserting on the themed final-frame <img> has no role/text query equivalent
+        () => document.querySelector('img[data-heyloo-theme-img="light"]'),
+      ),
+    ).toBeInTheDocument();
   });
 
   it("Visual throws a clear error when rendered outside HeroScrollScene", () => {
@@ -125,7 +127,7 @@ describe("HeroScrollScene", () => {
     consoleError.mockRestore();
   });
 
-  // --- SITE REPAIR regression coverage (pinned/qualifying tier) ---
+  // --- Pinned/qualifying tier regression coverage ---
 
   it("pins with a start offset that clears the sticky header, never the literal viewport top", async () => {
     stubQualifyingDevice();
@@ -168,31 +170,12 @@ describe("HeroScrollScene", () => {
     expect(reserve?.style.getPropertyValue("--hero-pin-vh-desktop")).toBe("250vh");
 
     // eslint-disable-next-line testing-library/no-container, testing-library/no-node-access -- asserting on the raw contents of an injected <style> tag has no role/text query equivalent
-    const styleTag = container.querySelector("style");
-    expect(styleTag?.textContent).toContain("hero-pin-reserve");
-    expect(styleTag?.textContent).toContain("var(--hero-pin-vh-tablet)");
-    expect(styleTag?.textContent).toContain("var(--hero-pin-vh-desktop)");
-    expect(styleTag?.textContent).toContain("prefers-reduced-motion: no-preference");
-  });
-
-  it("forces the reservation back to 0 once ready resolves to genuinely non-qualifying (e.g. no real WebGL) — the narrow correction for what CSS alone can't see", async () => {
-    // Matches the CSS media queries' width/motion guess (so CSS would
-    // reserve space) but fails the WebGl probe — jsdom's own default,
-    // since `HTMLCanvasElement.getContext` isn't mocked here.
-    stubMatchMedia(false);
-    Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
-
-    const { container } = render(
-      <HeroScrollScene>
-        <HeroScrollScene.Visual fallback={<FallbackHero />} />
-      </HeroScrollScene>,
-    );
-
-    await waitFor(() => {
-      // eslint-disable-next-line testing-library/no-container, testing-library/no-node-access -- asserting a specific CSS class/inline style on a decorative, non-interactive spacer div has no role/text to query by
-      const reserve = container.querySelector<HTMLDivElement>(".hero-pin-reserve");
-      expect(reserve?.style.height).toBe("0px");
-    });
+    const styleTags = [...container.querySelectorAll("style")];
+    const reserveStyleTag = styleTags.find((tag) => tag.textContent?.includes("hero-pin-reserve"));
+    expect(reserveStyleTag?.textContent).toContain("hero-pin-reserve");
+    expect(reserveStyleTag?.textContent).toContain("var(--hero-pin-vh-tablet)");
+    expect(reserveStyleTag?.textContent).toContain("var(--hero-pin-vh-desktop)");
+    expect(reserveStyleTag?.textContent).toContain("prefers-reduced-motion: no-preference");
   });
 
   it("still pins with pinSpacing: false on a qualifying device — GSAP never adds its own spacing on top of the CSS reservation", async () => {
@@ -208,7 +191,7 @@ describe("HeroScrollScene", () => {
     expect(scrollTriggerConfigs[0]?.pinSpacing).toBe(false);
   });
 
-  it("passes a sizing className to the WebGL canvas box on a qualifying device", async () => {
+  it("passes a sizing className to the film's visual box on a qualifying device", async () => {
     stubQualifyingDevice();
     render(
       <HeroScrollScene>
@@ -217,7 +200,7 @@ describe("HeroScrollScene", () => {
     );
     dispatchScroll();
     await waitFor(() => expect(scrollTriggerCreate).toHaveBeenCalledTimes(1));
-    // eslint-disable-next-line testing-library/no-node-access -- asserting a specific CSS class was applied to the canvas sizing box has no role/text query equivalent
+    // eslint-disable-next-line testing-library/no-node-access -- asserting a specific CSS class was applied to the sizing box has no role/text query equivalent
     expect(document.querySelector(".hero-visual-box")).toBeInTheDocument();
   });
 
@@ -238,9 +221,9 @@ describe("HeroScrollScene", () => {
     await waitFor(() => expect(scrollTriggerCreate).toHaveBeenCalledTimes(1));
   });
 
-  // --- SITE REPAIR regression coverage (hero-story-overlay blocker) ---
+  // --- hero-story-overlay content coverage ---
 
-  it("composites the real-content DOM overlay (transcript/tool-call badge) over the WebGL canvas on a qualifying device", async () => {
+  it("composites the real-content DOM overlay (transcript/tool-call badge) over the film canvas on a qualifying device, without waiting on any separate engagement signal", async () => {
     stubQualifyingDevice();
     render(
       <HeroScrollScene>
@@ -248,46 +231,37 @@ describe("HeroScrollScene", () => {
       </HeroScrollScene>,
     );
 
-    dispatchScroll();
-    await waitFor(() => expect(scrollTriggerCreate).toHaveBeenCalledTimes(1));
-    expect(await screen.findByTestId("hero-morph-scene-stub")).toBeInTheDocument();
-    // The overlay renders its content unconditionally (cross-fade is a
-    // style-only opacity, not a mount/unmount) — this is the regression
-    // coverage for "the pin rendered only an abstract line, no transcript
-    // ever appeared on a qualifying device." (This mocked ScrollTrigger
-    // never actually drives `progressRef` past 0, so assert on content
-    // that's in the DOM regardless of scroll progress, not the tool-call
-    // badge, which only appears once stage progress reaches it —
-    // `hero-story-overlay.test.tsx` covers that progression directly.)
+    // Mounted immediately — no `dispatchScroll()` here — this is the
+    // regression coverage for "the pin rendered only an abstract line,
+    // no transcript ever appeared."
     expect(screen.getAllByText(HERO_CALL_BUSINESS_NAME).length).toBeGreaterThan(0);
   });
 
-  it("never renders the WebGL-tier overlay under the non-qualifying/reduced-motion fallback — only `fallback` itself", async () => {
-    stubMatchMedia(true);
+  it("never renders the qualifying-tier overlay under the mobile fallback — only `fallback` itself, plus the static final-frame image", async () => {
+    stubNarrowDevice();
     render(
       <HeroScrollScene>
         <HeroScrollScene.Visual fallback={<FallbackHero />} />
       </HeroScrollScene>,
     );
     expect(await screen.findByTestId("fallback-hero")).toBeInTheDocument();
-    expect(screen.queryByText(HERO_CALL_BUSINESS_NAME)).not.toBeInTheDocument();
+    expect(screen.queryByText(HERO_CALL_TOOL_CALL)).not.toBeInTheDocument();
   });
 
-  it("never applies that same className to the non-qualifying fallback", async () => {
+  it("never applies the sizing className to the mobile fallback itself", async () => {
     // `useReducedMotion`/`useDeviceCapability` only resolve once on
     // mount (they react to real OS-level `change` events afterward, not
     // to a stub changing mid-test) — a fresh mount, not a rerender of an
     // already-qualifying instance, is what actually exercises this
     // branch.
-    stubMatchMedia(true);
+    stubNarrowDevice();
     render(
       <HeroScrollScene>
         <HeroScrollScene.Visual className="hero-visual-box" fallback={<FallbackHero />} />
       </HeroScrollScene>,
     );
     expect(await screen.findByTestId("fallback-hero")).toBeInTheDocument();
-    // eslint-disable-next-line testing-library/no-node-access -- asserting a specific CSS class was NOT applied to the fallback has no role/text query equivalent
-    expect(document.querySelector(".hero-visual-box")).not.toBeInTheDocument();
+    expect(screen.getByTestId("fallback-hero")).not.toHaveClass("hero-visual-box");
     expect(scrollTriggerCreate).not.toHaveBeenCalled();
   });
 });

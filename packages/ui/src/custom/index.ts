@@ -1,5 +1,11 @@
 export * from "./alert-rule-row.js";
-export * from "./audio-player.js";
+// `AudioPlayer` (the call-detail recording player, `apps/web/src/
+// components/tenant/call-detail-client.tsx`, the only consumer) is
+// deliberately NOT re-exported from here — import it from
+// `@heyloo/ui/audio-player` instead (a separate `exports` subpath,
+// package.json). Same fix as the `CommandPalette`/`DateRangePills`
+// exclusions below: this component pulls in `../primitives/slider.js`
+// transitively, with no marketing-route call site.
 export * from "./booking-calendar.js";
 export * from "./call-feed-item.js";
 export * from "./callout.js";
@@ -18,7 +24,15 @@ export * from "./connection-lifecycle-card.js";
 export * from "./data-list.js";
 export * from "./data-state.js";
 export * from "./data-table.js";
-export * from "./date-range-pills.js";
+// `DateRangePills` (tenant dashboard overview's date-range filter, the
+// only consumer) is deliberately NOT re-exported from here — import it
+// from `@heyloo/ui/date-range` instead (a separate `exports` subpath,
+// package.json; see that entry's own header comment). Same fix as the
+// `CommandPalette` exclusion above: this component pulls in
+// `react-day-picker`/`date-fns` transitively via
+// `../forms/date-range-picker.js` → `../primitives/calendar.js`, with no
+// marketing-route call site — physically keeping it out of this
+// barrel's module graph is what actually guarantees it stays out.
 export * from "./empty-error-state.js";
 export * from "./faq-editor.js";
 export * from "./ftc-disclosure-gate.js";
@@ -27,7 +41,13 @@ export * from "./impersonation-banner.js";
 export * from "./lead-table.js";
 export * from "./manual-mode-banner.js";
 export * from "./metric-card.js";
-export * from "./notification-center.js";
+// `NotificationCenter` (the tenant/admin/partner topbar bell,
+// `apps/web/src/components/tenant/tenant-shell-client.tsx`, the only
+// consumer) is deliberately NOT re-exported from here — import it from
+// `@heyloo/ui/notification` instead (a separate `exports` subpath,
+// package.json). Same fix as `AudioPlayer` above: pulls in
+// `../primitives/popover.js` and `../primitives/scroll-area.js`
+// transitively, with no marketing-route call site.
 export * from "./price-card.js";
 export * from "./provisioning-timeline.js";
 export * from "./realtime-indicator.js";

@@ -25,6 +25,7 @@ import {
   Plug,
   Scale,
   Settings,
+  Smile,
   Sparkles,
   Stethoscope,
   Store,
@@ -45,7 +46,15 @@ export const VERTICAL_ICONS: Record<Vertical, LucideIcon> = {
   auto: Car,
   vet: Stethoscope,
   legal: Scale,
-  dental: Sparkles,
+  // Literal dental glyph, not an abstract "AI sparkle" cliché
+  // (WEBSITE_CREATIVE_BRIEF.md §7 anti-slop checklist forbids ✨-style
+  // glyphs) — lucide-react has no dedicated tooth icon, so `Smile`
+  // stands in as a literal, non-AI-coded object, matching the other
+  // seven verticals' literal-object convention (Car, Stethoscope,
+  // Scale, Home, BedDouble, ChefHat, Building2). SITE REPAIR finding
+  // (blocker): the old `Sparkles` glyph appeared in the nav dropdown,
+  // the home business-types grid, and the /dental hero badge.
+  dental: Smile,
   real_estate: Home,
   motel: BedDouble,
   restaurant: ChefHat,

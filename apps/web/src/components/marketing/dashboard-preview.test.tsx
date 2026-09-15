@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { HOME_CONTENT } from "@/content/marketing/home";
 import { DashboardPreview } from "./dashboard-preview";
 
 function stubMatchMedia(matches: boolean) {
@@ -38,5 +39,31 @@ describe("DashboardPreview", () => {
     expect(screen.getByText("5")).toBeInTheDocument();
     expect(screen.getByText("182")).toBeInTheDocument();
     expect(screen.getByText("100.0%")).toBeInTheDocument();
+  });
+
+  it("fixture determinism (round-4 review): metrics and the booking are fixed constants from the content module, identical across renders — never Math.random/Date.now-derived", () => {
+    stubMatchMedia(true);
+
+    const view = render(<DashboardPreview />);
+    expect(screen.getByText(String(HOME_CONTENT.dashboardMetrics.callsToday))).toBeInTheDocument();
+    expect(
+      screen.getByText(String(HOME_CONTENT.dashboardMetrics.bookingsToday)),
+    ).toBeInTheDocument();
+    expect(screen.getByText(String(HOME_CONTENT.dashboardMetrics.minutesUsed))).toBeInTheDocument();
+    expect(
+      screen.getByText(`${HOME_CONTENT.dashboardMetrics.answerRatePercent}.0%`),
+    ).toBeInTheDocument();
+    expect(screen.getByText(HOME_CONTENT.booking.customer)).toBeInTheDocument();
+    expect(screen.getByText(HOME_CONTENT.booking.vehicle)).toBeInTheDocument();
+    view.unmount();
+
+    // Re-render (a second "page load") lands on the exact same numbers —
+    // there is no non-deterministic source (`Math.random`, `Date.now`) to
+    // drift between them.
+    render(<DashboardPreview />);
+    expect(screen.getByText(String(HOME_CONTENT.dashboardMetrics.callsToday))).toBeInTheDocument();
+    expect(
+      screen.getByText(`${HOME_CONTENT.dashboardMetrics.answerRatePercent}.0%`),
+    ).toBeInTheDocument();
   });
 });

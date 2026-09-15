@@ -21,9 +21,25 @@
       "types": "./dist/command-entry.d.ts",
       "default": "./dist/command-entry.js"
     },
+    "./date-range": {
+      "types": "./dist/date-range-entry.d.ts",
+      "default": "./dist/date-range-entry.js"
+    },
     "./input-otp": {
       "types": "./dist/primitives/input-otp.d.ts",
       "default": "./dist/primitives/input-otp.js"
+    },
+    "./primitives-extra": {
+      "types": "./dist/primitives-extra-entry.d.ts",
+      "default": "./dist/primitives-extra-entry.js"
+    },
+    "./notification": {
+      "types": "./dist/notification-entry.d.ts",
+      "default": "./dist/notification-entry.js"
+    },
+    "./audio-player": {
+      "types": "./dist/audio-player-entry.d.ts",
+      "default": "./dist/audio-player-entry.js"
     },
     "./styles.css": "./src/theme/globals.css"
   },

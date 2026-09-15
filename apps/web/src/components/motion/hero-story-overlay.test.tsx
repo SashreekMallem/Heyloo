@@ -6,6 +6,7 @@ import {
   HERO_CALL_TOOL_CALL,
   HERO_CALL_TURNS,
 } from "@/content/marketing/hero-call";
+import { HERO_FILM_CARD_RECT } from "./hero-film-frames";
 import { HeroStoryOverlay } from "./hero-story-overlay";
 
 /** Mirrors `hero-morph-canvas2d.test.tsx`'s own helper for the same `RefObject<number>` prop shape. */
@@ -135,6 +136,103 @@ describe("HeroStoryOverlay", () => {
     act(() => raf.tick());
     expect(Number(land?.style.opacity)).toBeCloseTo(1);
     expect(Number(book?.style.opacity)).toBeCloseTo(0);
+  });
+
+  it("SITE REPAIR regression (5th pass, 48/100 review): never puts two adjacent panels at simultaneous nonzero opacity across any of the 3 stage boundaries — the double-exposed-text bug a 1%-granularity scroll sweep caught", () => {
+    stubIntersectionObserver();
+    const raf = stubRaf();
+    const progressRef = progressRefOf(0);
+
+    render(<HeroStoryOverlay progressRef={progressRef} />);
+    const panels = (["ring", "answer", "book", "land"] as const).map((stage) =>
+      // eslint-disable-next-line testing-library/no-node-access -- these panels are aria-hidden decorative elements distinguished only by a data-attribute, not by role/text
+      document.querySelector<HTMLDivElement>(`[data-hero-stage="${stage}"]`),
+    );
+    expect(panels.every(Boolean)).toBe(true);
+
+    // Sweep every stage boundary (0.2, 0.55, 0.8) at 1% granularity, ±5%
+    // either side — the same resolution the review's own repro used —
+    // and assert at most one panel ever reads a nonzero opacity at once.
+    const boundaries = [0.2, 0.55, 0.8];
+    for (const boundary of boundaries) {
+      for (let offset = -0.05; offset <= 0.05; offset += 0.01) {
+        const progress = Math.min(1, Math.max(0, boundary + offset));
+        progressRef.current = progress;
+        act(() => raf.tick());
+        const visibleCount = panels.filter((panel) => Number(panel?.style.opacity) > 0).length;
+        expect(visibleCount, `progress=${progress.toFixed(3)}`).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  it("positions the 'book' and 'land' panels at HERO_FILM_CARD_RECT (light theme, the default) — the exact rect the film's white card settles into — and identically to each other", () => {
+    stubIntersectionObserver();
+    stubRaf();
+    const progressRef = progressRefOf(0.68);
+
+    render(<HeroStoryOverlay progressRef={progressRef} />);
+    // eslint-disable-next-line testing-library/no-node-access -- these panels are aria-hidden decorative elements distinguished only by a data-attribute, not by role/text
+    const book = document.querySelector<HTMLDivElement>('[data-hero-stage="book"]');
+    // eslint-disable-next-line testing-library/no-node-access -- these panels are aria-hidden decorative elements distinguished only by a data-attribute, not by role/text
+    const land = document.querySelector<HTMLDivElement>('[data-hero-stage="land"]');
+
+    const rect = HERO_FILM_CARD_RECT.light;
+    expect(book?.style.left).toBe(`${rect.x0 * 100}%`);
+    expect(book?.style.top).toBe(`${rect.y0 * 100}%`);
+    expect(book?.style.width).toBe(`${(rect.x1 - rect.x0) * 100}%`);
+    expect(book?.style.height).toBe(`${(rect.y1 - rect.y0) * 100}%`);
+    // "book" and "land" share the identical rect — the film's card holds
+    // still across both stages, so the DOM panel must too.
+    expect(land?.style.left).toBe(book?.style.left);
+    expect(land?.style.top).toBe(book?.style.top);
+    expect(land?.style.width).toBe(book?.style.width);
+    expect(land?.style.height).toBe(book?.style.height);
+  });
+
+  it("uses the dark theme's own (different) measured rect when data-theme is dark", () => {
+    document.documentElement.setAttribute("data-theme", "dark");
+    stubIntersectionObserver();
+    stubRaf();
+    const progressRef = progressRefOf(0.68);
+
+    render(<HeroStoryOverlay progressRef={progressRef} />);
+    // eslint-disable-next-line testing-library/no-node-access -- decorative element, no role/text query equivalent
+    const book = document.querySelector<HTMLDivElement>('[data-hero-stage="book"]');
+    const rect = HERO_FILM_CARD_RECT.dark;
+    expect(book?.style.left).toBe(`${rect.x0 * 100}%`);
+    expect(book?.style.width).toBe(`${(rect.x1 - rect.x0) * 100}%`);
+
+    document.documentElement.removeAttribute("data-theme");
+  });
+
+  it("floats the 'answer' panel near the top-right, not centred over the whole box", () => {
+    stubIntersectionObserver();
+    stubRaf();
+    const progressRef = progressRefOf(0.3);
+
+    render(<HeroStoryOverlay progressRef={progressRef} />);
+    // eslint-disable-next-line testing-library/no-node-access -- decorative element, no role/text query equivalent
+    const answer = document.querySelector<HTMLDivElement>('[data-hero-stage="answer"]');
+    expect(answer?.className).not.toContain("inset-0");
+    expect(answer?.className).toContain("top-");
+    expect(answer?.className).toContain("right-");
+  });
+
+  it("never renders the debug rect outline unless window.__heylooScrollDebug is set", () => {
+    stubIntersectionObserver();
+    stubRaf();
+    const progressRef = progressRefOf(0.5);
+
+    const { rerender } = render(<HeroStoryOverlay progressRef={progressRef} />);
+    // eslint-disable-next-line testing-library/no-node-access -- the debug rect is aria-hidden decorative markup, distinguished only by a data-attribute, with no role/text to query by
+    expect(document.querySelector('[data-hero-debug="card-rect"]')).not.toBeInTheDocument();
+
+    (window as unknown as { __heylooScrollDebug?: unknown }).__heylooScrollDebug = { hero: {} };
+    rerender(<HeroStoryOverlay progressRef={progressRef} />);
+    // eslint-disable-next-line testing-library/no-node-access -- the debug rect is aria-hidden decorative markup, distinguished only by a data-attribute, with no role/text to query by
+    expect(document.querySelector('[data-hero-debug="card-rect"]')).toBeInTheDocument();
+
+    (window as unknown as { __heylooScrollDebug?: unknown }).__heylooScrollDebug = undefined;
   });
 
   it("pauses its per-frame loop when the section scrolls out of view or the tab is hidden (GPU/CPU discipline, mirrors hero-morph-scene.tsx)", () => {

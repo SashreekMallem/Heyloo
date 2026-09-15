@@ -15,8 +15,11 @@ import {
   StatusBadge,
 } from "@heyloo/ui";
 import { Reveal } from "@/components/marketing/reveal";
+import { HOME_CONTENT } from "@/content/marketing/home";
 import { useCountUp } from "@/lib/marketing/use-count-up";
 import { useInView } from "@/lib/marketing/use-in-view";
+
+const { booking: BOOKING, dashboardMetrics: METRICS } = HOME_CONTENT;
 
 const MOCK_CALLS: CallSummary[] = [
   {
@@ -74,10 +77,10 @@ const MOCK_CALLS: CallSummary[] = [
  */
 export function DashboardPreview() {
   const [panelRef, settled] = useInView<HTMLDivElement>({ threshold: 0.35 });
-  const calls = useCountUp(14, settled);
-  const bookings = useCountUp(5, settled);
-  const minutes = useCountUp(182, settled);
-  const answerRate = useCountUp(100, settled);
+  const calls = useCountUp(METRICS.callsToday, settled);
+  const bookings = useCountUp(METRICS.bookingsToday, settled);
+  const minutes = useCountUp(METRICS.minutesUsed, settled);
+  const answerRate = useCountUp(METRICS.answerRatePercent, settled);
 
   return (
     // `isolate`: establishes a new stacking context around the 3D-transformed
@@ -157,10 +160,10 @@ export function DashboardPreview() {
               <DataList
                 layout="inline"
                 items={[
-                  { label: "Customer", value: "M. Alvarez" },
-                  { label: "Service", value: "Check engine diagnostic" },
-                  { label: "Vehicle", value: "2019 Honda Civic" },
-                  { label: "Time", value: "Tomorrow, 10:30 AM", mono: true },
+                  { label: "Customer", value: BOOKING.customer },
+                  { label: "Service", value: BOOKING.service },
+                  { label: "Vehicle", value: BOOKING.vehicle },
+                  { label: "Time", value: `${BOOKING.day}, ${BOOKING.time}`, mono: true },
                 ]}
               />
             </CardContent>

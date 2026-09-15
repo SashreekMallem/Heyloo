@@ -1,17 +1,15 @@
 "use client";
 
-import { HERO_PIN_VH, SCROLL_SCRUB } from "@heyloo/ui";
-import dynamic from "next/dynamic";
+import { cn, HERO_PIN_VH, SCROLL_SCRUB } from "@heyloo/ui";
 import type { CSSProperties, ReactNode, RefObject } from "react";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { deferUntilInteraction } from "@/lib/perf/defer-non-critical";
+import { HeroFilmScrubber } from "./hero-film-scrubber";
+import { HeroFilmFinalImage, HeroFilmStatic } from "./hero-film-static";
 import { HeroStoryOverlay } from "./hero-story-overlay";
-import { LazyWebglBoundary } from "./lazy-webgl-boundary";
 import { MIN_QUALIFYING_WIDTH, useDeviceCapability } from "./use-device-capability";
 import { useReducedMotion } from "./use-reduced-motion";
 import { useScrollProgress } from "./use-scroll-progress";
-
-const HeroMorphScene = dynamic(() => import("@/components/three/hero-morph-scene"), { ssr: false });
 
 const TABLET_MAX_WIDTH = 1024;
 
@@ -21,10 +19,9 @@ const TABLET_MAX_WIDTH = 1024;
  * named this file's unconditional `useScrollProgress` call as the reason
  * `gsap`/`ScrollTrigger` (~46KB gz) loads within ~500ms of hydration on
  * every qualifying device, whether or not the visitor ever scrolls to
- * the hero. Same fix shape as `Scene`'s own deferral
- * (`lazy-webgl-boundary.tsx`'s `ENGAGE_FALLBACK_MS`/`deferUntilInteraction`)
- * — gate GSAP's dynamic import on first scroll/pointer/key interaction,
- * or a short fallback for a passive visitor who never interacts.
+ * the hero — gate GSAP's dynamic import on first scroll/pointer/key
+ * interaction, or a short fallback for a passive visitor who never
+ * interacts (`deferUntilInteraction`).
  *
  * Deliberately safe for the CLS fix below: `forceCollapse`/
  * `HERO_PIN_RESERVE_CSS`'s space reservation is decided entirely by CSS
@@ -40,8 +37,7 @@ const TABLET_MAX_WIDTH = 1024;
  * scroll tick — before the visitor could plausibly have scrolled past
  * even the "ring" stage's own small range of the pin — so ScrollTrigger
  * picks up the section's live current scroll position the moment it
- * mounts, with no separate catch-up jump (same reasoning already
- * documented for `Scene`'s own deferred mount).
+ * mounts, with no separate catch-up jump.
  */
 const ENGAGE_FALLBACK_MS = 2500;
 
@@ -83,18 +79,10 @@ const HERO_PIN_RESERVE_CSS = `
 
 interface HeroScrollContextValue {
   progressRef: RefObject<number>;
+  /** Desktop/tablet, `prefers-reduced-motion: no-preference` — the pinned, scroll-scrubbed film tier. */
   qualifies: boolean;
-  /**
-   * True once the visitor has engaged (see `ENGAGE_FALLBACK_MS` above) —
-   * `HeroScrollSceneVisual` uses this to gate `HeroStoryOverlay` so it
-   * never appears layered on top of `LazyWebglBoundary`'s own
-   * pre-engagement `fallback` render (both `fallback` and the overlay
-   * show a full transcript/booking UI — stacking them would visually
-   * collide). `HeroStoryOverlay` and the real `Scene` both key off the
-   * same visitor interaction, via two independent `deferUntilInteraction`
-   * listeners on the same events, so in practice they appear together.
-   */
-  engaged: boolean;
+  /** `prefers-reduced-motion: reduce` (any width) — `HeroScrollSceneVisual` picks the static `HeroFilmStatic` tier over the mobile `fallback` tier when this is true. */
+  reducedMotion: boolean;
 }
 
 const HeroScrollContext = createContext<HeroScrollContextValue | null>(null);
@@ -128,8 +116,8 @@ function HeroScrollSceneImpl({
   const progressRef = useRef(0);
 
   const reducedMotion = useReducedMotion();
-  const { tier, ready } = useDeviceCapability();
-  const qualifies = ready && !reducedMotion && tier === "webgl";
+  const { qualifiesForFilm, ready } = useDeviceCapability();
+  const qualifies = ready && !reducedMotion && qualifiesForFilm;
 
   const isTablet = typeof window !== "undefined" && window.innerWidth < TABLET_MAX_WIDTH;
   const pinVh = isTablet ? pinVhTablet : pinVhDesktop;
@@ -157,14 +145,13 @@ function HeroScrollSceneImpl({
    * required at all. `HERO_PIN_RESERVE_CLASSNAME`'s rule below (scoped
    * per-instance via CSS custom properties, not hardcoded values, so
    * multiple instances/prop overrides stay correct) mirrors
-   * `qualifiesForWebgl`'s own width (`MIN_QUALIFYING_WIDTH`/
-   * `TABLET_MAX_WIDTH`) and `prefers-reduced-motion` checks — the two
-   * gates CSS can actually see. `probeWebglContext`/`deviceMemory`/
-   * `saveData` are JS-only and can't be known this way; for that rare
-   * remainder (CSS guessed "reserve," the JS probe then says "doesn't
-   * actually qualify") `forceCollapse` below corrects it back to 0 once
-   * `ready` — a narrow, uncommon-case shift instead of today's universal
-   * one.
+   * `qualifiesForFilm`'s own width (`MIN_QUALIFYING_WIDTH`/
+   * `TABLET_MAX_WIDTH`) and `prefers-reduced-motion` checks — the exact
+   * two gates that decide qualification now that there's no GPU/API
+   * probe left to also account for (`forceCollapse` below is mostly
+   * belt-and-suspenders at this point, kept for the same reasoning as
+   * before rather than assuming CSS and JS can never legitimately
+   * disagree).
    */
   const forceCollapse = ready && !qualifies;
 
@@ -172,8 +159,7 @@ function HeroScrollSceneImpl({
   useEffect(() => {
     // Only a device that already qualifies needs to engage — no reason
     // to arm scroll/interaction listeners (or start a timer) for a
-    // visitor who was never going to get the pin anyway. Mirrors
-    // `LazyWebglBoundary`'s identical gate on `Scene`'s own mount.
+    // visitor who was never going to get the pin anyway.
     if (!qualifies) return;
     return deferUntilInteraction(() => setEngaged(true), ENGAGE_FALLBACK_MS);
   }, [qualifies]);
@@ -199,7 +185,7 @@ function HeroScrollSceneImpl({
   };
 
   return (
-    <HeroScrollContext.Provider value={{ progressRef, qualifies, engaged: qualifies && engaged }}>
+    <HeroScrollContext.Provider value={{ progressRef, qualifies, reducedMotion }}>
       <div ref={sectionRef} className={className}>
         {children}
       </div>
@@ -215,17 +201,15 @@ function HeroScrollSceneImpl({
 
 export interface HeroScrollVisualProps {
   /**
-   * What renders in this slot on every tier that does NOT qualify for
-   * the pinned WebGL set piece — `prefers-reduced-motion`, a phone, or
-   * any device that fails `useDeviceCapability`'s gate. Rendered
-   * completely unchanged: drop in an already-correct existing hero
-   * visual as-is, e.g. `<LiveCallHero />`
-   * (`components/marketing/live-call-hero.tsx`), which already
-   * implements the brief's mobile/reduced-motion/non-qualifying content
-   * model end to end (play-once-on-enter, holds on the resolved frame,
-   * static under reduced motion) — this slot defers to it entirely on
-   * those tiers rather than shipping a second, competing implementation
-   * of the same fallback story.
+   * What renders alongside the mobile (<768px) tier's own product
+   * visual — `<LiveCallHero />` (`components/marketing/live-call-hero.tsx`),
+   * rendered completely unchanged, with the hero film's settled final
+   * frame (`HeroFilmFinalImage`) placed above it so mobile still shows
+   * the product object, just not the scrubbed sequence (no per-frame
+   * downloads on mobile). NOT used on the `prefers-reduced-motion` tier
+   * — that tier renders `HeroFilmStatic` (final frame + the "land"
+   * overlay panel) instead, regardless of width, since it needs no
+   * play-once timer `LiveCallHero` would otherwise still run.
    */
   fallback: ReactNode;
   className?: string;
@@ -233,64 +217,70 @@ export interface HeroScrollVisualProps {
 
 /**
  * The one slot inside `<HeroScrollScene>` that actually changes across
- * the pin: the flagship morph object
- * (`three/hero-morph-scene.tsx`, lazily imported so its bundle never
- * loads for a visitor who won't see it) on a qualifying device,
- * `fallback` everywhere else. Must be rendered inside a
- * `<HeroScrollScene>` — throws otherwise (a loud build-time-adjacent
- * error beats a silently-broken hero in production).
+ * the pin — three tiers, in priority order:
+ *   1. `prefers-reduced-motion: reduce` (any qualifying width) →
+ *      `HeroFilmStatic`: the settled final frame, no pin, no per-frame
+ *      downloads, no `requestAnimationFrame` loop.
+ *   2. Desktop/tablet ≥768px, motion allowed → the real set piece:
+ *      `HeroFilmScrubber`'s scroll-scrubbed frame sequence, with
+ *      `HeroStoryOverlay` composited on top.
+ *   3. Everything else (mobile) → `fallback` (`<LiveCallHero />`) with
+ *      the film's final frame placed above it.
+ * Must be rendered inside a `<HeroScrollScene>` — throws otherwise (a
+ * loud build-time-adjacent error beats a silently-broken hero in
+ * production).
  */
 function HeroScrollSceneVisual({ fallback, className }: HeroScrollVisualProps) {
   const context = useContext(HeroScrollContext);
   if (!context) {
     throw new Error("<HeroScrollScene.Visual> must be rendered inside <HeroScrollScene>.");
   }
-  const { progressRef, qualifies, engaged } = context;
+  const { progressRef, qualifies, reducedMotion } = context;
 
-  // Non-qualifying tier: render `fallback` with NO imposed size — it's
+  if (reducedMotion) {
+    return <HeroFilmStatic className={className} />;
+  }
+
+  // Mobile tier: render `fallback` with NO imposed size — it's
   // `LiveCallHero`, which already sizes itself correctly by content
-  // (`min-h-[19rem]` panels), and always has. `className` (the WebGL
-  // canvas's sizing box, see `HERO_VISUAL_CLASSNAME` in
-  // `hero-scroll-section.tsx`) is deliberately NOT applied here — an
-  // `aspect-[4/3]` box sized for a flat line-art canvas would just as
-  // easily clip or badly whitespace `LiveCallHero`'s own two-panel
-  // layout, which was never designed against it.
+  // (`min-h-[19rem]` panels), and always has. `className` (the sizing
+  // box, see `HERO_VISUAL_CLASSNAME` in `hero-scroll-section.tsx`) is
+  // deliberately NOT applied to `fallback` itself — only to the small
+  // final-frame image placed above it.
   if (!qualifies) {
-    return <>{fallback}</>;
+    return (
+      <>
+        <div className={cn(className, "mb-4 overflow-hidden rounded-2xl")}>
+          <HeroFilmFinalImage />
+        </div>
+        {fallback}
+      </>
+    );
   }
 
   return (
     <div className={className} style={{ position: "relative" }}>
-      <LazyWebglBoundary
-        className="absolute inset-0"
-        Scene={HeroMorphScene}
-        sceneProps={{ progressRef, className: "size-full" }}
-        fallback={fallback}
-      />
-      {/* The real product content composited over the WebGL line — see
+      <HeroFilmScrubber progressRef={progressRef} className="absolute inset-0" />
+      {/* The real product content composited over the film canvas — see
           hero-story-overlay.tsx for why this exists (SITE REPAIR
-          blocker: the WebGL tier previously rendered the abstract line
-          alone). Gated on `engaged` (not just `qualifies`): before the
-          visitor engages, `LazyWebglBoundary` above is showing its own
-          `fallback` — which already renders a full transcript/booking UI
-          — so mounting this overlay at the same time would stack two
-          competing renditions of the same content. Once `engaged`, both
-          this overlay and the real `Scene` mount together (independent
-          listeners on the same interaction event), replacing `fallback`
-          with content-equivalent WebGL + DOM-overlay, never an abrupt
-          swap from real content to an abstract line. */}
-      {engaged && <HeroStoryOverlay progressRef={progressRef} className="absolute inset-0" />}
+          blocker: this pin must never render only an abstract shape).
+          Mounted unconditionally alongside the film (not gated on any
+          separate "engaged" signal) — `HeroFilmScrubber` shows its own
+          theme-correct poster image the whole time frames are still
+          loading, so there's no competing full-UI fallback for this
+          overlay to ever stack on top of. */}
+      <HeroStoryOverlay progressRef={progressRef} className="absolute inset-0" />
     </div>
   );
 }
 
 /**
- * The hero's drop-in WebGL set piece (WEBSITE_CREATIVE_BRIEF.md §3).
- * Pins its `children` — the whole hero section — as one unit on a
- * qualifying device (desktop/tablet, WebGL available, reduced-motion off
- * — `useDeviceCapability`); a no-op passthrough everywhere else. Use
- * `<HeroScrollScene.Visual fallback={...}>` for the one child slot that
- * actually animates:
+ * The hero's drop-in scroll-scrubbed film set piece
+ * (WEBSITE_CREATIVE_BRIEF.md §3). Pins its `children` — the whole hero
+ * section — as one unit on a qualifying device (desktop/tablet, motion
+ * allowed — `useDeviceCapability`); a no-op passthrough everywhere else.
+ * Use `<HeroScrollScene.Visual fallback={...}>` for the one child slot
+ * that actually animates:
  *
  * ```tsx
  * <HeroScrollScene className="grid items-center gap-10 lg:grid-cols-2 lg:gap-16">

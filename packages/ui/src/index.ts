@@ -25,6 +25,12 @@
  * `@heyloo/ui/input-otp` instead. Both were confirmed present (by
  * literal string-marker search) in the home route's built chunks despite
  * having zero marketing-route call sites.
+ *
+ * Same pattern again (SITE REPAIR, next round): the calendar/date-range
+ * surface (`Calendar`, `DateRangePicker`, `DateRangePills` — pulls in
+ * `react-day-picker`/`date-fns`, its only call site the tenant dashboard
+ * overview's date-range filter) is likewise NOT re-exported from here —
+ * import from `@heyloo/ui/date-range` instead.
  */
 export const UI_PACKAGE_VERSION = "0.1.0" as const;
 

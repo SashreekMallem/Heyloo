@@ -33,18 +33,24 @@ export interface HeroScrollSectionProps {
  */
 /**
  * Sizing for the visual slot (`<HeroScrollScene.Visual>`'s wrapper div,
- * `hero-scroll-scene.tsx` L119, is `position: relative` only — it takes
- * its size from this className, same as every other sized box in this
+ * `hero-scroll-scene.tsx`, is `position: relative` only — it takes its
+ * size from this className, same as every other sized box in this
  * grid). Without an explicit size here the wrapper collapses to zero
- * (its only child is `position: absolute`, out of flow) and the WebGL
- * `<canvas>` falls back to the raw HTML default of 300x150px — this is
- * the fix for that. `aspect-[4/3]` + a capped width keeps the box in the
- * ~450-650px range the morph geometry/camera (`hero-morph-scene.tsx`) is
- * tuned to fill at every qualifying viewport (tablet single-column,
- * desktop half-column up to `Container`'s max width) without the line
- * ever approaching the frustum edge.
+ * (its only child is `position: absolute`, out of flow) — this is the
+ * fix for that.
+ *
+ * `aspect-video` (16:9) is deliberate, not just "wide enough": the hero
+ * film's frames are authored at exactly 1440×810 (16:9). Matching the
+ * box's own aspect ratio to the source frames means
+ * `hero-film-scrubber.tsx`'s cover-fit draw never has to crop — the
+ * frame fills the box edge-to-edge with no letterboxing on either axis
+ * — which is what lets `hero-story-overlay.tsx` position its "book"/
+ * "land" panels directly from `HERO_FILM_CARD_RECT`'s 0-1 fractions
+ * straight onto this box's own edges, with no separate crop-offset math
+ * to keep in sync.
  */
-const HERO_VISUAL_CLASSNAME = "relative mx-auto aspect-[4/3] w-full max-w-xl lg:mx-0 lg:max-w-none";
+const HERO_VISUAL_CLASSNAME =
+  "relative mx-auto aspect-video w-full max-w-2xl lg:mx-0 lg:max-w-none";
 
 export function HeroScrollSection({ className, children, visualFallback }: HeroScrollSectionProps) {
   return (

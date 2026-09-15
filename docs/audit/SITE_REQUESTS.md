@@ -447,3 +447,195 @@ what mounts under jsdom, which is the correct, exercised behavior for
 every non-qualifying tier) — verify it visually/via Playwright instead,
 per §6 step 9's own guidance on why canvas testing needs a different
 technique than a DOM snapshot.
+
+# GLUE+PERF cluster (2026-09-14) — reconciliation + perf-budget re-run
+
+Owned by cluster **GLUE+PERF** (`apps/web/**`, `packages/ui/**`). Found
+the HERO-FILM and PAGES-2 clusters' work already merged in the shared
+tree (`hero-film-scrubber.tsx` wired into `hero-scroll-scene.tsx`,
+`hero-story-overlay.tsx` positioned on `HERO_FILM_CARD_RECT`,
+`hero-scroll-section.tsx` using `aspect-video`, `page.tsx` rendering
+`<OwnerPhoneReveal />` right after `<DashboardPreview />`) — this pass
+verified the reconciliation rather than re-doing it, fixed the two lint
+errors that had been introduced (below), and re-ran the perf budget
+against the merged tree.
+
+## Lint fixes
+
+Two `testing-library` rule errors, both in files this cluster owns:
+- `dashboard-preview.test.tsx`: `render()`'s return value was named
+  `first`, which `testing-library/render-result-naming-convention`
+  rejects (`view`/`utils`/destructure only) — renamed to `view`.
+- `owner-phone-reveal.test.tsx`: `container.querySelector('[aria-hidden="true"]')`
+  tripped `no-container`/`no-node-access` — this is the same
+  "the element under test IS aria-hidden, so no role-based query can
+  reach it" case `hero-film-static.test.tsx`/`hero-story-overlay.test.tsx`
+  already carry with an inline `eslint-disable-next-line` (established
+  convention in this codebase, not a new exception) — applied the same
+  disable-with-reason comment rather than a different pattern.
+
+`pnpm --filter @heyloo/web typecheck` clean, `pnpm --filter @heyloo/web test`
+567/567 passing (110 files — one more than the merge's starting 566: a new
+regression-guard test added below), `npx biome check --write` on every
+changed file: 0 fixes needed, `pnpm run lint`: 0 errors / 32 warnings (all
+pre-existing, unrelated to this cluster's files — two `no-img-element`
+warnings on plain `<img>` matching this repo's own established
+deliberate-tradeoff precedent, the rest in files this cluster never
+touched). `pnpm --filter @heyloo/web build` (webpack, production,
+placeholder Supabase env): compiled clean, all 183 routes generated,
+TypeScript pass inside the build clean.
+
+## Playwright visual pass — found and fixed two real defects
+
+Built + started prod server; screenshotted the hero pin at 0/10/…/100%
+and the owner-phone section, 1440×900 and 1024×768, light + dark, plus a
+`prefers-reduced-motion` pass and a 390×844 mobile pass. A first pass
+looked clean at a glance — zero console errors across every
+screenshot, film edges dissolving correctly, no jump at the pin
+start/end — but looking closely at the actual screenshots (not just
+"did it error") surfaced two real, previously-undetected defects, both
+now fixed and re-verified with a fresh screenshot pass:
+
+**1. The "book" stage panel was almost entirely illegible.** From
+roughly 55%-80% scroll progress, the booking-card overlay showed only a
+single truncated character each for the vehicle and service fields
+("2." instead of "2019 Honda Civic", "C." instead of "Check engine
+diagnostic") — for the entire book stage, not a transient blip. Root
+cause: `hero-story-overlay.tsx`'s book panel revealed its three fields
+(vehicle/service, "Confirmed" badge, date/time) by toggling `opacity`
+while ALL THREE stayed permanently mounted in the flex row — an
+`opacity-0` element still occupies its full layout width, so the two
+not-yet-revealed right-side fields (`shrink-0`) permanently claimed most
+of the narrow `HERO_FILM_CARD_RECT` box's width, squeezing the one
+*visible* field down to a few pixels. Fixed by conditionally MOUNTING
+each field on its own `bookFieldsShown` threshold instead (matching the
+"answer" panel's own already-correct `visibleTurns.map(...)` pattern one
+panel up in the same file) — an unrevealed field now claims zero width,
+so the revealed field(s) get the card's real available width. Verified
+via a Playwright DOM measurement before/after (the vehicle-name `<p>`'s
+own `getBoundingClientRect().width` went from 11.875px against a
+138px `scrollWidth` — i.e. showing roughly one letter — to a full
+138px, exactly matching its content) and by eye, across the full book
+stage.
+
+**2. `HeroFilmThemedImage` — the "zero-flash theme-correct image"
+component — showed the WRONG theme's image, always, regardless of the
+viewer's actual resolved theme.** The reduced-motion tier, the mobile
+tier's final-frame image, and the scrubber's own poster image (before
+its first canvas frame decodes) all showed the DARK backdrop even under
+an explicit light `prefers-color-scheme`/`data-theme`. Root cause: the
+component's shared `imgStyle` object set `display: "block"` as an
+INLINE style on both the light and dark `<img>` — an inline style always
+wins over any stylesheet rule regardless of selector specificity, so the
+component's own `<style>`-tag CSS (meant to hide the inactive theme's
+image) never took effect at all. Both images stayed visible,
+stacked via `absolute inset-0`, and since "dark" is the second `<img>`
+in DOM order it painted on top of "light" every time — the component's
+entire zero-flash mechanism was silently inert since it was written.
+Fixed by removing `display` from the inline style entirely (it's
+controlled only by the stylesheet rule now) and giving that stylesheet
+an explicit default (both hidden, `light` shown unless an explicit dark
+theme/`prefers-color-scheme: dark` says otherwise) — matching this
+codebase's own established `:root:not([data-theme="light"])` dual-guard
+convention (`packages/ui/theme/globals.css`). Also added a regression
+guard test asserting neither `<img>`'s own inline style sets `display`
+at all — the existing test suite had only checked that the CSS *text*
+contained the right rule (`style?.textContent).toContain(...)`), which
+is exactly why a bug in whether that rule could ever WIN against an
+inline style went undetected through the entire HERO-FILM cluster's own
+(honestly-reported, thorough) verification pass. Re-verified with fresh,
+per-shot isolated Playwright browser contexts (the first repro attempt
+used one shared context across shots and falsely looked like a
+test-harness localStorage-bleed artifact before a controlled, isolated
+re-test proved it was a real, always-reproducing production bug).
+
+Both fixes are minimal and scoped to the two files that actually had the
+bug (`hero-story-overlay.tsx`, `hero-film-themed-image.tsx` + its test);
+neither touches `hero-film-frames.ts`'s frame math, the
+`HERO_FILM_CARD_RECT` measurements, or anything else HERO-FILM's cluster
+report described as verified. After both fixes: film edges dissolve
+correctly (no hard beige/charcoal rectangle), the DOM overlay panels land
+exactly on the film's white card in both themes and are fully legible at
+every stage, reduced-motion/mobile/scrubber-poster all show the correct
+theme, no blank frames, no jump at the pin start/end, no text overlap on
+the owner phone, zero console errors across every screenshot.
+
+## Perf budget: still FAILS, same root cause, confirmed unchanged by the merge
+
+`node --experimental-strip-types scripts/site-perf/measure.ts` against a
+fresh production build of the fully-reconciled tree:
+
+```
+Home (/)
+  PASS  LCP: 464ms (budget 2500ms)
+  PASS  CLS: 0.000 (budget 0.050)
+  FAIL  Initial JS (gz): 444.3KB (budget 250.0KB)
+```
+
+Identical to the number HERO-FILM's own cluster already recorded
+(444.3KB) — the PAGES-2 merge (`OwnerPhoneReveal`, the `page.tsx`
+reconciliation) added zero measurable initial-JS regression on top of
+it, since `OwnerPhoneReveal` loads GSAP through the same shared,
+dynamically-imported `gsap-loader.ts` every other set piece already uses
+(verified: no static `gsap`/`ScrollTrigger` import anywhere in
+`owner-phone-reveal.tsx`).
+
+Re-verified the specific levers this task's own instructions named,
+against the merged tree:
+- `three`/`@react-three/fiber`/`@react-three/drei`: confirmed absent from
+  `apps/web/package.json` and from every `.next/static/chunks/*.js` file
+  loaded on first paint (checked via a real CDP `Network` capture, not
+  just `grep`ping source — see the chunk table below).
+- GSAP: confirmed behind the engagement gate — `gsap-loader.ts` only
+  ever reaches `import("gsap")` from inside a `useEffect`/`useIsomorphicLayoutEffect`
+  callback (`hero-scroll-scene.tsx`'s `deferUntilInteraction`,
+  `owner-phone-reveal.tsx`'s unconditional-but-post-mount `loadGsap()`
+  call) — no `gsap` chunk appears in the CDP-captured initial-window
+  request list at all.
+- Sentry: `instrumentation-client.ts` (re-read in full — see its own
+  docstring) confirms `@sentry/nextjs` has zero reachable references from
+  the marketing route's client graph; the only "sentry" string matches
+  inside the initial chunks are `@sentry/nextjs`'s webpack plugin's
+  per-chunk debug-ID annotation (`globalThis._sentryDebugIds = ...`, a
+  few bytes each for source-map correlation), not SDK code.
+- PostHog/analytics: no `posthog` string anywhere in the initial-window
+  chunk set.
+- No marketing component in this cluster's ownership imports a heavy dep
+  outside a dynamic `import()`.
+
+Per-chunk table (real CDP `Network.loadingFinished` `encodedDataLength`
+wire bytes — same methodology `measure.ts` itself uses, captured via an
+uncommitted Playwright script against a fresh `next start` on the
+already-built production tree; total matches `measure.ts`'s own 444.3KB
+exactly, confirming the methodology agrees):
+
+| bytes (gz) | chunk | identified as |
+|---:|---|---|
+| 68,699 | `3692-*.js` | Next.js App Router client runtime (RSC/flight/hydrateRoot — framework floor) |
+| 63,888 | `3836f4b6-*.js` | React + ReactDOM (framework floor) |
+| 27,093 | `3691-*.js` | app framework glue (contains `zod`, used for the shared `signup` route's client validation reachable from `(marketing)`) |
+| 22,692 | `4885-*.js` | framework/vendor shared chunk |
+| 20,487 | `e809d3ec.*.js` | framework/vendor shared chunk |
+| 19,429 | `app/[locale]/(marketing)/page-*.js` | the home route's own page code (headline/CTAs, `HeroScrollSection`, `DashboardPreview`, `OwnerPhoneReveal`, `VerticalGrid`, etc.) |
+| 18,005 | `14.*.js` | framework/vendor shared chunk |
+| 17,855 | `6310-*.js` | framework/vendor shared chunk |
+| 12,585 | `809-*.js` | `next-intl`/`@formatjs` (i18n runtime) |
+| … | (24 more chunks, each 2.5–15.3KB) | Radix primitives, `@heyloo/ui` components, remaining route/layout glue |
+
+The two framework chunks alone (Next.js's client runtime + React/ReactDOM)
+are ~132.6KB gz — already past half the 250KB budget before a single
+line of this repo's own marketing code loads, exactly matching
+`docs/audit/SITE_REQUESTS.md`'s own earlier "~380KB before GSAP" finding
+from the ENGINE cluster (that number was pre-Sentry-removal and
+pre-WebGL-removal; today's 444.3KB, with the WebGL engine now fully
+deleted and Sentry now fully excluded from this route, confirms the
+framework floor — not this cluster's own code — is what the number is
+now dominated by).
+
+**Conclusion, unchanged from two prior clusters' independent
+measurements**: this is a structural, pre-existing, out-of-cluster-scope
+gap (CLAUDE.md Rule 4 — append and proceed, don't redesign). Closing it
+would mean moving off the App Router's client hydration model or a major
+React-version-level change, neither of which is a lever available inside
+`apps/web/**`/`packages/ui/**`. Reported honestly as a deferred FAIL, not
+silently accepted.

@@ -1,15 +1,8 @@
 "use client";
 
-import {
-  CallFeedItem,
-  Callout,
-  DataState,
-  DateRangePills,
-  type DateRangePreset,
-  MetricCard,
-  PageHeader,
-} from "@heyloo/ui";
+import { CallFeedItem, Callout, DataState, MetricCard, PageHeader } from "@heyloo/ui";
 import { TrendChart } from "@heyloo/ui/charts";
+import { DateRangePills, type DateRangePreset } from "@heyloo/ui/date-range";
 import { useState } from "react";
 import type { TenantPlanResponse } from "@/app/api/platform-settings/tenant-plan/route";
 import { SetupProgressPanel } from "@/components/tenant/setup-progress-panel";

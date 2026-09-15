@@ -8,69 +8,39 @@ afterEach(() => {
 });
 
 describe("useDeviceCapability", () => {
-  it("never reports the webgl tier before the client-side probe has actually run", () => {
-    // `renderHook`/`act` flush passive effects synchronously in this test
-    // harness (unlike a real browser's paint-then-effects ordering), so
-    // the mount effect has typically already resolved `ready: true` by
-    // the time this line runs — the guarantee this asserts is really "the
-    // safe tier never regresses to something unproven," which holds
-    // either way.
-    const { result } = renderHook(() => useDeviceCapability());
-    expect(result.current.tier).toBe("canvas2d");
-  });
-
-  it("resolves to canvas2d under jsdom (no real WebGL context, per jsdom's own limits)", async () => {
-    const { result } = renderHook(() => useDeviceCapability());
-    await waitFor(() => expect(result.current.ready).toBe(true));
-    expect(result.current.tier).toBe("canvas2d");
-  });
-
-  it("resolves to webgl only when every gate check passes", async () => {
+  it("qualifies on a desktop-width viewport with no reduced-motion preference", async () => {
     vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
     Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
-      {} as WebGLRenderingContext,
-    );
 
     const { result } = renderHook(() => useDeviceCapability());
     await waitFor(() => expect(result.current.ready).toBe(true));
-    expect(result.current.tier).toBe("webgl");
+    expect(result.current.qualifiesForFilm).toBe(true);
   });
 
-  it("fails closed on prefers-reduced-motion even when everything else qualifies", async () => {
+  it("fails closed on prefers-reduced-motion even at a qualifying width", async () => {
     vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: true }));
     Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
-      {} as WebGLRenderingContext,
-    );
 
     const { result } = renderHook(() => useDeviceCapability());
     await waitFor(() => expect(result.current.ready).toBe(true));
-    expect(result.current.tier).toBe("canvas2d");
+    expect(result.current.qualifiesForFilm).toBe(false);
   });
 
-  it("fails closed on a narrow (phone-width) viewport even with a working WebGL context", async () => {
+  it("fails closed on a narrow (phone-width) viewport even with no reduced-motion preference", async () => {
     vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
     Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
-      {} as WebGLRenderingContext,
-    );
 
     const { result } = renderHook(() => useDeviceCapability());
     await waitFor(() => expect(result.current.ready).toBe(true));
-    expect(result.current.tier).toBe("canvas2d");
+    expect(result.current.qualifiesForFilm).toBe(false);
   });
 
-  it("passes open when navigator.deviceMemory is absent (Safari/Firefox never expose it)", async () => {
+  it("qualifies right at the documented minimum width", async () => {
     vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
-    Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
-      {} as WebGLRenderingContext,
-    );
-    expect((navigator as { deviceMemory?: number }).deviceMemory).toBeUndefined();
+    Object.defineProperty(window, "innerWidth", { value: 768, configurable: true });
 
     const { result } = renderHook(() => useDeviceCapability());
     await waitFor(() => expect(result.current.ready).toBe(true));
-    expect(result.current.tier).toBe("webgl");
+    expect(result.current.qualifiesForFilm).toBe(true);
   });
 });

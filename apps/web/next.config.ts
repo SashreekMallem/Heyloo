@@ -1,3 +1,4 @@
+import withBundleAnalyzer from "@next/bundle-analyzer";
 import { withSentryConfig } from "@sentry/nextjs";
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
@@ -132,9 +133,34 @@ const nextConfig: NextConfig = {
       return config;
     },
   }),
+  // TEMP DIAGNOSTIC — SITE REPAIR 5th pass, reverted before commit: dumps
+  // webpack module stats for the client compiler to /tmp so the two named
+  // ~67KB/~62KB shared chunks can be attributed to real source modules
+  // instead of guessed at via minified string-marker search.
+  webpack(config, { isServer }) {
+    if (!isServer) {
+      config.plugins.push({
+        apply(compiler: import("webpack").Compiler) {
+          compiler.hooks.done.tap("DiagStats", (stats) => {
+            const fs = require("node:fs");
+            fs.writeFileSync(
+              "/tmp/claude-0/-home-user-Heyloo/e911cd24-2831-5e08-8f6e-43e25e74e180/scratchpad/webpack-stats.json",
+              JSON.stringify(
+                stats.toJson({ chunks: true, chunkModules: true, chunkOrigins: false, source: false, reasons: false }),
+              ),
+            );
+          });
+        },
+      });
+    }
+    return config;
+  },
 };
 
-export default withSentryConfig(withNextIntl(nextConfig), {
+/** `ANALYZE=true pnpm --filter @heyloo/web build` writes .next/analyze/client.html (+ stats) — the only sanctioned way to attribute the marketing route's initial-JS budget (scripts/site-perf/budgets.ts) to modules; never on by default. */
+const withAnalyzer = withBundleAnalyzer({ enabled: process.env.ANALYZE === "true", openAnalyzer: false });
+
+export default withSentryConfig(withAnalyzer(withNextIntl(nextConfig)), {
   silent: true,
   widenClientFileUpload: true,
   // VERIFY (CLAUDE.md Rule 1): org/project slugs come from SENTRY_ORG/

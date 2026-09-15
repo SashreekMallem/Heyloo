@@ -10,11 +10,11 @@ import {
   NAV_ICONS,
   type NavItem,
   type NavSection,
-  NotificationCenter,
   RealtimeIndicator,
   ThemeToggle,
   TopBar,
 } from "@heyloo/ui";
+import { NotificationCenter } from "@heyloo/ui/notification";
 import { MoreHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, usePathname } from "@/i18n/navigation";
