@@ -44,7 +44,14 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
         <Container size="wide">
           <HeroScrollSection
             className={cn(
-              "grid items-center gap-10 lg:grid-cols-2 lg:gap-16",
+              // `lg:min-h-[calc(100svh-4rem)]`: the pinned element (this grid) fills
+              // the viewport below the 64px sticky header for the entire ~250vh
+              // pin, with the row vertically centred — without it the hero sat
+              // in the top half of a 1440×900 viewport and the lower half stayed
+              // empty for the whole scroll (owner review of wave-2 round-5
+              // captures). `5fr_7fr` gives the film column the width the 16:9
+              // frame set (1440×810) is worth next to a 3-line display headline.
+              "grid items-center gap-10 lg:min-h-[calc(100svh-4rem)] lg:grid-cols-[5fr_7fr] lg:gap-12",
               // Full-bleed-right for the visual column only, `lg:` and up
               // (SITE REPAIR round 4, docs/BUILD_NOTES.md SITE-1: "the
               // visual column may extend past the Container ... use a
