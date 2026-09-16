@@ -106,6 +106,12 @@ export const config = {
     // Skip Next internals and static assets; run on everything else
     // (marketing pages included, so the intl middleware can locale-route
     // them too — auth guards above are no-ops for those paths).
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    // `widget.js` / `widget-voice.js` are the embeddable widget bundles
+    // served by their own route handlers (src/app/widget.js/route.ts). They
+    // MUST be excluded: next-intl locale-routes anything the matcher
+    // catches, so `/widget.js` was being rewritten to `/en/widget.js` and
+    // returning the localized 404 page on Vercel (caught on the first live
+    // deployment, 2026-09-16) — every embedded widget would fail to load.
+    "/((?!_next/static|_next/image|favicon.ico|widget\\.js|widget-voice\\.js|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };
