@@ -6,7 +6,7 @@
 
 import type { AdminJwtClaims } from "../_shared/admin-auth.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { optionalEnv } from "../_shared/deno/env.ts";
+import { optionalEnv, optionalServiceRoleKey } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import type { AdminDeps } from "./handler.ts";
@@ -22,7 +22,7 @@ const logger = createLogger({ fn: "admin" });
 const RETELL_API_KEY = optionalEnv("RETELL_API_KEY");
 const VOICE_TOOLS_WEBHOOK_URL = optionalEnv("VOICE_TOOLS_WEBHOOK_URL");
 const SUPABASE_URL = optionalEnv("SUPABASE_URL");
-const SB_SECRET_KEY = optionalEnv("SB_SECRET_KEY");
+const SB_SECRET_KEY = optionalServiceRoleKey();
 const SMARTLEAD_API_KEY = optionalEnv("SMARTLEAD_API_KEY");
 const OUTREACH_CAN_SPAM_FOOTER = optionalEnv("OUTREACH_CAN_SPAM_FOOTER");
 const RESEND_API_KEY = optionalEnv("RESEND_API_KEY");

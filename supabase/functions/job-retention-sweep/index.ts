@@ -2,7 +2,7 @@
 // (BACKEND_SPEC §8 "Retention sweep", `0 5 * * *`) via pg_net.http_post.
 import { timingSafeEqual } from "../_shared/crypto.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { requireEnv } from "../_shared/deno/env.ts";
+import { requireEnv, requireServiceRoleKey } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { runRetentionSweep } from "./handler.ts";
@@ -10,7 +10,7 @@ import { runRetentionSweep } from "./handler.ts";
 const logger = createLogger({ fn: "job-retention-sweep" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
 const SUPABASE_URL = requireEnv("SUPABASE_URL");
-const SB_SECRET_KEY = requireEnv("SB_SECRET_KEY");
+const SB_SECRET_KEY = requireServiceRoleKey();
 
 /** Bulk delete (Supabase Storage `DELETE /object/{bucket}` + `{prefixes}}`
  * body — confirmed against the installed `@supabase/storage-js` v2.116.0

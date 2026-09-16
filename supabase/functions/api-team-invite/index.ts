@@ -5,7 +5,7 @@
 // is 'owner' itself (handler.ts) before writing anything, since it runs
 // as service role (bypasses RLS).
 import { getSql } from "../_shared/deno/db.ts";
-import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { optionalEnv, requireEnv, requireServiceRoleKey } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { TeamInviteRequestSchema } from "../_shared/schemas/team-invite.ts";
@@ -13,7 +13,7 @@ import { handleTeamInvite } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-team-invite" });
 const SUPABASE_URL = requireEnv("SUPABASE_URL");
-const SB_SECRET_KEY = requireEnv("SB_SECRET_KEY");
+const SB_SECRET_KEY = requireServiceRoleKey();
 const APP_BASE_URL = optionalEnv("APP_BASE_URL") ?? "https://heyloo.app";
 
 interface JwtClaims {

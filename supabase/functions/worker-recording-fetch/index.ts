@@ -2,7 +2,7 @@
 // "Queue worker poll" job (BACKEND_SPEC §8, every minute).
 import { timingSafeEqual } from "../_shared/crypto.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { requireEnv } from "../_shared/deno/env.ts";
+import { requireEnv, requireServiceRoleKey } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import type { RecordingFetchQueueMsg } from "../_shared/queue.ts";
 import {
@@ -19,7 +19,7 @@ const logger = createLogger({ fn: "worker-recording-fetch" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
 const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
 const SUPABASE_URL = requireEnv("SUPABASE_URL");
-const SB_SECRET_KEY = requireEnv("SB_SECRET_KEY");
+const SB_SECRET_KEY = requireServiceRoleKey();
 
 const VISIBILITY_TIMEOUT_SECONDS = 60;
 const BATCH_SIZE = 20;

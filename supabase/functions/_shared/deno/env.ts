@@ -24,6 +24,38 @@ export function optionalEnv(name: string): string | undefined {
  * cold-start over a missing Stripe secret). See .env.example (T0) for the
  * authoritative comment-per-var source; kept in sync here for the subset
  * this package reads. */
+/**
+ * Service-role key for admin REST calls. Supabase injects
+ * `SUPABASE_SECRET_KEYS` (a JSON dictionary keyed by API-key name, e.g.
+ * `{"default":"sb_secret_..."}`) into every function automatically
+ * (supabase.com/docs/guides/functions/secrets, verified 2026-09-16), so no
+ * hand-set secret is needed. `SB_SECRET_KEY` is still honoured first as an
+ * explicit override (custom secrets cannot start with `SUPABASE_`).
+ */
+export function optionalServiceRoleKey(): string | undefined {
+  const explicit = Deno.env.get("SB_SECRET_KEY");
+  if (explicit) return explicit;
+  const raw = Deno.env.get("SUPABASE_SECRET_KEYS");
+  if (!raw) return undefined;
+  try {
+    const dict = JSON.parse(raw) as Record<string, unknown>;
+    const candidate = dict.default ?? Object.values(dict)[0];
+    return typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function requireServiceRoleKey(): string {
+  const key = optionalServiceRoleKey();
+  if (!key) {
+    throw new Error(
+      "Missing service-role key: SUPABASE_SECRET_KEYS was not provided by the platform and no SB_SECRET_KEY override is set",
+    );
+  }
+  return key;
+}
+
 export const ENV_VAR_NAMES = {
   supabaseDbUrl: "SUPABASE_DB_URL",
   supabaseUrl: "SUPABASE_URL",

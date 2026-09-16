@@ -2,7 +2,7 @@
 // supabase/config.toml — Stripe signature verified below (fail closed).
 import { runInBackground } from "../_shared/deno/background.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { requireEnv } from "../_shared/deno/env.ts";
+import { requireEnv, requireServiceRoleKey } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { StripeEventSchema } from "../_shared/schemas/stripe-event.ts";
@@ -15,7 +15,7 @@ const logger = createLogger({ fn: "webhooks-stripe" });
 const STRIPE_WEBHOOK_SIGNING_SECRET = requireEnv("STRIPE_WEBHOOK_SIGNING_SECRET");
 const SUPABASE_URL = requireEnv("SUPABASE_URL");
 const PROVISION_INTERNAL_SECRET = requireEnv("PROVISION_INTERNAL_SECRET");
-const SB_SECRET_KEY = requireEnv("SB_SECRET_KEY");
+const SB_SECRET_KEY = requireServiceRoleKey();
 
 const invokeProvisioning = createInvokeProvisioning({
   supabaseUrl: SUPABASE_URL,
