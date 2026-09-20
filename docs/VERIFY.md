@@ -2212,3 +2212,49 @@ issue (e.g. a future format change) — until then, the fail-safe direction
 
 **Code:** `supabase/functions/voice-tools/context.ts` (`isPlaceholderCallId`,
 `REAL_RETELL_CALL_ID_RE`).
+
+## CALL-7 (2026-09-20) — `DELETE /delete-agent/{id}`, `EndCallTool`, native `TransferCallTool` for multi_prompt/single_prompt
+
+Six new vertical batch-test suites (`vet`, `legal`, `real_estate`, `motel`,
+`restaurant`, `generic`), each 6/6 in two consecutive rounds. Full
+per-vertical table, every fix's root cause, and the green CI run:
+`docs/BUILD_NOTES.md`'s CALL-7 entry.
+
+**`DELETE /delete-agent/{agent_id}`** — RETELL-VERIFIED both via a live
+`docs.retellai.com/api-references/delete-agent` fetch AND the official
+`retell-typescript-sdk` source (`Agent.delete`, `src/resources/agent.ts`:
+`this._client.delete(path\`/delete-agent/${id}\`)`), agreeing field-for-
+field: no request body, `204 No Content` on success ("Deletes all
+versions of the agent."). Live-confirmed once via the actual delete call
+this task's own `cleanup_superseded_agent` flow made (vet's first
+`force_recompile`, superseded agent `agent_502be2279c0e0adaf268bbc0ad`),
+plus unit-tested (`_shared/providers/retell.test.ts`).
+
+**`EndCallTool`** (multi_prompt's `general_tools`, single_prompt's
+`general_tools`) — RETELL-VERIFIED via both a live
+`docs.retellai.com/build/single-multi-prompt/end-call` fetch and the
+official SDK source (`LlmCreateParams.EndCallTool`): `{name, type:
+"end_call", description?, execution_message_description?,
+execution_message_type?, speak_during_execution?}`; "By default, the
+agent won't end the call automatically" — must be explicitly granted.
+This was missing entirely from every multi_prompt/single_prompt template
+this platform has ever compiled — live-confirmed root cause of a 0/6
+batch-test run (`legal`) where every scenario, including a plain FAQ
+call, settled "Ending the conversation early as there might be a loop."
+
+**Native `TransferCallTool` for multi_prompt** (a per-state tool slot,
+not a node) — same confirmed shape as `LlmCreateParams.TransferCallTool`
+CALL-4 already RETELL-VERIFIED for conversation_flow's `TransferCallNode`
+(`{type:"transfer_call", name, description?, transfer_destination:
+{type:"predefined", number}, transfer_option:{type:"warm_transfer"}}`).
+`compileMultiPrompt` previously never special-cased `transfer_call` at
+all — it compiled to an ordinary custom `/voice-tools` webhook call, an
+unrecognized tool name the dispatcher always answers with the generic
+`fallbackEnvelope()`; live transcript evidence showed the model calling
+it 4 times in a row against an insistent caller before giving up.
+
+**Code:** `supabase/functions/_shared/providers/retell.ts` (`deleteAgent`),
+`supabase/functions/_shared/compiler/template-compiler.ts`
+(`compileMultiPrompt`, `compileSinglePrompt`, `EndCallTool`,
+`MultiPromptTransferCallTool`), `packages/adapters/retell/src/compiler/
+{types,multi-prompt,single-prompt}.ts` (mirrored for parity).

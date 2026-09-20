@@ -1,5 +1,37 @@
 # Launch Status
 
+**CALL-7 (2026-09-20)**: the six remaining verticals (`vet`, `legal`,
+`real_estate`, `motel`, `restaurant`, `generic` — `auto`/`dental` were
+already green, CALL-1..6) are now all batch-tested live, each with its
+own dedicated 6-scenario suite (booking, FAQ, transfer, take-message/
+after-hours, AI disclosure, plus one flow distinct to that vertical —
+emergency triage, safety escalation, lead-only valuation, rate-quote-only
+FAQ, food ordering). Five of six finish 6/6 in two consecutive rounds;
+`generic` finishes 5/6 then 6/6 (one documented simulator-noise flake,
+transcript-proven — the agent answered correctly and consistently every
+time, the simulated CALLER repeated itself). Found and fixed three
+genuine, platform-wide compiler bugs previously invisible because only
+`auto`/`dental` (both `compile_target: conversation_flow`) had ever been
+exercised live: (1) `legal`/`real_estate` (`multi_prompt`) couldn't even
+provision — a duplicate-destination-edge bug in `compileMultiPrompt`;
+(2) once that was fixed, EVERY `multi_prompt`/`single_prompt` scenario
+looped forever, because neither compile target had ever been granted a
+Retell `end_call` tool — "by default, the agent won't end the call
+automatically"; (3) `multi_prompt` never special-cased `transfer_call`
+into a native tool the way `conversation_flow` has since CALL-4, so
+every transfer attempt hit a dead custom-webhook fallback. Also fixed a
+narrower `conversation_flow` gap (a caller who declines everything right
+after the AI-disclosure question had no escape edge — widened CALL-4's
+generic wrap-up condition) and two vertical-specific tool/prompt bugs
+(vet/dental's `list_offerings` could loop; restaurant's `create_order`
+required an `offering_id` the model had no way to ever supply, fixed
+server-side the same way OPS-5 fixed `create_booking`'s `resource_id`).
+Added `cleanup_superseded_agent` (opt-in) to `api-admin-provision-test-
+tenant` so this task's own `force_recompile` churn never left orphaned
+Retell agents — 20 agents created, 14 deleted as superseded, 6 kept
+live. `auto`/`dental`'s own live agents were never touched. Full details:
+`docs/BUILD_NOTES.md`'s CALL-7 entry.
+
 **CALL-6 (2026-09-20)**: fixed a real, verified-live cross-tenant write
 (CLAUDE.md Rule 2) that OPS-5/CALL-5 both found but deliberately left
 open: every Retell batch-test/simulator call shares the literal

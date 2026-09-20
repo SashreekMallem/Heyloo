@@ -13688,3 +13688,486 @@ steps, `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`,
   `git status --porcelain` empty afterward (no stray build output).
 - `node --experimental-strip-types scripts/site-perf/measure.ts` — see
   before/after above.
+
+## CALL-7 (2026-09-20) — six remaining verticals batch-tested live (`vet`, `legal`, `real_estate`, `motel`, `restaurant`, `generic`), three genuine platform-wide compiler bugs found and fixed
+
+Task: provision one test tenant per remaining vertical, write a dedicated
+5+ scenario batch-test suite per vertical (`_shared/test-scenarios.ts`),
+run `api-admin-run-agent-tests` and iterate on template/compiler/tool
+fixes until each suite passes ≥4/5 in two consecutive runs. `auto`
+(CALL-1..6) and `dental` (CALL-6) were already green and are untouched
+here except as noted.
+
+### Per-vertical results
+
+| Vertical | compile_target | First run | Fixes applied (root cause) | Final 2 consecutive runs |
+|---|---|---|---|---|
+| `vet` | conversation_flow | 4/6 (book_new_caller: one-off model recall noise; ai_disclosure_check: loop-detector false positive, caller-side repetition) | persona shortened (no double-turn after disclosure); `list_offerings` "call ONCE" instruction (template, shared with `dental`); `__wrap_up` condition widened (compiler, see below) | **6/6, 6/6** |
+| `legal` | multi_prompt | provisioning itself 400'd (`create-retell-llm`: "Destination states must be unique") | compiler dedup-edge fix (`compileMultiPrompt`); `end_call` tool + instruction (compiler); native `transfer_call` tool + strengthened no-transfer instruction (compiler) | **6/6, 6/6** |
+| `real_estate` | multi_prompt | provisioning itself 400'd (same duplicate-destination bug) | same 3 compiler fixes as `legal` | **6/6, 6/6** |
+| `motel` | conversation_flow | 5/6 (ai_disclosure_check: agent stuck re-rendering the disclosure-laden greeting turn after turn) | `__wrap_up` global_node_setting condition widened to cover "caller says goodbye with nothing resolved yet" (compiler) | **6/6, 6/6** |
+| `restaurant` | conversation_flow | 4/6 (book_reservation: judge false-negative, see below; faq_hours_menu: greeting ignored a direct FAQ) | `order_or_reservation` prompt fragment allows answering a quick FAQ before branching (template); `create_order` server-side name-based offering fallback (tool, `voice-tools/tools/create_order.ts`) | **6/6, 6/6** |
+| `generic` | single_prompt | 5/6 (ai_disclosure_check: simulator-side caller repeated the identical question 6× verbatim while the agent answered correctly and consistently every time — documented noise, transcript evidence below) | none needed beyond the platform-wide `end_call`/`transfer_call` compiler fixes (already applied before generic's first run) | **5/6, 6/6** |
+
+Every vertical's final state clears the ≥4/5 bar in two consecutive
+runs; five of six are clean 6/6 twice. `dental`/`auto` were **not**
+recompiled or retested (per this task's own instructions) except where
+noted below.
+
+### Fix 1 — multi_prompt duplicate-destination-edge bug (`compileMultiPrompt`)
+
+**Symptom**: `legal` and `real_estate` (both `compile_target:
+"multi_prompt"`) failed to provision at all —
+`api-admin-provision-test-tenant` returned `retell_flow_create_failed`.
+Live function-log body (fetched via the Management API's
+`analytics/endpoints/logs.all`, `function_logs` table — `sbq.sh` only
+reads Postgres, this needed the separate logs endpoint):
+```
+{"status":"error","message":"Destination states must be unique for a
+particular state, found duplicate destination state:
+take_message_fallback"}
+```
+
+**Root cause**: `compileMultiPrompt` pushed an edge onto a state for
+EVERY matching `transitions` entry AND every `reachable_from: "any"`
+global intent, with no dedup. `legal`'s own template has an authored
+`greeting -> take_message_fallback` transition AND a `give_up` global
+intent (`reachable_from: "any"`) targeting the same `take_message_fallback`
+state — `greeting` ended up with two edges to the identical destination,
+which Retell's `create-retell-llm` schema rejects outright. Confirmed via
+a local repro script compiling `AGENT_TEMPLATE_SEEDS.legal.content`
+directly with `compileTemplate`. `compileConversationFlow` never had this
+bug (its `reachable_from: "any"` case uses `global_node_setting`, a
+single condition on the target node, not per-source edges) — this is why
+`auto`/`dental` (both conversation_flow) never hit it.
+
+**Fix**: a dedup guard — never push a second edge from the same
+state/node to a destination that already has one (first edge wins, which
+is always the authored `transitions` edge since that loop runs first) —
+applied in THREE places for full coverage: `compileMultiPrompt`'s
+`transitions` loop and its `global_intents` loop (the actual live bug),
+plus `compileConversationFlow`'s `global_intents` explicit-`reachable_from`-
+array loop (defensive — no shipped template uses that form today, every
+`global_intents` entry is `"any"`, but the same Retell constraint would
+reject it the same way if one ever does). Mirrored into
+`packages/adapters/retell/src/compiler/{multi-prompt,conversation-flow}.ts`
+for parity (CALL-4's established pattern) — that package's OWN
+`LEGAL_MULTI_PROMPT_TEMPLATE` fixture golden-snapshot had the exact same
+latent duplicate (`matter_type -> conflict_check` twice), confirming this
+wasn't `legal`-template-specific, it's the general shape "an authored
+transition and a `reachable_from: any` global intent share a target."
+
+**Code**: `supabase/functions/_shared/compiler/template-compiler.ts`
+(`compileMultiPrompt`, `compileConversationFlow`'s `applyGlobalIntents`-
+equivalent inline loop), `packages/adapters/retell/src/compiler/
+{multi-prompt,conversation-flow}.ts`. Regression tests: a dedicated
+`template-compiler.test.ts` case reusing `baseTemplate`'s own fixture
+(which already had this exact shape, previously untested for duplicates);
+`multi-prompt.test.ts`'s golden snapshot updated to the now-correct
+single-edge output.
+
+### Fix 2 — multi_prompt/single_prompt never granted an `end_call` tool
+
+**Symptom**: even after Fix 1 let `legal` provision, its first batch run
+was **0/6** — every single scenario, including a plain FAQ call with
+nothing left to discuss, settled `error: "Ending the conversation early
+as there might be a loop."` Live transcript: the agent and the simulated
+caller traded near-identical goodbye turns 4+ times in a row, never
+actually hanging up.
+
+**Root cause**: RETELL-VERIFIED (`docs.retellai.com/build/single-multi-
+prompt/end-call`, corroborated by the real `retell-typescript-sdk`
+source's `LlmCreateParams.EndCallTool`) — "By default, the agent won't
+end the call automatically." A Retell LLM response engine (single- or
+multi-prompt) has NO way to hang up unless explicitly granted a `type:
+"end_call"` tool. `compileMultiPrompt`/`compileSinglePrompt` never
+emitted `general_tools` at all — this bug has existed since these two
+compile targets were first implemented, just never live-batch-tested
+before this task (`legal`/`real_estate`/`generic` are the only three
+verticals using them, and none had been exercised live until now).
+`compileConversationFlow` never had this gap — it uses dedicated `end`
+nodes instead (CALL-2), a completely different mechanism.
+
+**Fix**: both `compileMultiPrompt` and `compileSinglePrompt` now always
+emit a `general_tools` entry `{type:"end_call", name:"end_call",
+description}`, plus an appended prompt instruction telling the model to
+say goodbye and then call it once the conversation is done — granting
+the tool alone doesn't tell the model WHEN to use it. Mirrored into
+`packages/adapters/retell/src/compiler/{multi-prompt,single-prompt}.ts`
+(that package's `RetellMultiPromptRequest` type was missing the
+`general_tools` field entirely — a real type-level gap, not just a
+runtime one).
+
+**Code**: `supabase/functions/_shared/compiler/template-compiler.ts`
+(`EndCallTool`, `END_CALL_INSTRUCTION`, both compile functions' return
+statements), `packages/adapters/retell/src/compiler/{types,multi-prompt,
+single-prompt}.ts`. Regression tests in both `template-compiler.test.ts`
+and the Node package's own suites (`sdk-contract.test.ts` widened to
+assert an `end_call` tool against `LlmCreateParams.EndCallTool`).
+
+### Fix 3 — multi_prompt never special-cased `transfer_call` (native tool)
+
+**Symptom**: with Fixes 1-2 landed, `real_estate`'s `transfer_request`
+scenario still errored (loop). Live transcript: the model called
+`transfer_call` FOUR times in a row, each time getting back
+`{"result":{"fallback":true,"message":"I'll take your details and have
+someone confirm."}}` — `voice-tools/handler.ts`'s generic
+`fallbackEnvelope()`, returned whenever a tool name doesn't dispatch to
+anything real — while repeating "I'm connecting you now" each time.
+
+**Root cause**: unlike `compileConversationFlow` (CALL-4: native
+`TransferCallNode` when a `transfer_number` is configured, an honest
+`take_message`-based spoken fallback when it isn't), `compileMultiPrompt`
+never special-cased `transfer_call` at all — it compiled to an ordinary
+custom `/voice-tools` webhook tool, a name the dispatcher never
+recognizes (`transfer_call` is deliberately excluded from real tool
+dispatch everywhere else in this codebase). `legal`'s own
+`transfer_request` scenario happened to pass by luck in early rounds
+(the model's own behavior is stochastic) before this was traced and
+fixed — after the fix, both verticals pass this scenario reliably.
+
+**Fix**: mirrors `compileConversationFlow`'s design exactly — a
+transfer-only state now compiles to a native `MultiPromptTransferCallTool`
+(RETELL-VERIFIED against `LlmCreateParams.TransferCallTool`, same shape
+CALL-4 already confirmed for the node variant) when
+`agent_configs.transfer_number` is configured, or the same honest
+`take_message` spoken fallback when it isn't — this project's test
+tenants deliberately have no `transfer_number` configured (CALL-4's own
+established reasoning still applies: never fabricate a placeholder
+number a real call might actually dial). `compileSinglePrompt` (no
+per-state gating at all, by design) gets the equivalent treatment at the
+whole-template level: `transfer_call` excluded from the ordinary
+custom-webhook tools list, replaced by either the native tool or the
+honest-fallback instruction section. Mirrored into `packages/adapters/
+retell/src/compiler/types.ts` (`RetellEndCallTool`, widened
+`RetellStateTool`/`RetellMultiPromptRequest.general_tools`) —
+`compileMultiPrompt`/`compileSinglePrompt` there ALREADY special-cased
+`transfer_call` (via the older `{{transfer_number}}`-placeholder design,
+pre-dating CALL-4's baked-in-literal improvement) so this package never
+had Fix 3's actual bug, only needed the type additions.
+
+**Fix 3b — the honest-fallback instruction itself needed strengthening.**
+Even with the native/fallback branch working correctly, `real_estate`'s
+`transfer_request` still intermittently errored (2 of 5 rounds): a live
+transcript showed the agent correctly explaining no transfer line exists
+and offering to take a message, but when the adversarial caller
+explicitly said "Please do not end the call," the model deferred to that
+request rather than hanging up — technically satisfying "never repeat
+the same apology a third time" (each turn's wording genuinely varied)
+while never calling `end_call`, which still reads as a loop to Retell's
+detector. Fixed by strengthening the shared instruction
+(`NO_TRANSFER_FALLBACK_END_CALL_SUFFIX`) to explicitly say the agent
+MUST call `end_call` itself after two offers "no matter what the caller
+says next — even if they explicitly ask you not to hang up." After this,
+`real_estate` passed `transfer_request` cleanly in the next 2 consecutive
+rounds.
+
+**Code**: `supabase/functions/_shared/compiler/template-compiler.ts`
+(`MultiPromptTransferCallTool`, `NO_TRANSFER_FALLBACK_END_CALL_SUFFIX`,
+both compile functions), `packages/adapters/retell/src/compiler/
+types.ts`.
+
+### Fix 4 — `__wrap_up`'s escape condition only covered "a request was answered"
+
+**Symptom**: `motel`'s `ai_disclosure_check` scenario (conversation_flow,
+unaffected by Fixes 1-3) looped — live transcript showed the agent
+re-rendering its OWN start-node instruction, disclosure line included,
+verbatim, turn after turn, while the caller repeated a farewell.
+
+**Root cause**: the caller in this scenario never states any real
+business request — they ask only the AI-disclosure meta-question, then
+immediately say goodbye. `greeting`'s only outgoing edges (per motel's
+authored `transitions`) are for booking/managing/leaving-a-message
+intents, none of which match "caller declines everything and leaves."
+CALL-4's generic `__wrap_up` global-node escape (`docs/BUILD_NOTES.md`
+CALL-4) only fires on "the caller's current question or request has just
+been fully answered" — since no business request was ever asked here,
+that trigger condition never matched either, leaving the model with
+nowhere to go but to keep re-emitting `greeting`'s own instruction text.
+
+**Fix**: widened `__wrap_up`'s `global_node_setting.condition` to ALSO
+cover "the caller says goodbye/thanks you/indicates they're done, even
+though nothing was actually resolved yet." This is a real, general
+platform gap (not motel-specific) — the same failure mode is
+structurally possible on any vertical whose greeting doesn't have an
+edge for "caller declines everything after the disclosure exchange";
+`vet` and `restaurant` were both recompiled onto this fix too (proven
+still 6/6 for `vet`; `restaurant`'s own separate fixes below landed in
+the same recompile). Mirrored into `packages/adapters/retell/src/
+compiler/conversation-flow.ts`'s identical `wrapUpNode` construction.
+
+**Code**: `supabase/functions/_shared/compiler/template-compiler.ts`
+(the `__wrap_up` node's `global_node_setting.condition` string),
+`packages/adapters/retell/src/compiler/conversation-flow.ts` (mirrored,
+its own golden snapshot updated).
+
+### Fix 5 — vet/dental's `list_offerings` had no "call it once" guard
+
+**Symptom**: `vet`'s `book_new_caller` scenario intermittently (2 of 5
+early rounds — genuinely non-deterministic model behavior, not every
+run) span into a runaway loop — one run alone racked up 216+
+`tool_health` rows and eventually errored at "might contain a loop that
+exceeds 400 utterances," another settled `fail` after visibly re-calling
+`list_offerings` with identical arguments 5+ times in a row without ever
+producing a spoken turn or transitioning onward.
+
+**Root cause**: `vet`'s (and `dental`'s, same pattern) `symptom_or_routine`/
+`pain_triage` state instruction said "Call list_offerings and match it to
+the closest offering" with no guard against calling it again — a
+deterministic, idempotent read tool the model, for no structural reason,
+sometimes kept re-invoking instead of reasoning from the result it
+already had. `auto` never grants `list_offerings` to any state at all
+(it resolves offerings differently), so this specific risk pattern was
+never exercised by the already-tested suites.
+
+**Fix**: both prompt fragments now say "Call list_offerings ONCE ... Never
+call list_offerings again for the rest of this call — reuse the result
+you already have." Applied to BOTH the live `_shared/agent-template-
+seeds.ts` (vet + dental) and the canonical `packages/templates/src/
+verticals/{veterinary,dental}.ts` source it was generated from.
+`dental`'s own live tenant/agent was deliberately **not** recompiled
+(out of this task's scope, per its own explicit instruction not to touch
+auto/dental unless required) — the fix is in place for any future
+dental recompile, just not applied retroactively to the CALL-6-proven
+tenant.
+
+**Code**: `supabase/functions/_shared/agent-template-seeds.ts` (vet's
+`symptom_or_routine`, dental's `pain_triage` prompt fragments),
+`packages/templates/src/verticals/{veterinary,dental}.ts`.
+
+### Fix 6 — restaurant's `order_or_reservation` ignored a direct FAQ question
+
+**Symptom**: `restaurant`'s `faq_hours_menu` scenario failed — the
+caller's very first turn clearly asked only for hours + a vegetarian
+option ("I'm not ready to order or book a table yet"), and the agent's
+first response ignored it entirely, re-asking "order or reservation?"
+The agent self-corrected on the SECOND attempt and the call still ended
+cleanly, but the judge (correctly) marked the first-turn miss a fail.
+
+**Root cause**: the state's own prompt fragment was unconditional —
+"Ask right away: order (pickup/delivery) or a table reservation? ... —
+decide it before asking anything else" — directly instructing the model
+to defer ANY other question, including a caller's explicit "just
+gathering information" FAQ ask.
+
+**Fix**: "If the caller has a quick question (hours, menu items, etc.)
+before deciding, answer it briefly first — then ask right away..."
+Applied to both `_shared/agent-template-seeds.ts` and the canonical
+`packages/templates/src/verticals/restaurant.ts` source.
+
+**Code**: `supabase/functions/_shared/agent-template-seeds.ts`
+(`order_or_reservation`'s prompt_fragment), `packages/templates/src/
+verticals/restaurant.ts`.
+
+### Fix 7 — `create_order` hard-required an `offering_id` the model had no way to supply
+
+**Symptom**: `restaurant`'s `order_food` scenario intermittently looped
+(1 of 5 rounds) — live transcript: `create_order` was called THREE times
+in a row with the exact same (correct) item name "Margherita pizza,"
+each time failing, the agent apologizing and blaming "a technical issue"
+before eventually trying to transfer.
+
+**Root cause**: unlike `vet`/`dental`'s `create_booking` flow (which
+grants `list_offerings` so the model can fetch a real `offering_id`), NO
+restaurant template state grants `list_offerings` — the menu is
+presented purely as prose (`{{menu_text}}`,
+`voice-inbound/dynamic-variables.ts#resolveMenuText`), which never
+carries an id. `create_order`'s own tool schema never actually
+`required`s `offering_id` either (only `["name","qty"]`), so the model,
+having only ever seen item NAMES, had no way to supply one —
+`voice-tools/tools/create_order.ts` unconditionally rejected any item
+whose `offering_id` didn't resolve, `item_not_found`, on an otherwise
+completely real, correctly-spoken menu item, every single time.
+
+**Fix**: same pattern OPS-5 already established for `create_booking`'s
+`resource_id` — resolve the offering server-side rather than trusting
+`offering_id` verbatim: exact id match first (the fast path for any
+vertical that DOES grant `list_offerings`), falling back to a
+case-insensitive `name` match against this tenant's active offerings
+(fetches the whole small active catalog rather than a filtered query, to
+match case-insensitively in JS without a second round trip). Never
+invents a price — only matches an EXISTING catalog row. This is a
+production `voice-tools` tool-level fix (not a template/compiler one),
+deployed independently via `voice-tools` and live immediately for every
+tenant, no recompile needed.
+
+**Code**: `supabase/functions/voice-tools/tools/create_order.ts`
+(`createOrder`'s offering-resolution block). Regression test: a new
+`create_order.test.ts` case with NO `offering_id` and mismatched casing
+("margherita pizza" vs. the catalog's "Margherita Pizza").
+
+### `create_order.ts`'s "book_reservation" judge false-negative (not fixed — no bug to fix)
+
+One `restaurant` round's `book_reservation` scenario was marked `fail`
+by Retell's own grading LLM with an explanation claiming a "UTC/local
+mismatch" between the quoted "5:00 PM" and the tool's `21:00Z` slot.
+Direct transcript inspection shows this is WRONG — `21:00Z` is exactly
+`17:00` (5:00 PM) `America/New_York` EDT in September, the model
+correctly converted it, passed the correctly-converted local ISO string
+to `create_booking`, and the booking's own response confirms the exact
+same `21:00Z` start time. This is a grading-LLM inaccuracy, not an agent
+bug — documented here with transcript evidence rather than chased
+further (nothing to fix); the very next round passed the same scenario
+cleanly with identical agent behavior.
+
+### `generic`'s `ai_disclosure_check` loop — documented simulator noise (not fixed)
+
+`generic`'s first round failed `ai_disclosure_check` with "Ending the
+conversation early as there might be a loop." Transcript evidence: the
+AGENT answered correctly and IDENTICALLY every single time ("I am the AI
+assistant for Anyservice Co... How can I assist you today?") — it's the
+SIMULATED CALLER that repeated the exact same question verbatim six
+times in a row without ever varying its phrasing or moving on. The
+identical persona wording already passes reliably for `auto` (CALL-1,
+8/8) and now `dental`'s own fallback suite — this is the documented
+Retell-simulator-caller non-determinism CALL-1/CALL-2/CALL-4/CALL-5
+already established as out-of-scope noise, backed here by transcript
+evidence per this task's own instruction. The very next round (identical
+code, identical tenant) passed 6/6 cleanly.
+
+### Test tenants provisioned + agents created/deleted
+
+All via `api-admin-provision-test-tenant`, slug `test-<vertical>-...`, no
+phone number attached (per task instructions). `cleanup_superseded_agent`
+(new opt-in flag, see below) used on every `force_recompile` call in this
+task so no agent this task created was ever left orphaned.
+
+| Vertical | tenant slug | tenant_id | Agents created (chronological) | Final (kept) agent_id |
+|---|---|---|---|---|
+| `vet` | `test-vet-lakeside` | `cad10349-475e-45fa-a02d-9c9275cd3931` | 3 (2 deleted) | `agent_294617dc324a4025c8838e0e7a` |
+| `legal` | `test-legal-firstlight` | `57fae321-fd18-4c1e-a7c4-03bda63a46b8` | 4 (3 deleted) | `agent_0fc234558b7d917d035b7a0a8a` |
+| `real_estate` | `test-realestate-cornerstone` | `189f29b1-a3da-4298-baee-b4da31e5a8ca` | 4 (3 deleted) | `agent_db0c0b0706fefc831402209b32` |
+| `motel` | `test-motel-wayfarer` | `3cda3859-5612-473b-a09a-9cbbd02a1f6a` | 2 (1 deleted) | `agent_638b5a6727f7a64d531e6e724c` |
+| `restaurant` | `test-restaurant-trattoria` | `8ff87186-4384-4e6c-b691-97875a551307` | 3 (2 deleted) | `agent_8385e9744713b84971a4db1c92` |
+| `generic` | `test-generic-anyservice` | `07ae6c2d-8122-4674-ac4d-48b556ffb472` | 4 (3 deleted) | `agent_565e1a61192d5cc2b0c00216a8` |
+
+20 agents created total across this task, 14 deleted as superseded (each
+deletion a real live `DELETE /delete-agent/{id}` call, confirmed via one
+live log check — `provision_test_tenant_cleanup_superseded_agent_deleted`
+— and structurally guaranteed by the code: deletion only ever fires
+AFTER the new agent is created+published, and only targets the id THIS
+tenant's own `agent_configs` row had on file before the recompile, never
+an agent this task didn't create). `auto`/`dental`'s live agents were
+**never** touched — no `force_recompile` call was made against either
+tenant this task, per the explicit instruction.
+
+### New: `cleanup_superseded_agent` (opt-in, `api-admin-provision-test-tenant`)
+
+Deliverable 3 of this task ("do not accumulate Retell agents"). Added
+`_shared/providers/retell.ts#deleteAgent` (`DELETE /delete-agent/{id}`,
+RETELL-VERIFIED — see `docs/VERIFY.md`'s new CALL-7 entry) and a new
+request field, `cleanup_superseded_agent: boolean` (default `false` —
+preserves CALL-2's original "old orphaned agents are harmless, not
+cleaned up" contract for every OTHER caller/task unchanged). When `true`
+together with `force_recompile: true`: the OLD `retell_agent_id` is
+captured BEFORE the recompile overwrites `agent_configs`, and deleted
+only AFTER the new agent is created, published, and confirmed working —
+never before, so a delete failure (logged as a warning, never fails the
+request) can never leave a tenant with zero working agents. Only ever
+deletes an id this same tenant's own row had on file, so it structurally
+cannot target an agent this codebase didn't create. Unit-tested
+(`api-admin-provision-test-tenant/handler.test.ts`): one test asserts
+call ORDER (`create_flow`, `create_agent`, `publish`, THEN `delete`), one
+asserts it's a true no-op on a first-ever provision (no prior agent to
+clean up, `delete-agent` never called).
+
+### `api-admin-run-agent-tests` was missing most per-vertical dynamic variables
+
+**Gap found while writing the new scenario suites** (not a scenario bug,
+a harness bug affecting test accuracy for every non-auto/dental
+vertical): the batch-test harness only ever set
+`heyloo_tenant_id`/`current_date`/`current_weekday`/`upcoming_weekday_dates`
+as `dynamic_variables` on each `create-test-case-definition` call — every
+OTHER per-vertical `{{token}}` a compiled prompt can reference
+(`rate_table`, `species_treated`, `emergency_referral_name/phone`,
+`practice_areas`, `consult_fee_text`, `menu_text`, `deposit_policy_text`,
+`business_name`, `assistant_name`, `timezone`, `cancellation_policy_text`)
+was left completely unresolved on every batch-test run for every
+vertical, since CALL-1 — a real call always gets these via
+`/voice-inbound`, but a batch test never goes through that path at all
+(CALL-2's own documented finding). `auto`/`dental`'s existing suites
+don't lean on these tokens heavily enough for pass/fail to have
+surfaced it; this task's new vet/legal/motel/restaurant scenarios
+(rate quotes, emergency referrals, consult fees) would have been
+unreliable without this fix. **Fixed**: `runAgentTests` now calls
+`voice-inbound/dynamic-variables.ts#resolveVerticalDynamicVariables` (the
+SAME function `/voice-inbound` already uses for a real call — the exact
+cross-function-folder import pattern `worker-tick`/`job-reconciliation`
+already establish in this codebase) and includes every resolved token,
+plus `business_name`/`assistant_name`/`timezone` read directly from the
+tenant/`agent_configs` row. A test tenant has no `dynamic_variable_
+overrides` configured, so every token resolves to its safe built-in
+default (e.g. vet's `species_treated` -> "cats and dogs", motel's
+`rate_table` -> an explicit "no rates on file" string) rather than a
+literal unresolved `{{token}}`.
+
+**Code**: `supabase/functions/api-admin-run-agent-tests/handler.ts`.
+Regression test asserts every expected token is present on every
+test-case definition's `dynamic_variables`, sourced from a
+`dynamic_variable_overrides` fixture.
+
+### New per-vertical scenario suites (`_shared/test-scenarios.ts`)
+
+6 scenarios each for `vet`, `legal`, `real_estate`, `motel`, `restaurant`,
+`generic` — every suite covers booking, an FAQ that must NOT book
+anything, a transfer request, take-message/after-hours intake, an
+explicit AI-disclosure check, plus one flow distinct to that vertical's
+own template: vet's red-flag emergency triage, legal's safety-emergency
+escalation, real_estate's lead-only valuation (no showing booked),
+motel's rate-quote-only FAQ (no reservation), restaurant's food order
+(`create_order`, alongside its own table reservation). `dental` keeps
+the ORIGINAL 4-scenario generic fallback CALL-6 already proved 4/4,
+untouched, renamed `DENTAL_FALLBACK_SCENARIOS` and left as the one
+deliberate exception to "every vertical gets its own dedicated suite."
+
+### Gates
+
+`cd supabase/functions && npx vitest run` — 110/110 files, 1049/1049
+tests green (up from 1038 at task start: +3 `retell.test.ts`
+(`deleteAgent`), +2 `api-admin-provision-test-tenant/handler.test.ts`
+(`cleanup_superseded_agent`), +1 `api-admin-run-agent-tests/handler.test.ts`
+(vertical dynamic variables), +4 `template-compiler.test.ts` (dedup-edge,
+end_call ×2, multi_prompt transfer_call ×2, single_prompt transfer_call
+×2 — several combined per `it()`), +1 `create_order.test.ts` (name
+fallback)). `packages/adapters/retell`: `npx tsc -b --pretty` clean,
+`npx vitest run` — 20/20 files, 190/190 tests green (2 golden snapshots
+updated: `multi-prompt`'s `LEGAL_MULTI_PROMPT_TEMPLATE` fixture had the
+same latent duplicate-edge bug Fix 1 closes; `conversation-flow`'s
+`AUTO_CONVERSATION_FLOW_TEMPLATE` snapshot updated for Fix 4's widened
+wrap-up condition text). `packages/templates`: `npx vitest run` —
+8/8 files, 373/373 tests green. `pnpm lint` (`biome check . && turbo run
+lint`) — exit 0, 0 errors (pre-existing warnings only, none in any file
+this task touched). `pnpm -w typecheck` — 21/21 tasks green. `pnpm -w
+test` — 21/21 tasks green (`@heyloo/edge-functions` 1049/1049). `cd
+supabase/functions && pnpm run test` — 110/110 files, 1049/1049 tests
+green (same suite, run directly per this task's own instruction).
+
+### Deploys
+
+`api-admin-provision-test-tenant` (8× — each compiler/template fix
+landing, plus the `cleanup_superseded_agent` addition itself),
+`api-admin-run-agent-tests` (2× — the scenario-suite additions, then the
+vertical-dynamic-variables fix), `voice-tools` (1× — the `create_order`
+fix, live immediately for every tenant, no recompile needed) — all via
+`npx supabase functions deploy <fn> --project-ref qulcubtwqsqgqpfgvorn
+--use-api --yes --import-map supabase/functions/deno.json`.
+
+### What remains
+
+- `packages/adapters/retell`'s multi_prompt/single_prompt `transfer_call`
+  handling still uses the pre-CALL-4 `{{transfer_number}}`-placeholder
+  design rather than CALL-4's improved baked-in-literal-number-or-honest-
+  fallback design — a pre-existing, already-flagged gap (CALL-4's "still
+  open" list), not touched here since that package's `transfer_call`
+  handling was never actually broken the way the live Deno compiler's
+  was (Fix 3's real bug), only needed the `general_tools`/`EndCallTool`
+  type additions this task did make.
+- `dental`'s live tenant was never recompiled onto Fix 5's `list_offerings`
+  "call ONCE" guard — in place for any future recompile, not applied
+  retroactively (out of this task's scope; `dental`'s own CALL-6-proven
+  4/4 state is unchanged).
+- Occasional pre-existing simulator-surface noise (documented above with
+  transcript evidence, `generic`'s repeated-caller-question case and
+  `restaurant`'s UTC-conversion judge false-negative) — genuinely not
+  fixable at the template/compiler/tool level, since the agent's own
+  behavior in both cases was already correct.
