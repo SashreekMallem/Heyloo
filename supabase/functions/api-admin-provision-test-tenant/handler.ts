@@ -70,6 +70,18 @@ export interface ProvisionTestTenantDeps {
   retellFetch: RetellFetch;
   retellApiKey: string;
   voiceToolsWebhookUrl: string;
+  /** CALL-5: the deployed `/voice-events` function URL — set as the
+   * Retell AGENT resource's own `webhook_url` (call_started/call_ended/
+   * call_analyzed event delivery). Distinct from `voiceToolsWebhookUrl`
+   * (custom-tool calls) and from `inbound_webhook_url` (phone-number-
+   * scoped inbound-call routing, set by `api-admin-attach-retell-number`)
+   * — three separate Retell webhook wiring points, easy to conflate. This
+   * one was missing entirely before CALL-5: every agent this function ever
+   * created had no `webhook_url` at all, so Retell never called
+   * `/voice-events` for any call against it — `webhook_events` stayed
+   * empty regardless of how many real/web calls happened (docs/
+   * BUILD_NOTES.md CALL-5 entry). */
+  eventsWebhookUrl: string;
   logger: Logger;
 }
 
@@ -389,6 +401,13 @@ async function compileAndCreateAgent(
     agent_name: compiled.agentName,
     voice_id: compiled.voiceId,
     response_engine: responseEngine,
+    // CALL-5 fix: previously omitted entirely — see this file's own
+    // ProvisionTestTenantDeps#eventsWebhookUrl doc comment. Confirmed shape
+    // (webhook_url + an explicit webhook_timeout_ms rather than relying on
+    // Retell's default) matches `packages/adapters/retell/src/agents.ts`'s
+    // already-correct Node-side `createOrUpdateRetellAgent`.
+    webhook_url: deps.eventsWebhookUrl,
+    webhook_timeout_ms: 10000,
   });
   const createdBody = created.body as { agent_id?: string };
   if (!created.ok || !createdBody.agent_id) {

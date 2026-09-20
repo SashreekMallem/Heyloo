@@ -100,6 +100,7 @@ describe("provisionTestTenant", () => {
         },
         retellApiKey: "key",
         voiceToolsWebhookUrl: "https://example.com/voice-tools",
+        eventsWebhookUrl: "https://example.com/voice-events",
         logger,
       },
     );
@@ -120,13 +121,15 @@ describe("provisionTestTenant", () => {
     let flowCreateCalled = false;
     let agentCreateCalled = false;
     let publishCalled = false;
-    const retellFetch = async (url: string) => {
+    let agentCreateBody: Record<string, unknown> | undefined;
+    const retellFetch = async (url: string, init?: RequestInit) => {
       if (url.includes("/create-conversation-flow")) {
         flowCreateCalled = true;
         return new Response(JSON.stringify({ conversation_flow_id: "flow_1" }), { status: 200 });
       }
       if (url.includes("/create-agent")) {
         agentCreateCalled = true;
+        agentCreateBody = init?.body ? JSON.parse(init.body as string) : undefined;
         return new Response(JSON.stringify({ agent_id: "agent_1", version: 1 }), { status: 201 });
       }
       if (url.includes("/get-agent/")) {
@@ -143,6 +146,7 @@ describe("provisionTestTenant", () => {
       retellFetch,
       retellApiKey: "key",
       voiceToolsWebhookUrl: "https://example.com/voice-tools",
+        eventsWebhookUrl: "https://example.com/voice-events",
       logger,
     });
 
@@ -151,6 +155,12 @@ describe("provisionTestTenant", () => {
     expect(flowCreateCalled).toBe(true);
     expect(agentCreateCalled).toBe(true);
     expect(publishCalled).toBe(true);
+    // CALL-5 fix: every created agent gets a real events webhook_url (was
+    // omitted entirely before — see this file's own ProvisionTestTenantDeps#
+    // eventsWebhookUrl doc comment; the real live bug this regression-tests
+    // against is exactly why /voice-events had never received a call).
+    expect(agentCreateBody?.["webhook_url"]).toBe("https://example.com/voice-events");
+    expect(agentCreateBody?.["webhook_timeout_ms"]).toBe(10000);
 
     const templateSeedInsert = calls.find((c) => c.text.includes("into public.agent_templates"));
     expect(templateSeedInsert).toBeDefined();
@@ -176,6 +186,7 @@ describe("provisionTestTenant", () => {
       },
       retellApiKey: "key",
       voiceToolsWebhookUrl: "https://example.com/voice-tools",
+        eventsWebhookUrl: "https://example.com/voice-events",
       logger,
     });
 
@@ -235,6 +246,7 @@ describe("provisionTestTenant", () => {
         retellFetch,
         retellApiKey: "key",
         voiceToolsWebhookUrl: "https://example.com/voice-tools",
+        eventsWebhookUrl: "https://example.com/voice-events",
         logger,
       },
     );
@@ -291,6 +303,7 @@ describe("provisionTestTenant", () => {
         retellFetch,
         retellApiKey: "key",
         voiceToolsWebhookUrl: "https://example.com/voice-tools",
+        eventsWebhookUrl: "https://example.com/voice-events",
         logger,
       },
     );
@@ -326,6 +339,7 @@ describe("provisionTestTenant", () => {
         retellFetch,
         retellApiKey: "key",
         voiceToolsWebhookUrl: "https://example.com/voice-tools",
+        eventsWebhookUrl: "https://example.com/voice-events",
         logger,
       },
     );
@@ -351,6 +365,7 @@ describe("provisionTestTenant", () => {
       },
       retellApiKey: "key",
       voiceToolsWebhookUrl: "https://example.com/voice-tools",
+        eventsWebhookUrl: "https://example.com/voice-events",
       logger,
     });
 
@@ -395,6 +410,7 @@ describe("provisionTestTenant", () => {
       retellFetch,
       retellApiKey: "key",
       voiceToolsWebhookUrl: "https://example.com/voice-tools",
+        eventsWebhookUrl: "https://example.com/voice-events",
       logger,
     });
 
@@ -422,6 +438,7 @@ describe("provisionTestTenant", () => {
       },
       retellApiKey: "key",
       voiceToolsWebhookUrl: "https://example.com/voice-tools",
+        eventsWebhookUrl: "https://example.com/voice-events",
       logger,
     });
 

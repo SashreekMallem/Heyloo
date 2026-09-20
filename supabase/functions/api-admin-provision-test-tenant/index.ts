@@ -16,6 +16,9 @@ import { provisionTestTenant } from "./handler.ts";
 const logger = createLogger({ fn: "api-admin-provision-test-tenant" });
 const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
 const VOICE_TOOLS_WEBHOOK_URL = requireEnv("VOICE_TOOLS_WEBHOOK_URL");
+// CALL-5: the deployed `/voice-events` function URL — see handler.ts's
+// ProvisionTestTenantDeps#eventsWebhookUrl doc comment.
+const VOICE_EVENTS_WEBHOOK_URL = requireEnv("VOICE_EVENTS_WEBHOOK_URL");
 const PROVISION_INTERNAL_SECRET = requireEnv("PROVISION_INTERNAL_SECRET");
 
 Deno.serve(async (req: Request) => {
@@ -40,6 +43,7 @@ Deno.serve(async (req: Request) => {
     retellFetch: fetch,
     retellApiKey: RETELL_API_KEY,
     voiceToolsWebhookUrl: VOICE_TOOLS_WEBHOOK_URL,
+    eventsWebhookUrl: VOICE_EVENTS_WEBHOOK_URL,
     logger,
   });
 
