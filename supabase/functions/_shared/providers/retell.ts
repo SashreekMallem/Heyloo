@@ -301,6 +301,31 @@ export async function listPhoneNumbers(fetchImpl: RetellFetch, apiKey: string, l
 }
 
 /**
+ * GET /get-phone-number/{phone_number} (CALL-5, RETELL-VERIFY: confirmed
+ * live against docs.retellai.com/api-references/get-phone-number
+ * 2026-09-20 — `PhoneNumberResponse`: `phone_number`, `inbound_agents`
+ * (weighted array, nullable), `inbound_webhook_url` (nullable, "webhook for
+ * inbound calls, where you can override" — phone-number-scoped, matching
+ * `updatePhoneNumber`/`importPhoneNumber` above), `outbound_agents`,
+ * `last_modification_timestamp`. Used by
+ * `api-admin-attach-retell-number`'s read-only `action: "inspect"` to
+ * confirm a number's live routing without calling Twilio or mutating
+ * anything.
+ */
+export async function getPhoneNumber(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  phoneNumberE164: string,
+) {
+  return retellRequest(
+    fetchImpl,
+    apiKey,
+    `/get-phone-number/${encodeURIComponent(phoneNumberE164)}`,
+    { method: "GET" },
+  );
+}
+
+/**
  * PATCH /update-phone-number/{phone_number} (CALL-1, RETELL-VERIFY:
  * confirmed live against `docs.retellai.com/api-references/update-phone-number`
  * 2026-09-20 — same confirmed shape as `importPhoneNumber` above:
