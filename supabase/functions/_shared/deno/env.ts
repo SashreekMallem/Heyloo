@@ -16,6 +16,20 @@ export function optionalEnv(name: string): string | undefined {
   return Deno.env.get(name) ?? undefined;
 }
 
+/**
+ * Names from `names` that are unset (empty string counts as unset, matching
+ * `requireEnv`'s own falsy check). Used by scheduled jobs whose OPTIONAL
+ * integration secret(s) may not be configured yet (OPS-1, docs/BUILD_NOTES.md):
+ * the cron-secret auth check still runs (and still fail-closed via
+ * `requireEnv`) before this is ever consulted, but a job that has nothing to
+ * do without an unset integration secret returns an explicit
+ * `{ skipped: "not_configured" }` 200 instead of crashing cold-start with
+ * `Missing required env var: X` every few minutes.
+ */
+export function missingEnv(names: readonly string[]): string[] {
+  return names.filter((name) => !Deno.env.get(name));
+}
+
 /** Central catalog of every env var edge functions read, so a missing one
  * fails at cold-start with a clear name instead of a deep-in-a-handler
  * `undefined`. Each function's index.ts only calls `requireEnv`/`optionalEnv`

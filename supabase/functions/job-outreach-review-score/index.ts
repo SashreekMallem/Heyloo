@@ -5,15 +5,19 @@
 
 import { timingSafeEqual } from "../_shared/crypto.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { missingEnv, optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { runReviewScorePass } from "./handler.ts";
 
 const logger = createLogger({ fn: "job-outreach-review-score" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
-const OUTSCRAPER_API_KEY = requireEnv("OUTSCRAPER_API_KEY");
-const ANTHROPIC_API_KEY = requireEnv("ANTHROPIC_API_KEY");
+
+// Outscraper + Anthropic are the OPTIONAL-integration secrets here (OPS-1,
+// docs/BUILD_NOTES.md): read lazily inside the handler, after the
+// cron-secret check, so the job skips cleanly instead of crashing
+// cold-start hourly while outreach isn't configured yet.
+const OPTIONAL_VARS = ["OUTSCRAPER_API_KEY", "ANTHROPIC_API_KEY"] as const;
 // OUTREACH-2's own dedicated env var (task instruction: "ANTHROPIC_OUTREACH_
 // RESEARCH_MODEL or a new ANTHROPIC_REVIEW_SCORE_MODEL") — a new,
 // separately-named var rather than reusing ANTHROPIC_OUTREACH_RESEARCH_MODEL
@@ -36,6 +40,14 @@ Deno.serve(async (req: Request) => {
   if (!provided || !timingSafeEqual(provided, CRON_SECRET)) {
     return jsonResponse({ error: "unauthorized" }, { status: 401 });
   }
+
+  const missing = missingEnv(OPTIONAL_VARS);
+  if (missing.length > 0) {
+    logger.warn("job_skipped_not_configured", { missing });
+    return jsonResponse({ skipped: "not_configured", missing }, { status: 200 });
+  }
+  const OUTSCRAPER_API_KEY = requireEnv("OUTSCRAPER_API_KEY");
+  const ANTHROPIC_API_KEY = requireEnv("ANTHROPIC_API_KEY");
 
   const sql = getSql();
   const result = await runReviewScorePass(sql, {

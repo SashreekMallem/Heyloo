@@ -1,5 +1,75 @@
 # Launch Status
 
+## Go-live ops — 2026-09-20 (secrets, cleanup, first green cron)
+
+**Branch state**: `main` == the work branch
+(`claude/voice-ai-agent-architecture-dcw0n8`) at `3be0217` prior to this
+pass's own commit; both pushed identical throughout.
+
+**Site**: live at https://heyloo-voice.vercel.app — home route and every
+other page verified 200; `/widget.js` serving correctly after the
+locale-routing middleware fix (`ecffe12`).
+
+**Supabase cleanup complete**: 59 → 44 edge functions (15 legacy ones
+removed), storage buckets 4 → 1 (the one remaining bucket, `call-
+recordings`, is public and had its 73 old recordings deleted), 8 legacy
+secrets removed.
+
+**Secrets now set** (verified via `supabase secrets list`, names only):
+`APP_BASE_URL`, `CRON_INVOKE_SECRET` (a stale mismatch fixed),
+`PROVISION_INTERNAL_SECRET`, `ADAPTER_TOKEN_ENCRYPTION_KEY`,
+`INTAKE_ENCRYPTION_KEY`, `WIDGET_TOKEN_SECRET`. Functions now read the
+platform-provided `SUPABASE_SECRET_KEYS` (`6f2dd69`), so a hand-set
+`SB_SECRET_KEY` is optional. First successful cron responses (HTTP 200)
+observed at 15:47 UTC. `job-alert-evaluation` fixed — `trailing` is a
+reserved word as a CTE name in PostgreSQL (`3be0217`).
+
+**OPS-1 — optional-integration cron jobs skip cleanly instead of crashing**
+(this pass, full rationale and diff in `docs/BUILD_NOTES.md`'s `OPS-1`
+entry): `job-keep-warm`, `job-retell-health-failover`, `job-outreach-
+personalize`, `job-outreach-personalize-collect`, and `job-outreach-
+review-score` were crashing at cold start with `Missing required env var:
+X` every 2-15 minutes because an optional integration's secret (Retell
+webhook signing, Twilio, or Anthropic/Outscraper/Smartlead) isn't
+provisioned yet — HTTP 500 `WORKER_ERROR` drowning monitoring. Added
+`missingEnv()` to `supabase/functions/_shared/deno/env.ts`; each
+function's `x-cron-secret` auth check is unchanged and still fail-closed,
+but the optional integration secret(s) are now read lazily inside the
+handler, after that auth check, and a missing one returns a logged,
+explicit `{ skipped: "not_configured", missing: [...] }` 200 instead of
+crashing. Deployed all five; boot-check (`curl -X POST .../<fn> -d '{}'`,
+no auth header, expect 401 = auth check reached, not 500):
+
+| function | HTTP code |
+| --- | --- |
+| `job-keep-warm` | 401 |
+| `job-retell-health-failover` | 401 |
+| `job-outreach-personalize` | 401 |
+| `job-outreach-personalize-collect` | **500** |
+| `job-outreach-review-score` | 401 |
+
+`job-outreach-personalize-collect` still cold-start-crashes: it also
+requires `OUTREACH_CAN_SPAM_FOOTER` (the CAN-SPAM physical-address +
+unsubscribe-instructions footer merged into every outreach send), which
+is a compliance hard rule per `.env.example`, not an optional-integration
+secret — out of OPS-1's scope and correctly still `requireEnv`'d at
+module scope (CLAUDE.md Rule 2, fail-closed). It is not in the current
+`supabase secrets list` output. Added to the still-blocked list below.
+
+**Still blocked on the owner**: `RETELL_WEBHOOK_SIGNING_SECRET`, a Twilio
+account (`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`), `RETELL_FAILOVER_VOICE_URL`,
+outreach vendor keys (`ANTHROPIC_API_KEY`, `OUTSCRAPER_API_KEY`,
+`SMARTLEAD_API_KEY`), **`OUTREACH_CAN_SPAM_FOOTER`** (newly flagged this
+pass — blocks `job-outreach-personalize-collect`'s cold start entirely,
+not just its outreach-vendor calls), Stripe, Resend, Vercel duplicate-
+project cleanup, Retell old-agent cleanup (24 agents), token/password
+rotation.
+
+**Gates this pass**: `cd supabase/functions && npx vitest run` 101/101
+files, 923/923 tests green. `npx biome check --write` on the six changed
+files — clean (one pure reformat). `pnpm -w typecheck` — 21/21 packages
+green.
+
 ## Design: cinematic scroll-scrubbed hero film, owner-phone payoff beat, home-route JS budget closed for real (SITE-2, 2026-09-15)
 
 Replaced the WebGL/react-three-fiber hero line-morph (`SITE-1`, below)

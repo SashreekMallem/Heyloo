@@ -11275,3 +11275,80 @@ pass — no new assets); `pnpm-lock.yaml` untouched, `pnpm install
 **Review score / status**: 95/100, pass, `"open": []` — no outstanding
 findings from the review this pass integrates. Nothing left incomplete
 from this task's own scope.
+
+## OPS-1 — optional-integration cron jobs skip when not configured (2026-09-20)
+
+**Problem**: the live Supabase project's pg_cron → `net.http_post` schedule
+now reaches these edge functions successfully, but five of them crash at
+cold start with `Missing required env var: X` because an OPTIONAL
+integration's secret is not provisioned yet (owner still pending on
+Retell webhook signing, Twilio account, and outreach vendor keys): every
+2-15 minutes forever, drowning monitoring in HTTP 500 `WORKER_ERROR`.
+Affected: `job-keep-warm` (`RETELL_WEBHOOK_SIGNING_SECRET`),
+`job-retell-health-failover` (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`,
+`RETELL_FAILOVER_VOICE_URL` — `RETELL_API_KEY` is already provisioned via
+the live Retell voice integration, so it stays required),
+`job-outreach-personalize` (`ANTHROPIC_API_KEY`),
+`job-outreach-personalize-collect` (`ANTHROPIC_API_KEY`,
+`SMARTLEAD_API_KEY` — `OUTREACH_CAN_SPAM_FOOTER` is a compliance hard
+rule per `.env.example`, not an integration secret, so it stays required),
+`job-outreach-review-score` (`OUTSCRAPER_API_KEY`, `ANTHROPIC_API_KEY`).
+
+**Fix**: added `missingEnv(names: readonly string[]): string[]` to
+`supabase/functions/_shared/deno/env.ts` (returns the subset of `names`
+that are unset, same falsy check as `requireEnv`). In each affected
+`index.ts`, `CRON_INVOKE_SECRET` stays a module-scope `requireEnv` and the
+`x-cron-secret` check still runs first and is unchanged (auth stays
+fail-closed). Only the OPTIONAL integration secrets moved from
+module-scope `requireEnv` (which throws at cold start, before the request
+handler even runs) to a check inside `Deno.serve`'s handler, immediately
+after the cron-secret check: if `missingEnv([...])` is non-empty, the
+handler logs `logger.warn("job_skipped_not_configured", { missing })` and
+returns `jsonResponse({ skipped: "not_configured", missing }, { status:
+200 })` without touching the database or any provider. When nothing is
+missing, each var is read with `requireEnv` at that point and the handler
+proceeds exactly as before — same `handler.ts` call, same deps shape, zero
+behavior change once an integration is actually configured. No
+`handler.ts` changed (portable, unit-tested files); the diff is entirely
+in the Deno-only, untested `index.ts` entrypoints plus the one new
+`_shared/deno/env.ts` helper (also Deno-only/untested — same as the
+existing `requireEnv`/`optionalEnv`/`optionalServiceRoleKey` it sits next
+to).
+
+**Why this doesn't weaken CLAUDE.md Rule 2's fail-closed rule**: Rule 2's
+"missing secret = reject, never skip" targets *auth and webhook*
+verification — a webhook whose signing secret is absent must be rejected,
+never processed as if it were verified, because skipping there would let
+an unauthenticated caller's payload through as trusted. These five
+functions are not webhooks and carry no caller-supplied payload to act on
+without verification — they are cron-fired workers gated by their own
+`x-cron-secret` auth check, which still runs first, is still
+`requireEnv`-backed, and is completely unchanged by this task. What
+changes is only *whether a periodic worker has optional integration
+credentials to do its (optional, not-yet-live) job* — Retell
+webhook-signing keepalive pings, Twilio failover, and Anthropic/Outscraper/
+Smartlead outreach automation are all real features that are simply not
+provisioned yet on this tenant/environment, same class of "feature X's
+adapter secret is absent" that `docs/VERIFY.md` and `.env.example`
+already treat as an expected, non-fatal absence elsewhere in this
+codebase (e.g. `ANTHROPIC_API_KEY` unset already "simply disables the AI
+reply" for a different function per `.env.example`). Returning an
+explicit `skipped: "not_configured"` 200 with a `missing` list and a
+`warn`-level structured log line is strictly more visible in monitoring
+than a recurring unstructured 500 crash was, and nothing runs, no
+provider is called, and no data is touched with a missing credential —
+the fail-closed guarantee (never proceed without the secret you need) is
+fully intact; only the *shape* of "not configured" changed, from a
+crash-and-retry-forever cold-start throw to an explicit, logged, 200
+no-op skip.
+
+**Gates**: `cd supabase/functions && npx vitest run` — 101/101 files,
+923/923 tests green (no `handler.ts`/`handler.test.ts` changed — the
+skip logic lives entirely in the untested Deno-only `index.ts` layer, so
+no new/adjusted unit tests were needed or possible under this repo's
+existing Node/Deno test split — see `supabase/functions/package.json`'s
+own description of that split). `npx biome check --write` on the six
+changed files — clean (one pure reformat, an array literal wrapped
+across lines in `job-retell-health-failover/index.ts`, no logic change).
+`pnpm -w typecheck` — 21/21 packages green, including
+`@heyloo/edge-functions#typecheck`.

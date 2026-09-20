@@ -5,15 +5,20 @@
 
 import { timingSafeEqual } from "../_shared/crypto.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { missingEnv, optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { findLeadsNeedingResearch, submitResearchBatch } from "./handler.ts";
 
 const logger = createLogger({ fn: "job-outreach-personalize" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
-const ANTHROPIC_API_KEY = requireEnv("ANTHROPIC_API_KEY");
 const RESEARCH_MODEL = optionalEnv("ANTHROPIC_OUTREACH_RESEARCH_MODEL") ?? "claude-haiku-4-5";
+
+// ANTHROPIC_API_KEY is an optional-integration secret (OPS-1,
+// docs/BUILD_NOTES.md): read lazily inside the handler, after the
+// cron-secret check, so the job skips cleanly instead of crashing
+// cold-start every 15 minutes while outreach isn't configured yet.
+const OPTIONAL_VARS = ["ANTHROPIC_API_KEY"] as const;
 
 const SCRAPE_TIMEOUT_MS = 10_000;
 
@@ -35,6 +40,13 @@ Deno.serve(async (req: Request) => {
   if (!provided || !timingSafeEqual(provided, CRON_SECRET)) {
     return jsonResponse({ error: "unauthorized" }, { status: 401 });
   }
+
+  const missing = missingEnv(OPTIONAL_VARS);
+  if (missing.length > 0) {
+    logger.warn("job_skipped_not_configured", { missing });
+    return jsonResponse({ skipped: "not_configured", missing }, { status: 200 });
+  }
+  const ANTHROPIC_API_KEY = requireEnv("ANTHROPIC_API_KEY");
 
   const sql = getSql();
   const leads = await findLeadsNeedingResearch(sql);
