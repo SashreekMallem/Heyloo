@@ -191,25 +191,23 @@ interface UpsertedCallLogRow {
  * simultaneous resolutions for the same never-before-seen `call_id` must
  * never produce two `call_logs` rows.
  *
- * DEPLOYMENT NOTE (CALL-2, docs/VERIFY.md): the originally-designed shape
- * here also set a `call_logs.source = 'tool_first_seen'` column so
- * `voice-events`'s `call_started` handler could tell a placeholder row
- * from a webhook-created one before deciding whether to overwrite it.
- * That column (+ an `agent_configs.retell_agent_id` index, a pure
- * performance nicety — this query is correct without it, just an
- * unindexed scan on a small table) needed an additive migration this
- * session's sandbox has no privileged path to apply (`supabase db push`
- * fails on a Postgres role-creation permission error; the Management
- * API's own SQL-execution endpoint and a one-shot migration-runner
- * function were both refused by this environment's own safety
- * guardrails as out of a subagent's authority — correctly so, deliberate
- * scope). Descoped to unblock CALL-2's live verification THIS session:
- * no `source` column is written; `handleCallStarted`'s own upsert (see
- * that function's header comment) is unconditional instead of
- * source-gated. Follow-up: apply
- * `supabase/migrations/20260920180000_call_logs_tool_first_seen.sql`
- * (kept, describes the richer intended shape) and restore the
- * `source`-gated distinction.
+ * CALL-5 UPDATE: `supabase/migrations/20260920180000_call_logs_tool_first_
+ * seen.sql` (the richer intended shape this DEPLOYMENT NOTE used to
+ * describe as un-appliable) IS now live (confirmed via the project's own
+ * `schema_migrations` history) — this insert writes `source =
+ * 'tool_first_seen'` accordingly, so `voice-events`'s `call_started`
+ * handler (which never overwrites `source` on conflict — see that
+ * function's own comment) can still tell a placeholder row from a
+ * webhook-created one, matching the migration's own column comment.
+ * `is_test_call` is also set here now: `true` whenever the tenant was
+ * resolved via the QA-harness-only `test_harness_tenant_id` tier (Retell
+ * batch tests — `api-admin-run-agent-tests` sets that dynamic variable) or
+ * whenever `retellCallId` is the literal `"playground"` Retell's batch
+ * simulator/chat-completion sessions all share (CALL-5, docs/BUILD_NOTES.md:
+ * every batch-test scenario's tool calls land on the SAME call_logs row
+ * for exactly this reason — collapsing to one row is a real, documented,
+ * Retell-controlled limitation, not a bug this fix changes; marking it
+ * `is_test_call` is what keeps it out of the tenant's real dashboard).
  */
 async function upsertPlaceholderCallLog(
   sql: SqlClient,
@@ -220,15 +218,16 @@ async function upsertPlaceholderCallLog(
     callerNumber: string | null;
     direction: "inbound" | "outbound";
     channel: "phone" | "web_voice";
+    isTestCall: boolean;
   },
 ): Promise<UpsertedCallLogRow | null> {
   const rows = await sql<UpsertedCallLogRow>`
     insert into public.call_logs (
       tenant_id, phone_number_id, retell_call_id, caller_number, direction,
-      started_at, channel
+      started_at, channel, source, is_test_call
     ) values (
       ${params.tenantId}, ${params.phoneNumberId}, ${params.retellCallId}, ${params.callerNumber},
-      ${params.direction}, now(), ${params.channel}
+      ${params.direction}, now(), ${params.channel}, 'tool_first_seen', ${params.isTestCall}
     )
     on conflict (retell_call_id) do update set tenant_id = call_logs.tenant_id
     returning id, tenant_id, caller_number
@@ -266,6 +265,13 @@ export async function resolveCallContext(
         call.direction === "outbound" ? "outbound" : "inbound";
       const channel: "phone" | "web_voice" =
         call.call_type === "phone_call" ? "phone" : "web_voice";
+      // CALL-5 (docs/BUILD_NOTES.md): a batch-test/chat-completion QA
+      // session only ever resolves via the `test_harness_tenant_id` tier,
+      // and Retell's simulator always sends the literal call_id
+      // "playground" for these — either signal alone is enough, checked
+      // for robustness against a future Retell change to one but not the
+      // other.
+      const isTestCall = resolved.via === "test_harness_tenant_id" || retellCallId === "playground";
 
       const upserted = await upsertPlaceholderCallLog(sql, {
         retellCallId,
@@ -274,6 +280,7 @@ export async function resolveCallContext(
         callerNumber,
         direction,
         channel,
+        isTestCall,
       });
       if (upserted) {
         logger.warn("voice_tools_call_context_resolved_from_payload", {

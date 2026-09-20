@@ -133,6 +133,32 @@ describe("resolveCallContext", () => {
     expect(calls.some((c) => c.text.includes("from public.phone_numbers"))).toBe(false);
   });
 
+  it("CALL-5: marks a batch-test/'playground' placeholder row is_test_call=true and source='tool_first_seen', so it never pollutes a tenant's real dashboard", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.tenants where id": [{ id: "t6", vertical: "dental" }],
+      "insert into public.call_logs": [{ id: "cl-new4", tenant_id: "t6", caller_number: null }],
+    });
+    const call: ToolCall = {
+      call_type: "web_call",
+      retell_llm_dynamic_variables: { heyloo_tenant_id: "t6" },
+    };
+    await resolveCallContext(sql, "playground", call, logger);
+    const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
+    expect(insertCall?.text).toContain("'tool_first_seen'");
+    expect(insertCall?.values).toContain(true); // is_test_call
+  });
+
+  it("CALL-5: a REAL call resolved via agent_id/to_number is never marked is_test_call from this path", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.agent_configs": [{ tenant_id: "t4", vertical: "auto" }],
+      "insert into public.call_logs": [{ id: "cl-new5", tenant_id: "t4", caller_number: null }],
+    });
+    const call: ToolCall = { agent_id: "agent_real", call_type: "phone_call" };
+    await resolveCallContext(sql, "call_real_1", call, logger);
+    const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
+    expect(insertCall?.values).toContain(false); // is_test_call
+  });
+
   it("(b) never trusts a spoofed tenant hint — only agent_id -> agent_configs is consulted, and cross-tenant resolution is impossible via args", async () => {
     // agent_id belongs to tenant A only; nothing about tenant B is ever
     // read from anywhere but the authoritative agent_configs/phone_numbers
