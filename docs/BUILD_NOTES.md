@@ -11352,3 +11352,119 @@ changed files — clean (one pure reformat, an array literal wrapped
 across lines in `job-retell-health-failover/index.ts`, no logic change).
 `pnpm -w typecheck` — 21/21 packages green, including
 `@heyloo/edge-functions#typecheck`.
+
+## OPS-2 — chronic pg_cron -> pg_net timeouts, cause + fix (2026-09-20)
+
+**Measured (sbq.sh against the live project, net._http_response, last 6
+sampled hours 10:00-16:00 UTC, ~1542 responses):**
+
+| Metric | Value |
+|---|---|
+| HTTP 200 | 31 |
+| HTTP 500 (`WORKER_ERROR`, pre-existing/OPS-1-class, out of scope here) | 591 |
+| HTTP 401 (mis-scoped/stale secret, out of scope here) | 452 |
+| Timeout (null status, `error_msg` set) | 468 |
+| — of which 15000ms timeout | 448 |
+| — of which 30000ms timeout | 19 |
+| — of which 45000ms timeout | 1 |
+| DNS-stall (DNS time == full 15000ms) among 15000ms timeouts | 133 / 446 sampled (~30%) |
+| Timeout rate, hour-by-hour | 74, 84, 74, 75, 80, 81 per hour — flat |
+| `pg_net.batch_size` / `.ttl` / `.database_name` / `.username` | 200 / 6 hours / postgres / (empty) |
+| `net.http_request_queue` depth (backlog) | 0 |
+| Timeout rate at the busiest coincidence (minute 0/30 — 3 per-min + */2 + */3 + */5 + three */15 + three hourly jobs, ~12 requests at once) | 10.8% |
+| Timeout rate with zero schedule overlap (only the 3 per-minute workers) | 39.8% |
+
+The last row is the key finding: timeout rate is **flat to inversely
+correlated** with how many jobs coincide in the same instant, which rules
+out a concurrency/thundering-herd cause and rules out (a) raising
+`pg_net.batch_size` (already 200, far above the ~12-request worst case,
+and the queue never backs up) and (c) staggering the per-minute/`*/2`/`*/3`
+job schedules apart from the `*/5`, `*/15`, and hourly ones (CLAUDE.md
+Rule 1: the numbers, not an available knob, drive the choice).
+
+**Cited cause** (fetched live this session — CLAUDE.md Rule 1):
+- `github.com/supabase/pg_net`'s own README: pg_net runs a **single**
+  background worker (no per-job/per-request concurrency setting exists;
+  `pg_net.batch_size` only bounds rows read per pass) — one shared libcurl
+  instance, and its DNS resolver state, serves every scheduled job.
+- `github.com/curl/curl/issues/18216` (closed, filed 2025-08-07, affects
+  curl 8.5.0/8.14.1/8.15.0): after a DNS lookup times out and libcurl calls
+  `ares_cancel()`, "the ares channel itself stays in an invalid state,
+  with its internal socket still open but not operable" — it does not
+  self-recover, and `curl_easy_reset()` does not clear it; the only fix is
+  discarding the handle. This matches the measured flat ~30% chronic
+  timeout rate independent of load exactly: once the single worker's
+  shared resolver state is corrupted by one timed-out lookup, a fixed
+  fraction of everything routed through that same worker keeps failing
+  until the worker restarts.
+- `github.com/orgs/supabase/discussions/36235` + pg_net's own
+  `net.worker_restart()` (confirmed present on the live project, pg_net
+  0.19.5, EXECUTE already granted to the `postgres` role every existing
+  cron.job runs as) — the documented recovery path for pg_net >= 0.8: it
+  reloads config and restarts the background worker, discarding the stuck
+  libcurl/c-ares handle. `supabase.com/docs/guides/database/extensions/
+  pg_net` (fetched 2026-09-20) documents the function's signature but
+  frames it only as a config-reload helper — the DNS-stuck-worker recovery
+  use is corroborated by the discussion above and by curl#18216's own
+  "only a fresh handle clears it" conclusion, not a direct doc statement,
+  so it's called out here as the one inference beyond documented fact.
+- `supabase.com/docs/guides/troubleshooting/webhook-debugging-guide-M8sk47`
+  (fetched 2026-09-20) documents a *different*, already-patched-since-
+  v0.11 "mass timeout from request-volume intensity" pg_net bug and
+  recommends raising the caller's timeout for *that* case (we're on
+  0.19.5); the flat/inverse concurrency correlation measured above rules
+  that scenario out here, so (b) raising `timeout_milliseconds` was
+  deliberately not used — it would only make an already-stuck request take
+  longer to fail, not fix the stuck resolver state.
+
+**Decision — (d):** a known pg_net/libcurl DNS-timeout-recovery gap, fixed
+by scheduling the documented recovery primitive (`net.worker_restart()`)
+on pg_cron itself, every 10 minutes, DB-internal only (no HTTP round trip,
+no Vault secret dependency, so it schedules unconditionally once pg_cron
+exists). Restart only takes effect between pg_net's own batches, so
+in-flight requests are unaffected; every 10 minutes bounds how long a
+corrupted resolver state (and its ~30% failure tax) can persist without
+being so frequent it disrupts otherwise-healthy batches.
+
+**Migration:**
+`supabase/migrations/20260920160500_pgnet_worker_restart_cron.sql` — adds
+`public.fn_cron_pgnet_worker_restart()` (guarded by a `pg_net` extension
+presence check, same pattern as this repo's other `job-internal-*` DB-only
+cron functions) and schedules it as `job-pgnet-worker-restart`
+(`*/10 * * * *`) via the existing `fn_cron_upsert` helper. The
+`x-cron-secret` HTTP mechanism is untouched — this job never makes an HTTP
+call. Additive, idempotent (upsert by job name), reproducible from zero.
+
+**Expected effect:** the chronic ~30% timeout floor should drop toward the
+transient/occasional level as the worker (and its DNS resolver state) gets
+force-cycled well before a corrupted state can dominate a full 6-hour
+window the way it did in the measurement above. Not expected to fully
+zero out timeouts (a fresh worker can still hit a genuinely slow/unhealthy
+DNS resolver at any moment), just to stop the corrupted state from
+persisting and compounding.
+
+**Not touched in this task (separate, already-tracked/out of scope):**
+the 591 HTTP 500 (`WORKER_ERROR`) and 452 HTTP 401 responses in the same
+window — the task's own problem statement calls the 5xx/401-producing
+misconfiguration "now fixed"; OPS-1 (above) already documents the
+`WORKER_ERROR` cold-start-crash class for `job-keep-warm`, `job-retell-
+health-failover`, and the outreach jobs specifically. The 500/401 volume
+still present in this measurement window (`WORKER_ERROR`/401 samples
+still occurring in the most recent 30 minutes as of this task) suggests
+that fix hasn't fully propagated or a related cause remains — flagged
+here as a gap for separate follow-up, not addressed by this migration
+(CLAUDE.md Rule 4 — scope discipline).
+
+**CI:** `scripts/ci/cron-queues-check.ts`'s `EXPECTED_CRON_JOBS` list
+updated to include `job-pgnet-worker-restart` (it's DB-internal, so it
+doesn't need adding to `CRON_MIGRATIONS`, which only re-applies
+Vault-secret-gated files). Could not run the script itself locally — no
+Docker daemon in this environment (`docker ps` fails: "no such file or
+directory" on the daemon socket), so `supabase start` cannot stand up the
+local Postgres this check depends on.
+
+**Gates:** `pnpm -w typecheck` and `pnpm run lint` — see this task's
+commit for pass/fail; `npx biome check --write` on every changed file —
+clean (the `.sql`/`.md` files touched aren't in biome's configured file
+set, only `scripts/ci/cron-queues-check.ts` was linted, no changes
+needed).

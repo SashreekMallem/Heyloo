@@ -1,5 +1,13 @@
 # Launch Status
 
+**OPS-2 (2026-09-20)**: ~30% of pg_cron→pg_net calls were timing out
+chronically (flat across all 25 jobs, independent of schedule overlap) —
+root cause is a single-worker pg_net/libcurl DNS-resolver-state bug
+(curl/curl#18216) that doesn't self-recover; fixed by scheduling
+`net.worker_restart()` every 10 minutes (`job-pgnet-worker-restart`,
+`supabase/migrations/20260920160500_pgnet_worker_restart_cron.sql`) —
+full measurements and citations in `docs/BUILD_NOTES.md` OPS-2.
+
 ## Go-live ops — 2026-09-20 (secrets, cleanup, first green cron)
 
 **Branch state**: `main` == the work branch

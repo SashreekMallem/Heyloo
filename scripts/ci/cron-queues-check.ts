@@ -122,6 +122,7 @@ const EXPECTED_CRON_JOBS: readonly string[] = [
   "job-offboarding",
   "job-retention-sweep",
   "job-keep-warm",
+  "job-pgnet-worker-restart",
 ];
 
 /** BACKEND_SPEC §9's 4 queues + their DLQ companions (DB-B3). */
