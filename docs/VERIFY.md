@@ -1980,3 +1980,109 @@ stay tenant-config-only, never caller-influenced.
 (`EndNode`, the `type: "subagent"` emission, the `is_terminal` -> end-node
 wiring), `supabase/functions/_shared/providers/retell.ts#createAgentVersion`,
 `supabase/functions/api-admin-provision-test-tenant/handler.ts#compileAndCreateAgent`.
+
+## CALL-4 (2026-09-20) — Call Transfer Node / End Node full schema, resolving CALL-2's open item above
+
+**Resolves the "What was NOT confirmed" item directly above this entry**
+(the Call Transfer Node's exact schema). Two independent sources, fetched/
+inspected live this session, agree field-for-field:
+
+1. **`docs.retellai.com/api-references/create-conversation-flow`**
+   (fetched live via WebFetch, 2026-09-20) — the request-body schema for
+   `TransferCallNode`, `EndNode`, and `SubagentNode`.
+2. **The actual `retell-sdk` npm package's TypeScript source**
+   (`node_modules/retell-sdk@5.64.0/src/resources/conversation-flow.ts`,
+   already a devDependency of `packages/adapters/retell` — see that
+   package's own `sdk-contract.test.ts`), specifically
+   `ConversationFlowCreateParams.TransferCallNode`/`.EndNode`/
+   `.SubagentNode` — the MORE authoritative of the two sources (the
+   published SDK's own generated types, not a docs-site prose summary),
+   used to double-check every field named below.
+
+**`TransferCallNode` (confirmed exact shape):**
+```
+{
+  id: string;
+  type: "transfer_call";
+  transfer_destination:
+    | { type: "predefined"; number: string; extension?: string }
+    | { type: "inferred"; prompt: string };
+  transfer_option:
+    | { type: "cold_transfer"; ... }
+    | { type: "warm_transfer"; ... }       // all sub-fields optional
+    | { type: "agentic_warm_transfer"; agentic_transfer_config: {...}; ... };
+  edge: { id: string; destination_node_id?: string; transition_condition: ... };
+  name?: string;
+  instruction?: {...};                     // "only used when speak_during_execution is true"
+  global_node_setting?: {...};
+  ignore_e164_validation?: boolean;
+  custom_sip_headers?: Record<string, string>;
+}
+```
+Confirmed: `edge` is SINGULAR and required (not an array) — the
+"transfer failed" fallback path only, matching what CALL-2's "What was
+NOT confirmed" note above already guessed from prose. `transfer_option:
+{type: "warm_transfer"}` alone is complete/valid — every other field on
+that variant is optional. `{type: "predefined"}`'s `number` field's own
+doc comment states verbatim: *"The number to transfer to in E.164 format
+or a dynamic variable like `{{transfer_number}}`."* — confirming a
+`{{var}}` placeholder IS a documented, supported value there. **This
+compiler deliberately does NOT use that indirection** (unlike
+`packages/adapters/retell`'s pre-CALL-4 code, which did): the destination
+is resolved by the CALLER of `compileTemplate`/`compileConversationFlow`
+from `agent_configs.transfer_number` and baked in as a literal string at
+compile time — a stronger, simpler G6 guarantee (no dependency on
+`voice-inbound` correctly setting a per-call dynamic variable) and it
+naturally supports "no number configured -> compile a different node
+entirely" (impossible with the dynamic-variable approach, since the node
+TYPE itself has to differ, not just a variable's runtime value).
+
+**`EndNode` (confirmed exact shape):**
+```
+{ id: string; type: "end"; name?: string; speak_during_execution?: boolean;
+  instruction?: {...}; global_node_setting?: {...}; model_choice?: {...};
+  display_position?: {...}; }
+```
+Confirms CALL-2's `EndNode` doc comment (which cited `global_node_setting?`
+from the SDK already) plus the field this task newly relies on:
+`global_node_setting` on an `end` node is valid and behaves identically to
+every other node type — used for the new generic wrap-up node (reachable
+from anywhere, not just a state with an authored edge onto it).
+
+**`SubagentNode` (confirmed exact shape, relevant fields):**
+`{id, type:"subagent", instruction, edges?, tool_ids?: string[] | null,
+tools?, knowledge_base_ids?, kb_config?, global_node_setting?,
+else_edge?, always_edge?, ...}` — confirms CALL-2's `EndNode` doc comment's
+prior citation of `tool_ids` on `SubagentNode` (that entry only quoted it
+secondhand; this entry confirms it directly against the SDK source) and is
+the basis for `packages/adapters/retell`'s CALL-4 mirror fix (this package
+previously had no `SubagentNode` type at all, only a `FunctionNode`/
+`ConversationNode` split that left every 2+-tool state unable to call
+anything — the same live bug CALL-2 fixed in the Deno compiler, never
+caught here since this package isn't wired to a live account).
+
+**disconnection_reason / transfer audit trail** (task item 1's "keep an
+audit row... if the docs give a webhook/event for it"): confirmed via
+WebSearch + WebFetch (`docs.retellai.com/api-references/get-call`,
+2026-09-20) that a real transferred call's `disconnection_reason` is
+`"call_transfer"` (or `"transfer_bridged"`/`"transfer_cancelled"` for the
+bridging sub-states), delivered on the existing `call_ended`/
+`call_analyzed` webhook Retell already sends for every call — **no new
+code needed**: `voice-events/handler.ts` already persists
+`call_logs.disconnection_reason` verbatim from every such webhook
+(pre-existing column/write path, confirmed by reading that handler this
+session), so a real transfer is already audited there once a real call
+happens. `call.transfer_destination` is also present on that same call
+object per the same source. Not re-verified live against an actual
+transferred phone call this session (the test tenant has no transfer
+number configured, by design — see BUILD_NOTES CALL-4), so this is
+DOCS-confirmed, not live-call-confirmed; a follow-up with a real
+`transfer_number` configured should confirm `disconnection_reason:
+"call_transfer"` shows up in a real `call_logs` row.
+
+**Code:** `supabase/functions/_shared/compiler/template-compiler.ts`
+(`TransferCallNode`, `CompileConversationFlowOptions.transferNumber`, the
+generic `__wrap_up`/`__wrap_up_end` nodes), `packages/adapters/retell/src/
+compiler/conversation-flow.ts` + `types.ts` (`RetellSubagentNode`, the
+same transfer/wrap-up mirror), `packages/adapters/retell/src/compiler/
+parity.test.ts` (the new cross-compiler structural-parity test).

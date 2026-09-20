@@ -61,28 +61,44 @@ Greet the caller and ask how you can help today.",
         "type": "prompt",
       },
       "name": "Check availability",
-      "speak_during_execution": true,
-      "tool_id": "check_availability",
-      "tool_type": "local",
-      "type": "function",
-      "wait_for_result": true,
+      "tool_ids": [
+        "check_availability",
+      ],
+      "type": "subagent",
     },
     {
-      "edges": [],
+      "edges": [
+        {
+          "destination_node_id": "confirm_booking__end",
+          "id": "edge_confirm_booking_end",
+          "transition_condition": {
+            "prompt": "this state's business is fully done and the caller has nothing further to discuss",
+            "type": "prompt",
+          },
+        },
+      ],
       "id": "confirm_booking",
       "instruction": {
         "text": "Confirm the details and create the booking.",
         "type": "prompt",
       },
       "name": "Confirm booking",
-      "speak_during_execution": true,
-      "tool_id": "create_booking",
-      "tool_type": "local",
-      "type": "function",
-      "wait_for_result": true,
+      "tool_ids": [
+        "create_booking",
+      ],
+      "type": "subagent",
     },
     {
-      "edges": [],
+      "edges": [
+        {
+          "destination_node_id": "triage_emergency__end",
+          "id": "edge_triage_emergency_end",
+          "transition_condition": {
+            "prompt": "this state's business is fully done and the caller has nothing further to discuss",
+            "type": "prompt",
+          },
+        },
+      ],
       "global_node_setting": {
         "condition": "Caller mentions brakes failing, smoke, or another immediate safety issue.",
       },
@@ -92,11 +108,70 @@ Greet the caller and ask how you can help today.",
         "type": "prompt",
       },
       "name": "Emergency triage",
+      "tool_ids": [
+        "take_message",
+      ],
+      "type": "subagent",
+    },
+    {
+      "id": "confirm_booking__end",
+      "instruction": {
+        "text": "Thank the caller, confirm there's nothing else you can help with, and say a warm goodbye.",
+        "type": "prompt",
+      },
+      "name": "Confirm booking — end call",
       "speak_during_execution": true,
-      "tool_id": "take_message",
-      "tool_type": "local",
-      "type": "function",
-      "wait_for_result": true,
+      "type": "end",
+    },
+    {
+      "id": "triage_emergency__end",
+      "instruction": {
+        "text": "Thank the caller, confirm there's nothing else you can help with, and say a warm goodbye.",
+        "type": "prompt",
+      },
+      "name": "Emergency triage — end call",
+      "speak_during_execution": true,
+      "type": "end",
+    },
+    {
+      "edges": [
+        {
+          "destination_node_id": "__wrap_up_end",
+          "id": "edge_wrap_up_to_end",
+          "transition_condition": {
+            "prompt": "The caller says no, they're all set, or otherwise indicates they have nothing further",
+            "type": "prompt",
+          },
+        },
+        {
+          "destination_node_id": "greeting",
+          "id": "edge_wrap_up_to_start",
+          "transition_condition": {
+            "prompt": "The caller says yes and has another request or question",
+            "type": "prompt",
+          },
+        },
+      ],
+      "global_node_setting": {
+        "condition": "The caller's current question or request has just been fully answered or handled (for example an FAQ about hours or pricing) and nothing else in this call is actively in progress, so it's a natural moment to check whether they need anything else.",
+      },
+      "id": "__wrap_up",
+      "instruction": {
+        "text": "Ask the caller: "Is there anything else I can help with?" and wait for their answer.",
+        "type": "prompt",
+      },
+      "name": "Wrap-up",
+      "type": "conversation",
+    },
+    {
+      "id": "__wrap_up_end",
+      "instruction": {
+        "text": "Thank the caller and say a warm goodbye.",
+        "type": "prompt",
+      },
+      "name": "Wrap-up — end call",
+      "speak_during_execution": true,
+      "type": "end",
     },
   ],
   "start_node_id": "greeting",

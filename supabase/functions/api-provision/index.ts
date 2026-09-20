@@ -113,7 +113,19 @@ Deno.serve(async (req: Request) => {
         tools: (row["tools"] as CompilerAgentTemplate["tools"]) ?? [],
         disclosure_line: row["disclosure_line"] as string,
       };
-      const compiled = compileRetellTemplate(template, VOICE_TOOLS_WEBHOOK_URL);
+      // CALL-4 (docs/BUILD_NOTES.md): `agent_configs.transfer_number` is
+      // tenant-config-only (G6) — this step only ever runs when no
+      // `agent_configs` row exists yet (the caller above gates on
+      // `!retellAgentId`), so this is null for every real onboarding today
+      // (a tenant has no path to set it before first provisioning); read
+      // it anyway rather than assume, so a future settings-before-checkout
+      // flow (or a re-run of this same step) picks it up automatically.
+      const existingTransfer = await sql<{ transfer_number: string | null }>`
+        select transfer_number from public.agent_configs where tenant_id = ${tenantIdForCompile}
+      `;
+      const compiled = compileRetellTemplate(template, VOICE_TOOLS_WEBHOOK_URL, {
+        transferNumber: existingTransfer[0]?.transfer_number ?? null,
+      });
 
       return {
         templateId: row["id"] as string,

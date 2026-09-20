@@ -263,6 +263,7 @@ async function compileTemplateForTenant(
   vertical: Vertical,
   voiceToolsWebhookUrl: string,
   forceReseed = false,
+  transferNumber: string | null = null,
 ): Promise<CompiledTemplateResult | null> {
   await ensureTemplateSeeded(sql, vertical, forceReseed);
 
@@ -283,7 +284,7 @@ async function compileTemplateForTenant(
     tools: (row["tools"] as CompilerAgentTemplate["tools"]) ?? [],
     disclosure_line: row["disclosure_line"] as string,
   };
-  const compiled = compileRetellTemplate(template, voiceToolsWebhookUrl);
+  const compiled = compileRetellTemplate(template, voiceToolsWebhookUrl, { transferNumber });
 
   return {
     templateId: row["id"] as string,
@@ -329,12 +330,26 @@ async function compileAndCreateAgent(
   deps: ProvisionTestTenantDeps,
   forceReseed = false,
 ): Promise<CompileAndCreateOutcome> {
+  // CALL-4: `agent_configs.transfer_number` is tenant-config-only (G6) and
+  // survives a `force_recompile` (the upsert below never overwrites it) —
+  // read whatever is already on file for this tenant (null for a fresh
+  // provision, or the test tenant, which deliberately has none configured
+  // — see this task's own docs/BUILD_NOTES.md CALL-4 entry for why) and
+  // hand it to the compiler so a configured tenant gets a real
+  // TransferCallNode and an unconfigured one gets the honest spoken
+  // fallback, never a hardcoded/guessed number.
+  const existingTransfer = await sql<{ transfer_number: string | null }>`
+    select transfer_number from public.agent_configs where tenant_id = ${tenant.id}
+  `;
+  const transferNumber = existingTransfer[0]?.transfer_number ?? null;
+
   const compiled = await compileTemplateForTenant(
     sql,
     tenant.id,
     tenant.vertical,
     deps.voiceToolsWebhookUrl,
     forceReseed,
+    transferNumber,
   );
   if (!compiled) {
     deps.logger.error("provision_test_tenant_no_active_template", { vertical: tenant.vertical });

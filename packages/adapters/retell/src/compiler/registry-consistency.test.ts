@@ -222,21 +222,14 @@ describe("transfer_call native wiring across the template registry", () => {
     const declaresTransfer = template.tools.some((t) => t.name === "transfer_call");
     if (!declaresTransfer) continue;
 
-    it(`${key}: transfer_call never appears as a custom-function webhook tool`, () => {
+    it(`${key}: transfer_call never appears as a custom-function webhook tool, either way`, () => {
       switch (template.compile_target) {
         case "conversation_flow": {
-          const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL);
-          expect(flow.tools.find((t) => t.name === "transfer_call")).toBeUndefined();
-          const transferNodes = flow.nodes.filter(
-            (n): n is Extract<(typeof flow.nodes)[number], { type: "transfer_call" }> =>
-              n.type === "transfer_call",
-          );
-          expect(transferNodes.length).toBeGreaterThan(0);
-          for (const node of transferNodes) {
-            expect(node.transfer_destination).toEqual({
-              type: "predefined",
-              number: "{{transfer_number}}",
-            });
+          // Neither branch (transferNumber configured or not, CALL-4) ever
+          // emits transfer_call as a webhook tool.
+          for (const transferNumber of [null, "+15559876543"]) {
+            const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL, { transferNumber });
+            expect(flow.tools.find((t) => t.name === "transfer_call")).toBeUndefined();
           }
           break;
         }
@@ -255,6 +248,30 @@ describe("transfer_call native wiring across the template registry", () => {
         }
       }
     });
+
+    if (template.compile_target !== "conversation_flow") continue;
+
+    it(`${key}: with a transferNumber configured, compiles a native TransferCallNode whose destination is that literal number (CALL-4, G6 tenant-config-only)`, () => {
+      const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL, {
+        transferNumber: "+15559876543",
+      });
+      const transferNodes = flow.nodes.filter(
+        (n): n is Extract<(typeof flow.nodes)[number], { type: "transfer_call" }> =>
+          n.type === "transfer_call",
+      );
+      expect(transferNodes.length).toBeGreaterThan(0);
+      for (const node of transferNodes) {
+        expect(node.transfer_destination).toEqual({
+          type: "predefined",
+          number: "+15559876543",
+        });
+      }
+    });
+
+    it(`${key}: with NO transferNumber configured, never emits a transfer_call node — an honest spoken fallback instead (CALL-4)`, () => {
+      const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL, { transferNumber: null });
+      expect(flow.nodes.some((n) => n.type === "transfer_call")).toBe(false);
+    });
   }
 });
 
@@ -272,49 +289,66 @@ describe("transfer_call native wiring across the template registry", () => {
 // transfer_call.
 // ---------------------------------------------------------------------------
 
-describe("single-tool states lock to a Retell FunctionNode / TransferCallNode (real + local registry)", () => {
+describe("tool-bearing states lock to a Retell SubagentNode / TransferCallNode (real + local registry, CALL-4)", () => {
   for (const { key, template } of [...LOCAL_REGISTRY, ...REAL_REGISTRY]) {
     if (template.compile_target !== "conversation_flow") continue;
 
-    it(`${key}: every non-start single-tool state compiles to the correct locked node type`, () => {
-      const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL);
+    it(`${key}: every non-start transfer_call-only state compiles to a TransferCallNode when a transferNumber is configured`, () => {
+      const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL, {
+        transferNumber: "+15559876543",
+      });
       const nodesById = new Map(flow.nodes.map((n) => [n.id, n]));
       const startId = template.states[0]?.id;
 
       for (const state of template.states) {
         if (state.id === startId) continue;
-        if (state.allowed_tools.length !== 1) continue;
+        if (state.allowed_tools.length !== 1 || state.allowed_tools[0] !== "transfer_call") {
+          continue;
+        }
+        const node = nodesById.get(state.id);
+        expect(node, `state '${state.id}' has no compiled node`).toBeDefined();
+        expect(node?.type).toBe("transfer_call");
+      }
+    });
+
+    it(`${key}: every non-start, non-transfer state with 1+ tools compiles to a SubagentNode carrying exactly its allowed_tools as tool_ids (a plain ConversationNode can never call a tool — RETELL-VERIFIED)`, () => {
+      const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL, {
+        transferNumber: "+15559876543",
+      });
+      const nodesById = new Map(flow.nodes.map((n) => [n.id, n]));
+      const startId = template.states[0]?.id;
+
+      for (const state of template.states) {
+        if (state.id === startId) continue;
+        if (state.allowed_tools.length === 0) continue;
+        if (state.allowed_tools.length === 1 && state.allowed_tools[0] === "transfer_call") {
+          continue;
+        }
 
         const node = nodesById.get(state.id);
         expect(node, `state '${state.id}' has no compiled node`).toBeDefined();
-        if (!node) continue;
-
-        const soleTool = state.allowed_tools[0];
-        if (soleTool === "transfer_call") {
-          expect(node.type).toBe("transfer_call");
-        } else {
-          expect(node.type).toBe("function");
-          if (node.type === "function") {
-            expect(node.tool_id).toBe(soleTool);
-            expect(node.wait_for_result).toBe(true);
-          }
+        expect(node?.type).toBe("subagent");
+        if (node?.type === "subagent") {
+          expect([...(node.tool_ids ?? [])].sort()).toEqual([...state.allowed_tools].sort());
         }
       }
     });
 
-    it(`${key}: every 0-or-2+-tool non-start state falls back to a plain ConversationNode (never locked to a single tool_id)`, () => {
-      const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL);
+    it(`${key}: every 0-tool non-start state compiles to a plain ConversationNode with no tool_ids field`, () => {
+      const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL, {
+        transferNumber: "+15559876543",
+      });
       const nodesById = new Map(flow.nodes.map((n) => [n.id, n]));
       const startId = template.states[0]?.id;
 
       for (const state of template.states) {
         if (state.id === startId) continue;
-        if (state.allowed_tools.length === 1) continue;
+        if (state.allowed_tools.length !== 0) continue;
 
         const node = nodesById.get(state.id);
         expect(node, `state '${state.id}' has no compiled node`).toBeDefined();
-        if (!node) continue;
-        expect(node.type).toBe("conversation");
+        expect(node?.type).toBe("conversation");
+        expect(node).not.toHaveProperty("tool_ids");
       }
     });
   }

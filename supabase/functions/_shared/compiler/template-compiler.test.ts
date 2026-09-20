@@ -145,10 +145,31 @@ describe("compileTemplate — conversation_flow", () => {
     expect(nodes.some((n) => n.id === "greeting__end")).toBe(false);
   });
 
-  it("a non-terminal template (no is_terminal state) emits no `end` nodes at all", () => {
+  it("a non-terminal template (no is_terminal state) emits no PER-STATE `end` node, but still emits the generic wrap-up end node (CALL-4: every flow can always end)", () => {
     const compiled = compileTemplate(baseTemplate(), "https://example.com/voice-tools");
     if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
-    expect(compiled.flow.body.nodes.some((n) => n.type === "end")).toBe(false);
+    const endNodes = compiled.flow.body.nodes.filter((n) => n.type === "end");
+    expect(endNodes.map((n) => n.id)).toEqual(["__wrap_up_end"]);
+  });
+
+  it("CALL-4: a generic wrap-up node is reachable from anywhere (global_node_setting) and can end the call or loop back to the start node", () => {
+    const compiled = compileTemplate(baseTemplate(), "https://example.com/voice-tools");
+    if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
+    const { nodes, start_node_id } = compiled.flow.body;
+    const wrapUpNode = nodes.find((n) => n.id === "__wrap_up") as
+      | {
+          type: string;
+          global_node_setting?: { condition: string };
+          edges: Array<{ destination_node_id: string }>;
+        }
+      | undefined;
+    expect(wrapUpNode?.type).toBe("conversation");
+    expect(wrapUpNode?.global_node_setting?.condition).toBeTruthy();
+    expect(wrapUpNode?.edges.map((e) => e.destination_node_id).sort()).toEqual(
+      ["__wrap_up_end", start_node_id].sort(),
+    );
+    const wrapUpEnd = nodes.find((n) => n.id === "__wrap_up_end");
+    expect(wrapUpEnd?.type).toBe("end");
   });
 
   it("fails the disclosure gate when disclosure_line is empty", () => {
@@ -178,6 +199,91 @@ describe("compileTemplate — conversation_flow", () => {
       },
     };
     expect(verifyDisclosureGate(flow, DISCLOSURE)).toBe(false);
+  });
+});
+
+function transferTemplate(): CompilerAgentTemplate {
+  return baseTemplate({
+    states: [
+      { id: "greeting", name: "Greeting", prompt_fragment: "Greet.", allowed_tools: [] },
+      {
+        id: "transfer_to_human",
+        name: "Transfer to human",
+        prompt_fragment: "The caller wants a human, use transfer_call.",
+        allowed_tools: ["transfer_call"],
+        is_terminal: true,
+      },
+    ],
+    transitions: [],
+    global_intents: [
+      {
+        name: "human_request",
+        target_state: "transfer_to_human",
+        reachable_from: "any",
+        description: "the caller asks for a human",
+      },
+    ],
+    tools: [
+      { name: "take_message", description: "takes a message", parameters: {} },
+      { name: "transfer_call", description: "warm-transfers the caller", parameters: {} },
+    ],
+  });
+}
+
+describe("compileTemplate — conversation_flow — transfer_call (CALL-4)", () => {
+  it("with a transferNumber configured: compiles a native transfer_call node, destination baked from tenant config, never a webhook tool", () => {
+    const compiled = compileTemplate(transferTemplate(), "https://example.com/voice-tools", {
+      transferNumber: "+15551234567",
+    });
+    if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
+    const { nodes, tools } = compiled.flow.body;
+
+    // Never a bogus custom-function tool named transfer_call.
+    expect(tools.some((t) => t.name === "transfer_call")).toBe(false);
+
+    const transferNode = nodes.find((n) => n.id === "transfer_to_human") as
+      | {
+          type: string;
+          transfer_destination?: { type: string; number: string };
+          transfer_option?: { type: string };
+          edge?: { destination_node_id: string };
+        }
+      | undefined;
+    expect(transferNode?.type).toBe("transfer_call");
+    expect(transferNode?.transfer_destination).toEqual({
+      type: "predefined",
+      number: "+15551234567",
+    });
+    expect(transferNode?.transfer_option).toEqual({ type: "warm_transfer" });
+    // The required "transfer failed" edge lands on this state's own end
+    // node — the same one the is_terminal pass creates.
+    expect(transferNode?.edge?.destination_node_id).toBe("transfer_to_human__end");
+    expect(nodes.some((n) => n.id === "transfer_to_human__end" && n.type === "end")).toBe(true);
+  });
+
+  it("with NO transferNumber configured: compiles an honest spoken fallback (take_message granted), never a transfer node", () => {
+    const compiled = compileTemplate(transferTemplate(), "https://example.com/voice-tools", {
+      transferNumber: null,
+    });
+    if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
+    const { nodes } = compiled.flow.body;
+
+    expect(nodes.some((n) => n.type === "transfer_call")).toBe(false);
+
+    const fallbackNode = nodes.find((n) => n.id === "transfer_to_human") as
+      | { type: string; tool_ids?: string[]; instruction?: { text: string } }
+      | undefined;
+    expect(fallbackNode?.type).toBe("subagent");
+    expect(fallbackNode?.tool_ids).toEqual(["take_message"]);
+    expect(fallbackNode?.instruction?.text).toMatch(/take_message/);
+    // Still is_terminal — still gets its own end node/edge.
+    expect(nodes.some((n) => n.id === "transfer_to_human__end")).toBe(true);
+  });
+
+  it("omitting the options argument entirely behaves the same as no transferNumber (back-compat default)", () => {
+    const compiled = compileTemplate(transferTemplate(), "https://example.com/voice-tools");
+    if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
+    expect(compiled.flow.body.nodes.some((n) => n.type === "transfer_call")).toBe(false);
   });
 });
 

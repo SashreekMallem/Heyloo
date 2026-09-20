@@ -81,10 +81,11 @@ function assertStateToolShape(tool: RetellStateTool): void {
 
 function assertEdgeShape(edge: RetellFlowEdge): void {
   assertAssignable<ConversationFlowCreateParams.ConversationNode.Edge>(edge);
-  // FunctionNode/TransferCallNode edges are a structurally distinct SDK
-  // type from ConversationNode.Edge (different namespace) but identical on
-  // the wire (`{id, transition_condition, destination_node_id?}`) —
-  // asserted separately so a future SDK divergence between them is caught.
+  // SubagentNode/FunctionNode/TransferCallNode edges are structurally
+  // distinct SDK types from ConversationNode.Edge (different namespace) but
+  // identical on the wire (`{id, transition_condition, destination_node_id?}`)
+  // — asserted separately so a future SDK divergence between them is caught.
+  assertAssignable<ConversationFlowCreateParams.SubagentNode.Edge>(edge);
   assertAssignable<ConversationFlowCreateParams.FunctionNode.Edge>(edge);
 }
 
@@ -107,9 +108,10 @@ function assertConversationFlowRequestShape(body: RetellConversationFlowRequest)
     if (node.type === "conversation") {
       assertAssignable<ConversationFlowCreateParams.ConversationNode>(node);
       for (const edge of node.edges) assertEdgeShape(edge);
-    } else if (node.type === "function") {
-      // GAP_REGISTER §1.4: single-tool states hard-lock to a Function Node.
-      assertAssignable<ConversationFlowCreateParams.FunctionNode>(node);
+    } else if (node.type === "subagent") {
+      // CALL-4: any 1+-tool, non-start state (GAP_REGISTER §1.4 correction —
+      // see this package's compiler/conversation-flow.ts header comment).
+      assertAssignable<ConversationFlowCreateParams.SubagentNode>(node);
       for (const edge of node.edges ?? []) assertEdgeShape(edge);
     } else if (node.type === "transfer_call") {
       // GAP_REGISTER §1.4 item 4: native transfer, not a custom webhook.

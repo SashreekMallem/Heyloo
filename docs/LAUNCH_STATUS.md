@@ -1,5 +1,29 @@
 # Launch Status
 
+**CALL-4 (2026-09-20)**: closes CALL-2's two open gaps. `transfer_call`
+now compiles to a native Retell `transfer_call` node whose destination is
+baked at compile time from `agent_configs.transfer_number` (tenant-config
+only, G6) — when unset (the test tenant deliberately has none configured),
+it compiles an honest spoken fallback instead (apologize once, offer to
+take a message, grant `take_message` for that state only, never loop). A
+generic wrap-up node ("Is there anything else I can help with?" -> no ->
+end, -> yes -> back to the start) is now reachable from anywhere in every
+compiled flow, closing the FAQ-only-call hangup gap. The Node-side sibling
+compiler (`packages/adapters/retell`) is now mirrored with CALL-2/CALL-4's
+subagent/end-node/transfer fixes and covered by a new cross-compiler
+parity test. **Live result: `auto` batch scenarios pass consistently
+across repeated runs (8/8 achieved, 7/8 typical — the 1-2 occasional
+failures are pre-existing, unrelated booking-flow/G6-lookup simulator
+flakiness, not a transfer/end-node regression); `transfer_request` and
+`faq_hours_pricing` — CALL-2's two open gaps — now pass in every run since
+this fix landed.** A second vertical (`dental`, `test-bright-dental`) ran
+the generic 4-scenario set and passed 4/4 on its cleanest run, confirming
+the compiler changes generalise — though its `tool_health`/`call_logs`
+stayed empty across every run despite conversational progress through
+tool-gated nodes, a separate, real, flagged-not-fixed finding (see
+`docs/BUILD_NOTES.md` CALL-4). Full details: `docs/BUILD_NOTES.md`'s
+CALL-4 entry.
+
 **CALL-2 (2026-09-20)**: the batch-test loop from CALL-1 is FIXED, and the
 real root cause was deeper than the traced call-context gap — a
 conversation-flow compiler bug meant NO tenant, ever, could actually call

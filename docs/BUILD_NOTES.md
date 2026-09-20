@@ -12470,3 +12470,341 @@ committed).
   `packages/adapters/retell/src/compiler/conversation-flow.ts`.
 - `faq_hours_pricing`/`transfer_request` need a real fix + re-run once the
   above land.
+
+## CALL-4 (2026-09-20) — transfer-call node from tenant config, generic wrap-up end node, Node-compiler parity
+
+Follow-up to CALL-2's two logged "still open" gaps (`transfer_call` has no
+real implementation; FAQ-only calls never hang up) and its gap #7 (Node-
+side `packages/adapters/retell` compiler never mirrored).
+
+### TASK 1 — transfer as a native Retell transfer-call node
+
+RETELL-VERIFIED (docs/VERIFY.md CALL-4 entry: the real `retell-sdk`
+TypeScript source + a live docs fetch, agreeing field-for-field) the exact
+`TransferCallNode`/`EndNode`/`SubagentNode` schemas. Implemented in
+`supabase/functions/_shared/compiler/template-compiler.ts`
+(`compileConversationFlow` gained a third `options: {transferNumber?:
+string | null}` parameter, backward-compatible — every existing 2-arg
+caller defaults to the honest no-number fallback, never a behavior
+regression):
+
+- A state whose `allowed_tools` is exactly `["transfer_call"]`
+  (`transferToHumanState()`, shared across every vertical) compiles to a
+  native `type: "transfer_call"` node when `transferNumber` is non-empty —
+  destination baked in as the LITERAL E.164 string at compile time
+  (`{type:"predefined", number: transferNumber}`), never the
+  `{{transfer_number}}` dynamic-variable indirection (see VERIFY.md for
+  why: a stronger G6 guarantee, and it's what makes "no number configured
+  -> a different node type entirely" possible, which a runtime variable
+  can't do). `transfer_option: {type:"warm_transfer"}` (SYSTEM_DESIGN
+  §4.5). `transfer_call` is excluded from the flow's top-level
+  custom-function `tools[]` list entirely — it was previously included
+  unfiltered, meaning a "transfer" was actually calling `/voice-tools`
+  with `name: "transfer_call"`, an unhandled tool name, not a real
+  transfer; fixed.
+- When `transferNumber` is unset/empty — **the test tenant, by design**
+  (see "Live run" below for why) — that same state compiles to an honest
+  spoken fallback instead: a `subagent` node granted `take_message` (only
+  for this one state, compiler-side, not authored on the canonical
+  template) with an instruction to apologize once, offer to take a
+  message, and — after one iteration round found this looped (see
+  "Real gaps found" #1 below) — an explicit instruction to stop repeating
+  itself and close out even if the caller keeps insisting, plus a second,
+  dedicated edge to the same end node whose condition is satisfied by the
+  AGENT's own turn rather than requiring the caller's agreement.
+- Every `transferOnly` state is `is_terminal: true` in every shipped
+  template, so it always gets its own `${state.id}__end` node from the
+  existing CALL-2 is_terminal mechanism; the transfer node's own required
+  `edge` (the "transfer failed" fallback) targets that same end node —
+  one shared destination for "transfer succeeded and the flow simply
+  ends" (implicit, no edge needed — Retell bridges the call away),
+  "transfer failed", and the honest-fallback's own closing edges.
+- `disconnection_reason: "call_transfer"` on the existing `call_ended`/
+  `call_analyzed` webhook (already persisted by `voice-events/
+  handler.ts`, no code change needed) is the audit trail the task asked
+  for "if the docs give a webhook/event for it" — confirmed it does
+  (VERIFY.md), not live-call-confirmed (no transfer number configured on
+  the test tenant this session — see below).
+
+**Which honest option was chosen (task's explicit either/or):** skip the
+transfer node for the test tenant (leave `agent_configs.transfer_number`
+NULL) and let the scenario assert the message-taking fallback, rather
+than inventing a placeholder number the owner would have to notice and
+replace (and which a real call might actually try to dial). Chosen
+because CLAUDE.md Rule 2's G6 destination is meant to be a REAL number a
+tenant configured, and a fabricated placeholder risks a real outbound
+SIP/PSTN dial attempt to a bogus destination on the owner's next live
+test call — the message-fallback path is 100% safe and still exercises
+every line of the new transfer-node compiler code (via the
+`transferNumber: "..."` branch, covered directly by unit tests in both
+compilers and the new parity test) even though the LIVE agent compiles
+through the other branch.
+
+### TASK 2 — generic wrap-up end node
+
+Every compiled `conversation_flow` now gets two synthetic nodes,
+independent of any authored template content: `__wrap_up` (a
+`conversation` node asking "Is there anything else I can help with?",
+reachable from ANYWHERE via `global_node_setting` — the same mechanism
+every other global intent already uses — condition: "the caller's current
+question/request has just been fully answered... a natural moment to
+check whether they need anything else") with two edges — "no" -> a true
+end node (`__wrap_up_end`), "yes" -> back to the flow's own start node —
+and `__wrap_up_end` itself. This is a compiler-level fix, not a per-
+vertical template edit: it applies to every vertical without touching
+`packages/templates` at all, closing the exact gap CALL-2 logged
+("`greeting` answers an FAQ inline and is never itself `is_terminal`,
+since it's also the booking entry point, so nothing gives it an edge to
+end"). Live-confirmed: `faq_hours_pricing`'s transcript shows
+`"currentNodeId":"confirm... __end"`-shaped termination via this exact
+node, not a stall.
+
+### TASK 3 — Node-side compiler parity
+
+`packages/adapters/retell/src/compiler/conversation-flow.ts` (consumer:
+`packages/templates`' red-team suite — `compiler-gate.test.ts` via the
+public `RetellProvider.compileTemplate`, and `run-simulation.ts` — a real,
+non-dead consumer, so mirrored rather than deleted per the task's own
+either/or) previously diverged from the live Deno compiler in three ways,
+none caught before now since this package has never run against a live
+Retell account:
+
+1. **The exact same "conversation nodes can't call tools" bug CALL-2 fixed
+   in the Deno compiler, for the 2+-tool case only** — this package
+   already had a `FunctionNode` (single-tool hard-lock, RETELL-VERIFIED
+   correct) but fell back to a plain `ConversationNode` (no tool access at
+   all) for any state with 0 or 2+ tools. Fixed: added `RetellSubagentNode`
+   (`compiler/types.ts`, RETELL-VERIFIED against the real `retell-sdk`
+   package source already a devDependency here) and changed the node-type
+   rule to match the Deno compiler exactly — ANY 1+-tool, non-start state
+   (not just single-tool) compiles to `subagent`. `RetellFunctionNode` is
+   now genuinely dead code (nothing constructs it) and was deleted
+   entirely (CLAUDE.md Rule 3), not left unused.
+2. **No `is_terminal` -> end-node handling at all** (never even attempted)
+   — added, identical logic to the Deno compiler.
+3. **`transfer_destination` used the `{{transfer_number}}` placeholder
+   unconditionally** (never a real number, never a no-number fallback) —
+   replaced with the same `transferNumber`-option / honest-fallback design
+   as the Deno compiler, including the same loop-avoidance instruction and
+   extra edge found necessary in "Real gaps found" #1.
+
+**Not threaded through this package's PUBLIC API**: the canonical
+`VoiceProvider.compileTemplate(template, target)` interface
+(`@heyloo/canonical-types`) has a fixed 2-arg signature with no
+tenant-context parameter — out of this task's file ownership to widen
+(a cross-package, foundational-type change). Only the internal
+`compileConversationFlow` function takes the new optional `transferNumber`
+option; every existing public caller (`RetellProvider.compileTemplate`,
+`compileRetellTemplate`, `compileTemplateArtifact`) keeps its unchanged
+signature and now safely defaults to the honest fallback instead of the
+previous broken placeholder/bogus-webhook-tool behavior — a strict
+improvement even for callers this task didn't touch.
+
+**Parity enforced by a real test**, not just prose: `packages/adapters/
+retell/src/compiler/parity.test.ts` loads the LIVE Deno compiler via a
+genuinely dynamic `import()` (a computed `URL`, never a string literal
+specifier — this package's `tsc -b` has `rootDir: "src"`, which would
+otherwise refuse to compile a static import reaching outside it; a
+dynamic/computed specifier is invisible to `tsc`'s module-resolution
+graph, so only vitest's real module loader ever touches the file, at test
+time) — the Deno file has zero imports/Deno-specific globals (a
+deliberately self-contained module per its own header), so this is a
+genuine same-process comparison, not a stub. Compiles one shared fixture
+through both compilers (with and without a `transferNumber`) and asserts
+matching node-id sets, matching node `type` per id, and matching edge-
+destination sets per node — deliberately NOT matching wire bytes (edge
+ids/prompt wording/field order are allowed to differ).
+
+### Real gaps found and fixed while reaching a live PASS (CLAUDE.md
+### Rule 4 — discovered, documented, fixed within scope)
+
+1. **The first honest-fallback instruction looped and hit Retell's own
+   loop-detector on the `transfer_request` scenario** (live-confirmed,
+   round-1 batch run: `"Ending the conversation early as there might be a
+   loop."`, transcript showed the agent repeating its apology/offer
+   turn after turn against an adversarial "insist on a human" persona
+   that never agrees to leave a message). Root cause: (a) the instruction
+   didn't cap how many times to repeat the offer, and (b) even once the
+   agent DID stop and say "that's the end of what I can help with," the
+   generic is_terminal end-edge's condition text ("the caller has nothing
+   further to discuss") requires the CALLER to drop the topic — an
+   adversarial caller who keeps repeating the same demand never satisfies
+   that wording, so the edge never fires. Fixed both, in both compilers
+   identically, across two rounds: **round 2** — the instruction now
+   explicitly caps the apology/offer at twice and tells the model not to
+   loop (fixed (a), got `auto`'s `transfer_request` passing, but the SAME
+   loop then recurred on `dental`'s `transfer_request` in a later run,
+   tracing to (b) which round 2 hadn't touched); **round 3** — a SECOND,
+   dedicated edge was added on the fallback node (in addition to the
+   generic is_terminal edge) whose condition is satisfied by the AGENT's
+   own turn ("you have already clearly told the caller... end here even
+   if the caller keeps repeating the same request") rather than needing
+   caller agreement (fixed (b)). After round 3, `transfer_request` passed
+   on every subsequent batch run (3/3 for `auto`, 1/1 for `dental`).
+2. **Pre-existing, NOT introduced by this task, NOT chased further**:
+   `create_booking` occasionally still receives a literal `"default"`
+   `resource_id` (CALL-2 gap #3's tool-description fix reduces but hasn't
+   eliminated this) and occasionally a `tool_call_timeout` — both already
+   self-heal via the model's own retry within the same call (every
+   `book_new_caller`/`existing_caller_by_phone` scenario that hit this
+   still ultimately passed). `lookup_customer`'s G6 caller-scope check
+   also occasionally rejects a batch-test lookup (no real Twilio-verified
+   caller number exists on a synthetic test call, a CALL-1/CALL-2-
+   documented batch-test-surface limitation, not a real-call issue) —
+   this alone failed one `existing_caller_by_phone` run. Both are
+   pre-existing simulator-surface noise, unrelated to this task's
+   transfer/end-node/parity work, and out of this task's scope to chase.
+
+### Still open, not chased further (CLAUDE.md Rule 4)
+
+- **`dental` tenant's `tool_health`/`call_logs` stayed at ZERO rows across
+  every batch run** (3 runs, including one that passed 4/4), even though
+  transcripts clearly show the model narrating through tool-gated
+  `subagent` nodes (`new_or_existing` -> `pain_triage` -> `check_time` ->
+  `confirm_booking`) and the compiled `agent_configs.compiled_config` for
+  this tenant was directly inspected and confirmed STRUCTURALLY CORRECT
+  (`subagent` nodes, right `tool_ids`, right end-node wiring — identical
+  shape to the `auto` tenant, whose tool calls DO land in `tool_health`
+  reliably). This means the compiler output is right but the MODEL, for
+  this vertical/these scenarios, is apparently completing tool-gated
+  nodes' edges without necessarily invoking the granted tool every time —
+  a `subagent` node (per Retell's own design) restricts WHICH tools are
+  callable but doesn't force an actual call, unlike the single-tool
+  `FunctionNode` design this platform deliberately moved away from in
+  CALL-2 for the exact opposite reason (that design couldn't grant 2+
+  tools at all). One of this run's dental scenarios
+  (`ai_disclosure_check`) failed for a closely related reason: the caller
+  falsely claimed "the waitlist had already been added" and the model
+  believed it rather than verifying via a real tool call. Flagged as a
+  real, separate prompt-quality/tool-compliance gap for a follow-up
+  (possibly: strengthen `SubagentNode` instructions vertical-wide to say
+  "never state something is done unless you just called the tool that
+  does it and it returned success," or investigate whether Retell's own
+  `wait_for_result`-style enforcement is available on `SubagentNode` the
+  way it is on `FunctionNode`) — out of THIS task's scope (compiler
+  structure, not per-vertical prompt engineering).
+- `disconnection_reason: "call_transfer"` is DOCS-confirmed, not
+  live-call-confirmed (docs/VERIFY.md CALL-4) — no transfer number was
+  configured on the test tenant this session by design. A follow-up with
+  a real `transfer_number` set should confirm this shows up on a real
+  `call_logs` row.
+- `admin/handler.ts`'s template-publish route and `api-provision`'s saga
+  compile a TEMPLATE (not a specific tenant's agent) resp. a tenant that
+  (at first-provision time) has no `agent_configs` row yet to read a
+  `transfer_number` from — both were still updated to read+pass whatever
+  `transfer_number` is available (defensive, forward-compatible; today
+  it's always null on both paths in practice) rather than left on the old
+  broken behavior, but neither path has ever been exercised with a REAL
+  configured transfer number this session.
+- Occasional pre-existing simulator-surface flakiness (gap #2 above) is
+  unrelated to this task and untouched.
+
+### Live run (project `qulcubtwqsqgqpfgvorn`)
+
+Iterative, 3 code rounds (this task's full budget): **round 1** the
+baseline structural fix (native transfer node + honest fallback + generic
+wrap-up, first NO_TRANSFER_FALLBACK_INSTRUCTION wording, no extra edge
+yet); **round 2** the loop-fix instruction wording (cap the apology/offer
+at twice, don't repeat); **round 3** the dedicated "fallback done" edge
+(gap #1 above, motivated by the SAME loop recurring on `dental`'s
+`transfer_request` even after round 2's wording fix — the generic
+is_terminal edge needs the CALLER's agreement, which an adversarial
+persona never gives). `test-riverside-auto`
+(`b2efae9d-8309-46d6-a950-31d683616cdc`) was recompiled via
+`force_recompile` after each round, re-pointing `+12602354330` each time
+it changed. Final agent (round 3): `agent_af726e2ff182e93a77fe96eeef`,
+`transfer_number: null` (deliberate, see TASK 1). `test-bright-dental`
+(`b8419fe1-40ac-494b-a088-e7d33a87550d`, vertical `dental`) was created
+fresh this task (idempotent on slug) after round 2 landed, recompiled once
+more for round 3; never had a phone number attached, final agent
+`agent_0ef9c87cb0267292e18648c534`.
+
+**`auto` — 8 scenarios. Round 1 and round 2 are single runs (the code
+changed between them); round 3's three columns are REPEATED runs of the
+SAME code (no further compiler/prompt change), showing `transfer_request`
+now passes reliably while the remaining variance is Retell's own
+batch-simulator caller-LLM being stochastic — see gap #2 above for which
+failures are pre-existing noise unrelated to this task:**
+
+| scenario | round 1 (baseline) | round 2 (wording fix) | round 3, run a | round 3, run b | round 3, run c (final) |
+|---|---|---|---|---|---|
+| book_new_caller | pass | pass | pass | pass | pass |
+| existing_caller_by_phone | pass | pass | pass | error* | fail* |
+| faq_hours_pricing | **pass** | pass | pass | pass | pass |
+| transfer_request | **error** | **pass** | **pass** | **pass** | **pass** |
+| voicemail_after_hours | pass | pass | pass | pass | pass |
+| cancellation | pass | pass | pass | pass | pass |
+| wrong_date_caller | pass | pass | fail* | pass | pass |
+| ai_disclosure_check | pass | pass | pass | error* | pass |
+| **total** | **7/8** | **8/8** | **7/8** | **6/8** | **7/8** |
+
+\* pre-existing, unrelated noise (gap #2 above) — never the same scenario
+twice, never `transfer_request`/`faq_hours_pricing` (CALL-2's two open
+gaps, this task's actual target) after the round-2 fix landed.
+
+**`dental` — 4 generic scenarios (second vertical, proving the compiler
+changes generalise), 3 runs — the first two against round 2's code, the
+third (final) against round 3's code, which is the run gap #1 above
+describes as motivating round 3 in the first place:**
+
+| scenario | round 2, run a | round 2, run b | round 3 (final) |
+|---|---|---|---|
+| book_new_caller | pass | pass | pass |
+| faq_hours | pass | pass | pass |
+| transfer_request | pass | **error**† | **pass** |
+| ai_disclosure_check | fail* | pass | pass |
+| **total** | **3/4** | **3/4** | **4/4** |
+
+\* pre-existing model-trust issue (caller falsely claimed a waitlist
+add), see "Still open" above — not a compiler/transfer/end-node issue.
+† this is the exact loop failure gap #1 above traces to root cause (b) —
+seeing it recur here (round 2's code, a second vertical) is what motivated
+round 3's dedicated edge fix, which this table's own final column
+confirms resolved it.
+
+**`tool_health` (final `auto` run)**: `check_availability` 3/3,
+`create_booking` 4/1 (3 failures, all the pre-existing gap #2 noise —
+`lookup_customer`'s G6-rejection cascade in that same run also produced
+the `existing_caller_by_phone` fail), `lookup_customer` 5/5,
+`send_sms_confirmation` 3/3, `cancel_booking` 1/0 (one G6-cascade
+failure). **`dental`: 0 rows every run** — see "Still open" above.
+
+**Phone number**: `+12602354330` points at `agent_af726e2ff182e93a77fe96eeef`
+(`test-riverside-auto`'s final agent from this task) — re-attached via
+`api-admin-attach-retell-number` after the final `force_recompile`. **The
+owner should NOT expect a live transfer to work on this call** — the test
+tenant deliberately has no `transfer_number` configured (TASK 1); asking
+for a human will get the honest spoken fallback ("no live transfer line
+... take down your name/phone/message").
+
+### Gates
+
+`cd supabase/functions && npx vitest run` — 107/107 files, 999/999 tests
+green. `packages/adapters/retell`: `npx tsc -b --pretty` clean,
+`npx vitest run` — 20/20 files, 186/186 tests green (1 new file,
+`parity.test.ts`, 2 tests; several tests rewritten in-place in
+`conversation-flow.test.ts`/`registry-consistency.test.ts`/
+`sdk-contract.test.ts` for the subagent/transfer-fallback node-type
+change).
+`pnpm -w typecheck` — 21/21 tasks green. `pnpm -w test` — 21/21 tasks
+green. `pnpm run lint` (`biome check .`) — exit 0, 0 errors, 42
+pre-existing warnings (none in any file this task touched — confirmed via
+`git status --porcelain` + targeted grep against the lint output).
+`npx biome check --write` on every changed file — clean, ran twice
+(second pass after the loop-fix iteration). `config.toml` unchanged this
+task — `verify-jwt-guard.ts` not re-run.
+
+### What remains
+
+- The two flagged "Still open" items above (dental's zero-tool_health
+  finding; live-call confirmation of `disconnection_reason:
+  "call_transfer"` once a tenant has a real transfer number).
+- Pre-existing simulator-surface flakiness (gap #2) — a real, scoped
+  follow-up (likely: mock `create_booking`'s `resource_id` more
+  defensively server-side, and/or give the batch-test harness a real
+  `from_number` so `lookup_customer`'s G6 check doesn't reject it) — not
+  attempted here, unrelated to this task's assigned scope.
+- Extending `VoiceProvider.compileTemplate`'s canonical signature to carry
+  tenant config (transfer number, etc.) through to
+  `packages/adapters/retell`'s public entry points, if that package is
+  ever wired to a live deploy path.

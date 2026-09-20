@@ -167,33 +167,6 @@ export interface RetellConversationNode {
 }
 
 /**
- * RETELL-VERIFY (GAP_REGISTER §1.4, confirmed via retell-sdk's
- * `ConversationFlowCreateParams.FunctionNode`): a single-tool node that
- * hard-locks the model to exactly one callable tool, unlike a plain
- * `ConversationNode` (which has no per-node tool-scoping field at all — see
- * conversation-flow.ts's header). `tool_id` is the referenced tool's
- * `name` for a `tool_type: "local"` tool (one declared in this same flow's
- * top-level `tools[]`) — RETELL-VERIFY: local tools carry no separate `id`
- * field on the wire, `name` is their only identifier, so `tool_id` is
- * assumed to mean that name for the "local" case; `docs/VERIFY.md` tracks
- * confirming this against a live sandbox call before go-live (egress to
- * docs.retellai.com blocked in this environment, CLAUDE.md Rule 1).
- */
-export interface RetellFunctionNode {
-  id: string;
-  type: "function";
-  tool_id: string;
-  tool_type: "local" | "shared";
-  wait_for_result: boolean;
-  name?: string;
-  instruction?: { type: "prompt"; text: string };
-  speak_during_execution?: boolean;
-  edges?: RetellFlowEdge[];
-  else_edge?: { id: string; transition_condition: RetellTransitionCondition };
-  global_node_setting?: RetellGlobalNodeSetting;
-}
-
-/**
  * RETELL-VERIFY (GAP_REGISTER §1.4 item 4, confirmed via retell-sdk's
  * `ConversationFlowCreateParams.TransferCallNode`): the native transfer
  * mechanism — replaces the previous custom-webhook `transfer_call` tool
@@ -208,20 +181,67 @@ export interface RetellTransferCallNode {
   type: "transfer_call";
   transfer_destination: RetellTransferDestination;
   transfer_option: RetellTransferOption;
-  edge: { id: string; transition_condition: RetellTransitionCondition };
+  /** `destination_node_id` is OPTIONAL on the real SDK's `TransferCallNode.Edge` (RETELL-VERIFIED) — this compiler always sets it (CALL-4: the "transfer failed" fallback lands on this state's own end node). */
+  edge: {
+    id: string;
+    destination_node_id?: string;
+    transition_condition: RetellTransitionCondition;
+  };
   name?: string;
   global_node_setting?: RetellGlobalNodeSetting;
 }
 
+/**
+ * CALL-4 (docs/BUILD_NOTES.md): RETELL-VERIFIED field-for-field against the
+ * real retell-sdk TypeScript source
+ * (`node_modules/retell-sdk/src/resources/conversation-flow.ts`,
+ * `ConversationFlowCreateParams.SubagentNode`) — the node type built for
+ * "dialogue with tool calling" (`tool_ids`, same `instruction`/`edges`/
+ * `global_node_setting` shape as `RetellConversationNode`). Mirrors
+ * `supabase/functions/_shared/compiler/template-compiler.ts`'s CALL-2 fix:
+ * a plain `RetellConversationNode`'s LLM can never invoke a tool at all
+ * (Retell's own docs: "Conversation nodes do not use tools / functions"),
+ * so ANY state with 1+ tools — not only the single-tool case
+ * `RetellFunctionNode` hard-locks to — must compile to this node type
+ * instead, or it structurally cannot call anything its `allowed_tools`
+ * promises. Previously this package only had `RetellFunctionNode` (a
+ * single-tool hard lock) and fell back to a plain `RetellConversationNode`
+ * for 0-or-2+-tool states — the 2+-tool case was exactly this same live
+ * bug, just never caught here since this package isn't wired to a live
+ * Retell account (header comment, T4/T3).
+ */
+export interface RetellSubagentNode {
+  id: string;
+  type: "subagent";
+  name?: string;
+  instruction: { type: "prompt"; text: string };
+  edges?: RetellFlowEdge[];
+  /** The flow-level `tools[].name` values (== `tool_id`) this node's LLM may call. RETELL-VERIFIED: `tool_ids?: Array<string> | null` on the real SDK's `SubagentNode`. */
+  tool_ids?: string[];
+  global_node_setting?: RetellGlobalNodeSetting;
+}
+
+/**
+ * CALL-2/CALL-4 (docs/BUILD_NOTES.md): RETELL-VERIFIED field-for-field
+ * against the real retell-sdk TypeScript source
+ * (`ConversationFlowCreateParams.EndNode`) — the only way to end a call
+ * from within a conversation flow; a node with no outgoing edge is a dead
+ * end, not an implicit hangup. `global_node_setting` makes it reachable
+ * from anywhere in the flow (CALL-4's generic wrap-up node), the same
+ * mechanism every other node type here shares.
+ */
 export interface RetellEndNode {
   id: string;
   type: "end";
-  name: string;
+  name?: string;
+  speak_during_execution?: boolean;
+  instruction?: { type: "prompt"; text: string };
+  global_node_setting?: RetellGlobalNodeSetting;
 }
 
 export type RetellConversationFlowNode =
   | RetellConversationNode
-  | RetellFunctionNode
+  | RetellSubagentNode
   | RetellTransferCallNode
   | RetellEndNode;
 

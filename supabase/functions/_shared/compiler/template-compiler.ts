@@ -79,6 +79,11 @@ interface FunctionTool {
   parameters: unknown;
 }
 
+/** The one reserved tool name `transferCallTool()` always uses (`packages/templates/src/shared/tools.ts`) — never a real HTTP `/voice-tools` call, a native Retell transfer-call node instead (see `TransferCallNode` below). */
+const TRANSFER_CALL_TOOL_NAME = "transfer_call";
+/** The shared take-message tool every vertical declares (`packages/templates/src/shared/tools.ts#takeMessageTool`) — granted, compiler-side only, to a transfer-only state when no `transferNumber` is configured (CALL-4's spoken-fallback design, this file's header). */
+const TAKE_MESSAGE_TOOL_NAME = "take_message";
+
 function toolsFor(template: CompilerAgentTemplate, toolWebhookUrl: string): FunctionTool[] {
   return template.tools.map((tool) => ({
     type: "custom" as const,
@@ -179,6 +184,54 @@ interface EndNode {
   name?: string;
   speak_during_execution?: boolean;
   instruction?: { type: "prompt"; text: string };
+  // CALL-4: shared by the same mechanism as `ConversationNode.
+  // global_node_setting` (RETELL-VERIFIED against the real retell-sdk
+  // TypeScript source, `node_modules/retell-sdk/src/resources/
+  // conversation-flow.ts` — `ConversationFlowCreateParams.EndNode.
+  // global_node_setting?: EndNode.GlobalNodeSetting` — every node type this
+  // compiler emits carries this same optional field). Used by the generic
+  // wrap-up node below so it's reachable from anywhere in the flow, not
+  // just from a state with an authored edge onto it.
+  global_node_setting?: { condition: string };
+}
+
+/**
+ * CALL-4 (docs/BUILD_NOTES.md): RETELL-VERIFIED field-for-field against the
+ * real retell-sdk TypeScript source (`node_modules/retell-sdk/src/
+ * resources/conversation-flow.ts`, `ConversationFlowCreateParams.
+ * TransferCallNode` — also cross-checked against docs.retellai.com/
+ * api-references/create-conversation-flow, both fetched 2026-09-20, see
+ * docs/VERIFY.md). `edge` is a SINGULAR required field (not an array) —
+ * the "transfer failed" fallback path only; a successful transfer bridges
+ * the call away from this flow entirely, no further routing needed here.
+ * `transfer_destination.number` accepts either a literal E.164 string or a
+ * `{{dynamic_variable}}` placeholder per the SDK's own doc comment — this
+ * compiler always bakes the LITERAL number in directly (never the
+ * `{{transfer_number}}` indirection `packages/adapters/retell`'s Node
+ * sibling previously used) because the destination is resolved HERE, at
+ * compile time, from `agent_configs.transfer_number` (G6, CLAUDE.md Rule 2:
+ * "transfer_call destinations tenant-config only") — see
+ * `compileConversationFlow`'s `transferNumber` option below for the
+ * no-number-configured fallback this enables.
+ */
+interface TransferCallNode {
+  id: string;
+  type: "transfer_call";
+  name: string;
+  transfer_destination: { type: "predefined"; number: string };
+  // Warm transfer — SYSTEM_DESIGN §4.5: "warm transfers always carry a
+  // context summary". `{type: "warm_transfer"}` alone is a complete, valid
+  // value (every other `TransferOptionWarmTransfer` field is optional,
+  // RETELL-VERIFIED against the real SDK source).
+  transfer_option: { type: "warm_transfer" };
+  edge: {
+    id: string;
+    destination_node_id: string;
+    transition_condition: { type: "prompt"; prompt: string };
+  };
+  global_node_setting?: { condition: string };
+  /** Unused by this compiler (never the start node, see `compileConversationFlow`'s guard) — declared only so `firstTurnText`'s `.instruction?.text` narrows across the whole node union without a discriminant check. RETELL-VERIFIED present on the real node (`"What to say when transferring the call, only used when speak during execution"`). */
+  instruction?: { type: "prompt"; text: string };
 }
 
 export interface ConversationFlowBody {
@@ -187,38 +240,142 @@ export interface ConversationFlowBody {
   // retell-typescript-sdk) — always "agent": every template opens with the
   // agent's own greeting/disclosure line, never a user-speaks-first flow.
   start_speaker: "agent";
-  nodes: (ConversationNode | EndNode)[];
+  nodes: (ConversationNode | EndNode | TransferCallNode)[];
   tools: FunctionTool[];
   global_prompt?: string;
 }
 
+export interface CompileConversationFlowOptions {
+  /**
+   * CALL-4: `agent_configs.transfer_number` (E.164), resolved by the
+   * CALLER (this tenant's own config row) and never anything else — G6 /
+   * CLAUDE.md Rule 2 ("transfer_call destinations tenant-config only").
+   * When set (non-empty), a transfer-only state (`allowed_tools ===
+   * ["transfer_call"]`, e.g. every template's shared `transferToHumanState()`)
+   * compiles to a native `TransferCallNode` whose destination is this
+   * literal number. When unset/empty — a tenant that hasn't configured a
+   * transfer number yet — that same state compiles to a spoken fallback
+   * instead: an ordinary node instructed to apologize and take a message,
+   * granted the `take_message` tool for this one node only (never a
+   * transfer node with nowhere real to send the call, and never a silent
+   * dead end either).
+   */
+  transferNumber?: string | null;
+}
+
+function isTransferOnlyState(state: CompilerAgentState): boolean {
+  return state.allowed_tools.length === 1 && state.allowed_tools[0] === TRANSFER_CALL_TOOL_NAME;
+}
+
+const NO_TRANSFER_FALLBACK_INSTRUCTION =
+  "No live transfer line is configured for this business right now. Once, clearly and " +
+  "warmly, say so and offer to take down their name, phone number, and a short message so " +
+  "the team can call them back — never repeat that same apology/offer a third time. If they " +
+  "give a callback number, call take_message with it (fold in whatever they've already told " +
+  "you) and let them know someone will call back soon, then the call is done. If they keep " +
+  "insisting on a transfer or won't give a number after you've offered twice, don't keep " +
+  "repeating yourself: calmly acknowledge you can't do more right now and that's the end of " +
+  "what you can help with today — the call is done either way.";
+
 function compileConversationFlow(
   template: CompilerAgentTemplate,
   toolWebhookUrl: string,
+  options: CompileConversationFlowOptions = {},
 ): ConversationFlowBody {
-  const tools = toolsFor(template, toolWebhookUrl);
+  const transferNumber = options.transferNumber?.trim() || null;
+  // transfer_call is never a real HTTP `/voice-tools` call (it compiles to
+  // a native TransferCallNode below, or is dropped entirely for the
+  // no-transfer-number fallback) — excluded from the flow's top-level
+  // custom-function tools list so Retell never sees a bogus webhook tool
+  // named "transfer_call" (CALL-4 fix; previously included unfiltered).
+  const tools = toolsFor(template, toolWebhookUrl).filter(
+    (t) => t.name !== TRANSFER_CALL_TOOL_NAME,
+  );
 
   const toolsByName = new Map(tools.map((t) => [t.name, t]));
 
-  const nodesById = new Map<string, ConversationNode>();
+  const nodesById = new Map<string, ConversationNode | TransferCallNode>();
   for (const state of template.states) {
+    const transferOnly = isTransferOnlyState(state);
+
+    if (transferOnly && transferNumber) {
+      nodesById.set(state.id, {
+        id: state.id,
+        type: "transfer_call",
+        name: state.name,
+        transfer_destination: { type: "predefined", number: transferNumber },
+        transfer_option: { type: "warm_transfer" },
+        // Destination filled in once the is_terminal end-node pass below
+        // creates `${state.id}__end` — every shipped transferOnly state is
+        // `is_terminal: true` (transferToHumanState()), so this always
+        // resolves; defensively falls back to the state id itself (a
+        // no-op edge Retell will reject loudly rather than silently drop)
+        // if a future template ever violates that assumption.
+        edge: {
+          id: `${state.id}_transfer_failed`,
+          destination_node_id: state.is_terminal ? `${state.id}__end` : state.id,
+          transition_condition: {
+            type: "prompt",
+            prompt: "The transfer failed, rang out, or nobody answered",
+          },
+        },
+      });
+      continue;
+    }
+
     // Only tool_ids Retell actually knows about (defensive — a state
     // authoring bug referencing a name absent from template.tools would
-    // otherwise produce a tool_ids entry Retell rejects outright).
-    const toolIds = (state.allowed_tools ?? []).filter((name) => toolsByName.has(name));
+    // otherwise produce a tool_ids entry Retell rejects outright). A
+    // transfer-only state with no transferNumber configured is granted
+    // take_message instead of its authored (now-unusable) transfer_call.
+    const requestedTools = transferOnly ? [TAKE_MESSAGE_TOOL_NAME] : (state.allowed_tools ?? []);
+    const toolIds = requestedTools.filter((name) => toolsByName.has(name));
+    // CALL-4 live-iteration fix: the generic is_terminal end-edge below
+    // ("the caller has nothing further to discuss") requires the CALLER to
+    // drop the topic — an adversarial caller who keeps repeating the same
+    // transfer demand after the agent has already clearly declined twice
+    // never satisfies that wording, so the call stalls at this node and
+    // Retell's own loop-detector aborts it (live-confirmed:
+    // `docs/BUILD_NOTES.md` CALL-4). This fallback node gets its own EXTRA
+    // edge to that same end node whose condition is satisfied by the
+    // AGENT's own turn instead — it doesn't need the caller's agreement.
+    const fallbackDoneEdge =
+      transferOnly && state.is_terminal
+        ? [
+            {
+              id: `edge_${state.id}_fallback_done`,
+              destination_node_id: `${state.id}__end`,
+              transition_condition: {
+                type: "prompt" as const,
+                prompt:
+                  "you have already clearly told the caller no live transfer is available and " +
+                  "offered to take a message at least once — end here even if the caller keeps " +
+                  "repeating the same request",
+              },
+            },
+          ]
+        : [];
     nodesById.set(state.id, {
       id: state.id,
       type: toolIds.length > 0 ? "subagent" : "conversation",
       name: state.name,
-      instruction: { type: "prompt", text: state.prompt_fragment },
-      edges: [],
+      instruction: {
+        type: "prompt",
+        text: transferOnly ? NO_TRANSFER_FALLBACK_INSTRUCTION : state.prompt_fragment,
+      },
+      edges: fallbackDoneEdge,
       ...(toolIds.length > 0 ? { tool_ids: toolIds } : {}),
     });
   }
 
   for (const [index, transition] of template.transitions.entries()) {
     const fromNode = nodesById.get(transition.from);
-    if (!fromNode || !nodesById.has(transition.to)) continue;
+    // transfer_call nodes have no `edges` array (a single required `edge`
+    // only, set above) — no shipped template authors an outgoing
+    // transition from a transfer-only state today (it's always
+    // is_terminal), but guard it the same way the is_terminal pass below
+    // does rather than throw.
+    if (!fromNode || fromNode.type === "transfer_call" || !nodesById.has(transition.to)) continue;
     fromNode.edges.push({
       id: `edge_${transition.from}_${transition.to}_${index}`,
       destination_node_id: transition.to,
@@ -238,7 +395,7 @@ function compileConversationFlow(
     }
     for (const fromStateId of globalIntent.reachable_from) {
       const fromNode = nodesById.get(fromStateId);
-      if (!fromNode) continue;
+      if (!fromNode || fromNode.type === "transfer_call") continue;
       fromNode.edges.push({
         id: `global_${globalIntent.name}_${fromStateId}_${globalIntent.target_state}`,
         destination_node_id: globalIntent.target_state,
@@ -251,7 +408,11 @@ function compileConversationFlow(
   const startNodeId = startState?.id ?? "";
   if (startState) {
     const startNode = nodesById.get(startState.id);
-    if (startNode) {
+    // The start state is never a transfer-only state in any shipped
+    // template (see this file's own compileTemplate doc comment history /
+    // packages/adapters/retell's identical documented assumption) — guard
+    // defensively rather than assume.
+    if (startNode && startNode.type !== "transfer_call") {
       startNode.instruction.text = `${template.disclosure_line}\n\n${startNode.instruction.text}`;
     }
   }
@@ -277,6 +438,10 @@ function compileConversationFlow(
         text: "Thank the caller, confirm there's nothing else you can help with, and say a warm goodbye.",
       },
     });
+    // A transfer_call node's own `edge` (set above) already targets this
+    // exact end-node id — nothing further to wire onto it, and it has no
+    // `.edges` array to push onto anyway.
+    if (fromNode.type === "transfer_call") continue;
     fromNode.edges.push({
       id: `edge_${state.id}_end`,
       destination_node_id: endNodeId,
@@ -287,10 +452,66 @@ function compileConversationFlow(
     });
   }
 
+  // CALL-4 (docs/BUILD_NOTES.md "FAQ-only calls never hang up"): a single
+  // generic wrap-up escape, reachable from ANYWHERE in the flow via
+  // Retell's global-node mechanism (the same mechanism every authored
+  // `global_intents` "reachable_from: any" entry already uses) — not tied
+  // to any one vertical's state ids. Two nodes, matching the task's own
+  // "Is there anything else I can help with?" -> no -> end shape: a
+  // conversation node asks the question and either loops back to the
+  // flow's start node (the caller has another request) or proceeds to a
+  // true end node (they don't). This is what closes the gap `is_terminal`
+  // end-nodes above don't cover: a state like `greeting` that answers an
+  // FAQ inline and is never itself `is_terminal` (it's also the booking
+  // entry point, so it can't always be).
+  const WRAP_UP_NODE_ID = "__wrap_up";
+  const WRAP_UP_END_NODE_ID = "__wrap_up_end";
+  const wrapUpNode: ConversationNode = {
+    id: WRAP_UP_NODE_ID,
+    type: "conversation",
+    name: "Wrap-up",
+    instruction: {
+      type: "prompt",
+      text: 'Ask the caller: "Is there anything else I can help with?" and wait for their answer.',
+    },
+    edges: [
+      {
+        id: "edge_wrap_up_to_end",
+        destination_node_id: WRAP_UP_END_NODE_ID,
+        transition_condition: {
+          type: "prompt",
+          prompt:
+            "The caller says no, they're all set, or otherwise indicates they have nothing further",
+        },
+      },
+      {
+        id: "edge_wrap_up_to_start",
+        destination_node_id: startNodeId,
+        transition_condition: {
+          type: "prompt",
+          prompt: "The caller says yes and has another request or question",
+        },
+      },
+    ],
+    global_node_setting: {
+      condition:
+        "The caller's current question or request has just been fully answered or handled " +
+        "(for example an FAQ about hours or pricing) and nothing else in this call is actively " +
+        "in progress, so it's a natural moment to check whether they need anything else.",
+    },
+  };
+  const wrapUpEndNode: EndNode = {
+    id: WRAP_UP_END_NODE_ID,
+    type: "end",
+    name: "Wrap-up — end call",
+    speak_during_execution: true,
+    instruction: { type: "prompt", text: "Thank the caller and say a warm goodbye." },
+  };
+
   const body: ConversationFlowBody = {
     start_node_id: startNodeId,
     start_speaker: "agent",
-    nodes: [...nodesById.values(), ...endNodes],
+    nodes: [...nodesById.values(), ...endNodes, wrapUpNode, wrapUpEndNode],
     tools,
   };
   if (template.system_prompt) body.global_prompt = template.system_prompt;
@@ -419,8 +640,9 @@ function firstTurnText(flow: CompiledFlowRequest): string {
   switch (flow.kind) {
     case "conversation_flow": {
       // The start node is always states[0] (compileConversationFlow), never
-      // a synthetic `end` node — `instruction` is only optional on the
-      // union's `EndNode` arm.
+      // a synthetic `end`/`transfer_call`/wrap-up node — `instruction` is
+      // only optional on those other union arms (declared there purely for
+      // this lookup's type-checking, never populated by this compiler).
       const startNode = flow.body.nodes.find((n) => n.id === flow.body.start_node_id);
       return startNode?.instruction?.text ?? "";
     }
@@ -452,10 +674,14 @@ export interface CompiledTemplate {
 export function compileTemplate(
   template: CompilerAgentTemplate,
   toolWebhookUrl: string,
+  options: CompileConversationFlowOptions = {},
 ): CompiledTemplate {
   const flow: CompiledFlowRequest =
     template.compile_target === "conversation_flow"
-      ? { kind: "conversation_flow", body: compileConversationFlow(template, toolWebhookUrl) }
+      ? {
+          kind: "conversation_flow",
+          body: compileConversationFlow(template, toolWebhookUrl, options),
+        }
       : template.compile_target === "multi_prompt"
         ? { kind: "multi_prompt", body: compileMultiPrompt(template, toolWebhookUrl) }
         : { kind: "single_prompt", body: compileSinglePrompt(template, toolWebhookUrl) };

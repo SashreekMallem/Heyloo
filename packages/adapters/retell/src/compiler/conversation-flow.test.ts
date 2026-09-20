@@ -1,3 +1,4 @@
+import type { CanonicalTool } from "@heyloo/canonical-types";
 import { describe, expect, it } from "vitest";
 import { AUTO_CONVERSATION_FLOW_TEMPLATE } from "../fixtures/templates.js";
 import { compileConversationFlow } from "./conversation-flow.js";
@@ -39,11 +40,11 @@ describe("compileConversationFlow", () => {
   it("marks the emergency global_intent's target node with global_node_setting.condition (reachable_from: any)", () => {
     const flow = compileConversationFlow(AUTO_CONVERSATION_FLOW_TEMPLATE, TOOL_WEBHOOK_URL);
     const triageNode = flow.nodes.find((n) => n.id === "triage_emergency");
-    // Single-tool (take_message-only), non-start state -> hard-locked to a
-    // Function Node (GAP_REGISTER §1.4) rather than the previous plain
-    // conversation node; global_node_setting is identically shaped there.
-    expect(triageNode?.type).toBe("function");
-    if (triageNode?.type === "function") {
+    // Single-tool (take_message-only), non-start state -> a SubagentNode
+    // (CALL-4 — any 1+-tool state, not only the single-tool case);
+    // global_node_setting is identically shaped there.
+    expect(triageNode?.type).toBe("subagent");
+    if (triageNode?.type === "subagent") {
       expect(triageNode.global_node_setting).toEqual({
         condition: AUTO_CONVERSATION_FLOW_TEMPLATE.global_intents.find(
           (gi) => gi.target_state === "triage_emergency",
@@ -52,9 +53,10 @@ describe("compileConversationFlow", () => {
     }
   });
 
-  it("never emits a tool_ids field on a conversation node (not a real field — RETELL-VERIFY)", () => {
+  it("never emits a tool_ids field on a plain conversation node (not a real field on that node type — RETELL-VERIFY)", () => {
     const flow = compileConversationFlow(AUTO_CONVERSATION_FLOW_TEMPLATE, TOOL_WEBHOOK_URL);
     for (const node of flow.nodes) {
+      if (node.type !== "conversation") continue;
       expect(node).not.toHaveProperty("tool_ids");
     }
   });
@@ -72,14 +74,12 @@ describe("compileConversationFlow", () => {
     expect(flow.global_prompt).toBe(AUTO_CONVERSATION_FLOW_TEMPLATE.system_prompt);
   });
 
-  it("hard-locks a single-tool, non-start state to a Function Node (GAP_REGISTER §1.4)", () => {
+  it("compiles a single-tool, non-start state to a SubagentNode with a one-entry tool_ids (CALL-4)", () => {
     const flow = compileConversationFlow(AUTO_CONVERSATION_FLOW_TEMPLATE, TOOL_WEBHOOK_URL);
     const checkTime = flow.nodes.find((n) => n.id === "check_time");
-    expect(checkTime?.type).toBe("function");
-    if (checkTime?.type === "function") {
-      expect(checkTime.tool_id).toBe("check_availability");
-      expect(checkTime.tool_type).toBe("local");
-      expect(checkTime.wait_for_result).toBe(true);
+    expect(checkTime?.type).toBe("subagent");
+    if (checkTime?.type === "subagent") {
+      expect(checkTime.tool_ids).toEqual(["check_availability"]);
     }
   });
 
@@ -94,44 +94,86 @@ describe("compileConversationFlow", () => {
     const greeting = flow.nodes.find((n) => n.id === flow.start_node_id);
     expect(greeting?.type).toBe("conversation");
   });
+});
 
-  it("compiles a single-tool transfer_call state to a native TransferCallNode, not a Function Node (GAP_REGISTER §1.4 item 4)", () => {
-    const withTransferState = {
-      ...AUTO_CONVERSATION_FLOW_TEMPLATE,
-      states: [
-        ...AUTO_CONVERSATION_FLOW_TEMPLATE.states,
-        {
-          id: "transfer_to_human",
-          name: "Transfer to human",
-          prompt_fragment: "Connecting you now.",
-          allowed_tools: ["transfer_call"],
-          is_terminal: true,
-        },
-      ],
-      tools: [
-        ...AUTO_CONVERSATION_FLOW_TEMPLATE.tools,
-        {
-          name: "transfer_call",
-          description: "Warm-transfer the caller to a human.",
-          parameters: { type: "object" as const, properties: {}, required: [] },
-          authorization: { scope: "tenant_config_only" as const },
-        },
-      ],
-    };
-    const flow = compileConversationFlow(withTransferState, TOOL_WEBHOOK_URL);
+function withTransferState(extraTools: CanonicalTool[] = []) {
+  return {
+    ...AUTO_CONVERSATION_FLOW_TEMPLATE,
+    states: [
+      ...AUTO_CONVERSATION_FLOW_TEMPLATE.states,
+      {
+        id: "transfer_to_human",
+        name: "Transfer to human",
+        prompt_fragment: "Connecting you now.",
+        allowed_tools: ["transfer_call"],
+        is_terminal: true,
+      },
+    ],
+    tools: [
+      ...AUTO_CONVERSATION_FLOW_TEMPLATE.tools,
+      {
+        name: "transfer_call",
+        description: "Warm-transfer the caller to a human.",
+        parameters: { type: "object" as const, properties: {}, required: [] },
+        authorization: { scope: "tenant_config_only" as const },
+      },
+      ...extraTools,
+    ],
+  };
+}
+
+describe("compileConversationFlow — transfer_call (CALL-4, mirrors template-compiler.ts)", () => {
+  it("with a transferNumber configured: compiles a native TransferCallNode, destination baked from tenant config", () => {
+    const flow = compileConversationFlow(withTransferState(), TOOL_WEBHOOK_URL, {
+      transferNumber: "+15551234567",
+    });
     const transferNode = flow.nodes.find((n) => n.id === "transfer_to_human");
     expect(transferNode?.type).toBe("transfer_call");
     if (transferNode?.type === "transfer_call") {
       expect(transferNode.transfer_destination).toEqual({
         type: "predefined",
-        number: "{{transfer_number}}",
+        number: "+15551234567",
       });
       expect(transferNode.transfer_option).toEqual({ type: "warm_transfer" });
+      expect(transferNode.edge.destination_node_id).toBe("transfer_to_human__end");
     }
     // transfer_call is never emitted into the flow's top-level custom-tools list.
     expect(flow.tools.find((t) => t.name === "transfer_call")).toBeUndefined();
+    expect(flow.nodes.some((n) => n.id === "transfer_to_human__end" && n.type === "end")).toBe(
+      true,
+    );
   });
 
+  it("with NO transferNumber configured: compiles an honest spoken fallback (take_message granted), never a transfer node", () => {
+    const flow = compileConversationFlow(
+      withTransferState([
+        {
+          name: "take_message",
+          description: "Takes a message.",
+          parameters: { type: "object" as const, properties: {}, required: [] },
+          authorization: { scope: "none" as const },
+        },
+      ]),
+      TOOL_WEBHOOK_URL,
+      { transferNumber: null },
+    );
+    expect(flow.nodes.some((n) => n.type === "transfer_call")).toBe(false);
+    const fallbackNode = flow.nodes.find((n) => n.id === "transfer_to_human");
+    expect(fallbackNode?.type).toBe("subagent");
+    if (fallbackNode?.type === "subagent") {
+      expect(fallbackNode.tool_ids).toEqual(["take_message"]);
+      expect(fallbackNode.instruction.text).toMatch(/take_message/);
+    }
+    expect(flow.nodes.some((n) => n.id === "transfer_to_human__end")).toBe(true);
+  });
+
+  it("omitting options entirely behaves the same as no transferNumber (back-compat default for every existing public caller)", () => {
+    const flow = compileConversationFlow(withTransferState(), TOOL_WEBHOOK_URL);
+    expect(flow.nodes.some((n) => n.type === "transfer_call")).toBe(false);
+  });
+});
+
+describe("compileConversationFlow — predicate-on-tool-result", () => {
   it("compiles a predicate-on-tool-result transition to an equation-typed edge (GAP_REGISTER §1.5)", () => {
     const withToolResult = {
       ...AUTO_CONVERSATION_FLOW_TEMPLATE,
