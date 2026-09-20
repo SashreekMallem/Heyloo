@@ -227,3 +227,154 @@ export async function createWebCall(
     body: JSON.stringify(payload),
   });
 }
+
+/**
+ * GET /v2/list-phone-numbers (CALL-1, RETELL-VERIFY: confirmed live against
+ * `docs.retellai.com/api-references/list-phone-numbers` 2026-09-20 —
+ * `limit`/`sort_order`/`pagination_key` query params). The response body is
+ * NOT a bare array — it's `{items: [...], has_more, pagination_key}`
+ * (`PaginatedResponseBase`, same envelope as list-test-runs); a first pass
+ * of this comment assumed a bare array from an imprecise doc summary and
+ * that assumption produced a real live 502 (`attach_retell_number_list_
+ * failed`) before being corrected here. Each `items[]` entry carries
+ * `phone_number` (E.164, the resource's own identifier — there is no
+ * separate id), `phone_number_type`, `inbound_agents`, `nickname`. Only
+ * `limit` is passed here — the live account owns a single number today,
+ * well under any default page size, and CALL-1's attach flow fails loudly
+ * rather than silently paginating if that assumption ever stops holding
+ * (see api-admin-attach-retell-number/handler.ts).
+ */
+export async function listPhoneNumbers(fetchImpl: RetellFetch, apiKey: string, limit = 1000) {
+  return retellRequest(
+    fetchImpl,
+    apiKey,
+    `/v2/list-phone-numbers?limit=${encodeURIComponent(String(limit))}`,
+    { method: "GET" },
+  );
+}
+
+/**
+ * PATCH /update-phone-number/{phone_number} (CALL-1, RETELL-VERIFY:
+ * confirmed live against `docs.retellai.com/api-references/update-phone-number`
+ * 2026-09-20 — same confirmed shape as `importPhoneNumber` above:
+ * `inbound_agents`/`outbound_agents` are weighted-array fields, not a bare
+ * `inbound_agent_id` string; `inbound_webhook_url` lives here
+ * (phone-number-scoped), matching `docs/research/RETELL_TESTABILITY_2026-09-20.md`
+ * row 5a). Used to re-point an EXISTING number (already owned by the Retell
+ * account, imported outside this codebase) at a newly-compiled agent —
+ * never calls Twilio.
+ */
+export async function updatePhoneNumber(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  phoneNumberE164: string,
+  payload: {
+    inbound_agents?: Array<{ agent_id: string; weight: number; agent_version?: string | number }>;
+    outbound_agents?: Array<{ agent_id: string; weight: number; agent_version?: string | number }>;
+    inbound_webhook_url?: string;
+    nickname?: string;
+  },
+) {
+  return retellRequest(
+    fetchImpl,
+    apiKey,
+    `/update-phone-number/${encodeURIComponent(phoneNumberE164)}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+}
+
+/**
+ * POST /create-test-case-definition, POST /create-batch-test,
+ * GET /v2/list-test-runs/{id} (CALL-1) — the same three calls
+ * `packages/adapters/retell/src/tests-api.ts` already wraps for the
+ * Node-side red-team harness, reimplemented here as plain-`fetch`
+ * Deno-importable functions for the identical Node/Deno workspace-package
+ * boundary reason every other function in this file exists (see this
+ * file's own header). Shapes confirmed against `docs.retellai.com`
+ * (`/api-references/create-batch-test`, `/create-test-case-definition`)
+ * 2026-09-20 and cross-checked against that package's own VERIFY-13 note:
+ * `response_engine` targets a `conversation-flow`/`retell-llm` id (never an
+ * agent id directly — "Custom LLM is not supported" for batch testing).
+ * Confirmed this pass: omitting `tool_mocks` on a test case definition
+ * means "a tool call matching no mock falls through to the real tool" —
+ * i.e. batch tests CAN and DO hit a real custom-tool webhook live, no mock
+ * required (docs/research/RETELL_TESTABILITY_2026-09-20.md's own open
+ * question, resolved here).
+ */
+export async function createTestCaseDefinition(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  payload: {
+    name: string;
+    response_engine: Record<string, unknown>;
+    user_prompt: string;
+    metrics: string[];
+    dynamic_variables?: Record<string, string>;
+  },
+) {
+  return retellRequest(fetchImpl, apiKey, "/create-test-case-definition", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function createBatchTest(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  payload: { response_engine: Record<string, unknown>; test_case_definition_ids: string[] },
+) {
+  return retellRequest(fetchImpl, apiKey, "/create-batch-test", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listTestRuns(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  batchJobId: string,
+  limit = 1000,
+) {
+  return retellRequest(
+    fetchImpl,
+    apiKey,
+    `/v2/list-test-runs/${encodeURIComponent(batchJobId)}?limit=${encodeURIComponent(String(limit))}`,
+    { method: "GET" },
+  );
+}
+
+/**
+ * POST /create-chat, POST /create-chat-completion (CALL-1) — the headless
+ * text-mode path `docs/research/RETELL_TESTABILITY_2026-09-20.md` row 4a/4b
+ * confirms against `docs.retellai.com/api-references/create-chat` and
+ * `.../create-chat-completion`: drives the SAME agent prompt/tool config
+ * as a live phone call, over text, with no telephony required. Used as a
+ * secondary live smoke-check of the custom-tool webhook path (CALL-1 RUN
+ * IT LIVE step d) independent of the batch-test API.
+ */
+export async function createChat(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  payload: {
+    agent_id: string;
+    agent_version?: number;
+    metadata?: Record<string, unknown>;
+    retell_llm_dynamic_variables?: Record<string, unknown>;
+  },
+) {
+  return retellRequest(fetchImpl, apiKey, "/create-chat", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function createChatCompletion(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  payload: { chat_id: string; content: string },
+) {
+  return retellRequest(fetchImpl, apiKey, "/create-chat-completion", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}

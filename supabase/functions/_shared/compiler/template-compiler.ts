@@ -68,6 +68,7 @@ export interface CompilerAgentTemplate {
 
 interface FunctionTool {
   type: "custom";
+  tool_id: string;
   name: string;
   description: string;
   url: string;
@@ -77,6 +78,16 @@ interface FunctionTool {
 function toolsFor(template: CompilerAgentTemplate, toolWebhookUrl: string): FunctionTool[] {
   return template.tools.map((tool) => ({
     type: "custom" as const,
+    // CALL-1 gap fix (docs/BUILD_NOTES.md): confirmed live against
+    // docs.retellai.com/api-references/create-conversation-flow
+    // 2026-09-20 — every `tools[]` entry requires a caller-generated
+    // `tool_id` (`request/body/tools/0 must have required property
+    // 'tool_id'`, seen verbatim from a real 400 response). Tool `name` is
+    // already required to be unique within a template's tool set, so it
+    // doubles as a stable, deterministic `tool_id` — never randomly
+    // generated, so recompiling the same template produces an identical
+    // flow body (idempotent, diff-friendly).
+    tool_id: tool.name,
     name: tool.name,
     description: tool.description,
     url: toolWebhookUrl,

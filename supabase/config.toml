@@ -229,3 +229,17 @@ verify_jwt = false
 # too, never trusting a caller-supplied tenant_id).
 [functions.api-widget-voice-token]
 verify_jwt = false
+
+# api-admin-provision-test-tenant / api-admin-attach-retell-number /
+# api-admin-run-agent-tests (CALL-1, docs/BUILD_PLAN.md): internal-only,
+# never called with a Supabase user JWT — verify_jwt = false, same posture
+# as worker-*/job-* above, except auth is a shared `x-internal-secret`
+# header (timing-safe compared against PROVISION_INTERNAL_SECRET) rather
+# than the cron secret, the SAME pattern api-provision/index.ts already
+# uses for its own internal (service_role) call path.
+[functions.api-admin-provision-test-tenant]
+verify_jwt = false
+[functions.api-admin-attach-retell-number]
+verify_jwt = false
+[functions.api-admin-run-agent-tests]
+verify_jwt = false

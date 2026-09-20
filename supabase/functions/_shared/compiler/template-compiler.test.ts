@@ -49,6 +49,29 @@ describe("compileTemplate — conversation_flow", () => {
     expect(startNode?.instruction.text.startsWith(DISCLOSURE)).toBe(true);
   });
 
+  it("gives every emitted tool a tool_id (CALL-1 gap fix: required by a live 400, docs.retellai.com/api-references/create-conversation-flow)", () => {
+    const compiled = compileTemplate(baseTemplate(), "https://example.com/voice-tools");
+    if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
+    expect(compiled.flow.body.tools).toEqual([
+      {
+        type: "custom",
+        tool_id: "check_availability",
+        name: "check_availability",
+        description: "checks slots",
+        url: "https://example.com/voice-tools",
+        parameters: { properties: {} },
+      },
+      {
+        type: "custom",
+        tool_id: "create_booking",
+        name: "create_booking",
+        description: "books a slot",
+        url: "https://example.com/voice-tools",
+        parameters: { properties: {} },
+      },
+    ]);
+  });
+
   it("marks the global-intent target node with global_node_setting.condition (reachable_from: any)", () => {
     const compiled = compileTemplate(baseTemplate(), "https://example.com/voice-tools");
     if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");

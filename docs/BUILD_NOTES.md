@@ -11751,3 +11751,241 @@ each worker's already-covered business logic). `pnpm -w typecheck` —
 clean (auto-reformat only, import-sort/wrap, no logic change); a
 full-repo `biome check` afterward shows only 43 pre-existing warnings,
 none in any file this task touched.
+
+## CALL-1 — first live call path: test-tenant provisioning, Retell number attach, batch-test runner (2026-09-20)
+
+**What was built** (each: portable `handler.ts` + Vitest, thin Deno
+`index.ts`, `verify_jwt = false`, `x-internal-secret` auth — same
+timing-safe-compare pattern `api-provision/index.ts`'s internal call path
+already uses):
+
+- `api-admin-provision-test-tenant`: creates a tenant row + platform
+  defaults for a vertical (business hours/resources/offerings, ported from
+  `supabase/seed/seed.sql`'s per-vertical demo-tenant block into
+  `_shared/vertical-defaults.ts`), compiles the vertical's agent template
+  via `_shared/compiler/template-compiler.ts` (same compile pipeline
+  `api-provision`'s saga and `admin`'s template-publish route already use),
+  creates + **publishes** the Retell agent, upserts `agent_configs`. Never
+  calls Twilio. Idempotent on `slug`.
+- `api-admin-attach-retell-number`: lists the account's Retell phone
+  numbers (`GET /v2/list-phone-numbers`), selects `phone_e164` or the
+  account's only number, re-points it at the tenant's agent (`PATCH
+  /update-phone-number/{phone_number}`, `inbound_agents`/
+  `inbound_webhook_url`), upserts `phone_numbers`. Never calls Twilio.
+- `api-admin-run-agent-tests`: runs Retell's batch-simulation suite
+  (`create-test-case-definition` → `create-batch-test` → `list-test-runs`,
+  no `tool_mocks` — confirmed live that an unmocked tool call "falls
+  through to the real tool") against 8 scenarios per
+  `_shared/test-scenarios.ts` (full set for `auto`, a smaller generic set
+  for the other 7 verticals — only `auto` exercised live). One invocation
+  has a bounded poll budget (default 45s) and returns a `resume` payload
+  (batch_job_id + case-definition ids + started_at) if the batch hasn't
+  settled yet, so a second call resumes polling rather than blocking past
+  Supabase's own function-duration limit. Also supports `mode:
+  "chat_smoke"` — a couple of turns over the Chat API
+  (`create-chat`/`create-chat-completion`) against the same agent, added
+  as the RUN-IT-LIVE step (d) secondary check. Both modes query
+  `tool_health`/`call_logs` (by `tenant_id` + `occurred_at`/`created_at` >=
+  the run's `started_at`) and report counts in the response.
+- `worker-messages-outbound/index.ts`: adopted OPS-1's `missingEnv` skip
+  pattern (Twilio/Resend checked inside the handler, after the
+  `x-cron-secret` check, not at module scope) — this standalone entrypoint
+  still crashed cold-start without those secrets; `worker-tick` already
+  had the fix, this one didn't.
+
+New shared files: `_shared/vertical-defaults.ts` (8-vertical business
+hours/resources/offerings), `_shared/test-scenarios.ts` (8 `auto`
+scenarios: new-caller booking, existing-caller-by-phone, FAQ hours/pricing,
+transfer request, after-hours message, cancellation, wrong-date caller,
+"are you an AI?" disclosure check — plus a 4-scenario generic fallback for
+the other verticals), `_shared/agent-template-seeds.ts` (see gap #1 below).
+`_shared/providers/retell.ts` gained `listPhoneNumbers`, `updatePhoneNumber`,
+`createTestCaseDefinition`, `createBatchTest`, `listTestRuns`, `createChat`,
+`createChatCompletion` (all RETELL-VERIFY'd live against docs.retellai.com
+2026-09-20, cited in each function's own doc comment).
+
+### Real gaps found and fixed while reaching a first live run (CLAUDE.md
+### Rule 4 — discovered, documented, fixed where blocking, not redesigned)
+
+1. **`agent_templates` was completely empty on the live project.** No seed
+   script wires `packages/templates`' registry into a hosted Supabase
+   project — `supabase/seed/seed.sql` only runs against local dev via
+   `supabase db reset`. Without an active template row for a vertical, no
+   agent can ever be compiled for any tenant, on any code path (this
+   blocks `api-provision` too, not just this task's function) — a
+   pre-existing blocker, not something this task introduced. Fixed
+   pragmatically: `api-admin-provision-test-tenant/handler.ts`'s
+   `ensureTemplateSeeded` lazily inserts ONE active row per vertical from
+   `_shared/agent-template-seeds.ts` (a generated, portable copy of
+   `packages/templates/dist/templates.build.json`, all 8 verticals) the
+   first time that vertical is needed — a lazy version of the seed/sync
+   script the platform is still missing. `voice_id`/`model` defaults
+   (`retell-Cimo`, `gpt-4.1-mini`) are RETELL-VERIFIED live (list-voices'
+   own documented example; `create-conversation-flow`'s `LLMModel` enum).
+   **Follow-up tracked, not built here:** a real seed/sync script (or an
+   `admin` route) that keeps `agent_templates` in sync with
+   `packages/templates`' registry for every vertical, run at deploy time —
+   this task's lazy-seed-on-first-use is a stopgap for CALL-1's scope, not
+   that script.
+2. **jsonb columns were silently double-JSON-encoded on every write.**
+   `${JSON.stringify(x)}::jsonb` — the exact pattern `admin/handler.ts`'s
+   template-create route ALSO uses — writes a jsonb STRING containing the
+   JSON text, not a jsonb array/object, because postgres.js (with
+   `prepare: true`, this project's setting) performs a `Describe` round
+   trip on a new prepared statement, learns the server-inferred parameter
+   type from the `::jsonb` cast context (OID 3802), and re-serializes the
+   value through `JSON.stringify` a SECOND time using that learned type —
+   double-encoding an already-stringified value. Confirmed empirically:
+   the live `agent_templates.tools`/`tenants.business_hours` columns this
+   task's own (since-fixed) code wrote came back `jsonb_typeof(...) =
+   'string'`, not `'array'`/`'object'`, and a downstream `template.tools.map
+   is not a function` crash traced straight to it. **Fix:** pass the raw
+   JS object/array directly (`${defaults.business_hours}::jsonb`, no
+   manual `JSON.stringify`) — postgres.js's own learned-type serializer
+   handles it correctly exactly once. Fixed in every jsonb write this
+   task's own three functions make; the two already-broken live rows
+   (`tenants.business_hours`, `agent_templates.tools` for `auto`) are
+   self-healed in place by `ensureTenant`/`ensureTemplateSeeded` on next
+   use (checks `jsonb_typeof(...)`, UPDATEs + regenerates availability
+   slots if corrupted — never silently reuses a broken row). **NOT fixed**
+   (same bug, same `${JSON.stringify(...)}::jsonb` pattern, out of this
+   task's assigned files): `admin/handler.ts`'s template-create/patch
+   routes (lines around `insert into public.agent_templates` /
+   `update ... set states = `) and `api-provision/handler.ts` doesn't hit
+   this (it never writes a jsonb literal itself) — `admin`'s template
+   authoring routes remain broken until a follow-up task applies the same
+   fix there.
+3. **`create-conversation-flow`'s `tools[]` requires a caller-generated
+   `tool_id`** (`request/body/tools/0 must have required property
+   'tool_id'`, seen verbatim from a real live 400 from
+   `_shared/compiler/template-compiler.ts`'s `toolsFor()`, which only ever
+   emitted `{type, name, description, url, parameters}`). RETELL-VERIFY
+   confirmed live (docs.retellai.com/api-references/create-conversation-flow
+   2026-09-20): `tool_id` is caller-supplied; a tool's `name` is already
+   required to be unique within a template, so `tool_id: tool.name` is
+   used — deterministic, idempotent recompiles. This is the SAME shared
+   compiler `admin`'s template-publish route and `api-provision`'s saga
+   both use, so this fix applies to those paths too, not just this task's.
+4. **`GET /v2/list-phone-numbers`'s response is NOT a bare array** — it's
+   `{items: [...], has_more, pagination_key}` (`PaginatedResponseBase`,
+   same envelope as `list-test-runs`). An earlier pass's doc summary said
+   "response array of phone-number objects", which was imprecise/wrong and
+   produced a real live 502 (`attach_retell_number_list_failed`,
+   `Array.isArray(body)` false against `{items:[...]}`) before being
+   corrected via a second, more targeted doc fetch. Fixed in
+   `api-admin-attach-retell-number/handler.ts` and the doc comment on
+   `_shared/providers/retell.ts#listPhoneNumbers`.
+5. **A freshly-created Retell agent is an unpublished draft**; the Chat API
+   refuses to start a session against one (`Cannot start a chat session
+   with selected agent.`, real live 422) and draft-agent behavior is
+   generally unreliable to test against. `api-provision/handler.ts`'s
+   saga already does the getAgent→publishAgentVersion two-step (RETELL-VERIFY
+   VERIFY-6) — this task's provisioning function was missing it entirely.
+   Fixed: `provisionTestTenant` now publishes (idempotent — tracked via
+   `agent_configs.published_at`, skipped once already set).
+
+### Still unresolved (documented, not chased further — out of this
+### task's scope/budget)
+
+- **Chat API still refuses this agent even after publishing** —
+  `create-chat` returns the same `"Cannot start a chat session with
+  selected agent."` 422 with a published `conversation_flow`-type agent.
+  Not confirmed against docs whether Chat requires a `retell-llm` response
+  engine specifically (vs. `conversation-flow`) or some other
+  agent-level flag — `docs/VERIFY.md`'s CALL-1 entry logs this as
+  genuinely open.
+- **Batch-test simulations never reached `/voice-tools` at all** — despite
+  transcripts showing the conversation progress to tool-gated states
+  (e.g. `confirm_booking`), `tool_health` stayed at 0 rows for the whole
+  run (confirmed directly against the live table — only `job-keep-warm`'s
+  own periodic ping rows are present). Root cause, traced via
+  `voice-tools/context.ts#resolveCallContext`: it resolves tenant context
+  by looking up `call_logs.retell_call_id = <the call's id>`, and that row
+  is only ever created by `voice-events`'s `call_started` handler for a
+  REAL inbound phone call — a batch-test/chat/playground session has no
+  such row (its `call_id` is a synthetic value like `"playground"`), so
+  `resolveCallContext` returns `null` and every tool call gets the
+  graceful `fallbackEnvelope` instead of running — plausibly also the
+  actual cause of the "Ending the conversation early as there might be a
+  loop" result on 7/8 scenarios (the model repeatedly getting a fallback
+  non-answer). **This is a real, pre-existing architecture gap** — hot-path
+  `voice-tools`/`voice-events` call-context resolution has no notion of a
+  non-telephony (batch-test/chat/web-call) session — well outside this
+  task's assigned scope to fix (touches the hot path CLAUDE.md Rule 2 asks
+  us to be especially careful with, and needs its own design: e.g. an
+  `INSERT ... ON CONFLICT DO NOTHING` synthetic `call_logs` row keyed by
+  `call_id`/`chat_id` the first time an unrecognized id is seen, scoped by
+  which agent_id the call is against). **Important: a REAL inbound phone
+  call is NOT affected** — `voice-events`'s `call_started` webhook fires
+  and inserts the real `call_logs` row before the caller's first tool-
+  requiring turn, so `resolveCallContext` resolves normally on that path;
+  this gap is specific to Retell's own test/simulation/chat surfaces, not
+  to production call handling. Flagged here rather than fixed given the
+  scope/hot-path risk; a follow-up task should design the fix properly.
+- Per-vertical scenario/seed depth: only `auto` has a full 8-scenario set
+  and was exercised against a live account; the other 7 verticals' smaller
+  generic fallback set is untested live.
+
+### Live run (project `qulcubtwqsqgqpfgvorn`)
+
+- **Tenant**: `b2efae9d-8309-46d6-a950-31d683616cdc` (slug
+  `test-riverside-auto`, vertical `auto`, status `active`).
+- **Agent**: `agent_7d5a837becbbe2c36d7f6ada12` (`conversation_flow`,
+  published).
+- **Phone number**: `+12602354330` — re-pointed to this agent
+  (`inbound_agents: [{agent_id, weight:1}]`, `inbound_webhook_url` set to
+  the live `RETELL_INBOUND_WEBHOOK_URL`). `phone_numbers.twilio_sid` holds
+  the placeholder `retell-native:+12602354330` (this number predates this
+  task, never went through Twilio — see `api-admin-attach-retell-number`'s
+  own doc comment for the known-limitation this creates for
+  `api-a2p-register`/`job-retell-health-failover`/`job-offboarding`, none
+  of which block a first call).
+- **DB verified**: `agent_configs` row present (`published_at` set),
+  `phone_numbers` row present, 2 `resources` + 3 `offerings` (auto
+  defaults, no duplicates across repeated idempotent calls), 648
+  `availability_slots` rows generated.
+- **Batch test** (8/8 `auto` scenarios, `batch_job_id
+  test_batch_084629d607df`): all 8 settled `error` — `"Ending the
+  conversation early as there might be a loop."` — see the unresolved gap
+  above for the traced root cause (no `call_logs` row for a synthetic
+  test `call_id`, so `/voice-tools` always fell back). Transcripts
+  otherwise show HEALTHY agent behavior: the compiled disclosure line
+  fires verbatim in the greeting, state transitions follow the template
+  graph correctly (greeting → collect_name → collect_vehicle → ... →
+  confirm_booking; greeting → transfer_to_human on an explicit human
+  request; greeting → manage_booking on a cancellation request), and the
+  `ai_disclosure_check` scenario got a correct, honest answer ("I'm the
+  AI assistant here at the shop") when asked directly.
+- **`tool_health`**: 0 rows for this tenant (see gap above — expected
+  given the traced root cause, not a surprise once traced). `call_logs`:
+  0 rows (no real call has been placed yet).
+- **Chat-smoke secondary check**: blocked by the still-open Chat-API
+  422 above — not completed.
+- **Function logs / `net._http_response`**: no unexpected errors from any
+  cron job or from `voice-inbound`/`voice-tools` in the run window (only
+  the pre-existing, expected `job-keep-warm`→`voice-inbound` 404 keep-warm
+  ping and the OPS-1-class `missingEnv` skips for Twilio/Resend-dependent
+  jobs).
+
+### Gates
+
+`cd supabase/functions && npx vitest run` — 106/106 files, 966/966 tests
+green. `pnpm -w typecheck` — 21/21 packages green. `pnpm run lint` (biome +
+turbo eslint) — 0 errors (43 pre-existing warnings, none in any file this
+task touched). `npx biome check --write` on every changed file — clean.
+`node --experimental-strip-types scripts/ci/verify-jwt-guard.ts` — passed,
+48 functions checked (3 new `api-admin-*` entries added, `verify_jwt =
+false`, internal-secret-only auth, no hand-decoded JWT).
+
+### What remains
+
+- The owner can now call `+12602354330` for a real end-to-end voice test —
+  the number, agent, and webhook wiring are live and verified in the DB;
+  this is the actual first-live-call proof this task's title promises,
+  independent of the batch-test/Chat-API gaps above (both of which are
+  Retell-simulation-surface-specific, not real-call-path issues).
+- The two "not fixed" items above (`admin/handler.ts`'s same jsonb
+  double-encoding bug; the batch-test/chat call-context-resolution gap)
+  are real, live-confirmed bugs a follow-up task should pick up.
+- A proper `agent_templates` seed/sync script (item 1 above) — this task's
+  lazy per-vertical seed is a stopgap, not that script.

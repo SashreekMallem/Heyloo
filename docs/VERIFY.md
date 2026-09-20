@@ -1797,3 +1797,28 @@ is still open.
 **Code:** `supabase/functions/worker-tick/handler.ts`'s header comment
 (cites the same sources), `docs/BUILD_NOTES.md` OPS-3 entry (full
 experiment log).
+
+## CALL-1 (2026-09-20) — Chat API agent-type prerequisite, unconfirmed
+
+**Endpoint:** `POST /create-chat` (docs.retellai.com/api-references/create-chat).
+
+**What was confirmed live:** required fields (`agent_id`), optional
+fields (`agent_version`, `metadata`, `retell_llm_dynamic_variables`); a
+422 `"Cannot find requested asset under given api key."` for a bad
+`agent_id`.
+
+**What was NOT confirmed:** whether starting a chat session requires the
+agent's `response_engine` to be `retell-llm` rather than
+`conversation-flow`, or some other agent-level prerequisite. A live,
+PUBLISHED `conversation_flow`-type agent (`agent_7d5a837becbbe2c36d7f6ada12`,
+project `qulcubtwqsqgqpfgvorn`) consistently returns a 422 `"Cannot start
+a chat session with selected agent."` from `create-chat`, and the fetched
+doc page doesn't state this prerequisite explicitly either way. See
+`docs/BUILD_NOTES.md`'s CALL-1 entry ("Still unresolved") for the full
+context — this blocked CALL-1's RUN-IT-LIVE step (d) chat-smoke secondary
+check; a follow-up should either confirm this constraint from Retell
+support/further docs, or try a `retell-llm`-target template to see if
+Chat works against that response engine instead.
+
+**Code:** `supabase/functions/_shared/providers/retell.ts#createChat`,
+`supabase/functions/api-admin-run-agent-tests/handler.ts#runChatSmoke`.

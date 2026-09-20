@@ -1,5 +1,23 @@
 # Launch Status
 
+**CALL-1 (2026-09-20)**: first live call path is LIVE — a real test
+tenant (`test-riverside-auto`, vertical `auto`) is provisioned, its agent
+is compiled + published, and the account's Retell number
+(`+12602354330`) is re-pointed to it (`inbound_agents`/
+`inbound_webhook_url` set) — verified directly in the DB
+(`agent_configs`, `phone_numbers`, 648 `availability_slots` rows). **The
+owner can call `+12602354330` now.** Retell's own batch-simulation test
+suite ran (8/8 `auto` scenarios) but every case ended in the simulator's
+own loop-detector — traced to a real gap (not a phone-call-path bug):
+`/voice-tools`' call-context resolution requires a `call_logs` row that
+only a REAL phone call's `call_started` webhook creates, so a batch-test/
+chat-API synthetic session always falls back instead of running tools.
+Real inbound calls are unaffected. Full details, three new gaps found +
+fixed along the way (an empty `agent_templates` table, a jsonb
+double-encoding bug also present in `admin/handler.ts` and not yet fixed
+there, a missing `tool_id` field Retell now requires on custom tools),
+and what's still open: `docs/BUILD_NOTES.md`'s CALL-1 entry.
+
 **OPS-4 (2026-09-20)**: the Retell first-call prerequisite listed below as
 owner-blocked is now met on the Retell side — Retell signs webhooks with
 the account's API key (no separate signing secret exists;
