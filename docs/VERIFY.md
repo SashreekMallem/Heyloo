@@ -1759,3 +1759,41 @@ whole reason it was moved) rather than any new integration work.
 **Code:** `apps/web/instrumentation-client.ts`,
 `apps/web/src/lib/perf/sentry-init.tsx`,
 `apps/web/src/app/[locale]/{(tenant),(admin),(partner)}/layout.tsx`.
+
+## OPS-3 (2026-09-20) — why worker-messages-outbound's specific edge
+## function path was the disproportionately lossy one
+
+**Endpoint/feature:** Supabase's Edge Functions gateway/routing layer
+(`https://qulcubtwqsqgqpfgvorn.supabase.co/functions/v1/<name>`) — not a
+third-party API this repo calls, but the platform's own request routing
+for its deployed functions.
+
+**What was confirmed (CLAUDE.md Rule 1 — fetched live this session, cited
+in `docs/BUILD_NOTES.md` OPS-3):** pg_net (`github.com/supabase/pg_net`
+`src/worker.c`) runs one persistent background worker with one persistent
+`curl_multi_init()` handle and no per-host connection cap or HTTP-version
+override; libcurl's own docs (`curl.se/libcurl/c/CURLMOPT_PIPELINING.html`)
+confirm HTTP/2 multiplexing (`CURLPIPE_MULTIPLEX`) has been on by default
+since curl 7.62.0 and multiplexes concurrent transfers to the same host
+over one shared connection when added to the same multi handle — both
+facts a live experiment's result is consistent with (loss followed the
+target *function*, not the cron job/dispatch slot).
+
+**What was NOT confirmed:** the precise, final-mile reason
+worker-messages-outbound's specific `/functions/v1/worker-messages-outbound`
+path was the one that was disproportionately slow/lossy at Supabase's edge
+in that experiment (a per-function concurrency/cold-start limit? a
+region-routing quirk? something specific to that function's own request
+handling under Supabase's gateway?) — this would need Supabase's own
+current edge-functions-routing/infra docs (supabase.com/docs/guides/
+functions), which were not fetched for this specific question this
+session (time-boxed to the assigned OPS-3 experiment + fix). The fix
+applied (one combined `net.http_post` per minute via a new `worker-tick`
+function instead of three concurrent ones to the same host) removes the
+condition the evidence pointed to regardless of this final-mile detail,
+so it was not blocking, but the underlying "why that one path" question
+is still open.
+
+**Code:** `supabase/functions/worker-tick/handler.ts`'s header comment
+(cites the same sources), `docs/BUILD_NOTES.md` OPS-3 entry (full
+experiment log).

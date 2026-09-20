@@ -2,6 +2,8 @@ import type { ResendFetch } from "../_shared/providers/resend.ts";
 import { sendEmail } from "../_shared/providers/resend.ts";
 import type { TwilioFetch } from "../_shared/providers/twilio.ts";
 import { sendSms } from "../_shared/providers/twilio.ts";
+import type { MessagesOutboundQueueMsg } from "../_shared/queue.ts";
+import { deleteMessage, moveToDeadLetter, QUEUE_NAMES, readBatch } from "../_shared/queue.ts";
 import { renderTemplate } from "../_shared/templates.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 
@@ -205,4 +207,69 @@ export async function processOutboundMessage(
   });
   await sql`update public.messages_outbound set status = 'failed', error = 'channel_not_implemented' where id = ${message.id}`;
   return "failed";
+}
+
+// ---------------------------------------------------------------------------
+// Batch-poll entry point (OPS-3, docs/BUILD_NOTES.md) — the read-batch/
+// retry/dead-letter loop that used to live only in `index.ts`'s Deno
+// `Deno.serve` handler, moved here so it's reusable from BOTH this
+// function's own `index.ts` (unchanged manual-invoke endpoint) and
+// `worker-tick/handler.ts` (the combined-dispatch entry). Portable/
+// unit-tested exactly like the rest of this file — no `Deno` global, only
+// `SqlClient`/`OutboundDeps`/queue.ts helpers.
+// ---------------------------------------------------------------------------
+
+export const OUTBOUND_VISIBILITY_TIMEOUT_SECONDS = 30;
+export const OUTBOUND_BATCH_SIZE = 20;
+export const OUTBOUND_MAX_ATTEMPTS = 5; // BACKEND_SPEC §9 — pgmq's own read_ct is the attempt counter for this queue.
+
+export interface RunOutboundWorkerResult {
+  processed: number;
+  dead_lettered: number;
+  batch_size: number;
+}
+
+export async function runOutboundWorker(
+  sql: SqlClient,
+  deps: OutboundDeps,
+): Promise<RunOutboundWorkerResult> {
+  const batch = await readBatch<MessagesOutboundQueueMsg>(
+    sql,
+    QUEUE_NAMES.messagesOutbound,
+    OUTBOUND_VISIBILITY_TIMEOUT_SECONDS,
+    OUTBOUND_BATCH_SIZE,
+  );
+
+  let processed = 0;
+  let deadLettered = 0;
+  for (const row of batch) {
+    try {
+      await processOutboundMessage(sql, row.message.message_id, deps);
+      await deleteMessage(sql, QUEUE_NAMES.messagesOutbound, row.msg_id);
+      processed += 1;
+    } catch (err) {
+      deps.logger.error("worker_messages_outbound_error", {
+        error: String(err),
+        msg_id: row.msg_id,
+      });
+      if (row.read_ct >= OUTBOUND_MAX_ATTEMPTS) {
+        await moveToDeadLetter(sql, QUEUE_NAMES.messagesOutbound, row.msg_id, row.message);
+        // BACKEND_SPEC §9: "after 5 attempts, row status -> failed, moved to
+        // messages_outbound_dlq for manual admin review" — the DLQ move
+        // above only removes the pgmq message; the domain row itself must
+        // also flip to `failed` here, or an exhausted-retry message stays
+        // `status='queued'` forever with no admin-visible signal at all.
+        await sql`
+          update public.messages_outbound
+          set status = 'failed', error = ${String(err)}
+          where id = ${row.message.message_id} and status not in ('sent', 'delivered')
+        `;
+        deadLettered += 1;
+      }
+      // else: leave in queue — becomes visible again after the visibility
+      // timeout for the next poll to retry.
+    }
+  }
+
+  return { processed, dead_lettered: deadLettered, batch_size: batch.length };
 }

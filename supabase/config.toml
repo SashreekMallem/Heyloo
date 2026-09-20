@@ -101,6 +101,8 @@ verify_jwt = false
 verify_jwt = false
 [functions.worker-adapter-push]
 verify_jwt = false
+[functions.worker-tick]
+verify_jwt = false
 [functions.job-reconciliation]
 verify_jwt = false
 [functions.job-billing-cycle]

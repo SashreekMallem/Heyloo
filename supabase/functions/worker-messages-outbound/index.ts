@@ -8,10 +8,8 @@ import { timingSafeEqual } from "../_shared/crypto.ts";
 import { getSql } from "../_shared/deno/db.ts";
 import { requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
-import type { MessagesOutboundQueueMsg } from "../_shared/queue.ts";
-import { deleteMessage, moveToDeadLetter, QUEUE_NAMES, readBatch } from "../_shared/queue.ts";
 import { jsonResponse } from "../_shared/responses.ts";
-import { processOutboundMessage } from "./handler.ts";
+import { runOutboundWorker } from "./handler.ts";
 
 const logger = createLogger({ fn: "worker-messages-outbound" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
@@ -20,10 +18,6 @@ const TWILIO_AUTH_TOKEN = requireEnv("TWILIO_AUTH_TOKEN");
 const RESEND_API_KEY = requireEnv("RESEND_API_KEY");
 const RESEND_FROM_ADDRESS = requireEnv("RESEND_FROM_ADDRESS");
 
-const VISIBILITY_TIMEOUT_SECONDS = 30;
-const BATCH_SIZE = 20;
-const MAX_ATTEMPTS = 5; // BACKEND_SPEC §9 — pgmq's own read_ct is the attempt counter for this queue.
-
 Deno.serve(async (req: Request) => {
   const provided = req.headers.get("x-cron-secret");
   if (!provided || !timingSafeEqual(provided, CRON_SECRET)) {
@@ -31,13 +25,6 @@ Deno.serve(async (req: Request) => {
   }
 
   const sql = getSql();
-  const batch = await readBatch<MessagesOutboundQueueMsg>(
-    sql,
-    QUEUE_NAMES.messagesOutbound,
-    VISIBILITY_TIMEOUT_SECONDS,
-    BATCH_SIZE,
-  );
-
   const deps = {
     twilioFetch: fetch,
     twilioAccountSid: TWILIO_ACCOUNT_SID,
@@ -63,33 +50,6 @@ Deno.serve(async (req: Request) => {
     logger,
   };
 
-  let processed = 0;
-  let deadLettered = 0;
-  for (const row of batch) {
-    try {
-      await processOutboundMessage(sql, row.message.message_id, deps);
-      await deleteMessage(sql, QUEUE_NAMES.messagesOutbound, row.msg_id);
-      processed += 1;
-    } catch (err) {
-      logger.error("worker_messages_outbound_error", { error: String(err), msg_id: row.msg_id });
-      if (row.read_ct >= MAX_ATTEMPTS) {
-        await moveToDeadLetter(sql, QUEUE_NAMES.messagesOutbound, row.msg_id, row.message);
-        // BACKEND_SPEC §9: "after 5 attempts, row status -> failed, moved to
-        // messages_outbound_dlq for manual admin review" — the DLQ move
-        // above only removes the pgmq message; the domain row itself must
-        // also flip to `failed` here, or an exhausted-retry message stays
-        // `status='queued'` forever with no admin-visible signal at all.
-        await sql`
-          update public.messages_outbound
-          set status = 'failed', error = ${String(err)}
-          where id = ${row.message.message_id} and status not in ('sent', 'delivered')
-        `;
-        deadLettered += 1;
-      }
-      // else: leave in queue — becomes visible again after the visibility
-      // timeout for the next poll to retry.
-    }
-  }
-
-  return jsonResponse({ processed, dead_lettered: deadLettered, batch_size: batch.length });
+  const result = await runOutboundWorker(sql, deps);
+  return jsonResponse(result);
 });

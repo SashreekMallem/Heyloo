@@ -4,23 +4,12 @@ import { timingSafeEqual } from "../_shared/crypto.ts";
 import { getSql } from "../_shared/deno/db.ts";
 import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
-import type { AdapterPushQueueMsg } from "../_shared/queue.ts";
-import {
-  deleteMessage,
-  enqueue,
-  moveToDeadLetter,
-  QUEUE_NAMES,
-  readBatch,
-} from "../_shared/queue.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import type { AdapterPushDeps } from "./handler.ts";
-import { pushToAdapter } from "./handler.ts";
+import { runAdapterPushWorker } from "./handler.ts";
 
 const logger = createLogger({ fn: "worker-adapter-push" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
-const VISIBILITY_TIMEOUT_SECONDS = 45;
-const BATCH_SIZE = 20;
-const MAX_ATTEMPTS = 6; // BACKEND_SPEC §9
 
 // Per-provider app-level OAuth credentials (never per-tenant — a tenant's
 // OWN token lives on their `adapter_connections` row; these are Heyloo's
@@ -54,43 +43,6 @@ Deno.serve(async (req: Request) => {
   }
 
   const sql = getSql();
-  const batch = await readBatch<AdapterPushQueueMsg>(
-    sql,
-    QUEUE_NAMES.adapterPush,
-    VISIBILITY_TIMEOUT_SECONDS,
-    BATCH_SIZE,
-  );
-
-  let pushed = 0;
-  let deadLettered = 0;
-
-  for (const row of batch) {
-    const msg = row.message;
-    const ok = await pushToAdapter(sql, msg, logger, DEPS);
-    if (ok) {
-      await deleteMessage(sql, QUEUE_NAMES.adapterPush, row.msg_id);
-      pushed += 1;
-      continue;
-    }
-
-    if (msg.attempt + 1 >= MAX_ATTEMPTS) {
-      await moveToDeadLetter(sql, QUEUE_NAMES.adapterPush, row.msg_id, msg);
-      logger.error("worker_adapter_push_exhausted", {
-        tenant_id: msg.tenant_id,
-        adapter: msg.adapter,
-        entity_id: msg.entity_id,
-      });
-      deadLettered += 1;
-      // T7 TODO: once a dashboard "sync failed" banner surface exists, flip
-      // a per-entity sync-status flag here so it renders (BACKEND_SPEC §9).
-    } else {
-      await deleteMessage(sql, QUEUE_NAMES.adapterPush, row.msg_id);
-      await enqueue(sql, QUEUE_NAMES.adapterPush, {
-        ...msg,
-        attempt: msg.attempt + 1,
-      } satisfies AdapterPushQueueMsg);
-    }
-  }
-
-  return jsonResponse({ pushed, dead_lettered: deadLettered, batch_size: batch.length });
+  const result = await runAdapterPushWorker(sql, logger, DEPS);
+  return jsonResponse(result);
 });

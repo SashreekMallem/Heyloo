@@ -91,9 +91,12 @@ function rows(output: string): string[] {
 
 /**
  * BACKEND_SPEC §8's 12 job-table rows, expanded to the ACTUAL job names the
- * migrations schedule (the "queue worker poll" row becomes 3 `worker-*`
- * jobs; "referral qualification + payout batch" becomes 2 jobs) plus the
- * DB-internal jobs that ride the same `cron.job` table
+ * migrations schedule (the "queue worker poll" row becomes the single
+ * `worker-tick` job, which fans out to all 3 queue workers in-process —
+ * OPS-3, docs/BUILD_NOTES.md, replacing the 3 separate `worker-*` per-
+ * minute jobs this repo used before; "referral qualification + payout
+ * batch" becomes 2 jobs) plus the DB-internal jobs that ride the same
+ * `cron.job` table
  * (`job-internal-*` — availability roll-forward, usage rollup, the DB-M1
  * webhook_events/tool_health retention sweep, referral qualification).
  * Sourced by grepping every `fn_cron_upsert('<name>'` call site across
@@ -105,9 +108,7 @@ const EXPECTED_CRON_JOBS: readonly string[] = [
   "job-internal-usage-rollup",
   "job-internal-retention-sweep",
   "job-internal-referral-qualification",
-  "worker-messages-outbound",
-  "worker-recording-fetch",
-  "worker-adapter-push",
+  "worker-tick",
   "job-retell-health-failover",
   "job-alert-evaluation",
   "job-reminder-scheduler",

@@ -33,6 +33,13 @@ import {
   type SquareFetch,
 } from "../_shared/providers/square.ts";
 import type { AdapterPushQueueMsg } from "../_shared/queue.ts";
+import {
+  deleteMessage,
+  enqueue,
+  moveToDeadLetter,
+  QUEUE_NAMES,
+  readBatch,
+} from "../_shared/queue.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
@@ -1066,6 +1073,69 @@ export async function pushToAdapter(
     return false;
   }
   return pusher(sql, msg, logger, deps);
+}
+
+// ---------------------------------------------------------------------------
+// Batch-poll entry point (OPS-3, docs/BUILD_NOTES.md) — see
+// worker-messages-outbound/handler.ts's identical-purpose comment. Moved
+// out of `index.ts` so `worker-tick/handler.ts` can invoke this queue's
+// poll in-process alongside the other two workers.
+// ---------------------------------------------------------------------------
+
+export const ADAPTER_PUSH_VISIBILITY_TIMEOUT_SECONDS = 45;
+export const ADAPTER_PUSH_BATCH_SIZE = 20;
+export const ADAPTER_PUSH_MAX_ATTEMPTS = 6; // BACKEND_SPEC §9
+
+export interface RunAdapterPushWorkerResult {
+  pushed: number;
+  dead_lettered: number;
+  batch_size: number;
+}
+
+export async function runAdapterPushWorker(
+  sql: SqlClient,
+  logger: Logger,
+  deps: AdapterPushDeps,
+): Promise<RunAdapterPushWorkerResult> {
+  const batch = await readBatch<AdapterPushQueueMsg>(
+    sql,
+    QUEUE_NAMES.adapterPush,
+    ADAPTER_PUSH_VISIBILITY_TIMEOUT_SECONDS,
+    ADAPTER_PUSH_BATCH_SIZE,
+  );
+
+  let pushed = 0;
+  let deadLettered = 0;
+
+  for (const row of batch) {
+    const msg = row.message;
+    const ok = await pushToAdapter(sql, msg, logger, deps);
+    if (ok) {
+      await deleteMessage(sql, QUEUE_NAMES.adapterPush, row.msg_id);
+      pushed += 1;
+      continue;
+    }
+
+    if (msg.attempt + 1 >= ADAPTER_PUSH_MAX_ATTEMPTS) {
+      await moveToDeadLetter(sql, QUEUE_NAMES.adapterPush, row.msg_id, msg);
+      logger.error("worker_adapter_push_exhausted", {
+        tenant_id: msg.tenant_id,
+        adapter: msg.adapter,
+        entity_id: msg.entity_id,
+      });
+      deadLettered += 1;
+      // T7 TODO: once a dashboard "sync failed" banner surface exists, flip
+      // a per-entity sync-status flag here so it renders (BACKEND_SPEC §9).
+    } else {
+      await deleteMessage(sql, QUEUE_NAMES.adapterPush, row.msg_id);
+      await enqueue(sql, QUEUE_NAMES.adapterPush, {
+        ...msg,
+        attempt: msg.attempt + 1,
+      } satisfies AdapterPushQueueMsg);
+    }
+  }
+
+  return { pushed, dead_lettered: deadLettered, batch_size: batch.length };
 }
 
 // ---------------------------------------------------------------------------

@@ -11528,3 +11528,226 @@ as an optional override, not a separately-required secret.
 entry. `docs/LAUNCH_STATUS.md` — removed `RETELL_WEBHOOK_SIGNING_SECRET`
 from the owner-blocked list (the first-call prerequisite on the Retell
 side is now met via `RETELL_API_KEY`, already provisioned).
+
+## OPS-3 — one cron request per minute instead of three: the per-job asymmetry, root cause, and fix (2026-09-20)
+
+**Starting point (OPS-2's own gap):** OPS-2 fixed the chronic pg_cron ->
+pg_net timeout floor's *persistence* (`net.worker_restart()` every 10
+minutes) but explicitly left its own measured **per-job asymmetry**
+unexplained: over the 120 minutes before this task, worker-recording-fetch
+arrived ~100% of the time, worker-adapter-push ~68%, worker-messages-
+outbound only ~50% — and OPS-2's own 10-minute restart job measurably did
+**not** move the timeout rate (8 -> 7 timeouts per 12 minutes). This task's
+job was to explain that asymmetry with an experiment, not a theory, and
+fix whatever it showed.
+
+### Experiment log (all times UTC, `sbq.sh` against the live project)
+
+- **16:08:46-16:23:46 — baseline** (`function_edge_logs`, POST arrivals per
+  15-minute window): worker-recording-fetch (cron job 6) 15/15 (100%),
+  worker-adapter-push (job 7) 15/15 (100%), worker-messages-outbound (job
+  5) 8/15 (~53%). `cron.job_run_details.start_time` millisecond ordering,
+  sampled across 5 consecutive minutes (16:20-16:24): job 6 fired first,
+  job 5 second, job 7 third, every cycle in that sample.
+- **16:24:45 — experiment start.** Live-swapped the `net.http_post` `url`
+  between cron job 5 (worker-messages-outbound, worst arrival) and job 6
+  (worker-recording-fetch, best arrival) via `cron.alter_job`. During the
+  swap, `cron.job_run_details` showed the within-minute firing order was
+  **not** perfectly fixed after all (job 6 first at 16:25/26/28/30, job 5
+  first at 16:27/29) — already weakening a pure fixed-dispatch-order
+  theory before the arrival counts even came in.
+- **16:24:45-16:33:46 (9 minutes) — swap result** (`function_edge_logs`):
+  worker-recording-fetch function (now driven by job 5) = 9/9 (100%).
+  worker-messages-outbound function (now driven by job 6) = 3/9 (~33%,
+  *worse* than its own 53% pre-swap baseline). worker-adapter-push
+  (untouched control, job 7) = 9/9 (100%).
+  **Conclusion: the loss follows the TARGET URL/function
+  (worker-messages-outbound), not the cron-job slot or dispatch
+  position.** Job 5 went from bad (53%) to good (100%) the moment it was
+  pointed at a different endpoint; job 6 went from good (100%) to bad
+  (33%) the moment it was pointed at worker-messages-outbound. A pure
+  "single shared pg_net worker, DNS-resolver-state corruption is
+  order/position-dependent" explanation predicts the *opposite* —
+  whichever request happens to lose the race in a given tick, roughly
+  independent of which function it targets — so this experiment rules
+  that reading out as the *whole* story, on top of OPS-2's own
+  already-measured "worker_restart() didn't move the needle" result.
+- **16:35:19 — restored** job 5/job 6 to their original commands
+  (verified via `cron.job` read-back). `job-pgnet-worker-restart`
+  (OPS-2) was left running throughout, untouched.
+
+### Cited research (CLAUDE.md Rule 1 — fetched live this session)
+
+- `github.com/supabase/pg_net`'s own `src/worker.c` (fetched 2026-09-20):
+  the background worker's `curl_multi_init()` handle is created **once**
+  at worker startup, stored in the long-lived `worker_state` struct, and
+  reused for **every** subsequent batch/tick. `curl_global_init(CURL_
+  GLOBAL_ALL)` is called once for the whole worker process. No
+  `CURLMOPT_MAX_HOST_CONNECTIONS` (or any other per-host connection cap)
+  and no `CURLOPT_HTTP_VERSION` override is set anywhere in the file.
+  Each batch's rows are added to that one persistent multi handle via a
+  plain sequential `for` loop (`curl_multi_add_handle` per row) before
+  the event loop (`curl_multi_socket_action`) begins.
+- `curl.se/libcurl/c/CURLMOPT_PIPELINING.html` (fetched 2026-09-20):
+  "Since 7.62.0, CURLPIPE_MULTIPLEX is enabled by default" — "If this bit
+  is set, libcurl tries to multiplex the new transfer over an existing
+  connection if possible," and multiplexing only applies "when the same
+  hostname is used for subsequent transfers." pg_net never disables this
+  (confirmed above), and its persistent multi handle is exactly the
+  "same multi handle reused for subsequent transfers" precondition.
+- `curl.se/libcurl/c/CURLOPT_HTTP_VERSION.html` (fetched 2026-09-20): the
+  default for an HTTPS connection has been `CURL_HTTP_VERSION_2TLS`
+  (prefer HTTP/2 over TLS) since curl 7.62.0.
+- **Inference (beyond directly-documented fact, flagged per this
+  project's own Rule-1 convention):** three `net.http_post` calls fired
+  in the same pg_cron tick, to the same host, through pg_net's one
+  persistent libcurl multi handle, with HTTP/2 multiplexing on by
+  default and nothing disabling it, are positioned to be multiplexed
+  onto a single shared TCP/TLS connection as concurrent HTTP/2 streams
+  rather than opening three independent connections. If that is what's
+  happening, one function's response being disproportionately slow
+  (worker-messages-outbound's, per the swap experiment) can starve or
+  coincide with lost responses for the *other* streams sharing that one
+  connection too — consistent with both (a) the specific, repeatable
+  per-function asymmetry the experiment demonstrated and (b) OPS-2's
+  separately measured ~30% *baseline* loss rate that wasn't confined to
+  worker-messages-outbound alone historically. curl/curl#18216 (cited by
+  OPS-2: a DNS-timeout leaves pg_net's single shared c-ares channel "in
+  an invalid state... does not self-recover" until the worker restarts)
+  remains a plausible compounding factor for the *chronic floor*, but
+  does not by itself explain the swap result, which is why this entry
+  treats it as a contributing, not sole, cause.
+  **VERIFY.md gap**: the precise, final-mile reason worker-messages-
+  outbound's specific endpoint was disproportionately slow/lossy at
+  Supabase's edge was not independently confirmed against Supabase's own
+  current docs from this environment — logged as a VERIFY item rather
+  than guessed at further (CLAUDE.md Rule 1 item 2).
+
+### Decision and fix
+
+Regardless of the exact final-mile mechanism, the evidence is unanimous
+on the *removable condition*: **three concurrent `net.http_post` calls to
+the same host, in the same pg_cron tick, sharing pg_net's one persistent
+connection/multiplexing state.** The fix removes that condition at its
+source (OPS-2's `net.worker_restart()` is **kept** as a defense-in-depth
+backstop for the resolver-corruption failure mode, not superseded):
+
+- New edge function `supabase/functions/worker-tick/` (`index.ts` +
+  `handler.ts` + `handler.test.ts`), `verify_jwt = false` + `x-cron-secret`
+  auth exactly like every other `worker-*`/`job-*` function.
+  `handler.ts#runWorkerTick` invokes all three queue workers' own
+  batch-poll logic **in-process, concurrently**, each under its own
+  12-second hard timeout (`_shared/timeout.ts#withTimeout`, already used
+  by `voice-tools`) so one stuck queue can't starve the other two inside
+  the single `net.http_post` 15-second budget, and returns one combined
+  JSON report.
+- Each of the three workers' read-batch/retry/dead-letter loop, which
+  used to live only in that function's own (untested, Deno-only)
+  `index.ts`, was moved into its own portable, unit-tested `handler.ts`
+  as a new exported `run*Worker` function (`runOutboundWorker`,
+  `runRecordingFetchWorker`, `runAdapterPushWorker`) — reused by both that
+  function's own `index.ts` (unchanged behavior, still independently
+  invocable) and by `worker-tick`. No business logic changed, only where
+  the loop lives (diff is a pure move, confirmed by reading the diffs).
+- **NOT_CONFIGURED per-leg isolation (found during THIS task's own live
+  deploy, fixed in scope — not deferred):** the first `worker-tick`
+  deploy built all three legs' deps with module-scope `requireEnv`,
+  exactly mirroring each original `index.ts`. That silently regressed
+  reliability: before this task, worker-messages-outbound's missing
+  Twilio/Resend secrets (unprovisioned on this project — see
+  docs/LAUNCH_STATUS.md's "Secrets now set" list and OPS-1's own text)
+  crashed *only that function* at cold start; worker-recording-fetch and
+  worker-adapter-push kept polling successfully as their own independent
+  jobs. Combining all three into one function meant ANY one leg's
+  missing secret crashed the WHOLE function, silently taking the other
+  two legs' polling down with it too — confirmed live: `worker-tick`
+  returned 500 `WORKER_ERROR` for every invocation (unauthenticated
+  AND cron-authenticated) from its first deploy (16:37:07) onward, and
+  `function_edge_logs` shows a 5-minute stretch (16:42-16:46) where cron
+  fired every minute (`cron.job_run_details` all `succeeded` — the SQL
+  statement submitting the request never failed) but ZERO requests
+  reached the edge at all — consistent with the platform backing off
+  spawning new isolates for a function that crashes on every cold start,
+  a distinct failure mode from the same-tick multiplexing issue above.
+  Fixed in `handler.ts` (a `NotConfiguredLeg` marker + `notConfigured()`
+  + `runLeg()`, all covered by new `handler.test.ts` cases) and
+  `index.ts` (each leg's required vars checked with `missingEnv` — the
+  OPS-1 pattern — instead of module-scope `requireEnv`; only
+  `CRON_INVOKE_SECRET`, the shared auth boundary, stays hard-required).
+  A leg with a missing secret now reports `{status: "skipped", missing:
+  [...]}` and is simply never invoked; the other two legs still run
+  normally in the same request. Redeployed as version 2 at 16:46:58;
+  confirmed live immediately after (cron-authenticated POST):
+  `messages_outbound` `skipped` (`missing: ["TWILIO_ACCOUNT_SID",
+  "TWILIO_AUTH_TOKEN", "RESEND_API_KEY", "RESEND_FROM_ADDRESS"]`),
+  `recording_fetch` and `adapter_push` both `ok`. Since that redeploy,
+  every cron-fired minute has arrived at the edge (16:47-16:50 sample:
+  1/1 each minute, plus the manual verification calls).
+- Migration `supabase/migrations/20260920163500_worker_tick_cron.sql`
+  (additive, idempotent, `fn_cron_upsert`-based like
+  `20260910093000_queues_and_scheduled_jobs.sql`/
+  `20260920160500_pgnet_worker_restart_cron.sql`): unschedules
+  `worker-messages-outbound`/`worker-recording-fetch`/`worker-adapter-push`
+  and schedules `worker-tick` at `* * * * *` in their place. **Note**:
+  this file was applied live via `sbq.sh` before the NOT_CONFIGURED
+  finding above, so its own inline comment (lines ~57-60, "the swap
+  experiment showing the loss follows dispatch position") states an
+  earlier, mid-experiment hypothesis that the swap result itself then
+  refuted. Per CLAUDE.md Rule 2 ("never edit an applied migration"), that
+  comment was left as-is rather than edited post-apply — this BUILD_NOTES
+  entry (not the migration file) is the corrected, authoritative account;
+  `handler.ts`'s own header comment (not yet applied/live-database
+  content, safe to correct) was fixed to match.
+- `supabase/config.toml`: added `[functions.worker-tick]` /
+  `verify_jwt = false`.
+- `scripts/ci/cron-queues-check.ts`'s `EXPECTED_CRON_JOBS`: the three
+  `worker-*` entries replaced with `worker-tick`.
+
+### Deploy + live measurement
+
+Deployed `worker-tick` (twice — v1, then v2 with the NOT_CONFIGURED fix),
+`worker-messages-outbound`, `worker-recording-fetch`, `worker-adapter-push`
+(`supabase functions deploy --use-api`). Boot-check (unauthenticated POST,
+expect 401), final state: worker-tick 401, worker-recording-fetch 401,
+worker-adapter-push 401 — all three correctly enforce auth before any
+handler work. worker-messages-outbound (the STANDALONE function, unchanged
+by this task) still 500s `WORKER_ERROR` unauthenticated — **pre-existing,
+not a regression**: confirmed present in `net._http_response` 13 times in
+the 24 minutes immediately before this task's first deploy (16:00-16:24
+UTC), same `requireEnv("TWILIO_ACCOUNT_SID"/...)` call this task never
+touched. Out of scope here per CLAUDE.md Rule 4 (a distinct,
+already-tracked gap, same class as OPS-1's).
+
+Migration applied live via `sbq.sh` (whole `.sql` file as one query) and
+recorded in `supabase_migrations.schema_migrations`. `cron.job` read-back:
+the three old `worker-*` jobs are gone, `worker-tick` (jobid 27) scheduled
+`* * * * *`.
+
+**Before/after (function_edge_logs POST arrivals):**
+
+| | Before (3 separate `* * * * *` jobs) | After (`worker-tick`, 1 job) |
+|---|---|---|
+| worker-recording-fetch | 15/15 (100%), 15-min baseline | folded into worker-tick |
+| worker-adapter-push | 15/15 (100%), 15-min baseline | folded into worker-tick |
+| worker-messages-outbound | 8/15 (~53%), 15-min baseline; 3/9 (~33%) once isolated by the swap experiment | folded into worker-tick |
+| **Combined lane arrival** | 38/45 requests (~84%), but the messages-outbound queue specifically went unserviced ~47-67% of ticks | **worker-tick: 8/8 (100%)**, every minute 16:47-16:54 UTC (8 consecutive minutes immediately after the v2/NOT_CONFIGURED fix deployed at 16:46:58) |
+| `net._http_response`, all cron jobs combined | OPS-2's own 6-hour sample: ~30% chronic timeout floor (448-468/~1542) | 16/17 (94%) succeeded, 1 timeout, in the 8 minutes 16:46:58-16:54:58 UTC across every cron job on the project (not just worker-tick) |
+
+worker-tick's own queue-processing results in that window: `recording_fetch`
+and `adapter_push` legs `ok` every invocation (`processed`/`pushed`
+0 — queues empty, expected, no live traffic yet); `messages_outbound` leg
+`skipped` every invocation (`missing: ["TWILIO_ACCOUNT_SID",
+"TWILIO_AUTH_TOKEN", "RESEND_API_KEY", "RESEND_FROM_ADDRESS"]` —
+pre-existing, out of scope, see above).
+
+### Gates
+
+`cd supabase/functions && npx vitest run` — 102/102 files, 929/929 tests
+(was 101/923 before this task; +1 file/+6 tests for `worker-tick`'s own
+dispatcher tests — concurrency, timeout, partial-failure, and the two
+NOT_CONFIGURED/skip cases — against injected fake runners, not re-testing
+each worker's already-covered business logic). `pnpm -w typecheck` —
+21/21 packages green. `npx biome check --write` on every changed file —
+clean (auto-reformat only, import-sort/wrap, no logic change); a
+full-repo `biome check` afterward shows only 43 pre-existing warnings,
+none in any file this task touched.

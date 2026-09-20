@@ -8,6 +8,19 @@ docs.retellai.com/features/webhook-overview, confirmed 2026-09-20), and
 `voice-inbound`, and `job-keep-warm` no longer require a separately-set
 `RETELL_WEBHOOK_SIGNING_SECRET` — see `docs/BUILD_NOTES.md` OPS-4.
 
+**OPS-3 (2026-09-20)**: explained OPS-2's own unexplained per-job
+asymmetry with a live experiment (URL-swap between the best/worst-arrival
+cron jobs) — the timeout loss followed the TARGET function
+(worker-messages-outbound), not the job/dispatch slot, pointing at
+same-tick HTTP/2-multiplexed contention on pg_net's one shared connection
+rather than pure DNS-resolver corruption alone. Fixed by replacing the
+three separate per-minute `worker-messages-outbound`/
+`worker-recording-fetch`/`worker-adapter-push` pg_cron jobs with one
+combined `worker-tick` job that runs all three in-process; measured
+arrival went from ~53-100% per function (one function chronically ~53%)
+to 100% (8/8 minutes) for the single combined request — full experiment
+log, citations, and before/after in `docs/BUILD_NOTES.md` OPS-3.
+
 **OPS-2 (2026-09-20)**: ~30% of pg_cron→pg_net calls were timing out
 chronically (flat across all 25 jobs, independent of schedule overlap) —
 root cause is a single-worker pg_net/libcurl DNS-resolver-state bug
