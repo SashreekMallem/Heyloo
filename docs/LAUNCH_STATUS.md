@@ -1,5 +1,39 @@
 # Launch Status
 
+**OPS-5 (2026-09-20)**: four functions (`webhooks-stripe`,
+`webhooks-paypal`, `webhooks-twilio-sms`, `api-text-chat`) crashed at cold
+start (500 `WORKER_ERROR` on every request, including a legitimate signed
+webhook) whenever their provider secret was unset — Stripe/PayPal/Twilio/
+Anthropic aren't provisioned yet. Fixed to fail CLOSED with a clean 503
+`{"error":"not_configured"}` instead of crashing the isolate; proven live
+via curl (500 → 503 on all four; `worker-messages-outbound` was already
+correct, 401 throughout). Batch-test flakiness had two real causes, both
+fixed: `create_booking` now resolves a hallucinated `resource_id`
+server-side (falls back to `resource_name` or the first genuinely-open
+resource, never fails the booking outright over a model-recall error);
+`lookup_customer`'s G6 guard no longer rejects every batch-test call
+outright for having no caller id — it looks the caller up by the number
+they state instead, still tenant-scoped, flagged `unverified` until the
+agent reads the name back and confirms (real calls, which always have a
+caller id, are completely unaffected). Root-caused (but deliberately did
+NOT fix, out of this task's scope — flagged for whoever owns `voice-tools/
+context.ts` next) why `dental`'s `tool_health` rows were always empty:
+every batch-test call shares the literal `call_id` `"playground"`, so
+`call_logs`' unique-on-`retell_call_id` cache permanently attributes every
+tenant's batch test to whichever tenant ran the FIRST one ever (`auto`,
+confirmed live — 275 rows under `auto`, zero under `dental`, before this
+fix). Fixed `tool_health`'s own attribution independently (a per-call
+`heyloo_tenant_id` signal that can't collide the way the cached row does)
+— proven live: `dental`'s re-run now shows 7/7 `tool_health` rows
+correctly tagged with its own tenant id. Also closed a real
+`VoiceProvider.compileTemplate` type-honesty gap (`packages/
+canonical-types`/`packages/adapters/retell`) and fixed the admin
+template-publish route to pass its compile inputs explicitly rather than
+relying on an implicit default. Final batch-test re-runs: `auto` 5/8 then
+7/8 (both remaining gaps pre-existing Retell-simulator/model-behavior
+noise, unrelated to this task), `dental` 4/4 clean. Full details:
+`docs/BUILD_NOTES.md`'s OPS-5 entry.
+
 **CALL-5 (2026-09-20)**: the real (non-batch-test) call-event path is
 FIXED and proven live, for the first time. Root cause of `webhook_events`
 having zero rows ever: `createAgent`'s payload (in both

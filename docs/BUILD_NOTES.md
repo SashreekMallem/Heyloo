@@ -12969,3 +12969,281 @@ context.ts` (`is_test_call`/`source` hygiene), `scripts/e2e/
 retell-web-call.ts` (new), `supabase/config.toml` (new function entry).
 New secret: `VOICE_EVENTS_WEBHOOK_URL`. Full narrative + exact live
 Retell docs confirmed: `docs/VERIFY.md`'s CALL-5 entry.
+
+## OPS-5 — Cold-start crashes, batch-test flakiness, tool_health attribution, template-publish parity
+
+**Task 1 — cold-start crashes when optional provider secrets are missing.**
+`webhooks-stripe`, `webhooks-paypal`, `webhooks-twilio-sms`, `api-text-chat`
+each read their provider secret with `requireEnv()` at module scope, so an
+isolate with that secret unset (Stripe/PayPal/Twilio/Anthropic are not
+provisioned yet) threw at cold start on EVERY request, including a
+legitimate signed webhook — confirmed live via curl: all four returned 500
+before this fix, `worker-messages-outbound` (already using the OPS-1
+`missingEnv()` pattern) returned a clean 401 unauthorized throughout, no
+change needed there. Fixed by switching each to `optionalEnv()` and adding
+an explicit gate at the top of the `Deno.serve` handler — before any body
+parsing, signature verification, or provider call runs — that returns 503
+`{"error":"not_configured"}` (webhooks) or the same for `api-text-chat`;
+never processing, never skipping signature verification (CLAUDE.md Rule
+2). Added `_shared/config-gate.ts`, a pure Deno-global-free predicate with
+vitest coverage, since the `index.ts` files themselves are Deno-only
+(excluded from this package's tsconfig/vitest) and can't be unit tested
+directly — proven instead via curl pre/post-deploy (see report) and a live
+redeploy. Live curl proof: all four went 500 → 503
+`{"error":"not_configured"}`; edge-logs confirmation was attempted via the
+analytics endpoint but that endpoint returned "Backend error!" on every
+filtered/time-windowed query this session (a plain unfiltered
+`count(*)`/`limit 5` worked, returning only a handful of rows total — this
+project's edge-logs analytics endpoint appears to have very limited/lagged
+ingestion in this environment, not something this task could fix; the curl
+before/after evidence is the reliable proof here).
+
+**Task 2 — batch-test flakiness, two root causes fixed.**
+
+(a) `create_booking` sometimes sent a bad/invented `resource_id` a few
+turns after `check_availability` returned the real ones (a plain LLM-recall
+error, not an authorization concern). `voice-tools/tools/create_booking.ts`
+now resolves the resource server-side (`resolveBookingResourceId`): exact
+id match (unchanged fast path) → `resource_name` match if the model
+supplied one (new optional field, mirrored into `_shared/schemas/
+voice-tools.ts` and `packages/canonical-types/src/tools.ts`'s
+`zCreateBookingRequest` for schema-parity-test coverage) → first resource
+that genuinely has an `availability_slots` row covering the requested
+window (the same table `check_availability` itself reads, so this can only
+land on a resource that's really open then, never an arbitrary one). A
+fallback firing logs a warning for observability. Deliberately did NOT
+touch the compiled tool schema in `_shared/compiler/template-compiler.ts`/
+`_shared/agent-template-seeds.ts` (7 duplicated per-vertical
+`create_booking` tool-schema blocks) — the server-side resolution is the
+actual fix (tolerates a bad id regardless of what the model sends), and
+editing 7 near-identical JSON blocks for a documentation-only
+`resource_name` hint was judged not worth the diff size/review risk for
+this task; flagged here as a nice-to-have follow-up, not done.
+
+(b) `lookup_customer`'s G6 guard rejected every batch-test call outright
+(no `from_number` — Retell's batch simulator never sets one). Fixed
+authorization reasoning: the strict `args.phone === ctx.callerNumber`
+match still applies, completely unchanged, whenever a live caller number
+exists — a real call's `ctx.callerNumber` is always populated from
+Twilio's `from_number` (`voice-tools/context.ts`), so this is a no-op
+change for every genuine caller. Only when `ctx.callerNumber` is `null`
+(no caller-id-equivalent exists on the channel at all — batch-test/
+chat-completion calls today) does it fall back to looking the caller up by
+the number they (or the simulated persona) state, scoped exactly the same
+as every other tool — tenant-id only, never cross-tenant. The result is
+flagged `unverified: true` with a `message` instructing the agent to read
+the matched name back and get an explicit yes before sharing details or
+making changes — this is the "confirms" half of the authorization the
+task asked for: without a caller ID to authenticate against, the only
+signal left is a name-based read-back-and-confirm, exactly what a human
+receptionist does on a blocked/absent caller ID. Never weakens anything
+for a real call (the whole new branch is provably unreachable — a live
+call always has `ctx.callerNumber` set).
+
+Batch-test evidence across three re-runs (see task 5's table below):
+`lookup_customer` went from rejecting every batch-test call to 2/2, 2/2,
+1/1 success. `create_booking`'s fallback path has direct unit coverage
+(`create_booking.test.ts`'s two new OPS-5 cases) plus indirect live proof
+— every batch-test run's `create_booking` `tool_health` success count
+stayed consistent with the scenario outcomes, no `resource_not_found`
+seen in any run.
+
+**Task 3 — dental `tool_health` rows (root cause + fix).**
+
+Confirmed live root cause: every Retell batch-test/chat-completion tool
+call shares the literal `call_id` `"playground"`
+(`voice-tools/context.ts`'s own documented finding, now further confirmed
+by CALL-5's entry above noting the SAME pre-existing single row).
+`call_logs` is unique on `retell_call_id`, so the FIRST tenant ever to run
+a batch test against that literal id wins a real row permanently — a live
+query confirmed exactly one `call_logs` row for `retell_call_id =
+'playground'`, owned by the `auto` test tenant (`b2efae9d-...`, its
+first-ever batch test, long before the `dental` tenant existed):
+
+```
+select id, tenant_id, retell_call_id, is_test_call, started_at
+from call_logs where retell_call_id = 'playground';
+-- one row, tenant_id = b2efae9d-8309-46d6-a950-31d683616cdc
+```
+
+and 275 `tool_health` rows under that same tenant vs. zero under dental's
+(`select tenant_id, count(*) from tool_health where call_id='playground'
+group by 1` → `{auto: 275, null: 60}`, no dental). `resolveCallContext`'s
+cached-row lookup (its resolution path (a),
+`voice-tools/context.ts`) returns whichever tenant happens to already own
+that row for EVERY later batch-test call from ANY tenant, forever — so
+dental's batch-test tool calls were being silently misattributed to
+`auto`, never dropped (the 60 `tenant_id: null` rows are a separate,
+already-closed artifact: they predate CALL-2/CALL-5's tenant-resolution
+fixes entirely, from before `resolveTenantFromPayload` could resolve a
+batch-test call at all, so no `call_logs` row was ever created for them).
+
+Fixed in the `tool_health` WRITE PATH only, deliberately never touching
+`voice-tools/context.ts` (owned by a concurrent task this task must not
+edit, per its own scope note — read only, to understand the mechanism).
+The underlying `call_logs` collision — and therefore which tenant a
+batch-test call's actual booking/DB writes land under — is UNCHANGED and
+remains open; flagged here for whichever task owns `context.ts` next. What
+this DOES fix, independently and safely: `api-admin-run-agent-tests` sets
+`retell_llm_dynamic_variables.heyloo_tenant_id` to the real tenant under
+test on every single scenario it runs (`api-admin-run-agent-tests/
+handler.ts`) — a per-call signal carried on the tool-call payload itself,
+never cached, so it can never collide the way the shared `call_logs` row
+does. `_shared/tool-stats.ts`'s new `resolveTelemetryTenantId` prefers it
+(when present) over the resolved `ctx.tenantId` when tagging a
+`tool_health` row; a real call never sets that dynamic variable at all
+(`context.ts`'s own confirmed finding), so this is a no-op for production
+traffic — verified via a direct SQL query after re-deploying and hitting a
+snag first (see below), then confirming clean.
+
+Debugging note, honestly logged: the first post-fix dental re-run (4
+scenarios) still showed ZERO dental-tagged `tool_health` rows immediately
+after. Root-caused to test methodology, not the fix: that run's window
+overlapped with a still-settling PRIOR `auto` batch job (Retell's own
+async simulation continuing server-side after this task's poll gave up on
+an unsettled scenario), so a same-time unfiltered query mixed leftover
+`auto` rows into the picture. A single-scenario re-run isolated in time
+(`book_new_caller` only, no other job running concurrently) immediately
+showed the fix working — `tool_health` rows tagged `tenant_id = dental`
+— and the final official 4-scenario dental re-run (task 5's table)
+confirms it cleanly: `select tenant_id, tool_name, count(*) from
+tool_health where tenant_id = 'b8419fe1-40ac-494b-a088-e7d33a87550d' group
+by 1,2` → `check_availability: 3, create_booking: 3,
+send_sms_confirmation: 3, lookup_customer: 1`, all correctly tagged. A
+temporary diagnostic `logger.warn` added mid-investigation was removed
+before the final commit — confirmed via `git diff` showing only the
+intended one-line change.
+
+**Task 4 — admin template-publish + `VoiceProvider.compileTemplate`
+parity.** `admin/handler.ts`'s `POST admin-templates/:key/publish` route
+(the only `compileTemplate` call site under `supabase/functions/admin*`/
+`api-admin-*`, found by grepping `publish` across both those and
+`apps/web/src/app/**/admin`) called `compileTemplate(template,
+toolWebhookUrl)` with no compile-options argument at all, unlike
+`api-admin-provision-test-tenant/handler.ts` and `api-provision/index.ts`,
+which both pass an explicit `{ transferNumber }` looked up from
+`agent_configs`. This route compiles a VERTICAL-WIDE reference/preview
+agent (`agent_templates` — confirmed by reading `resolveTemplateByKey`'s
+own docstring and the web UI caller, `apps/web/.../cockpit/templates/
+[vertical]/page.tsx`, which posts by vertical slug only, no `tenant_id`
+anywhere), never a specific tenant's, so there's no real
+`agent_configs.transfer_number` to look up — fixed to pass
+`{ transferNumber: null }` explicitly: the same honest "no transfer
+configured" input the other two call sites pass for a tenant that
+genuinely hasn't set one yet, rather than a silently-omitted argument that
+happens to default to the same behavior. Zero behavior change, just
+honesty.
+
+Second half: `packages/adapters/retell/src/compiler/conversation-flow.ts`
+had a standing documented gap — the canonical `VoiceProvider.
+compileTemplate(template, target)` interface (`@heyloo/canonical-types`)
+had no tenant-context parameter at all, so `RetellProvider.
+compileTemplate`/`compileRetellTemplate` (this package's PUBLIC entry
+points) could never pass a `transferNumber` through even though
+`compileConversationFlow` itself already accepted one internally (CALL-4).
+Closed it honestly rather than casting: `CompileTemplateOptions`
+(`packages/canonical-types/src/voice-provider.ts`) adds an optional third
+`options` parameter to the interface, threaded through every real layer —
+`RetellProvider.compileTemplate` → `compileTemplateArtifact` →
+`compileRetellTemplate` → `buildFlowRequest` → `compileConversationFlow`
+(`packages/adapters/retell/src/{provider,compiler/index}.ts`) — additive
+and back-compat at every layer (every existing 2-3-arg call keeps
+compiling exactly as before). New coverage in `compiler/index.test.ts`
+proves a `transferNumber` passed at the PUBLIC entry point really reaches
+the compiled `transfer_call` node's destination, and that omitting
+`options` still compiles the honest no-transfer-number fallback. This
+package still isn't wired into any live deploy path (unchanged from
+CALL-4's note) — its only real consumer today is `packages/templates`'
+red-team suite.
+
+**Task 5 — batch-test re-runs (final, official).**
+
+| tenant | run | pass | notes |
+|---|---|---|---|
+| auto | 1 | 5/8 | `book_new_caller`/`ai_disclosure_check` errored ("Ending the conversation early as there might be a loop" — Retell's own simulator loop-detector, the exact pre-existing gap-#2 noise CALL-4's own entry already describes); `wrong_date_caller` never settled within the poll window (Retell's async batch job kept running after this task's poll gave up — pre-existing simulator/infra timing, not a regression) |
+| auto | 2 | 7/8 | `wrong_date_caller` failed on a real, pre-existing, unrelated issue (the model re-dates the caller's corrected date without asking — a date-parsing/prompt issue, nothing to do with `create_booking`'s resource resolution or `lookup_customer`'s G6 guard); every other scenario passed, including `ai_disclosure_check` and `book_new_caller` this time |
+| dental | 1 | 4/4 | clean settle, all four scenarios pass; `tool_health` now shows 7 rows, all correctly tagged `tenant_id = b8419fe1-40ac-494b-a088-e7d33a87550d` (previously always zero) |
+
+Across every run this task made, `lookup_customer` never once rejected a
+batch-test call (previously it rejected 100% of them) and `create_booking`
+never once failed with `resource_not_found`. The remaining failures above
+are the same category of pre-existing Retell-simulator/model-behavior
+noise CALL-2/CALL-4's own entries already documented as out of scope for
+that generation of fixes — not attempted here either, since they're
+unrelated to this task's assigned scope (resource-id hallucination and
+the G6 no-caller-id rejection).
+
+### Gates
+
+`cd supabase/functions && npx vitest run` — 110/110 files, 1026/1026
+tests green (new: `_shared/config-gate.test.ts`, `_shared/
+tool-stats.test.ts`; extended: `voice-tools/tools/create_booking.test.ts`,
+`voice-tools/tools/lookup_customer.test.ts`). `npx tsc -p tsconfig.json
+--noEmit --pretty` clean. `packages/canonical-types`: `npx tsc -b --pretty`
+clean, `npx vitest run` 11/11 files, 166/166 green. `packages/adapters/
+retell`: `npx tsc -b --pretty` clean, `npx vitest run` 20/20 files, 188/188
+green (2 new cases in `compiler/index.test.ts`). `pnpm -w typecheck` —
+21/21 tasks green. `pnpm -w test` — 21/21 tasks green. `npx biome check .`
+— 0 errors (one pre-existing error in a concurrently-edited file, `scripts/
+e2e/retell-web-call.ts`, was already fixed by the other in-flight task by
+the time of the final check), 43 pre-existing warnings untouched by this
+task, 1 info. `npx biome check --write` on every changed file, plus one
+small pre-existing lint fix in `webhooks-twilio-sms/handler.ts` (a file
+this task's task-1 deliverable already touches) to get a clean run.
+
+### Deploys
+
+`webhooks-stripe`, `webhooks-paypal`, `webhooks-twilio-sms`, `api-text-chat`,
+`voice-tools` (twice — once for tasks 2/3, once more after removing a
+temporary debug-only log line), `admin` — all deployed via `npx supabase
+functions deploy <fn> --project-ref qulcubtwqsqgqpfgvorn --use-api --yes
+--import-map supabase/functions/deno.json`, each confirmed live via curl
+and/or a batch-test re-run per task above.
+
+### Cross-agent coordination note
+
+This task ran concurrently with another agent actively editing
+`voice-events`, the web-call e2e path, `api-admin-attach-retell-number`,
+`voice-tools/context.ts`, and `is_test_call` handling in the SAME working
+tree (not a separate worktree) — confirmed live mid-task: a `git stash`
+taken to unblock a `pull --rebase` briefly raced that agent's own
+in-progress edit to `api-provision/index.ts` (caught it in a real,
+momentarily-inconsistent intermediate state — a reference to a
+not-yet-declared const). Resolved by leaving that one file's on-disk
+state untouched (never overwritten from the stash) and verifying every
+other stashed file was either already identical to what the other agent
+had independently rewritten, or unaffected — confirmed via `diff` against
+each stashed file before dropping the stash, zero data loss. No files
+from that agent's scope were edited by this task.
+
+### What remains
+
+- The `_shared/compiler/template-compiler.ts`/`_shared/
+  agent-template-seeds.ts` per-vertical `create_booking` tool-schema JSON
+  (7 duplicated blocks) was not updated to advertise `resource_name` to
+  the model — the server-side fallback resolution works regardless, so
+  this is a prompt-quality nice-to-have, not a correctness gap.
+- The actual `call_logs` collision on the literal `"playground"`
+  `retell_call_id` (task 3's root cause) is unfixed — a batch-test call's
+  real booking/DB writes can still land under the wrong tenant's `ctx.
+  tenantId` when `call_logs` already has a same-`call_id` row from a
+  different tenant's earlier test. Only `tool_health`'s own attribution
+  was fixed independently in this task, deliberately scoped away from
+  `voice-tools/context.ts`. A real fix likely needs a synthetic,
+  per-test-run-unique `retell_call_id` (`api-admin-run-agent-tests` is the
+  only caller in a position to mint one) or a collision-tolerant
+  `resolveCallContext` — flagged for the task that owns `context.ts`.
+- Two `auto`-tenant scenario outcomes this task's re-runs hit
+  (`ai_disclosure_check`'s simulator loop-detector, `wrong_date_caller`'s
+  model re-dating and its poll-window timeout) are the same category of
+  pre-existing Retell-simulator/model-behavior noise CALL-2/CALL-4 already
+  flagged as a separate, out-of-scope follow-up — not attempted here.
+- Could not independently confirm the deliverable-1 fix via the edge-logs
+  analytics endpoint (`GET .../analytics/endpoints/logs.all`) — every
+  filtered/time-windowed query against `function_edge_logs` returned
+  `"Backend error! Retry your query."` this session, including on retry;
+  an unfiltered `count(*)`/`limit 5` worked but returned only a handful of
+  rows total, suggesting very limited log retention/ingestion in this
+  environment rather than a query-syntax issue on this task's end. The
+  curl before/after evidence (500 → 503 for all four functions) is the
+  reliable proof recorded instead.
