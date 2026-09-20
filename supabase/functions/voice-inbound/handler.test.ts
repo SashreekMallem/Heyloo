@@ -86,6 +86,11 @@ describe("handleVoiceInbound", () => {
       language: "en",
       disclosure_line: BASE_ROW.disclosure_line,
       transfer_number: "+15550001111",
+      // CALL-6 (docs/BUILD_NOTES.md): NOW is Monday 2026-01-12 America/
+      // New_York — the next 7 calendar days, tenant-timezone-local.
+      upcoming_weekday_dates:
+        "Tuesday=2026-01-13, Wednesday=2026-01-14, Thursday=2026-01-15, " +
+        "Friday=2026-01-16, Saturday=2026-01-17, Sunday=2026-01-18, Monday=2026-01-19",
     });
     expect(result.body.call_inbound.dynamic_variables.caller_recent_context).toBeUndefined();
   });

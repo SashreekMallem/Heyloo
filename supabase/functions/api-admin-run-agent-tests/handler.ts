@@ -1,4 +1,7 @@
-import { computeCurrentDateContext } from "../_shared/business-hours.ts";
+import {
+  computeCurrentDateContext,
+  computeUpcomingWeekdayDates,
+} from "../_shared/business-hours.ts";
 import type { RetellFetch } from "../_shared/providers/retell.ts";
 import {
   createBatchTest,
@@ -419,6 +422,7 @@ export async function runAgentTests(
 
     startedAt = now().toISOString();
     const currentDateContext = computeCurrentDateContext(now(), tenant.timezone);
+    const upcomingWeekdayDates = computeUpcomingWeekdayDates(now(), tenant.timezone);
     caseDefinitions = [];
     for (const scenario of scenarios) {
       const created = await createTestCaseDefinition(deps.retellFetch, deps.retellApiKey, {
@@ -447,6 +451,12 @@ export async function runAgentTests(
           // instead of honestly reporting `none_available`.
           current_date: currentDateContext.date,
           current_weekday: currentDateContext.weekday,
+          // CALL-6 (docs/BUILD_NOTES.md) — the `wrong_date_caller`
+          // scenario's own finding: the model still gets weekday-name
+          // arithmetic ("next Monday") wrong even with current_date/
+          // current_weekday alone. A precomputed lookup removes the need
+          // for the model to compute it itself.
+          upcoming_weekday_dates: upcomingWeekdayDates,
         },
       });
       const createdBody = created.body as { test_case_definition_id?: string };

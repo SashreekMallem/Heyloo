@@ -95,6 +95,41 @@ export function computeCurrentDateContext(
   };
 }
 
+/**
+ * CALL-6 (docs/BUILD_NOTES.md — OPS-5's own `wrong_date_caller` finding,
+ * "the model re-dates the caller's corrected date without asking"):
+ * `current_date`/`current_weekday` alone still leaves the model to do
+ * weekday-name-to-calendar-date arithmetic ("next Monday") itself —
+ * confirmed live that it gets this wrong even when told the anchor date
+ * (e.g. computing "next Monday" from a Sunday anchor as 11 days out and
+ * not even landing on an actual Monday). Same fix pattern as `current_
+ * date` itself (SYSTEM_DESIGN §5: "timezone math baked in at
+ * materialization, never in the hot path", and never left for the model
+ * to compute): precomputes the next 7 calendar days' weekday->date
+ * mapping, tenant-timezone-local, as a single compact lookup string the
+ * prompt can hand the model instead of asking it to count days — e.g.
+ * `"Monday=2026-09-21, Tuesday=2026-09-22, ..., Sunday=2026-09-27"`
+ * (starting tomorrow, so "today" — already covered by `current_date`/
+ * `current_weekday` — is never duplicated in it).
+ */
+export function computeUpcomingWeekdayDates(now: Date, timeZone: string): string {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "long",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const entries: string[] = [];
+  for (let offset = 1; offset <= 7; offset++) {
+    const day = new Date(now.getTime() + offset * 24 * 60 * 60 * 1000);
+    const parts = formatter.formatToParts(day);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+    entries.push(`${get("weekday")}=${get("year")}-${get("month")}-${get("day")}`);
+  }
+  return entries.join(", ");
+}
+
 export function computeGreetingHoursContext(
   now: Date,
   timeZone: string,

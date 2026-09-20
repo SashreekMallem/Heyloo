@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeGreetingHoursContext } from "./business-hours.ts";
+import { computeGreetingHoursContext, computeUpcomingWeekdayDates } from "./business-hours.ts";
 
 const TZ = "America/New_York"; // EST = UTC-5 in January
 const HOURS = {
@@ -63,5 +63,31 @@ describe("computeGreetingHoursContext", () => {
       exceptions,
     );
     expect(result).toBe("We're open until 1 PM.");
+  });
+});
+
+describe("computeUpcomingWeekdayDates", () => {
+  it("CALL-6: lists the next 7 calendar days' weekday->date mapping, tenant-timezone-local, starting tomorrow", () => {
+    // 2026-01-12T14:00:00Z is Monday 09:00 America/New_York.
+    const result = computeUpcomingWeekdayDates(new Date("2026-01-12T14:00:00.000Z"), TZ);
+    expect(result).toBe(
+      "Tuesday=2026-01-13, Wednesday=2026-01-14, Thursday=2026-01-15, " +
+        "Friday=2026-01-16, Saturday=2026-01-17, Sunday=2026-01-18, Monday=2026-01-19",
+    );
+  });
+
+  it("never includes today (already covered by current_date/current_weekday) — starts strictly tomorrow", () => {
+    const result = computeUpcomingWeekdayDates(new Date("2026-01-12T14:00:00.000Z"), TZ);
+    expect(result).not.toContain("2026-01-12");
+    expect(result.split(", ")).toHaveLength(7);
+  });
+
+  it("wraps correctly across a month boundary", () => {
+    // 2026-01-29T14:00:00Z is Thursday 09:00 America/New_York.
+    const result = computeUpcomingWeekdayDates(new Date("2026-01-29T14:00:00.000Z"), TZ);
+    expect(result).toBe(
+      "Friday=2026-01-30, Saturday=2026-01-31, Sunday=2026-02-01, " +
+        "Monday=2026-02-02, Tuesday=2026-02-03, Wednesday=2026-02-04, Thursday=2026-02-05",
+    );
   });
 });

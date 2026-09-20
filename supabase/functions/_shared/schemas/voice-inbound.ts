@@ -43,6 +43,11 @@ export const VoiceInboundDynamicVariablesSchema = z.object({
   // same Node/Deno boundary this file's own header already documents).
   current_date: z.string(),
   current_weekday: z.string(),
+  // CALL-6 (docs/BUILD_NOTES.md) — a ready-made weekday-name->date lookup
+  // for the next 7 days (`computeUpcomingWeekdayDates`), so the model
+  // never has to compute "next Monday" itself; see agent-template-seeds.ts'
+  // CURRENT_DATE guidance for the exact prompt wording.
+  upcoming_weekday_dates: z.string(),
   special_instructions: z.string(),
   manager_name: z.string().optional(),
   manager_phone: z.string().optional(),

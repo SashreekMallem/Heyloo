@@ -1,6 +1,7 @@
 import {
   computeCurrentDateContext,
   computeGreetingHoursContext,
+  computeUpcomingWeekdayDates,
 } from "../_shared/business-hours.ts";
 import { normalizeE164 } from "../_shared/phone.ts";
 import type {
@@ -125,6 +126,7 @@ export async function handleVoiceInbound(params: {
     row.hours_exceptions as never,
   );
   const currentDateContext = computeCurrentDateContext(now, row.timezone);
+  const upcomingWeekdayDates = computeUpcomingWeekdayDates(now, row.timezone);
 
   // GAP_REGISTER §1.3 — every per-vertical `{{token}}` the compiled prompt
   // may reference (tow partner, practice areas, rate table, menu, ...),
@@ -145,6 +147,7 @@ export async function handleVoiceInbound(params: {
     timezone: row.timezone,
     current_date: currentDateContext.date,
     current_weekday: currentDateContext.weekday,
+    upcoming_weekday_dates: upcomingWeekdayDates,
     special_instructions: row.special_instructions ?? "",
     is_manual_mode: row.manual_mode,
     language: row.language_primary,
