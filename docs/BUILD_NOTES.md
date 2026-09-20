@@ -13468,3 +13468,96 @@ and direct SQL verification above.
 - The pre-existing 18 `auto`-tenant bookings this task marked `is_test =
   true` were NOT reassigned to whichever tenant "really" created each one
   — that information doesn't exist to reconstruct honestly (Task 3).
+
+## OPS-6 — CI "Cron jobs + pgmq queues check" red since 65fe307: `worker-tick` never scheduled on a fresh CI stack (2026-09-20)
+
+**Symptom**: CI red on `main` since `65fe307` (OPS-3). Every job green
+except `node --experimental-strip-types scripts/ci/cron-queues-check.ts`
+against a fresh `supabase start` local stack:
+```
+cron-queues-check FAILED:
+  - missing cron.job entries: worker-tick
+```
+All other 19 `EXPECTED_CRON_JOBS` entries (in
+`scripts/ci/cron-queues-check.ts`) were present. No migration file was
+touched by this task (CLAUDE.md Rule 2 — `20260920163500_worker_tick_
+cron.sql` is applied live and was never edited).
+
+**Root cause**: `20260920163500_worker_tick_cron.sql` (OPS-3) gates
+`fn_cron_upsert('worker-tick', ...)` behind the same three-part check every
+other HTTP-calling job migration uses — `pg_cron` extension present, then
+`pg_net` + `supabase_vault` extensions present, then the
+`cron_functions_base_url`/`cron_invoke_secret` Vault secrets actually
+populated — skipping with a `raise notice` and returning early if any gate
+fails. On a fresh `supabase start`, migrations apply in filename order
+*before* any Vault secret exists, so this migration's own first pass always
+skips scheduling `worker-tick` (expected — every sibling vault-gated
+migration skips its jobs on first apply too, by the same design documented
+in `20260910093000_queues_and_scheduled_jobs.sql`'s header comment).
+`cron-queues-check.ts` accounts for exactly this: after `supabase start`
+finishes, it inserts CI-only dummy Vault secrets, then re-applies a fixed
+`CRON_MIGRATIONS` list of migration files so their vault-gated
+`fn_cron_upsert` calls run again, now with secrets present. That list was
+`20260910093000_queues_and_scheduled_jobs.sql`,
+`20260910100500_new_job_cron_schedules.sql`, and
+`20260910100600_job_keep_warm_cron_schedule.sql` — written before
+`20260920163500_worker_tick_cron.sql` (OPS-3) existed, and OPS-3 never
+added its own new vault-gated migration to this list. So on every fresh CI
+`supabase start`: first apply skips `worker-tick` (no secrets yet, exactly
+as designed), and the re-apply step never re-runs
+`20260920163500_worker_tick_cron.sql` either (not in `CRON_MIGRATIONS`) —
+`worker-tick` ends up scheduled nowhere in CI, while every job scheduled
+by the three older files gets picked up correctly on the re-apply pass.
+This is a CI-script gap only, not a migration or live-project bug: the
+live project applied `20260920163500` once, directly, after
+`cron_functions_base_url`/`cron_invoke_secret` already existed in its
+Vault (per `docs/DEPLOY.md` §3.6's deploy order), so its gate passed on
+that single real apply and `worker-tick` has been scheduled and running
+there (`* * * * *`) the whole time — confirmed via the `sbq.sh` SQL helper
+against the live project both before and after this fix, no observed
+gap or downtime.
+
+Sibling file `20260920160500_pgnet_worker_restart_cron.sql`
+(`job-pgnet-worker-restart`, OPS-2) is NOT affected by this same gap and
+does not need to be added to `CRON_MIGRATIONS`: its `fn_cron_upsert` call
+is DB-internal only (`net.worker_restart()`, no HTTP call, no Vault
+secret), gated only on `pg_cron` being present, so it schedules
+unconditionally on the very first fresh `supabase start` apply, before any
+Vault secret exists — which is exactly why it was already present in CI
+and not named in the original bug report alongside `worker-tick`. (Several
+other migrations — `20260910122000_motel_deposit_hold_expiry_cron.sql`,
+`20260910140100_commission_accrual_cron_schedule.sql`,
+`20260910160000_wave2_cron.sql`,
+`20260911140100_job_outreach_review_score_cron_schedule.sql` — call
+`fn_cron_upsert` too, some Vault-gated and some not, but schedule jobs
+that are not in `EXPECTED_CRON_JOBS`; out of this task's scope per CLAUDE.md
+Rule 4, left untouched.)
+
+**Fix**: added `"supabase/migrations/20260920163500_worker_tick_cron.sql"`
+to the `CRON_MIGRATIONS` array in `scripts/ci/cron-queues-check.ts`
+(alongside the three existing entries, in filename order) and corrected
+that array's header comment, which had drifted to "every file that calls
+`fn_cron_upsert`" (false — `20260920160500_pgnet_worker_restart_cron.sql`
+also calls it and is deliberately excluded) to instead state the actual
+criterion: every migration whose `fn_cron_upsert` call is gated behind the
+pg_net/supabase_vault/vault-secrets-present check. No migration was
+created or edited — CLAUDE.md Rule 2 ("never edit an applied migration")
+does not apply to a CI script, and no new schema change was needed since
+`20260920163500` already contains the correct, working guard/schedule
+logic; it just wasn't in the CI re-apply list.
+
+**Verification**:
+- `sbq.sh "select jobname, schedule from cron.job order by 1"` against the
+  live project, both before and after this change: 24 rows including
+  `{"jobname":"worker-tick","schedule":"* * * * *"}`, unchanged — the live
+  job was never at risk and needed no live migration (this was a
+  CI-stack-only gap).
+- `pnpm lint` — 0 errors (33 pre-existing warnings, unrelated files).
+- `pnpm typecheck` — 21/21 packages green (`scripts/ci/*` is
+  dependency-free, outside the pnpm workspace, run only via
+  `node --experimental-strip-types`, per the script's own header comment —
+  consistent with `scripts/ci/rls-cross-tenant-probe.ts`).
+- Docker/`supabase start` unavailable in this sandbox (no daemon), so the
+  full fresh-stack repro (`cron-queues-check.ts` actually turning green)
+  was verified by re-reading GitHub Actions CI after pushing rather than
+  locally — see the run linked from this task's final report.

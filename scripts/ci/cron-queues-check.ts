@@ -141,14 +141,32 @@ const EXPECTED_QUEUES: readonly string[] = [
 /**
  * Migration files (in filename/apply order) whose statements are safe and
  * meaningful to re-run after the CI-only vault secrets are inserted — every
- * file that calls `fn_cron_upsert`. Listed explicitly (rather than grepped
- * at runtime) so this script fails loudly if a new such migration is added
- * without updating it, instead of silently widening what gets re-applied.
+ * file whose `fn_cron_upsert` call(s) are gated behind the pg_net +
+ * supabase_vault + vault-secrets-present check (so on a fresh `supabase
+ * start`, before this script's dummy secrets exist, that job is skipped
+ * with a NOTICE and only appears once the file is re-run here). A
+ * DB-internal-only job like `job-pgnet-worker-restart`
+ * (`20260920160500_pgnet_worker_restart_cron.sql`) schedules unconditionally
+ * as soon as pg_cron exists — no Vault dependency — so it's already present
+ * after the first `supabase start` apply and doesn't need to be listed here.
+ * Listed explicitly (rather than grepped at runtime) so this script fails
+ * loudly if a new such migration is added without updating it, instead of
+ * silently widening what gets re-applied.
+ *
+ * OPS-6 (docs/BUILD_NOTES.md): `20260920163500_worker_tick_cron.sql`
+ * (OPS-3) is Vault-gated exactly like the three files below but was never
+ * added here when it landed, so on every fresh CI `supabase start` its
+ * `worker-tick` job was scheduled nowhere — not on first apply (no Vault
+ * secrets yet) and not by this re-apply step (file missing from this list).
+ * This was a CI-script gap only; the live project's `worker-tick` job
+ * (scheduled when `20260920163500` first applied there, Vault secrets
+ * already present) was never affected.
  */
 const CRON_MIGRATIONS: readonly string[] = [
   "supabase/migrations/20260910093000_queues_and_scheduled_jobs.sql",
   "supabase/migrations/20260910100500_new_job_cron_schedules.sql",
   "supabase/migrations/20260910100600_job_keep_warm_cron_schedule.sql",
+  "supabase/migrations/20260920163500_worker_tick_cron.sql",
 ];
 
 function main(): void {
