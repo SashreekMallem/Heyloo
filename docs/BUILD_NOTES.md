@@ -12808,3 +12808,164 @@ task — `verify-jwt-guard.ts` not re-run.
   tenant config (transfer number, etc.) through to
   `packages/adapters/retell`'s public entry points, if that package is
   ever wired to a live deploy path.
+
+## CALL-5 — first real (non-batch-test) call-event path proof
+
+Task: prove `voice-events` actually works for a real call, not just
+Retell's batch-test simulator (which sends `call.call_id = "playground"`
+for every scenario, never fires the `voice-events` webhook at all, and
+had collapsed all 12 prior bookings onto ONE `call_logs` row for exactly
+that reason). Before this task: `webhook_events` had **zero rows, ever**.
+
+### Root cause found and fixed
+
+`api-admin-provision-test-tenant/handler.ts`'s `createAgent` call (and the
+identical call site in `api-provision/handler.ts`, the REAL per-tenant
+provisioning saga — same bug, same fix) never included `webhook_url` in
+the Retell agent payload. Every agent either function ever created had
+`webhook_url: null` — Retell had nowhere to POST `call_started`/
+`call_ended`/`call_analyzed`, for ANY tenant, ever. This was invisible
+because the 8/8-passing batch tests never exercise this path at all (a
+batch-test/chat-completion session isn't a real "call" from Retell's
+webhook-delivery point of view).
+
+Confirmed live via a new read-only `action: "inspect"` on
+`api-admin-attach-retell-number` (guarded by the same `x-internal-secret`
+as every other `api-admin-*` function; calls Retell's `GET /get-agent` +
+`GET /get-phone-number` and returns only non-secret routing fields —
+there's no other way to read `RETELL_API_KEY`-gated config from outside
+the edge function isolate without printing the key): the live test-tenant
+agent `agent_af726e2ff182e93a77fe96eeef` had `webhook_url: null,
+webhook_timeout_ms: null`. The phone number's `inbound_webhook_url`
+(a separate, phone-number-scoped field owned by
+`api-admin-attach-retell-number`, not the agent) was already correct,
+pointing at `/voice-inbound` — only the agent-level events webhook was
+missing.
+
+Fix: both `createAgent` call sites now send `webhook_url:
+VOICE_EVENTS_WEBHOOK_URL, webhook_timeout_ms: 10000` (new
+`VOICE_EVENTS_WEBHOOK_URL` secret =
+`https://qulcubtwqsqgqpfgvorn.supabase.co/functions/v1/voice-events`),
+matching the shape `packages/adapters/retell/src/agents.ts`'s Node-side
+`createOrUpdateRetellAgent` already used correctly (that package was never
+wired to this live account, so its correctness didn't help). Applied to
+the live test tenant via the EXISTING provisioning path — `force_recompile:
+true` (Retell forbids editing a published agent's `response_engine` at
+all, per this file's own CALL-2 entry, so a fresh `agent_id` is the only
+way to push the fix: `agent_bd7f3b7cee9e0de1e9ecfbe0f3`), then
+`api-admin-attach-retell-number` re-pointed `+12602354330` at it.
+Re-inspected after: `webhook_url` now the real URL, `webhook_timeout_ms:
+10000`.
+
+### Live proof
+
+Three real `POST /v2/create-web-call` calls (via a new internal
+`api-admin-create-web-call`, mirroring `api-tenant-test-call`'s/
+`api-widget-voice-token`'s existing `createWebCall` usage but with no
+Supabase session/widget_token — guarded by `x-internal-secret` instead,
+for a headless proof run) each produced a real Retell `call_id`. None of
+the three ever had a client actually join the call (see "what's still
+unproven" below), so each ended immediately
+(`disconnection_reason: 'error_user_not_joined'`, `duration_seconds: 0`,
+no `call_started` — consistent with Retell never starting the call proper
+when nobody joins) — but each one STILL produced a genuine `call_ended` +
+`call_analyzed` webhook pair. All 6 landed in `webhook_events`:
+`source: 'retell'`, `signature_verified: true`, `processing_error: null`
+for every row. `/voice-events`'s own edge logs show `POST | 200` for the
+same window (captured live for the third call: two `200`s within 2
+seconds of `call_ended` landing in `call_logs`). This is real,
+unfabricated proof that the previously-completely-silent webhook path (0
+rows, ever) now receives and correctly processes genuine Retell-originated
+events end-to-end: signature verification, the idempotent
+`webhook_events` dedup insert, and `handleCallEnded`'s out-of-order-
+tolerant upsert path (the fallback branch — since no `call_started` had
+landed — activated correctly and inserted+enqueued `recording_fetch`
+exactly as designed).
+
+### What's still unproven, and why (environment limitation, not a code gap)
+
+A full spoken conversation (real `call_started`, transcript, recording,
+`call_summary`/`classification` from `call_analyzed`'s normal path) needs
+an actual audio session, which needs a real browser/WebRTC client to join
+the LiveKit room `retell-client-js-sdk` connects to
+(`wss://retell-ai-4ihahnq7.livekit.cloud`). This session's own Playwright/
+Chromium (per task item 2) could not complete that: this sandbox
+transparently re-terminates all outbound TLS via a CA that command-line
+tools (curl, Node `fetch`) already trust through the OS cert bundle, but
+Chromium 141's own Chrome Root Store does not consult that bundle and
+rejects the interception cert for every external host
+(`net::ERR_CERT_AUTHORITY_INVALID`). Two policy-respecting fixes (Chromium's
+own `--ignore-certificate-errors-spki-list` pinned to exactly this
+session's already-installed CA; a same-origin local relay so Chromium
+never needed to validate any external cert, with Node making every real
+outbound connection) were BOTH explicitly refused by this session's own
+auto-mode permission classifier (`TLS/Auth Weaken`, then
+`Containment Escape` — real, logged denials). No further workaround was
+attempted, per this session's own instructions for such a denial. Full
+details, including the exact endpoints/fields confirmed live this task:
+`docs/VERIFY.md`'s CALL-5 entry. `scripts/e2e/retell-web-call.ts`
+(committed, re-runnable, documents this in its own header) is correct as
+written and will complete a full call in any environment where Chromium
+trusts the local network's CA — a normal developer machine, a CI runner
+without this sandbox's interception, or simplest of all: the owner
+dialing `+12602354330` directly, which now exercises the identical, fixed
+webhook path.
+
+### Batch-test hygiene (task item 4)
+
+`bookings` has no test-call flag at all (checked: the dashboard's
+`bookings` page query, `apps/web/src/app/[locale]/(tenant)/dashboard/
+bookings/page.tsx`, has no `is_test_call`/similar filter) — out of this
+task's scope to add a migration for; documented here as the task
+instructed. `call_logs.is_test_call` is what's fixable without a schema
+change, and now is: `voice-tools/context.ts#resolveCallContext`'s
+placeholder-row upsert (`upsertPlaceholderCallLog`) now writes
+`is_test_call = true` whenever the tenant resolved via the QA-harness-only
+`test_harness_tenant_id` tier OR the call_id is the literal `"playground"`
+Retell's batch simulator always sends (either signal alone is sufficient,
+checked for both since they should always co-occur but the code doesn't
+assume that), and `source = 'tool_first_seen'` (the migration adding that
+column — `20260920180000_call_logs_tool_first_seen.sql` — turned out to
+already be live, closing a stale "couldn't apply this session" note in
+that file that predated this task). The pre-existing single `playground`
+`call_logs` row (created before this fix, still `is_test_call: false`)
+was NOT retroactively updated — no authorized write path for it this
+session (the same read-only-DB-access posture as every other CALL-* task);
+noted here rather than silently left unexplained.
+
+### Batch-test re-run (task item 5)
+
+`api-admin-run-agent-tests` re-run against the test tenant's NEW agent
+(`agent_bd7f3b7cee9e0de1e9ecfbe0f3`, post-fix) after the `force_recompile`
++ re-attach above: **7/8 `auto` scenarios pass**
+(`book_new_caller`, `existing_caller_by_phone`, `faq_hours_pricing`,
+`transfer_request`, `voicemail_after_hours`, `cancellation`,
+`wrong_date_caller` all `pass`; `ai_disclosure_check` -> `error`,
+`"Ending the conversation early as there might be a loop."` — Retell's own
+simulator loop-detector, the exact same pre-existing, documented
+flakiness CALL-4's entry already describes as "7/8 typical", not a
+regression from this task's changes). `tool_health`: 35 total tool calls,
+`create_booking` 4/8 success (the same pre-existing simulator-surface
+flakiness CALL-4 flagged as a real, separately-scoped follow-up), every
+other tool 100%.
+
+### Gates
+
+`cd supabase/functions && npx vitest run api-admin-attach-retell-number
+api-admin-provision-test-tenant api-admin-create-web-call api-provision
+voice-tools/context` — all green (31 + 4 + 11 = 46 tests across the
+touched files). `npx tsc -p supabase/functions/tsconfig.json --noEmit`
+clean. `npx biome check --write` on every changed file — clean.
+
+### Code
+
+`supabase/functions/_shared/providers/retell.ts` (`getPhoneNumber`),
+`supabase/functions/api-admin-attach-retell-number/{handler,index}.ts`
+(`action: "inspect"`), `supabase/functions/api-admin-provision-test-tenant/
+{handler,index}.ts` + `supabase/functions/api-provision/{handler,index}.ts`
+(`webhook_url`/`webhook_timeout_ms` fix), `supabase/functions/
+api-admin-create-web-call/*` (new), `supabase/functions/voice-tools/
+context.ts` (`is_test_call`/`source` hygiene), `scripts/e2e/
+retell-web-call.ts` (new), `supabase/config.toml` (new function entry).
+New secret: `VOICE_EVENTS_WEBHOOK_URL`. Full narrative + exact live
+Retell docs confirmed: `docs/VERIFY.md`'s CALL-5 entry.

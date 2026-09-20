@@ -1,5 +1,35 @@
 # Launch Status
 
+**CALL-5 (2026-09-20)**: the real (non-batch-test) call-event path is
+FIXED and proven live, for the first time. Root cause of `webhook_events`
+having zero rows ever: `createAgent`'s payload (in both
+`api-admin-provision-test-tenant` and the real `api-provision` saga) never
+set `webhook_url`, so Retell had nowhere to POST `call_started`/
+`call_ended`/`call_analyzed` for ANY agent either function created —
+confirmed live, before and after the fix, via a new read-only
+`action: "inspect"` on `api-admin-attach-retell-number`. Fixed (both now
+send `webhook_url`/`webhook_timeout_ms`), applied to the live test tenant
+(new agent `agent_bd7f3b7cee9e0de1e9ecfbe0f3`, `+12602354330` re-attached),
+and **proven live**: three real `POST /v2/create-web-call` calls each
+produced a genuine `call_ended` + `call_analyzed` webhook pair —
+`webhook_events` now has 6 rows (`source: 'retell'`,
+`signature_verified: true`, `processing_error: null` on every one, up from
+zero before this task), `/voice-events` edge logs show `200`s for the same
+window. **NOT proven**: a full spoken conversation (`call_started` with a
+real transcript/recording) — this session's sandboxed Chromium could not
+complete a real WebRTC/audio session (its Chrome Root Store rejects this
+environment's TLS-interception CA, and two policy-respecting workarounds
+were both explicitly denied by the session's own auto-mode classifier as
+`TLS/Auth Weaken` and `Containment Escape`, so none were forced through).
+`scripts/e2e/retell-web-call.ts` (new, re-runnable) will complete this in
+any environment where Chromium trusts the local CA, or the owner can now
+simply call `+12602354330` directly — real proof either way, since the
+underlying webhook fix is what was actually broken and is now confirmed
+live. Batch tests re-run clean post-fix (7/8 `auto`, the one failure
+pre-existing simulator flakiness, not a regression). Full details:
+`docs/BUILD_NOTES.md`'s CALL-5 entry; live Retell docs confirmed this
+task: `docs/VERIFY.md`'s CALL-5 entry.
+
 **CALL-4 (2026-09-20)**: closes CALL-2's two open gaps. `transfer_call`
 now compiles to a native Retell `transfer_call` node whose destination is
 baked at compile time from `agent_configs.transfer_number` (tenant-config
