@@ -49,7 +49,9 @@ export async function evaluateUsageSpike(sql: SqlClient): Promise<Alert[]> {
       select tenant_id, sum(billable_minutes) as today_minutes
       from public.usage_daily where date = current_date
       group by tenant_id
-    ), trailing as (
+    ), prior_week as (
+      -- NOT 'trailing': reserved word in PostgreSQL (TRIM ... TRAILING), a
+      -- syntax error as a CTE name; caught on the live project 2026-09-20.
       select tenant_id, avg(billable_minutes) as trailing_avg_minutes
       from public.usage_daily
       where date >= current_date - interval '7 days' and date < current_date
@@ -57,7 +59,7 @@ export async function evaluateUsageSpike(sql: SqlClient): Promise<Alert[]> {
     )
     select t.tenant_id, t.today_minutes, coalesce(tr.trailing_avg_minutes, 0) as trailing_avg_minutes
     from today t
-    left join trailing tr on tr.tenant_id = t.tenant_id
+    left join prior_week tr on tr.tenant_id = t.tenant_id
     where tr.trailing_avg_minutes > 0 and t.today_minutes >= tr.trailing_avg_minutes * ${USAGE_SPIKE_MULTIPLIER}
   `;
   return rows.map((r) => ({

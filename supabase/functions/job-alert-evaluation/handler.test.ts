@@ -43,7 +43,7 @@ describe("evaluateNegativeMargin", () => {
 describe("evaluateUsageSpike", () => {
   it("maps rows crossing the 2.5x trailing-average threshold into alerts", async () => {
     const { sql } = makeSql({
-      "left join trailing": [{ tenant_id: "t1", today_minutes: 300, trailing_avg_minutes: 100 }],
+      "left join prior_week": [{ tenant_id: "t1", today_minutes: 300, trailing_avg_minutes: 100 }],
     });
     const alerts = await evaluateUsageSpike(sql);
     expect(alerts).toHaveLength(1);
