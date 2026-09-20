@@ -12,7 +12,7 @@ import { fallbackEnvelope, jsonResponse } from "../_shared/responses.ts";
 import { verifyRetellSignature } from "../_shared/retell-signature.ts";
 import { withTimeout } from "../_shared/timeout.ts";
 import { recordToolStat } from "../_shared/tool-stats.ts";
-import { dispatchTool, isKnownTool, validateEnvelope } from "./handler.ts";
+import { dispatchTool, isKnownTool, resolveEnvelopeCallId, validateEnvelope } from "./handler.ts";
 
 // Re-exported so `withTimeout`'s actual race/rejection/no-dangling-timer
 // behavior can be asserted from `_shared/timeout.test.ts` — this file itself
@@ -74,7 +74,11 @@ Deno.serve(async (req: Request) => {
   if (!envelope.success) {
     return jsonResponse({ error: "invalid_request" }, { status: 400 });
   }
-  const { call_id, name, args } = envelope.data;
+  const { name, args, call } = envelope.data;
+  const call_id = resolveEnvelopeCallId(envelope.data);
+  if (!call_id) {
+    return jsonResponse({ error: "invalid_request" }, { status: 400 });
+  }
 
   // Circuit open (or an unrecognized tool name) short-circuits to the
   // graceful fallback immediately — no DB round trip at all.
@@ -90,6 +94,10 @@ Deno.serve(async (req: Request) => {
   let success = true;
   let errorType: string | undefined;
   let responseBody: unknown;
+  // CALL-2 fix: `dispatchTool` fills this in once it resolves a real
+  // tenant, so the `tool_health` row below is tagged correctly instead of
+  // always `tenant_id: null` regardless of whether resolution succeeded.
+  const telemetry: { tenantId: string | null } = { tenantId: null };
 
   try {
     responseBody = await withTimeout(
@@ -105,10 +113,12 @@ Deno.serve(async (req: Request) => {
           },
           dentalIntake: { appBaseUrl: APP_BASE_URL },
           ...(GEOCODE_API_KEY ? { geocode: { fetchImpl: fetch, apiKey: GEOCODE_API_KEY } } : {}),
+          telemetry,
         },
         call_id,
         name,
         args,
+        call,
       ),
       HARD_ABORT_MS,
     );
@@ -126,7 +136,7 @@ Deno.serve(async (req: Request) => {
   runInBackground(
     () =>
       recordToolStat(sql, {
-        tenantId: null,
+        tenantId: telemetry.tenantId,
         toolName: name,
         callId: call_id,
         latencyMs,

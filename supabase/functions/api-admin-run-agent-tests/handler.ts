@@ -1,3 +1,4 @@
+import { computeCurrentDateContext } from "../_shared/business-hours.ts";
 import type { RetellFetch } from "../_shared/providers/retell.ts";
 import {
   createBatchTest,
@@ -61,6 +62,27 @@ export interface ChatSmokeSuccessBody {
   call_logs_count: number;
 }
 
+/** CALL-2 (docs/BUILD_NOTES.md, docs/VERIFY.md): `chat_smoke` reports this
+ * instead of attempting `create-chat`, confirmed via
+ * docs.retellai.com/build/create-chat-agent 2026-09-20 — Retell's Chat API
+ * requires a dedicated CHAT agent (dashboard "Create an Agent" -> "Chat
+ * Agent", or `POST /create-chat-agent`), a separate agent resource from a
+ * VOICE agent even when both share the same response_engine type
+ * (`conversation-flow`/`retell-llm`). This tenant's `agent_configs.
+ * retell_agent_id` is always a voice agent (`api-admin-provision-test-
+ * tenant`/`api-provision` both only ever call `create-agent`/`create-
+ * conversation-flow`) — never a chat agent — so `create-chat` against it
+ * cannot succeed regardless of response_engine, matching the live 422
+ * `"Cannot start a chat session with selected agent."` this task's CALL-1
+ * predecessor hit. Not a conversation-flow-specific limitation as CALL-1
+ * left it (open question resolved). */
+export interface ChatSmokeUnsupportedBody {
+  tenant_id: string;
+  mode: "chat_smoke";
+  unsupported: true;
+  reason: string;
+}
+
 export interface ScenarioResult {
   case_id: string;
   label: string;
@@ -70,7 +92,10 @@ export interface ScenarioResult {
   /** Truncated JSON dump of the raw `transcript_snapshot` for manual
    * inspection — this wrapper does not parse it (packages/adapters/retell/
    * src/tests-api.ts's own VERIFY-13 note: the SDK types this field
-   * `unknown` by design and no fetched doc page shows a worked example). */
+   * `unknown` by design and no fetched doc page shows a worked example).
+   * CALL-2: bumped from 1500 to 12000 chars — the old cap cut off a
+   * multi-turn conversation before it reached its `tool_calls`/loop-abort
+   * point, the exact thing this response exists to help diagnose. */
   transcript_preview: string | null;
 }
 
@@ -97,7 +122,11 @@ export interface RunAgentTestsSuccessBody {
 
 export interface RunAgentTestsResult {
   status: number;
-  body: RunAgentTestsSuccessBody | ChatSmokeSuccessBody | { error: string };
+  body:
+    | RunAgentTestsSuccessBody
+    | ChatSmokeSuccessBody
+    | ChatSmokeUnsupportedBody
+    | { error: string };
 }
 
 export interface RunAgentTestsDeps {
@@ -209,7 +238,7 @@ async function pollBatch(
           transcript_snapshot_present: job?.transcript_snapshot != null,
           transcript_preview:
             job?.transcript_snapshot != null
-              ? JSON.stringify(job.transcript_snapshot).slice(0, 1500)
+              ? JSON.stringify(job.transcript_snapshot).slice(0, 12000)
               : null,
         };
       });
@@ -228,14 +257,45 @@ async function pollBatch(
       transcript_snapshot_present: job?.transcript_snapshot != null,
       transcript_preview:
         job?.transcript_snapshot != null
-          ? JSON.stringify(job.transcript_snapshot).slice(0, 1500)
+          ? JSON.stringify(job.transcript_snapshot).slice(0, 12000)
           : null,
     };
   });
   return { settled: true, results };
 }
 
-async function runChatSmoke(
+function runChatSmoke(tenantId: string): RunAgentTestsResult {
+  // CALL-2: confirmed unsupported for this tenant's agent — see
+  // `ChatSmokeUnsupportedBody`'s doc comment. Returned WITHOUT calling
+  // `createChat` at all (the 422 is guaranteed, not worth the live call).
+  return {
+    status: 200,
+    body: {
+      tenant_id: tenantId,
+      mode: "chat_smoke",
+      unsupported: true,
+      reason:
+        "Retell's Chat API (create-chat) requires a dedicated chat agent " +
+        "(dashboard 'Create an Agent' -> 'Chat Agent', or POST /create-chat-agent) " +
+        "distinct from a voice agent, even one using the same response_engine " +
+        "(conversation-flow/retell-llm). This tenant's agent_configs.retell_agent_id " +
+        "is a voice agent (create-agent/create-conversation-flow) — create-chat " +
+        "against it always 422s. Confirmed via docs.retellai.com/build/create-chat-agent " +
+        "2026-09-20; see docs/VERIFY.md CALL-2.",
+    },
+  };
+}
+
+/**
+ * The pre-CALL-2 implementation, kept (exported, still covered by its own
+ * tests) rather than deleted per CLAUDE.md Rule 4 ("leave the code, mark
+ * unsupported in its response") — `runChatSmoke` above no longer calls this
+ * against a tenant's VOICE agent (guaranteed 422, see `ChatSmokeUnsupportedBody`),
+ * but it's exactly what a follow-up task should call once a tenant also has
+ * a real Retell CHAT agent (`POST /create-chat-agent`) provisioned and its
+ * id available to look up here instead of `agent_configs.retell_agent_id`.
+ */
+export async function runChatSmokeAgainstChatAgent(
   sql: SqlClient,
   tenantId: string,
   deps: RunAgentTestsDeps,
@@ -325,7 +385,7 @@ export async function runAgentTests(
   const req = parsed.data;
   const now = deps.now ?? (() => new Date());
 
-  if (req.mode === "chat_smoke") return runChatSmoke(sql, req.tenant_id, deps);
+  if (req.mode === "chat_smoke") return runChatSmoke(req.tenant_id);
 
   let batchJobId: string;
   let caseDefinitions: Array<{ case_id: string; definition_id: string }>;
@@ -336,8 +396,8 @@ export async function runAgentTests(
     caseDefinitions = req.resume.case_definitions;
     startedAt = req.resume.started_at;
   } else {
-    const tenantRows = await sql<{ vertical: Vertical }>`
-      select vertical from public.tenants where id = ${req.tenant_id}
+    const tenantRows = await sql<{ vertical: Vertical; timezone: string }>`
+      select vertical, timezone from public.tenants where id = ${req.tenant_id}
     `;
     const tenant = tenantRows[0];
     if (!tenant) return { status: 404, body: { error: "tenant_not_found" } };
@@ -358,6 +418,7 @@ export async function runAgentTests(
     if (scenarios.length === 0) return { status: 422, body: { error: "no_matching_scenarios" } };
 
     startedAt = now().toISOString();
+    const currentDateContext = computeCurrentDateContext(now(), tenant.timezone);
     caseDefinitions = [];
     for (const scenario of scenarios) {
       const created = await createTestCaseDefinition(deps.retellFetch, deps.retellApiKey, {
@@ -365,6 +426,28 @@ export async function runAgentTests(
         response_engine: responseEngine,
         user_prompt: scenario.personaPrompt,
         metrics: ["Agent's responses stay relevant to what the simulated caller said."],
+        dynamic_variables: {
+          // CALL-2 (docs/BUILD_NOTES.md): RETELL-VERIFIED live — a
+          // batch-test simulator's tool-call payload never carries
+          // `agent_id`/`to_number` (no real Agent/phone-number resource
+          // is bound to a bare-response_engine test run), so voice-tools/
+          // context.ts's context resolver has nothing to key a tenant
+          // lookup on for this surface at all UNLESS we hand it one
+          // ourselves. `heyloo_tenant_id` here is the one this codebase's
+          // own `resolveTenantFromPayload` reads back from
+          // `call.retell_llm_dynamic_variables` — a batch-test/QA-
+          // harness-only mechanism, never present on a real call.
+          heyloo_tenant_id: req.tenant_id,
+          // CALL-2: a batch test never goes through `/voice-inbound` (no
+          // `call_inbound` webhook fires for a simulated run), so the
+          // model has no `current_date`/`current_weekday` either —
+          // confirmed live this produced `check_availability` calls
+          // years off the real generated `availability_slots` window,
+          // which the model then hallucinated a booking confirmation for
+          // instead of honestly reporting `none_available`.
+          current_date: currentDateContext.date,
+          current_weekday: currentDateContext.weekday,
+        },
       });
       const createdBody = created.body as { test_case_definition_id?: string };
       if (!created.ok || !createdBody.test_case_definition_id) {

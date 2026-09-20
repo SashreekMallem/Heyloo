@@ -2,18 +2,59 @@ import { z } from "zod";
 
 /**
  * `/voice-tools` dispatch envelope + per-tool argument schemas
- * (BACKEND_SPEC §7.2). VERIFY (docs/VERIFY.md): the envelope shape
- * (`{call_id, name, args}`) is BACKEND_SPEC's canonical assumption about
- * Retell's function-calling tool-webhook contract, not yet confirmed against
- * Retell's live docs (egress-blocked) — re-verify before first production
- * deploy; `.passthrough()` used narrowly so an unexpected extra arg field
- * doesn't hard-fail a call that would otherwise succeed.
+ * (BACKEND_SPEC §7.2). CALL-2 (docs/BUILD_NOTES.md, docs/VERIFY.md):
+ * RETELL-VERIFIED live against docs.retellai.com/build/conversation-flow/
+ * custom-function (the compile target every shipped template uses) and
+ * docs.retellai.com/build/single-multi-prompt/custom-function (identical
+ * example) 2026-09-20 — the real request body is `{name, call, args}`, NOT
+ * BACKEND_SPEC's originally-assumed flat `{call_id, name, args}`: `call_id`
+ * lives nested at `call.call_id`, not as a top-level sibling of `name`/
+ * `args`. `call` also carries `agent_id` (used by CALL-2's context-
+ * resolution fallback, `../voice-tools/context.ts`) and `call_type`
+ * (`"web_call"` in the only example either page shows). `call.from_number`/
+ * `to_number`/`direction` are NOT present in either fetched example —
+ * VERIFY.md logs this as unconfirmed for real phone calls (the docs' one
+ * worked example is a web_call); `ToolCallSchema` types them optional and
+ * `.passthrough()`s the rest so their absence never breaks parsing and
+ * their presence (if Retell does send them on phone calls, as BACKEND_SPEC
+ * assumed) is used opportunistically. Top-level `call_id` is ALSO accepted
+ * (optional) for back-compat with anything already sending the old assumed
+ * shape (e.g. `job-keep-warm`'s synthetic ping body) — `ToolDispatchEnvelope`
+ * requires at least one of `call_id`/`call.call_id` to be present, checked
+ * by `../../voice-tools/handler.ts#validateEnvelope`, not by this schema
+ * alone (Zod's cross-field refine reports a less useful error than the
+ * dedicated check there).
  */
-export const ToolDispatchEnvelopeSchema = z.object({
-  call_id: z.string().min(1),
-  name: z.string().min(1),
-  args: z.record(z.string(), z.unknown()),
-});
+export const ToolCallSchema = z
+  .object({
+    call_id: z.string().min(1).optional(),
+    agent_id: z.string().min(1).optional(),
+    call_type: z.string().optional(),
+    from_number: z.string().optional(),
+    to_number: z.string().optional(),
+    direction: z.string().optional(),
+    // CALL-2 (docs/BUILD_NOTES.md, docs/VERIFY.md): confirmed live —
+    // Retell's batch-test simulator's tool-call payload has NEITHER
+    // `agent_id` NOR `to_number` populated at all (no real Agent/phone-
+    // number resource is involved in a batch-test run against a bare
+    // response_engine). `retell_llm_dynamic_variables` is documented on
+    // the custom-function `call` object generally; used ONLY as a
+    // batch-test/QA-harness resolution signal — see context.ts's
+    // resolveTenantFromPayload — never relied on for a real call (real
+    // calls never set `heyloo_tenant_id` in dynamic variables).
+    retell_llm_dynamic_variables: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+export type ToolCall = z.infer<typeof ToolCallSchema>;
+
+export const ToolDispatchEnvelopeSchema = z
+  .object({
+    call_id: z.string().min(1).optional(),
+    name: z.string().min(1),
+    args: z.record(z.string(), z.unknown()),
+    call: ToolCallSchema.optional(),
+  })
+  .passthrough();
 export type ToolDispatchEnvelope = z.infer<typeof ToolDispatchEnvelopeSchema>;
 
 export const CheckAvailabilityArgsSchema = z

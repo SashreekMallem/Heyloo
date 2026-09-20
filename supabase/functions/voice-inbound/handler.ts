@@ -1,4 +1,7 @@
-import { computeGreetingHoursContext } from "../_shared/business-hours.ts";
+import {
+  computeCurrentDateContext,
+  computeGreetingHoursContext,
+} from "../_shared/business-hours.ts";
 import { normalizeE164 } from "../_shared/phone.ts";
 import type {
   VoiceInboundRequest,
@@ -121,6 +124,7 @@ export async function handleVoiceInbound(params: {
     row.business_hours as never,
     row.hours_exceptions as never,
   );
+  const currentDateContext = computeCurrentDateContext(now, row.timezone);
 
   // GAP_REGISTER §1.3 — every per-vertical `{{token}}` the compiled prompt
   // may reference (tow partner, practice areas, rate table, menu, ...),
@@ -139,6 +143,8 @@ export async function handleVoiceInbound(params: {
     assistant_name: row.assistant_name ?? "the AI assistant",
     greeting_hours_context: greetingHoursContext,
     timezone: row.timezone,
+    current_date: currentDateContext.date,
+    current_weekday: currentDateContext.weekday,
     special_instructions: row.special_instructions ?? "",
     is_manual_mode: row.manual_mode,
     language: row.language_primary,

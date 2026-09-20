@@ -89,6 +89,31 @@ describe("handleCallStarted", () => {
     await handleCallStarted(sql, { call_id: "call_1" }, logger);
     expect(calls.some((c) => c.text.includes("insert into public.call_logs"))).toBe(false);
   });
+
+  it("CALL-2: upserts (not `do nothing`) so a placeholder row from a raced tool call is backfilled with this webhook's authoritative data", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.phone_numbers": [
+        { tenant_id: "t1", phone_number_id: "pn1", owner_test_phone: null },
+      ],
+    });
+    const call: RetellCallObject = {
+      call_id: "call_raced_1",
+      from_number: "+15551234567",
+      to_number: "+15559998888",
+      start_timestamp: 1_700_000_000_000,
+    };
+    await handleCallStarted(sql, call, logger);
+    const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
+    expect(insertCall).toBeDefined();
+    // A single INSERT ... ON CONFLICT (retell_call_id) DO UPDATE — never
+    // `do nothing` (which would leave a raced placeholder's approximate
+    // data stale forever).
+    expect(insertCall?.text).toContain("on conflict (retell_call_id) do update set");
+    // Exactly one write for this call_id — the upsert is a single statement,
+    // never a separate detect-then-insert/update pair (no check-then-insert,
+    // CLAUDE.md Rule 2).
+    expect(calls.filter((c) => c.text.includes("insert into public.call_logs")).length).toBe(1);
+  });
 });
 
 describe("handleCallEnded", () => {

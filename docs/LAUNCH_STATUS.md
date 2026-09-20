@@ -1,5 +1,30 @@
 # Launch Status
 
+**CALL-2 (2026-09-20)**: the batch-test loop from CALL-1 is FIXED, and the
+real root cause was deeper than the traced call-context gap — a
+conversation-flow compiler bug meant NO tenant, ever, could actually call
+a tool (every node compiled to a type that Retell docs say can never
+invoke tools). Fixed live, in order: (1) `voice-tools` now resolves tenant
+context from the tool payload itself (`agent_id`/`to_number`/a QA-harness
+dynamic variable) when no `call_logs` row exists yet, not just from a
+`call_started` webhook; (2) the compiler now emits `type: "subagent"`
+(not `"conversation"`) for any tool-calling state; (3) `create_booking`'s
+`resource_id` tool-arg gained a description after the model invented
+placeholder values; (4) every compiled prompt now carries the real
+current date (there was none before — the model was resolving "tomorrow"
+against a stale internal date); (5) `is_terminal` states now compile to a
+real Retell `end` node (previously never read at all — a booking, once
+confirmed, had no edge onward and the model just looped). **Live result:
+6/8 `auto` batch scenarios PASS, including the AI-disclosure check, and 7
+real `bookings` rows were created** (`status: 'confirmed'`, real dates).
+Two scenarios remain open (`transfer_call` has no real implementation —
+it's a dedicated Retell node type, not a tool; FAQ-only calls that never
+reach a booking don't hang up) — real, scoped follow-ups, not this task's
+blocker. The `call_logs.source` migration this task designed couldn't be
+applied this session (no DB-migration-privileged path in this sandbox);
+the code was reshaped to not need it yet. Full details:
+`docs/BUILD_NOTES.md`'s CALL-2 entry.
+
 **CALL-1 (2026-09-20)**: first live call path is LIVE — a real test
 tenant (`test-riverside-auto`, vertical `auto`) is provisioned, its agent
 is compiled + published, and the account's Retell number

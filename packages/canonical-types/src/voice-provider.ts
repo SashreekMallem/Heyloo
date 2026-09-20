@@ -108,6 +108,17 @@ export const zAgentDynamicVariables = z.object({
   assistant_name: z.string().min(1),
   greeting_hours_context: z.string().min(1),
   timezone: z.string().min(1),
+  /** CALL-2 (docs/BUILD_NOTES.md): the ONLY absolute-date anchor anywhere
+   * in a compiled prompt (`CURRENT_DATE_FRAGMENT`,
+   * `packages/templates/src/shared/fragments.ts`) — confirmed live that
+   * without one, the model resolves "tomorrow"/relative dates against its
+   * own training-era sense of "today" rather than the real current date,
+   * producing `date_range` values years off from `availability_slots`'
+   * actual generated window. `YYYY-MM-DD` in the tenant's own timezone. */
+  current_date: z.string().min(1),
+  /** Same date, spoken form (e.g. "Sunday") — spoken/read-back-friendly
+   * alongside `current_date`. */
+  current_weekday: z.string().min(1),
   special_instructions: z.string(),
   manager_name: z.string().optional(),
   manager_phone: z.string().optional(),

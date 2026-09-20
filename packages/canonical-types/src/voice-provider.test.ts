@@ -103,6 +103,8 @@ describe("zAgentDynamicVariables", () => {
         assistant_name: "Ava",
         greeting_hours_context: "we're open until 6pm",
         timezone: "America/Chicago",
+        current_date: "2026-09-20",
+        current_weekday: "Sunday",
         special_instructions: "",
         is_manual_mode: false,
         language: "en-US",
@@ -118,9 +120,27 @@ describe("zAgentDynamicVariables", () => {
         assistant_name: "Ava",
         greeting_hours_context: "open",
         timezone: "America/Chicago",
+        current_date: "2026-09-20",
+        current_weekday: "Sunday",
         special_instructions: "",
         is_manual_mode: false,
         language: "en-US",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a payload missing current_date (CALL-2: the model's only real-date anchor)", () => {
+    expect(() =>
+      zAgentDynamicVariables.parse({
+        business_name: "Joe's Auto",
+        assistant_name: "Ava",
+        greeting_hours_context: "open",
+        timezone: "America/Chicago",
+        current_weekday: "Sunday",
+        special_instructions: "",
+        is_manual_mode: false,
+        language: "en-US",
+        disclosure_line: "This call may be recorded.",
       }),
     ).toThrow();
   });

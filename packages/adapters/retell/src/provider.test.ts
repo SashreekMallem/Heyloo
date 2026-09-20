@@ -58,6 +58,8 @@ describe("RetellProvider", () => {
         assistant_name: "Ava",
         greeting_hours_context: "open",
         timezone: "America/Chicago",
+        current_date: "2026-09-20",
+        current_weekday: "Sunday",
         special_instructions: "",
         is_manual_mode: false,
         language: "en-US",

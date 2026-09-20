@@ -106,14 +106,16 @@ export async function handleCallStarted(
   const isTestCall =
     !!callerNumber && !!tenantRow.owner_test_phone && callerNumber === tenantRow.owner_test_phone;
 
-  // CALL-2 (docs/BUILD_NOTES.md): a `tool_first_seen` placeholder
+  // CALL-2 (docs/BUILD_NOTES.md): a placeholder row
   // (voice-tools/context.ts#resolveCallContext) may already exist for this
   // call_id if the caller's first tool call raced ahead of this webhook's
-  // own commit — upsert over ONLY that placeholder with this webhook's
-  // authoritative data (never a row another call_started already wrote;
-  // `where call_logs.source = 'tool_first_seen'` makes a retried/duplicate
-  // call_started delivery a no-op against an already-webhook-sourced row,
-  // same effective behavior the old `do nothing` had for that case).
+  // own commit — upsert over it with this webhook's authoritative data
+  // rather than `do nothing` (which would leave the placeholder's
+  // approximate data stale forever). Unconditional (not gated by a
+  // `source` column — see context.ts#upsertPlaceholderCallLog's
+  // "DEPLOYMENT NOTE" for why that column isn't written this session):
+  // safe either way, since a retried/duplicate call_started delivery for
+  // an already-webhook-populated row just re-writes the same values.
   await sql`
     insert into public.call_logs (
       tenant_id, phone_number_id, retell_call_id, caller_number, direction, started_at, is_test_call, channel
@@ -128,9 +130,7 @@ export async function handleCallStarted(
       direction = excluded.direction,
       started_at = excluded.started_at,
       is_test_call = excluded.is_test_call,
-      channel = excluded.channel,
-      source = 'call_started'
-    where call_logs.source = 'tool_first_seen'
+      channel = excluded.channel
   `;
 }
 

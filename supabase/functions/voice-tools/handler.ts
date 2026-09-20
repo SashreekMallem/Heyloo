@@ -12,6 +12,7 @@ import {
   SendPaymentLinkArgsSchema,
   SendSmsConfirmationArgsSchema,
   TakeMessageArgsSchema,
+  type ToolCall,
   ToolDispatchEnvelopeSchema,
   UpdateBookingArgsSchema,
 } from "../_shared/schemas/voice-tools.ts";
@@ -57,6 +58,18 @@ export interface DispatchDeps {
     fetchImpl: GeocodeFetch;
     apiKey: string;
   };
+  /** CALL-2 fix: a mutable out-param `index.ts` reads AFTER `dispatchTool`
+   * resolves, so `recordToolStat`'s `tool_health` row can be tagged with
+   * the real resolved `tenant_id` instead of always `null` (the pre-CALL-2
+   * bug — `resolveCallContext`'s result never left this function, so
+   * every `tool_health` row was written with `tenant_id: null` regardless
+   * of whether context resolution succeeded, making the per-tenant
+   * `tool_health` counts `api-admin-run-agent-tests` reports structurally
+   * always zero). Chosen over widening `ToolResultEnvelope`'s shape
+   * (which every tool test and the Retell-facing response contract
+   * assumes is exactly `{result: ...}`) — a lean hot-path out-param, not a
+   * second return channel. */
+  telemetry?: { tenantId: string | null };
 }
 
 const KNOWN_TOOLS = new Set([
@@ -82,14 +95,15 @@ export async function dispatchTool(
   callId: string,
   name: string,
   rawArgs: unknown,
+  call?: ToolCall,
 ): Promise<ToolResultEnvelope> {
   const { sql, logger, dentalIntake, geocode } = deps;
 
-  const ctx = await resolveCallContext(sql, callId);
+  const ctx = await resolveCallContext(sql, callId, call, logger);
   if (!ctx) {
-    logger.warn("voice_tools_unresolved_call_context", { call_id: callId, tool: name });
     return fallbackEnvelope();
   }
+  if (deps.telemetry) deps.telemetry.tenantId = ctx.tenantId;
 
   switch (name) {
     case "check_availability": {
@@ -161,4 +175,16 @@ export async function dispatchTool(
 
 export function validateEnvelope(body: unknown) {
   return ToolDispatchEnvelopeSchema.safeParse(body);
+}
+
+/**
+ * CALL-2: the real Retell body nests `call_id` under `call.call_id`
+ * (`_shared/schemas/voice-tools.ts`'s header comment) — top-level `call_id`
+ * is accepted too (e.g. `job-keep-warm`'s synthetic ping body) but is never
+ * the only source. `index.ts` treats a `null` result from this as a 400
+ * `invalid_request`, same as a schema-validation failure — neither shape
+ * providing a call id at all is not a recoverable request.
+ */
+export function resolveEnvelopeCallId(data: { call_id?: string; call?: ToolCall }): string | null {
+  return data.call_id ?? data.call?.call_id ?? null;
 }

@@ -93,6 +93,28 @@ export async function createConversationFlow(
   });
 }
 
+/** PATCH /update-conversation-flow/{conversation_flow_id} — RETELL-VERIFIED
+ * live 2026-09-20 (docs.retellai.com/api-references/update-conversation-flow):
+ * same request body shape as create (nodes/tools/start_node_id/
+ * global_prompt/...), no `version` query param (updates the latest
+ * version in place). Used by CALL-2's compiler-bug fix to push a
+ * recompiled flow to an ALREADY-provisioned tenant's existing
+ * conversation_flow_id, since `api-admin-provision-test-tenant` only ever
+ * calls `createConversationFlow` once per tenant (`if (!agentId)`). */
+export async function updateConversationFlow(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  conversationFlowId: string,
+  payload: Record<string, unknown>,
+) {
+  return retellRequest(
+    fetchImpl,
+    apiKey,
+    `/update-conversation-flow/${encodeURIComponent(conversationFlowId)}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+}
+
 /** POST /create-retell-llm — step 1 of the two-step protocol for
  * `multi_prompt`/`single_prompt` templates; response carries `llm_id`. */
 export async function createRetellLLM(
@@ -103,6 +125,31 @@ export async function createRetellLLM(
   return retellRequest(fetchImpl, apiKey, "/create-retell-llm", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+/** POST /create-agent-version/{agent_id} — RETELL-VERIFIED live 2026-09-20
+ * (docs.retellai.com/api-references/create-agent-version, corroborated by
+ * community.retellai.com/t/api-workflow-for-updating-a-published-
+ * conversation-flow/2805's official-answer summary): the ONLY way to
+ * change a published agent — `update-agent`/`update-conversation-flow`
+ * both flatly reject any edit touching a currently-published agent/flow
+ * (`400`/`422 "Cannot update published ..."`, confirmed live against
+ * this project's own test-tenant agent, CALL-2). Body is `{base_version}`
+ * (the version to branch a new, unpublished DRAFT from — typically the
+ * agent's current published version); response is the new draft version's
+ * full agent object (`is_published: false`, same `agent_id`, incremented
+ * `version`). CALL-2's `force_recompile` flow: create-agent-version ->
+ * update-agent (now succeeds — it's a draft) -> publish-agent-version. */
+export async function createAgentVersion(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  agentId: string,
+  baseVersion: number,
+) {
+  return retellRequest(fetchImpl, apiKey, `/create-agent-version/${encodeURIComponent(agentId)}`, {
+    method: "POST",
+    body: JSON.stringify({ base_version: baseVersion }),
   });
 }
 

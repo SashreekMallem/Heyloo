@@ -37,6 +37,12 @@ export const VoiceInboundDynamicVariablesSchema = z.object({
   assistant_name: z.string(),
   greeting_hours_context: z.string(),
   timezone: z.string(),
+  // CALL-2 (docs/BUILD_NOTES.md): the model's only absolute-date anchor —
+  // see packages/templates/src/shared/fragments.ts's CURRENT_DATE_FRAGMENT
+  // and @heyloo/canonical-types' zAgentDynamicVariables (kept in sync,
+  // same Node/Deno boundary this file's own header already documents).
+  current_date: z.string(),
+  current_weekday: z.string(),
   special_instructions: z.string(),
   manager_name: z.string().optional(),
   manager_phone: z.string().optional(),

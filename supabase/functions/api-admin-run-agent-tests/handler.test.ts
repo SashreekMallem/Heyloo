@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import type { SqlClient } from "../_shared/types.ts";
-import { runAgentTests, validateRequest } from "./handler.ts";
+import { runAgentTests, runChatSmokeAgainstChatAgent, validateRequest } from "./handler.ts";
 
 const logger = createLogger();
 
@@ -203,14 +203,43 @@ describe("runAgentTests", () => {
   });
 });
 
-describe("runAgentTests — chat_smoke mode", () => {
-  it("returns 422 when the tenant has no compiled agent", async () => {
-    const { sql } = makeSql({ "from public.agent_configs": [{ retell_agent_id: null }] });
+describe("runAgentTests — chat_smoke mode (CALL-2: confirmed unsupported for a voice agent)", () => {
+  it("reports unsupported without calling create-chat at all — docs.retellai.com/build/create-chat-agent confirms Chat requires a dedicated chat agent, never a voice agent", async () => {
+    const { sql } = makeSql({ "from public.agent_configs": [{ retell_agent_id: "agent_1" }] });
+    let retellFetchCalls = 0;
     const result = await runAgentTests(
       sql,
       { tenant_id: "t1", mode: "chat_smoke" },
-      { retellFetch: async () => jsonResponse({}), retellApiKey: "key", logger },
+      {
+        retellFetch: async () => {
+          retellFetchCalls += 1;
+          return jsonResponse({});
+        },
+        retellApiKey: "key",
+        logger,
+      },
     );
+    expect(retellFetchCalls).toBe(0);
+    expect(result).toEqual({
+      status: 200,
+      body: expect.objectContaining({
+        tenant_id: "t1",
+        mode: "chat_smoke",
+        unsupported: true,
+        reason: expect.stringContaining("chat agent"),
+      }),
+    });
+  });
+});
+
+describe("runChatSmokeAgainstChatAgent (kept, not currently called by runAgentTests — CALL-2)", () => {
+  it("returns 422 when the tenant has no compiled agent", async () => {
+    const { sql } = makeSql({ "from public.agent_configs": [{ retell_agent_id: null }] });
+    const result = await runChatSmokeAgainstChatAgent(sql, "t1", {
+      retellFetch: async () => jsonResponse({}),
+      retellApiKey: "key",
+      logger,
+    });
     expect(result).toEqual({ status: 422, body: { error: "tenant_has_no_compiled_agent" } });
   });
 
@@ -230,11 +259,11 @@ describe("runAgentTests — chat_smoke mode", () => {
       throw new Error(`unexpected call: ${url}`);
     };
 
-    const result = await runAgentTests(
-      sql,
-      { tenant_id: "t1", mode: "chat_smoke" },
-      { retellFetch, retellApiKey: "key", logger },
-    );
+    const result = await runChatSmokeAgainstChatAgent(sql, "t1", {
+      retellFetch,
+      retellApiKey: "key",
+      logger,
+    });
 
     expect(result.status).toBe(200);
     const body = result.body as {

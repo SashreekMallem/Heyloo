@@ -35,6 +35,10 @@ export interface CompilerAgentState {
   name: string;
   prompt_fragment: string;
   allowed_tools: string[];
+  /** CALL-2 (docs/BUILD_NOTES.md): previously declared on the canonical
+   * `AgentState` type but never read by this compiler at all — see
+   * `EndNode`'s own doc comment for the live bug that left unfixed. */
+  is_terminal?: boolean;
 }
 
 export interface CompilerTransition {
@@ -107,7 +111,35 @@ function toolsFor(template: CompilerAgentTemplate, toolWebhookUrl: string): Func
 
 interface ConversationNode {
   id: string;
-  type: "conversation";
+  // CALL-2 (docs/BUILD_NOTES.md): RETELL-VERIFIED live 2026-09-20
+  // (docs.retellai.com/build/conversation-flow/overview,
+  // /api-references/create-conversation-flow) — VERIFY-8's prior
+  // resolution was half right and half wrong. Right: `tool_ids` is not a
+  // field on a plain `"conversation"` node. WRONG conclusion drawn from
+  // that: dropping `tool_ids` entirely rather than switching a tool-
+  // backed state to the node type that DOES support it. The docs are
+  // explicit and load-bearing here: "Conversation nodes do not use tools /
+  // functions" — a `"conversation"` node's LLM can NEVER invoke a tool,
+  // full stop, no matter what the flow's top-level `tools[]` contains or
+  // what the node's own prompt text says to do. `"subagent"` is the node
+  // type built for exactly this ("dialogue with tool calling") — same
+  // `instruction`/`edges`/`global_node_setting` shape a `"conversation"`
+  // node has, plus `tool_ids`. This was a real, live, silent bug: EVERY
+  // node this compiler ever emitted was `"conversation"`, so no
+  // conversation-flow agent this platform has ever compiled could call
+  // ANY tool — confirmed against a real batch-test transcript
+  // (`docs/BUILD_NOTES.md` CALL-2): the agent verbatim says "I don't have
+  // the ability to see availability directly," then hallucinates a
+  // booking confirmation instead of ever calling `create_booking`, then
+  // loops repeating that confirmation until Retell's loop-detector aborts
+  // the call — exactly the "Ending the conversation early as there might
+  // be a loop" result CALL-1 saw on 7/8 scenarios, not (only) the
+  // call-context-resolution gap CALL-1 traced it to. SYSTEM_DESIGN §4.1's
+  // own stated design for conversation_flow is "tool-backed nodes only" —
+  // this fixes the compiler to actually implement that, matching what
+  // `compileMultiPrompt` below already does per-state via the same
+  // `state.allowed_tools` field.
+  type: "conversation" | "subagent";
   name: string;
   instruction: { type: "prompt"; text: string };
   edges: Array<{
@@ -115,16 +147,38 @@ interface ConversationNode {
     destination_node_id: string;
     transition_condition: { type: "prompt"; prompt: string };
   }>;
-  // RETELL-VERIFY (docs/VERIFY.md VERIFY-8, resolved): `tool_ids` is NOT a
-  // real field on a plain conversation node (confirmed against
-  // retell-typescript-sdk's ConversationFlowCreateParams — it only exists
-  // on SubagentNode, a node type this compiler doesn't emit); removed.
-  // `global_node_setting: {condition}` replaces the previously-assumed bare
-  // `global_node: true` boolean — confirmed an object with a REQUIRED
-  // `condition` string. See packages/adapters/retell/src/compiler/types.ts
-  // for the full resolved-shape writeup (this file is a deliberate
-  // duplicate of that package's compiler, kept in sync — BUILD_NOTES T4/T3).
+  // `global_node_setting: {condition}` — confirmed an object with a
+  // REQUIRED `condition` string (VERIFY-8). See
+  // packages/adapters/retell/src/compiler/types.ts for the full
+  // resolved-shape writeup (this file is a deliberate duplicate of that
+  // package's compiler, kept in sync — BUILD_NOTES T4/T3).
   global_node_setting?: { condition: string };
+  /** Only present (and only valid) when `type === "subagent"` — the
+   * flow-level `tools[].tool_id` values (== `tool.name`, CALL-1's
+   * `tool_id: tool.name` convention) this node's LLM may call. */
+  tool_ids?: string[];
+}
+
+/**
+ * CALL-2 (docs/BUILD_NOTES.md): RETELL-VERIFIED live 2026-09-20
+ * (retell-typescript-sdk's `EndNode` interface, `src/resources/
+ * conversation-flow.ts` — docs.retellai.com/build/conversation-flow/node
+ * corroborates the field names but not a full schema on its own). A real,
+ * live-confirmed bug this fixes: `template.states[].is_terminal` was
+ * NEVER read by this compiler (only referenced in test fixtures/other
+ * packages) — an `is_terminal` state compiled to an ordinary
+ * conversation/subagent node with no edge onward, so once the model
+ * finished that state (e.g. `confirm_booking` right after a successful
+ * `create_booking`) there was nowhere for the flow to go: confirmed live,
+ * the model just kept re-confirming/re-calling the same tool turn after
+ * turn until Retell's own test-run timeout, never a clean call end.
+ */
+interface EndNode {
+  id: string;
+  type: "end";
+  name?: string;
+  speak_during_execution?: boolean;
+  instruction?: { type: "prompt"; text: string };
 }
 
 export interface ConversationFlowBody {
@@ -133,7 +187,7 @@ export interface ConversationFlowBody {
   // retell-typescript-sdk) — always "agent": every template opens with the
   // agent's own greeting/disclosure line, never a user-speaks-first flow.
   start_speaker: "agent";
-  nodes: ConversationNode[];
+  nodes: (ConversationNode | EndNode)[];
   tools: FunctionTool[];
   global_prompt?: string;
 }
@@ -144,14 +198,21 @@ function compileConversationFlow(
 ): ConversationFlowBody {
   const tools = toolsFor(template, toolWebhookUrl);
 
+  const toolsByName = new Map(tools.map((t) => [t.name, t]));
+
   const nodesById = new Map<string, ConversationNode>();
   for (const state of template.states) {
+    // Only tool_ids Retell actually knows about (defensive — a state
+    // authoring bug referencing a name absent from template.tools would
+    // otherwise produce a tool_ids entry Retell rejects outright).
+    const toolIds = (state.allowed_tools ?? []).filter((name) => toolsByName.has(name));
     nodesById.set(state.id, {
       id: state.id,
-      type: "conversation",
+      type: toolIds.length > 0 ? "subagent" : "conversation",
       name: state.name,
       instruction: { type: "prompt", text: state.prompt_fragment },
       edges: [],
+      ...(toolIds.length > 0 ? { tool_ids: toolIds } : {}),
     });
   }
 
@@ -195,10 +256,41 @@ function compileConversationFlow(
     }
   }
 
+  // CALL-2: every `is_terminal` state gets its own `end` node plus one
+  // edge onto it, so the flow actually has somewhere to go once that
+  // state's business is done — see `EndNode`'s own doc comment for the
+  // live bug this closes (no edge onward -> the model stalls, repeating
+  // the same turn/tool call forever instead of ending the call).
+  const endNodes: EndNode[] = [];
+  for (const state of template.states) {
+    if (!state.is_terminal) continue;
+    const fromNode = nodesById.get(state.id);
+    if (!fromNode) continue;
+    const endNodeId = `${state.id}__end`;
+    endNodes.push({
+      id: endNodeId,
+      type: "end",
+      name: `${state.name} — end call`,
+      speak_during_execution: true,
+      instruction: {
+        type: "prompt",
+        text: "Thank the caller, confirm there's nothing else you can help with, and say a warm goodbye.",
+      },
+    });
+    fromNode.edges.push({
+      id: `edge_${state.id}_end`,
+      destination_node_id: endNodeId,
+      transition_condition: {
+        type: "prompt",
+        prompt: "this state's business is fully done and the caller has nothing further to discuss",
+      },
+    });
+  }
+
   const body: ConversationFlowBody = {
     start_node_id: startNodeId,
     start_speaker: "agent",
-    nodes: [...nodesById.values()],
+    nodes: [...nodesById.values(), ...endNodes],
     tools,
   };
   if (template.system_prompt) body.global_prompt = template.system_prompt;
@@ -326,8 +418,11 @@ export type CompiledFlowRequest =
 function firstTurnText(flow: CompiledFlowRequest): string {
   switch (flow.kind) {
     case "conversation_flow": {
+      // The start node is always states[0] (compileConversationFlow), never
+      // a synthetic `end` node — `instruction` is only optional on the
+      // union's `EndNode` arm.
       const startNode = flow.body.nodes.find((n) => n.id === flow.body.start_node_id);
-      return startNode?.instruction.text ?? "";
+      return startNode?.instruction?.text ?? "";
     }
     case "multi_prompt": {
       const startState = flow.body.states.find((s) => s.name === flow.body.starting_state);

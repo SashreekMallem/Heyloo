@@ -63,6 +63,38 @@ function formatMinutesAs12h(totalMinutes: number): string {
   return m === 0 ? `${h12} ${period}` : `${h12}:${String(m).padStart(2, "0")} ${period}`;
 }
 
+/**
+ * CALL-2 (docs/BUILD_NOTES.md): the model's absolute-date anchor
+ * (`current_date`/`current_weekday` dynamic variables, `CURRENT_DATE_
+ * FRAGMENT`) — confirmed live that without one, the model resolves
+ * relative dates ("tomorrow") against its own training-era sense of
+ * "today" rather than the real date, producing `check_availability`
+ * `date_range` values years off from the real generated window. Reuses
+ * the same `Intl.DateTimeFormat` tenant-timezone-local-date approach
+ * `computeGreetingHoursContext`'s own `localParts` helper already uses
+ * (kept as a small separate function rather than exporting/reshaping that
+ * one, since its `dow` is a 3-letter key for business-hours lookups, not a
+ * full spoken weekday name).
+ */
+export function computeCurrentDateContext(
+  now: Date,
+  timeZone: string,
+): { date: string; weekday: string } {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "long",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = formatter.formatToParts(now);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return {
+    date: `${get("year")}-${get("month")}-${get("day")}`,
+    weekday: get("weekday"),
+  };
+}
+
 export function computeGreetingHoursContext(
   now: Date,
   timeZone: string,

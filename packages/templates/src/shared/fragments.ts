@@ -72,6 +72,24 @@ export const DIGIT_BY_DIGIT_READBACK_FRAGMENT =
   "dates and times back the same deliberate way (day, then date, then time) " +
   "before treating either as confirmed.";
 
+// CALL-2 (docs/BUILD_NOTES.md): confirmed live that with no absolute-date
+// anchor anywhere in the prompt, the model resolves "tomorrow"/"next
+// Monday" against its own training-era sense of "today" (observed calling
+// check_availability with a `date_range` in 2024, checked against a
+// database whose availability_slots only cover the real current window —
+// `none_available: true` every time, which the model then hallucinated a
+// booking confirmation for instead of properly reporting, before looping).
+// `{{current_date}}`/`{{current_weekday}}` are Retell's own `{{token}}`
+// dynamic-variable substitution (already used elsewhere, e.g.
+// `{{vehicle_makes_serviced}}`) — `voice-inbound/dynamic-variables.ts` and
+// `api-admin-run-agent-tests` both set these now.
+export const CURRENT_DATE_FRAGMENT =
+  "Today's date is {{current_date}} ({{current_weekday}}), tenant timezone " +
+  "{{timezone}}. Resolve every relative date/time the caller gives you " +
+  '("tomorrow", "next Monday", "this afternoon") against THIS date, never ' +
+  "a guess — pass fully-resolved absolute date_range values to " +
+  "check_availability.";
+
 // ---------------------------------------------------------------------------
 // MASTER_SPEC §3.6 — transactional-outbound consent ask
 // ---------------------------------------------------------------------------
@@ -143,6 +161,7 @@ export const MULTI_ENTITY_FRAGMENT =
 
 /** Every general-purpose fragment above, concatenated for convenient embedding into a `system_prompt`. */
 export const QUALITY_AND_COLLECTION_FRAGMENT = [
+  CURRENT_DATE_FRAGMENT,
   SILENCE_HANDLING_FRAGMENT,
   GIVE_UP_LADDER_FRAGMENT,
   ESCALATION_TRIGGERS_FRAGMENT,

@@ -189,6 +189,151 @@ describe("provisionTestTenant", () => {
     expect(businessHoursUpdate.length).toBe(0);
   });
 
+  it("CALL-2: force_recompile creates a BRAND-NEW agent (new agent_id) from the recompiled template and republishes, replacing the old one — RETELL-VERIFIED live that a published agent's flow/response_engine can never be edited in place, not even via a freshly branched draft version (see this function's own docstring)", async () => {
+    const { sql, calls } = makeSql({
+      "from public.tenants where slug": [
+        { id: "tenant_1", vertical: "auto", business_hours_ok: true },
+      ],
+      "from public.agent_configs": [
+        { retell_agent_id: "agent_existing", published_at: "2026-01-01T00:00:00.000Z" },
+      ],
+      "select at.* from public.agent_templates": [HEALTHY_TEMPLATE_ROW],
+    });
+
+    let flowCreateCalled = false;
+    let agentCreateCalled = false;
+    let publishCalled = false;
+    const retellFetch = async (url: string) => {
+      if (url.includes("/create-conversation-flow")) {
+        flowCreateCalled = true;
+        return new Response(JSON.stringify({ conversation_flow_id: "flow_new" }), {
+          status: 200,
+        });
+      }
+      if (url.includes("/create-agent")) {
+        agentCreateCalled = true;
+        return new Response(JSON.stringify({ agent_id: "agent_new", version: 1 }), {
+          status: 201,
+        });
+      }
+      if (url.includes("/get-agent/")) {
+        return new Response(JSON.stringify({ agent_id: "agent_new", version: 1 }), {
+          status: 200,
+        });
+      }
+      if (url.includes("/publish-agent-version/")) {
+        publishCalled = true;
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`unexpected retell call: ${url}`);
+    };
+
+    const result = await provisionTestTenant(
+      sql,
+      { ...baseBody, force_recompile: true },
+      {
+        retellFetch,
+        retellApiKey: "key",
+        voiceToolsWebhookUrl: "https://example.com/voice-tools",
+        logger,
+      },
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ tenant_id: "tenant_1", agent_id: "agent_new" });
+    expect(flowCreateCalled).toBe(true);
+    expect(agentCreateCalled).toBe(true);
+    expect(publishCalled).toBe(true);
+    const upsert = calls.find((c) => c.text.includes("insert into public.agent_configs"));
+    expect(upsert?.values).toContain("agent_new");
+  });
+
+  it("CALL-2: force_recompile re-syncs agent_templates from AGENT_TEMPLATE_SEEDS even when the existing row is already healthy (tools_ok) — otherwise a seed-content fix (like this task's own create_booking.resource_id description fix) never reaches an already-seeded vertical", async () => {
+    const { sql, calls } = makeSql({
+      "from public.tenants where slug": [
+        { id: "tenant_1", vertical: "auto", business_hours_ok: true },
+      ],
+      "from public.agent_configs": [
+        { retell_agent_id: "agent_existing", published_at: "2026-01-01T00:00:00.000Z" },
+      ],
+      // Already healthy (tools_ok: true) — without force_recompile this
+      // short-circuits and never re-syncs content.
+      "from public.agent_templates where vertical": [{ id: "tmpl_1", tools_ok: true }],
+      "select at.* from public.agent_templates": [HEALTHY_TEMPLATE_ROW],
+    });
+
+    const retellFetch = async (url: string) => {
+      if (url.includes("/create-conversation-flow")) {
+        return new Response(JSON.stringify({ conversation_flow_id: "flow_new" }), {
+          status: 200,
+        });
+      }
+      if (url.includes("/create-agent")) {
+        return new Response(JSON.stringify({ agent_id: "agent_new", version: 1 }), {
+          status: 201,
+        });
+      }
+      if (url.includes("/get-agent/")) {
+        return new Response(JSON.stringify({ agent_id: "agent_new", version: 1 }), {
+          status: 200,
+        });
+      }
+      if (url.includes("/publish-agent-version/")) {
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`unexpected retell call: ${url}`);
+    };
+
+    await provisionTestTenant(
+      sql,
+      { ...baseBody, force_recompile: true },
+      {
+        retellFetch,
+        retellApiKey: "key",
+        voiceToolsWebhookUrl: "https://example.com/voice-tools",
+        logger,
+      },
+    );
+
+    const reseedUpdate = calls.find(
+      (c) => c.text.includes("update public.agent_templates set") && c.text.includes("tools ="),
+    );
+    expect(reseedUpdate).toBeDefined();
+  });
+
+  it("CALL-2: force_recompile that fails to create a new agent logs a warning and KEEPS the old agent, rather than failing the whole request", async () => {
+    const { sql } = makeSql({
+      "from public.tenants where slug": [
+        { id: "tenant_1", vertical: "auto", business_hours_ok: true },
+      ],
+      "from public.agent_configs": [
+        { retell_agent_id: "agent_existing", published_at: "2026-01-01T00:00:00.000Z" },
+      ],
+      "select at.* from public.agent_templates": [HEALTHY_TEMPLATE_ROW],
+    });
+
+    const retellFetch = async (url: string) => {
+      if (url.includes("/create-conversation-flow")) {
+        return new Response(JSON.stringify({ status: "error" }), { status: 500 });
+      }
+      throw new Error(`unexpected retell call: ${url}`);
+    };
+
+    const result = await provisionTestTenant(
+      sql,
+      { ...baseBody, force_recompile: true },
+      {
+        retellFetch,
+        retellApiKey: "key",
+        voiceToolsWebhookUrl: "https://example.com/voice-tools",
+        logger,
+      },
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ tenant_id: "tenant_1", agent_id: "agent_existing" });
+  });
+
   it("self-heals a tenant row with a corrupted (non-object) business_hours column", async () => {
     const { sql, calls } = makeSql({
       "from public.tenants where slug": [

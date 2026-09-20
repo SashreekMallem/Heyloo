@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import type { SqlClient } from "../_shared/types.ts";
 import type { DispatchDeps } from "./handler.ts";
-import { dispatchTool, isKnownTool } from "./handler.ts";
+import { dispatchTool, isKnownTool, resolveEnvelopeCallId } from "./handler.ts";
 
 const logger = createLogger();
 
@@ -104,5 +104,59 @@ describe("dispatchTool", () => {
       preferred_window_end: "2026-01-02T00:00:00Z",
     });
     expect(result).toEqual({ result: { joined: false, reason: "invalid_phone" } });
+  });
+
+  it("CALL-2: fills deps.telemetry.tenantId with the resolved tenant, so tool_health rows are no longer always tenant_id: null", async () => {
+    const deps = makeDeps({ id: "cl1", tenant_id: "t1", caller_number: "+15551234567" });
+    const telemetry: { tenantId: string | null } = { tenantId: null };
+    await dispatchTool({ ...deps, telemetry }, "call_1", "join_waitlist", {
+      customer: { name: "Jane Doe", phone: "+15551234567" },
+      preferred_window_start: "2026-01-01T00:00:00Z",
+      preferred_window_end: "2026-01-02T00:00:00Z",
+    });
+    expect(telemetry.tenantId).toBe("t1");
+  });
+
+  it("CALL-2: leaves deps.telemetry.tenantId null when context never resolves (never a fabricated tenant)", async () => {
+    const deps = makeDeps(null);
+    const telemetry: { tenantId: string | null } = { tenantId: null };
+    await dispatchTool({ ...deps, telemetry }, "call_missing", "check_availability", {
+      date_range: { start: "2026-01-01T00:00:00Z", end: "2026-01-02T00:00:00Z" },
+    });
+    expect(telemetry.tenantId).toBeNull();
+  });
+
+  it("CALL-2: resolves context from the tool payload's call.agent_id when no call_logs row exists, instead of always falling back", async () => {
+    const deps = makeDeps(null, {
+      "from public.agent_configs": [{ tenant_id: "t9", vertical: "auto" }],
+      "insert into public.call_logs": [
+        { id: "cl-new", tenant_id: "t9", caller_number: "+15550001111" },
+      ],
+    });
+    const result = await dispatchTool(
+      deps,
+      "test_batch_call_1",
+      "check_availability",
+      { date_range: { start: "2026-01-01T00:00:00Z", end: "2026-01-02T00:00:00Z" } },
+      { agent_id: "agent_9" },
+    );
+    // Resolved a real tenant (t9) rather than the graceful fallback — the
+    // exact CALL-1-traced bug (batch-test/chat sessions always getting the
+    // fallback because no call_logs row exists for a synthetic call_id).
+    expect(result.result).not.toMatchObject({ fallback: true });
+  });
+});
+
+describe("resolveEnvelopeCallId", () => {
+  it("prefers a top-level call_id when present", () => {
+    expect(resolveEnvelopeCallId({ call_id: "top", call: { call_id: "nested" } })).toBe("top");
+  });
+
+  it("falls back to call.call_id (the real Retell shape) when there is no top-level call_id", () => {
+    expect(resolveEnvelopeCallId({ call: { call_id: "nested" } })).toBe("nested");
+  });
+
+  it("returns null when neither is present", () => {
+    expect(resolveEnvelopeCallId({})).toBeNull();
   });
 });

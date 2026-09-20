@@ -46,7 +46,7 @@ describe("compileTemplate — conversation_flow", () => {
     if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
     const { nodes, start_node_id } = compiled.flow.body;
     const startNode = nodes.find((n) => n.id === start_node_id);
-    expect(startNode?.instruction.text.startsWith(DISCLOSURE)).toBe(true);
+    expect(startNode?.instruction?.text.startsWith(DISCLOSURE)).toBe(true);
   });
 
   it("gives every emitted tool a tool_id (CALL-1 gap fix: required by a live 400, docs.retellai.com/api-references/create-conversation-flow)", () => {
@@ -75,26 +75,80 @@ describe("compileTemplate — conversation_flow", () => {
   it("marks the global-intent target node with global_node_setting.condition (reachable_from: any)", () => {
     const compiled = compileTemplate(baseTemplate(), "https://example.com/voice-tools");
     if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
-    const bookingNode = compiled.flow.body.nodes.find((n) => n.id === "booking");
+    const bookingNode = compiled.flow.body.nodes.find((n) => n.id === "booking") as
+      | { global_node_setting?: { condition: string } }
+      | undefined;
     expect(bookingNode?.global_node_setting).toEqual({
       condition: "the caller mentions an emergency",
     });
   });
 
-  it("never emits a tool_ids field on a conversation node (not a real field — RETELL-VERIFY)", () => {
+  it("CALL-2 fix: a state with allowed_tools compiles to a subagent node with tool_ids (a plain conversation node can never call a tool — RETELL-VERIFIED live)", () => {
     const template = baseTemplate({
       states: [
         {
           id: "booking",
           name: "Booking",
           prompt_fragment: "Collect booking details.",
+          // A name absent from template.tools must never leak into
+          // tool_ids — Retell would reject an unknown tool_id outright.
           allowed_tools: ["create_booking", "not_a_real_tool"],
         },
       ],
+      tools: [{ name: "create_booking", description: "books a slot", parameters: {} }],
     });
     const compiled = compileTemplate(template, "https://example.com/voice-tools");
     if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
-    expect(compiled.flow.body.nodes[0]).not.toHaveProperty("tool_ids");
+    expect(compiled.flow.body.nodes[0]).toMatchObject({
+      type: "subagent",
+      tool_ids: ["create_booking"],
+    });
+  });
+
+  it("a state with no allowed_tools still compiles to a plain conversation node with no tool_ids field", () => {
+    const compiled = compileTemplate(baseTemplate(), "https://example.com/voice-tools");
+    if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
+    const greetingNode = compiled.flow.body.nodes.find((n) => n.id === "greeting");
+    expect(greetingNode?.type).toBe("conversation");
+    expect(greetingNode).not.toHaveProperty("tool_ids");
+  });
+
+  it("CALL-2 fix: an is_terminal state gets an `end` node plus an edge onto it, so the flow has somewhere to go once that state's business is done (previously a live bug: no edge onward left the model repeating the same turn/tool call forever, never ending the call)", () => {
+    const template = baseTemplate({
+      states: [
+        { id: "greeting", name: "Greeting", prompt_fragment: "Greet.", allowed_tools: [] },
+        {
+          id: "confirm_booking",
+          name: "Confirm booking",
+          prompt_fragment: "Confirm and book.",
+          allowed_tools: ["create_booking"],
+          is_terminal: true,
+        },
+      ],
+      transitions: [{ from: "greeting", to: "confirm_booking", on: { intent: "ready" } }],
+      tools: [{ name: "create_booking", description: "books it", parameters: {} }],
+    });
+    const compiled = compileTemplate(template, "https://example.com/voice-tools");
+    if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
+    const { nodes } = compiled.flow.body;
+
+    const endNode = nodes.find((n) => n.type === "end");
+    expect(endNode).toBeDefined();
+    expect(endNode?.id).toBe("confirm_booking__end");
+
+    const confirmNode = nodes.find((n) => n.id === "confirm_booking") as
+      | { edges: Array<{ destination_node_id: string }> }
+      | undefined;
+    expect(confirmNode?.edges.some((e) => e.destination_node_id === endNode?.id)).toBe(true);
+
+    // A non-terminal state gets no end node/edge.
+    expect(nodes.some((n) => n.id === "greeting__end")).toBe(false);
+  });
+
+  it("a non-terminal template (no is_terminal state) emits no `end` nodes at all", () => {
+    const compiled = compileTemplate(baseTemplate(), "https://example.com/voice-tools");
+    if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
+    expect(compiled.flow.body.nodes.some((n) => n.type === "end")).toBe(false);
   });
 
   it("fails the disclosure gate when disclosure_line is empty", () => {

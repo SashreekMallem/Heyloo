@@ -1930,3 +1930,53 @@ reference before depending on anything beyond "send one query string, get
 back its rows or an error status" if a future task needs finer control.
 
 **Code:** `scripts/sync-agent-templates.ts#runQuery`.
+
+## CALL-2 addendum (2026-09-20) — conversation-flow node types, End node, agent-version workflow
+
+**Confirmed live/via docs during CALL-2's live diagnosis (docs/BUILD_NOTES.md
+CALL-2 entry has the full narrative):**
+
+- docs.retellai.com/build/conversation-flow/overview: "Conversation nodes
+  do not use tools / functions" — a plain `type: "conversation"` node can
+  NEVER invoke a tool, regardless of the flow's top-level `tools[]`.
+  `type: "subagent"` (same instruction/edges/global_node_setting shape,
+  plus `tool_ids`) is the node type for a slot-filling state that also
+  needs to call 1+ tools.
+- retell-typescript-sdk's `EndNode` (`src/resources/conversation-flow.ts`,
+  corroborated by docs.retellai.com/build/conversation-flow/node):
+  `{id, type: "end", instruction?, speak_during_execution?, name?,
+  display_position?, global_node_setting?, model_choice?}` — the only way
+  to end a call from within a conversation flow; a node with no outgoing
+  edge is a dead end, not an implicit hangup.
+- `update-conversation-flow` (PATCH) 400s with `"Cannot update published
+  conversation flow"` once any published agent version references it;
+  `update-agent` (PATCH) 422s with `"Cannot update published agent other
+  than version title"` once the agent itself is published; docs.retellai.
+  com/api-references/create-agent-version + community.retellai.com/t/
+  api-workflow-for-updating-a-published-conversation-flow/2805's cited
+  official answer describe branching a fresh draft version first
+  (`POST /create-agent-version/{agent_id}` with `{base_version}`) — but
+  live-confirmed this session that even THAT draft's `update-agent`
+  `response_engine` field still 400s with `"Cannot update response engine
+  after agent versions have been created"`. **Net finding, not stated
+  this plainly in any single fetched doc page:** once an agent has any
+  version history at all, its `agent_id` is permanently bound to its
+  original flow/llm resource — there is no API path to repoint it. A new
+  `agent_id` (fresh `create-agent`) is the only way to ship new flow
+  content to an existing tenant.
+
+**What was NOT confirmed:** the exact Call Transfer Node schema (type
+discriminant, transfer-destination field shape — static vs. `{{token}}`
+dynamic variable, cold/warm/SIP options) — docs.retellai.com/build/
+conversation-flow/node describes its existence and behavior in prose but
+the dedicated node-type page wasn't fetched this session (CALL-2 was
+time-boxed away from implementing it — see BUILD_NOTES CALL-2 "Still
+open"). A follow-up implementing `transfer_call` support must RETELL-
+VERIFY this before writing the compiler emission code, per CLAUDE.md
+Rule 1 — especially the destination-number field, since G6 requires it
+stay tenant-config-only, never caller-influenced.
+
+**Code:** `supabase/functions/_shared/compiler/template-compiler.ts`
+(`EndNode`, the `type: "subagent"` emission, the `is_terminal` -> end-node
+wiring), `supabase/functions/_shared/providers/retell.ts#createAgentVersion`,
+`supabase/functions/api-admin-provision-test-tenant/handler.ts#compileAndCreateAgent`.

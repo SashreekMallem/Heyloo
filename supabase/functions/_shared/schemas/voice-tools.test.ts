@@ -22,6 +22,7 @@ import {
   SendPaymentLinkArgsSchema,
   SendSmsConfirmationArgsSchema,
   TakeMessageArgsSchema,
+  ToolDispatchEnvelopeSchema,
   UpdateBookingArgsSchema,
 } from "./voice-tools.js";
 
@@ -149,5 +150,40 @@ describe("JoinWaitlistArgsSchema", () => {
     expect(() =>
       JoinWaitlistArgsSchema.parse({ customer: { name: "Jane Doe", phone: "+15551234567" } }),
     ).toThrow();
+  });
+});
+
+describe("ToolDispatchEnvelopeSchema (CALL-2)", () => {
+  it("accepts the real Retell shape: call_id nested under `call`, no top-level call_id", () => {
+    const parsed = ToolDispatchEnvelopeSchema.safeParse({
+      name: "check_availability",
+      args: { date_range: { start: "2026-01-01T00:00:00Z", end: "2026-01-02T00:00:00Z" } },
+      call: { call_id: "call_abc", agent_id: "agent_xyz", call_type: "web_call" },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("still accepts a flat top-level call_id (job-keep-warm's synthetic ping body)", () => {
+    const parsed = ToolDispatchEnvelopeSchema.safeParse({
+      call_id: "heyloo-keep-warm-ping",
+      name: "check_availability",
+      args: {},
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("passes through from_number/to_number/direction on `call` when present without requiring them", () => {
+    const parsed = ToolDispatchEnvelopeSchema.safeParse({
+      name: "check_availability",
+      args: {},
+      call: {
+        call_id: "call_1",
+        agent_id: "agent_1",
+        from_number: "+15551234567",
+        to_number: "+15559998888",
+        direction: "inbound",
+      },
+    });
+    expect(parsed.success).toBe(true);
   });
 });

@@ -100,7 +100,18 @@ export function createBookingTool(description: string, vertical?: Vertical): Can
     parameters: {
       type: "object",
       properties: {
-        resource_id: { type: "string" },
+        // CALL-2 (docs/BUILD_NOTES.md): a bare `{type:"string"}` with no
+        // description was confirmed live to produce a real booking
+        // failure — the model passed the literal string "default" instead
+        // of a real slot's id (`invalid input syntax for type uuid:
+        // "default"`, tool_health.error_type, live test tenant). This
+        // field is a real value, never invented.
+        resource_id: {
+          type: "string",
+          description:
+            "The exact resource_id from the specific slot the caller chose in " +
+            "check_availability's response — never invent or guess one.",
+        },
         offering_id: { type: "string" },
         start: { type: "string" },
         end: { type: "string" },
