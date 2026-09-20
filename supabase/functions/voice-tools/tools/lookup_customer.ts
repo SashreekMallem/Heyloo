@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { samePhone } from "../../_shared/phone.ts";
+import { normalizeE164, samePhone } from "../../_shared/phone.ts";
 import type { LookupCustomerArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { Logger, SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
@@ -57,7 +57,7 @@ function boundRecurringEntries(raw: unknown): unknown[] | undefined {
 
 export type LookupCustomerResult =
   | { error: "unauthorized_lookup" }
-  | { found: false }
+  | { found: false; unverified?: true; message?: string }
   | {
       found: true;
       name: string | null;
@@ -66,15 +66,38 @@ export type LookupCustomerResult =
       vehicles?: unknown;
       pets?: unknown;
       addresses?: CustomerAddressRow[];
+      unverified?: true;
+      message?: string;
     };
 
 /**
  * BACKEND_SPEC §7.2.5 (G6 tool authorization): server-side cross-checked
  * against the LIVE call's caller number (`ctx.callerNumber`, resolved from
- * `call_logs` — never trusted from `args` alone). A mismatch is rejected
- * and logged as a potential prompt-injection attempt, exactly as spec'd —
- * this is the one tool authorization check enforced in code, not just
- * documented.
+ * `call_logs` — never trusted from `args` alone) WHENEVER one exists. A
+ * mismatch on a real call (one with a live `from_number`) is rejected and
+ * logged as a potential prompt-injection attempt, exactly as spec'd — this
+ * branch is completely unchanged from before, so a real call is never any
+ * less protected than it was.
+ *
+ * OPS-5 (docs/BUILD_NOTES.md): `ctx.callerNumber` is `null` only when the
+ * channel itself carries no caller-id-equivalent to check against — Retell
+ * batch-test simulator calls (no `from_number` at all, the recurring
+ * `lookup_customer` G6-rejection flakiness this fixes) and, by the same
+ * reasoning, any other future channel with no dialed-from number. There is
+ * no live caller number to authenticate `args.phone` against in that case
+ * — same information a phone receptionist has on a blocked/absent caller
+ * ID: nothing, until the caller states a number out loud. So this falls
+ * back to looking the caller up by the number they (or the simulator's
+ * caller-persona) STATE, scoped exactly like every other tool here —
+ * tenant-id only, never cross-tenant — and flags the result `unverified`
+ * with an instruction for the agent to read the customer's name back and
+ * get an explicit yes before treating the match as confirmed (the
+ * "confirms" half of the authorization: the human/simulated caller, not
+ * just the model, has to agree the record is theirs). This never widens
+ * what a REAL call can do — `ctx.callerNumber` is populated from Twilio's
+ * `from_number` on every live/PSTN call (context.ts), so a genuine
+ * malicious caller with a real number still hits the strict-match branch
+ * below exactly as before.
  */
 export async function lookupCustomer(
   sql: SqlClient,
@@ -82,7 +105,9 @@ export async function lookupCustomer(
   args: Args,
   logger: Logger,
 ): Promise<LookupCustomerResult> {
-  if (!samePhone(args.phone, ctx.callerNumber)) {
+  const hasLiveCallerNumber = !!ctx.callerNumber;
+
+  if (hasLiveCallerNumber && !samePhone(args.phone, ctx.callerNumber)) {
     logger.warn("lookup_customer_unauthorized_attempt", {
       call_id: ctx.retellCallId,
       tenant_id: ctx.tenantId,
@@ -91,14 +116,46 @@ export async function lookupCustomer(
     return { error: "unauthorized_lookup" };
   }
 
+  // Normalized once, used for both branches: a real call's callerNumber is
+  // already E.164 (context.ts), and a stated number needs the same
+  // normalization the rest of this codebase applies at every boundary
+  // (CLAUDE.md Rule 2) before it's ever compared against `phone_e164`.
+  const lookupPhone = hasLiveCallerNumber ? ctx.callerNumber : normalizeE164(args.phone);
+  if (!hasLiveCallerNumber) {
+    logger.warn("lookup_customer_no_caller_id_stated_number", {
+      call_id: ctx.retellCallId,
+      tenant_id: ctx.tenantId,
+    });
+  }
+  if (!lookupPhone) {
+    // No live caller id AND the stated number doesn't even parse as a
+    // phone number — nothing to look up yet; tell the agent to ask again
+    // rather than querying with a value that can never match anything.
+    return {
+      found: false,
+      unverified: true,
+      message:
+        "No caller ID is available for this call. Ask the caller to say their phone number, then try again with the number they give.",
+    };
+  }
+
   const rows = await sql<CustomerRow>`
     select id, name, segment, metadata
     from public.customers
-    where tenant_id = ${ctx.tenantId} and phone_e164 = ${ctx.callerNumber}
+    where tenant_id = ${ctx.tenantId} and phone_e164 = ${lookupPhone}
     limit 1
   `;
   const customer = rows[0];
-  if (!customer) return { found: false };
+  if (!customer) {
+    return hasLiveCallerNumber
+      ? { found: false }
+      : {
+          found: false,
+          unverified: true,
+          message:
+            "No record was found for that number. Confirm you have the right phone number with the caller before trying a different one.",
+        };
+  }
 
   const bookingRows = await sql<RecentBookingRow>`
     select id, start_at, status
@@ -137,5 +194,16 @@ export async function lookupCustomer(
     ...(vehicles !== undefined ? { vehicles } : {}),
     ...(pets !== undefined ? { pets } : {}),
     ...(addressRows.length > 0 ? { addresses: addressRows } : {}),
+    // No live caller id to authenticate the match against (see this
+    // function's own docstring) — the match is on the STATED number alone,
+    // so the agent must read the name back and get an explicit yes before
+    // treating it as confirmed, same as a receptionist would with a
+    // blocked/absent caller ID.
+    ...(hasLiveCallerNumber
+      ? {}
+      : {
+          unverified: true as const,
+          message: `Read the name "${customer.name ?? "on file"}" back to the caller and get a clear yes that it's them before sharing any other details or making changes.`,
+        }),
   };
 }

@@ -198,3 +198,64 @@ describe("lookupCustomer (G6 caller-scope authorization)", () => {
     expect((result as { addresses?: unknown }).addresses).toBeUndefined();
   });
 });
+
+describe("lookupCustomer — no live caller number (OPS-5, batch-test G6 flakiness)", () => {
+  const noCallerCtx: CallContext = { ...ctx, callerNumber: null };
+
+  it("never rejects outright when there's no caller id to check against — looks up by the stated number instead", async () => {
+    let queriedPhone: unknown;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("from public.customers")) {
+        queriedPhone = values[1];
+        return Promise.resolve([
+          { id: "cust_1", name: "Jordan Lee", segment: "returning", metadata: {} },
+        ]);
+      }
+      return Promise.resolve([]);
+    }) as SqlClient;
+    const result = await lookupCustomer(sql, noCallerCtx, { phone: "(555) 999-8888" }, logger);
+    expect(queriedPhone).toBe("+15559998888");
+    expect(result).toMatchObject({ found: true, name: "Jordan Lee", unverified: true });
+    expect((result as { message?: string }).message).toContain("Jordan Lee");
+  });
+
+  it("logs the no-caller-id stated-number lookup distinctly from the unauthorized-attempt path", async () => {
+    const warnings: { msg: string }[] = [];
+    const spyLogger = {
+      ...logger,
+      warn: (msg: string) => warnings.push({ msg }),
+    };
+    const sql = (() => Promise.resolve([])) as SqlClient;
+    await lookupCustomer(sql, noCallerCtx, { phone: CALLER_NUMBER }, spyLogger);
+    expect(warnings.map((w) => w.msg)).toContain("lookup_customer_no_caller_id_stated_number");
+    expect(warnings.map((w) => w.msg)).not.toContain("lookup_customer_unauthorized_attempt");
+  });
+
+  it("returns an unverified not-found (never a hard error) when nothing matches the stated number", async () => {
+    const sql = (() => Promise.resolve([])) as SqlClient;
+    const result = await lookupCustomer(sql, noCallerCtx, { phone: CALLER_NUMBER }, logger);
+    expect(result).toMatchObject({ found: false, unverified: true });
+  });
+
+  it("asks the agent to get a real number rather than querying when the stated phone doesn't even parse", async () => {
+    let queried = false;
+    const sql = (() => {
+      queried = true;
+      return Promise.resolve([]);
+    }) as SqlClient;
+    const result = await lookupCustomer(sql, noCallerCtx, { phone: "not-a-phone" }, logger);
+    expect(queried).toBe(false);
+    expect(result).toMatchObject({ found: false, unverified: true });
+  });
+
+  it("still scopes strictly to the caller's own tenant — cannot be used to reach across tenants", async () => {
+    let queriedTenant: unknown;
+    const sql = ((_strings: TemplateStringsArray, ...values: unknown[]) => {
+      queriedTenant = values[0];
+      return Promise.resolve([]);
+    }) as SqlClient;
+    await lookupCustomer(sql, noCallerCtx, { phone: CALLER_NUMBER }, logger);
+    expect(queriedTenant).toBe("tenant_1");
+  });
+});

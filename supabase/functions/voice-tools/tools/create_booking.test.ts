@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createLogger } from "../../_shared/logger.ts";
 import type { SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
@@ -43,10 +43,52 @@ describe("createBooking", () => {
     expect(result).toEqual({ confirmed: false, reason: "invalid_phone" });
   });
 
-  it("EDGE_AUDIT B1: rejects a resource_id that doesn't belong to (or isn't active for) the caller's tenant", async () => {
-    const { sql } = makeStepSql([{ rows: [] }]); // resource ownership check: no match
+  it("EDGE_AUDIT B1: rejects a resource_id that doesn't belong to (or isn't active for) the caller's tenant, when no fallback resolves either", async () => {
+    const { sql } = makeStepSql([
+      { rows: [] }, // exact resource_id match: none
+      { rows: [] }, // first-available fallback (no resource_name given): none open
+    ]);
     const result = await createBooking(sql, ctx, args);
     expect(result).toEqual({ confirmed: false, reason: "resource_not_found" });
+  });
+
+  it("OPS-5: resolves a hallucinated resource_id server-side via resource_name when the exact id doesn't match", async () => {
+    const warn = vi.fn();
+    const { sql } = makeStepSql([
+      { rows: [] }, // exact resource_id match: none (the model invented "res_bogus")
+      { rows: [{ id: "res_real" }] }, // resource_name match: found
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+      { rows: [{ id: "booking_1", start_at: args.start, end_at: args.end }] }, // booking insert
+      NO_ADAPTER_CONNECTIONS,
+    ]);
+    const result = await createBooking(
+      sql,
+      ctx,
+      { ...args, resource_id: "res_bogus", resource_name: "Bay 2" },
+      { logger: { ...createLogger(), warn }, appBaseUrl: "https://example.com" },
+    );
+    expect(result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
+    expect(warn).toHaveBeenCalledWith(
+      "create_booking_resource_id_resolved_fallback",
+      expect.objectContaining({
+        requested_resource_id: "res_bogus",
+        resolved_resource_id: "res_real",
+      }),
+    );
+  });
+
+  it("OPS-5: falls back to the first genuinely-available resource when the id is wrong and no resource_name was given", async () => {
+    const { sql } = makeStepSql([
+      { rows: [] }, // exact resource_id match: none
+      { rows: [{ id: "res_open" }] }, // first-available fallback: one resource has an open slot
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+      { rows: [{ id: "booking_1", start_at: args.start, end_at: args.end }] }, // booking insert
+      NO_ADAPTER_CONNECTIONS,
+    ]);
+    const result = await createBooking(sql, ctx, { ...args, resource_id: "res_bogus" });
+    expect(result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
   });
 
   it("EDGE_AUDIT B1: rejects an offering_id that doesn't belong to the caller's tenant", async () => {

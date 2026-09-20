@@ -96,6 +96,66 @@ interface DepositPolicy {
 const DEFAULT_DEPOSIT_HOLD_HOURS = 24;
 
 /**
+ * OPS-5 (docs/BUILD_NOTES.md — recurring `create_booking` batch-test
+ * failure): resolves the resource to book server-side rather than trusting
+ * `args.resource_id` verbatim. The batch-test simulator's caller-LLM
+ * sometimes invents or misremembers a `resource_id` a few turns after
+ * `check_availability` returned the real ones (a plain LLM-recall error,
+ * not an authorization concern — `check_availability`'s own results are
+ * already tenant-scoped and available-only); previously that always
+ * failed the booking outright with `resource_not_found`, even though a
+ * perfectly good resource for the requested window existed. Resolution
+ * order:
+ *   1. exact id match, scoped to this tenant + active (the fast, correct-
+ *      model-behavior path — zero extra query beyond what already ran).
+ *   2. `resource_name`, if the model supplied one — case-insensitive match
+ *      against this tenant's active resources.
+ *   3. first-available — the earliest (by id, deterministic) resource that
+ *      genuinely has an `availability_slots` row covering the requested
+ *      `[start, end)` window, i.e. the exact table `check_availability`
+ *      itself reads, so this can only ever resolve onto a resource that
+ *      really is open then, never an arbitrary one.
+ * Returns `null` (→ `resource_not_found`) only when none of the three
+ * resolves — never widens which resource a call is authorized to book,
+ * only which one of THIS tenant's genuinely-open resources it lands on.
+ */
+async function resolveBookingResourceId(
+  sql: SqlClient,
+  ctx: CallContext,
+  args: Args,
+): Promise<string | null> {
+  const exact = await sql<{ id: string }>`
+    select id from public.resources
+    where id = ${args.resource_id} and tenant_id = ${ctx.tenantId} and active
+    limit 1
+  `;
+  if (exact[0]) return exact[0].id;
+
+  if (args.resource_name) {
+    const byName = await sql<{ id: string }>`
+      select id from public.resources
+      where tenant_id = ${ctx.tenantId} and active and name ilike ${args.resource_name}
+      order by id asc
+      limit 1
+    `;
+    if (byName[0]) return byName[0].id;
+  }
+
+  const firstAvailable = await sql<{ id: string }>`
+    select id from public.resources
+    where tenant_id = ${ctx.tenantId} and active
+      and id in (
+        select resource_id from public.availability_slots
+        where tenant_id = ${ctx.tenantId} and is_available = true
+          and slot_range && tstzrange(${args.start}, ${args.end})
+      )
+    order by id asc
+    limit 1
+  `;
+  return firstAvailable[0]?.id ?? null;
+}
+
+/**
  * BACKEND_SPEC §7.2.2 — one INSERT, race-proof. Never check-then-insert: the
  * GIST exclusion constraint on `(resource_id, during) where status =
  * 'confirmed'` is the race-proofing (SYSTEM_DESIGN §5); this handler just
@@ -118,18 +178,24 @@ export async function createBooking(
   // EDGE_AUDIT B1: every referenced id must be verified to belong to the
   // caller's OWN tenant before it's ever written — same pattern already
   // used by `update_booking`/`cancel_booking`/`create_order`/
-  // `send_payment_link`. `args.resource_id`/`args.offering_id` come
-  // straight from the Retell tool-call args (Zod-shape-validated only, not
-  // ownership-validated) — without this, a manipulated/adversarial call on
-  // Tenant A's agent could create a `confirmed` booking against Tenant B's
-  // resource.
-  const resourceRows = await sql<{ id: string }>`
-    select id from public.resources
-    where id = ${args.resource_id} and tenant_id = ${ctx.tenantId} and active
-    limit 1
-  `;
-  if (!resourceRows[0]) {
+  // `send_payment_link`. `args.resource_id` comes straight from the Retell
+  // tool-call args (Zod-shape-validated only, not ownership-validated); a
+  // mismatch is resolved server-side (`resolveBookingResourceId` above)
+  // rather than failing outright — an LLM-hallucinated id can only ever
+  // land on one of THIS tenant's own genuinely-open resources, never
+  // widen authorization to another tenant's.
+  const resolvedResourceId = await resolveBookingResourceId(sql, ctx, args);
+  if (!resolvedResourceId) {
     return { confirmed: false, reason: "resource_not_found" };
+  }
+  if (resolvedResourceId !== args.resource_id) {
+    deps?.logger.warn("create_booking_resource_id_resolved_fallback", {
+      tenant_id: ctx.tenantId,
+      call_id: ctx.retellCallId,
+      requested_resource_id: args.resource_id,
+      requested_resource_name: args.resource_name ?? null,
+      resolved_resource_id: resolvedResourceId,
+    });
   }
 
   if (args.offering_id) {
@@ -246,7 +312,7 @@ export async function createBooking(
         status, party_size, source_call_id, idempotency_key, structured_payload,
         quoted_rate_cents, hold_expires_at
       ) values (
-        ${ctx.tenantId}, ${args.resource_id}, ${args.offering_id ?? null}, ${customerId},
+        ${ctx.tenantId}, ${resolvedResourceId}, ${args.offering_id ?? null}, ${customerId},
         ${args.start}, ${args.end}, ${bookingStatus}, ${args.party_size ?? null}, ${ctx.callLogId},
         ${idempotencyKey}, ${structuredPayload}::jsonb,
         ${quotedRateCents}, ${holdExpiresAt}

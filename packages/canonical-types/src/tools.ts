@@ -77,6 +77,12 @@ const zIdentityVerifyInput = z.object({
 
 export const zCreateBookingRequest = z.object({
   resource_id: z.string().min(1),
+  /** OPS-5 (docs/BUILD_NOTES.md): optional fallback hint mirrored from
+   * `_shared/schemas/voice-tools.ts`'s `CreateBookingArgsSchema` —
+   * `voice-tools/tools/create_booking.ts` resolves the real resource
+   * server-side when `resource_id` doesn't match (a hallucinated/
+   * misremembered id), using this name as one of its resolution steps. */
+  resource_name: z.string().min(1).optional(),
   offering_id: z.string().min(1).optional(),
   start: z.string().min(1),
   end: z.string().min(1),

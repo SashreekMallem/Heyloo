@@ -88,6 +88,13 @@ export const CustomerInputSchema = z
 export const CreateBookingArgsSchema = z
   .object({
     resource_id: z.string().min(1),
+    // OPS-5 (docs/BUILD_NOTES.md): optional fallback hint — the resource's
+    // human-readable name, used by `create_booking`'s server-side
+    // resolution when `resource_id` doesn't match a real resource for this
+    // tenant (a hallucinated/misremembered id from `check_availability`'s
+    // own result a few turns earlier). Never trusted alone either; see
+    // `create_booking.ts`'s `resolveBookingResourceId`.
+    resource_name: z.string().min(1).optional(),
     offering_id: z.string().optional(),
     start: z.string().min(1),
     end: z.string().min(1),
