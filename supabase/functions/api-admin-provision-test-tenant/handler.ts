@@ -10,6 +10,7 @@ import {
   createAgent,
   createConversationFlow,
   createRetellLLM,
+  deleteAgent,
   getAgent,
   publishAgentVersion,
 } from "../_shared/providers/retell.ts";
@@ -49,6 +50,22 @@ export interface ProvisionTestTenantRequest {
    * deleting and recreating it (which would also churn its phone-number
    * attachment/agent_id). */
   force_recompile?: boolean;
+  /** CALL-7 (docs/BUILD_PLAN.md task 4 — "do not accumulate Retell
+   * agents"): opt-in, only meaningful together with `force_recompile`.
+   * Default false PRESERVES the CALL-2-established behavior every prior
+   * caller/task relies on ("old orphaned flow/agent resources are
+   * harmless, not cleaned up"). When true, the OLD `retell_agent_id` this
+   * force_recompile is about to supersede is deleted via Retell's
+   * `DELETE /delete-agent/{id}` (`_shared/providers/retell.ts#deleteAgent`)
+   * right after the new agent is created and republished — never before
+   * (never leaves the tenant with zero working agents if the new
+   * create/publish step fails). A delete failure is logged, never fails
+   * the request — the new agent is already live and correct either way;
+   * a leftover orphaned old agent is the same harmless state this flag
+   * exists to normally avoid, not a regression. Only ever deletes an
+   * agent id this same tenant's own `agent_configs` row had on file, so
+   * it can never target an agent this codebase didn't create. */
+  cleanup_superseded_agent?: boolean;
 }
 
 export interface ProvisionTestTenantResult {
@@ -126,6 +143,10 @@ export function validateRequest(
   if (forceRecompile !== undefined && typeof forceRecompile !== "boolean") {
     return { ok: false, error: "invalid_force_recompile" };
   }
+  const cleanupSupersededAgent = b["cleanup_superseded_agent"];
+  if (cleanupSupersededAgent !== undefined && typeof cleanupSupersededAgent !== "boolean") {
+    return { ok: false, error: "invalid_cleanup_superseded_agent" };
+  }
   return {
     ok: true,
     data: {
@@ -135,6 +156,7 @@ export function validateRequest(
       owner_email: ownerEmail,
       ...(ownerPhone ? { owner_phone_e164: ownerPhone } : {}),
       ...(forceRecompile ? { force_recompile: true } : {}),
+      ...(cleanupSupersededAgent ? { cleanup_superseded_agent: true } : {}),
     },
   };
 }
@@ -450,6 +472,12 @@ export async function provisionTestTenant(
   `;
   let agentId = existingConfig[0]?.retell_agent_id ?? null;
   let needsPublish = !existingConfig[0]?.published_at;
+  // CALL-7: the agent `force_recompile` is about to supersede (if any) —
+  // captured BEFORE compileAndCreateAgent overwrites agent_configs, so a
+  // later opt-in cleanup deletes the exact id this tenant's own row had on
+  // file, never a guess. Null on a first-ever provision (nothing to clean
+  // up) or when force_recompile isn't set (agentId is simply reused as-is).
+  const supersededAgentId = req.force_recompile ? agentId : null;
 
   const isFirstProvision = !agentId;
   if (isFirstProvision || req.force_recompile) {
@@ -504,6 +532,30 @@ export async function provisionTestTenant(
       return { status: 502, body: { error: "retell_publish_agent_failed" } };
     }
     await sql`update public.agent_configs set published_at = now() where tenant_id = ${tenant.id}`;
+  }
+
+  // CALL-7: only reached once the NEW agent (agentId, possibly just
+  // recompiled above) is created and, if needed, published — so this
+  // tenant always has a working agent on file before its old one is ever
+  // deleted. `supersededAgentId` is only non-null on a force_recompile
+  // that actually replaced the id (never on a first provision, never when
+  // force_recompile's own compile step failed and fell back to the
+  // existing agent — see compileAndCreateAgent's "skipped" branch above,
+  // which leaves `agentId` unchanged from `existingConfig`).
+  if (req.cleanup_superseded_agent && supersededAgentId && supersededAgentId !== agentId) {
+    const deleted = await deleteAgent(deps.retellFetch, deps.retellApiKey, supersededAgentId);
+    if (!deleted.ok) {
+      deps.logger.warn("provision_test_tenant_cleanup_superseded_agent_failed", {
+        tenant_id: tenant.id,
+        superseded_agent_id: supersededAgentId,
+        status: deleted.status,
+      });
+    } else {
+      deps.logger.info("provision_test_tenant_cleanup_superseded_agent_deleted", {
+        tenant_id: tenant.id,
+        superseded_agent_id: supersededAgentId,
+      });
+    }
   }
 
   await sql`update public.tenants set status = case when status = 'trialing' then 'active' else status end where id = ${tenant.id}`;

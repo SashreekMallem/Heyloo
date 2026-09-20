@@ -348,6 +348,122 @@ describe("provisionTestTenant", () => {
     expect(result.body).toEqual({ tenant_id: "tenant_1", agent_id: "agent_existing" });
   });
 
+  it("CALL-7: cleanup_superseded_agent deletes the OLD agent_id (captured before the recompile) only AFTER the new agent is created and published", async () => {
+    const { sql } = makeSql({
+      "from public.tenants where slug": [
+        { id: "tenant_1", vertical: "auto", business_hours_ok: true },
+      ],
+      "from public.agent_configs": [
+        { retell_agent_id: "agent_existing", published_at: "2026-01-01T00:00:00.000Z" },
+      ],
+      "select at.* from public.agent_templates": [HEALTHY_TEMPLATE_ROW],
+    });
+
+    const callOrder: string[] = [];
+    let deletedAgentId: string | undefined;
+    const retellFetch = async (url: string, init?: RequestInit) => {
+      if (url.includes("/create-conversation-flow")) {
+        callOrder.push("create_flow");
+        return new Response(JSON.stringify({ conversation_flow_id: "flow_new" }), {
+          status: 200,
+        });
+      }
+      if (url.includes("/create-agent")) {
+        callOrder.push("create_agent");
+        return new Response(JSON.stringify({ agent_id: "agent_new", version: 1 }), {
+          status: 201,
+        });
+      }
+      if (url.includes("/get-agent/")) {
+        return new Response(JSON.stringify({ agent_id: "agent_new", version: 1 }), {
+          status: 200,
+        });
+      }
+      if (url.includes("/publish-agent-version/")) {
+        callOrder.push("publish");
+        return new Response(null, { status: 204 });
+      }
+      if (url.includes("/delete-agent/")) {
+        callOrder.push("delete");
+        deletedAgentId = decodeURIComponent(url.split("/delete-agent/")[1] ?? "");
+        expect(init?.method).toBe("DELETE");
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`unexpected retell call: ${url}`);
+    };
+
+    const result = await provisionTestTenant(
+      sql,
+      { ...baseBody, force_recompile: true, cleanup_superseded_agent: true },
+      {
+        retellFetch,
+        retellApiKey: "key",
+        voiceToolsWebhookUrl: "https://example.com/voice-tools",
+        eventsWebhookUrl: "https://example.com/voice-events",
+        logger,
+      },
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ tenant_id: "tenant_1", agent_id: "agent_new" });
+    expect(deletedAgentId).toBe("agent_existing");
+    // Delete only happens after the new agent is created AND published —
+    // never before, so a delete failure or an earlier step's failure can
+    // never leave the tenant with zero working agents.
+    expect(callOrder).toEqual(["create_flow", "create_agent", "publish", "delete"]);
+  });
+
+  it("CALL-7: cleanup_superseded_agent is a no-op on a FIRST provision (no prior agent to delete, no delete-agent call made)", async () => {
+    const { sql } = makeSql({
+      "from public.tenants where slug": [],
+      "into public.tenants": [{ id: "tenant_1" }],
+      "into public.resources": [{ id: "res_1" }],
+      "from public.agent_configs": [],
+      "as tools_ok\n    from public.agent_templates": [],
+      "select at.* from public.agent_templates": [HEALTHY_TEMPLATE_ROW],
+    });
+
+    const retellFetch = async (url: string) => {
+      if (url.includes("/create-conversation-flow")) {
+        return new Response(JSON.stringify({ conversation_flow_id: "flow_new" }), {
+          status: 200,
+        });
+      }
+      if (url.includes("/create-agent")) {
+        return new Response(JSON.stringify({ agent_id: "agent_new", version: 1 }), {
+          status: 201,
+        });
+      }
+      if (url.includes("/get-agent/")) {
+        return new Response(JSON.stringify({ agent_id: "agent_new", version: 1 }), {
+          status: 200,
+        });
+      }
+      if (url.includes("/publish-agent-version/")) {
+        return new Response(null, { status: 204 });
+      }
+      if (url.includes("/delete-agent/")) {
+        throw new Error("delete-agent should never be called on a first provision");
+      }
+      throw new Error(`unexpected retell call: ${url}`);
+    };
+
+    const result = await provisionTestTenant(
+      sql,
+      { ...baseBody, cleanup_superseded_agent: true },
+      {
+        retellFetch,
+        retellApiKey: "key",
+        voiceToolsWebhookUrl: "https://example.com/voice-tools",
+        eventsWebhookUrl: "https://example.com/voice-events",
+        logger,
+      },
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ tenant_id: "tenant_1", agent_id: "agent_new" });
+  });
+
   it("self-heals a tenant row with a corrupted (non-object) business_hours column", async () => {
     const { sql, calls } = makeSql({
       "from public.tenants where slug": [
