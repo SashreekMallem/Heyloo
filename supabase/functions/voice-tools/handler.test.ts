@@ -67,13 +67,13 @@ describe("dispatchTool", () => {
 
   it("returns the graceful fallback for an unrecognized tool name rather than an error", async () => {
     const deps = makeDeps({ id: "cl1", tenant_id: "t1", caller_number: "+15551234567" });
-    const result = await dispatchTool(deps, "call_1", "not_a_real_tool", {});
+    const result = await dispatchTool(deps, "call_0123456789abcdef01234567", "not_a_real_tool", {});
     expect(result.result).toMatchObject({ fallback: true });
   });
 
   it("returns the graceful fallback when args fail Zod validation, never throwing", async () => {
     const deps = makeDeps({ id: "cl1", tenant_id: "t1", caller_number: "+15551234567" });
-    const result = await dispatchTool(deps, "call_1", "check_availability", {
+    const result = await dispatchTool(deps, "call_0123456789abcdef01234567", "check_availability", {
       date_range: "not an object",
     });
     expect(result.result).toMatchObject({ fallback: true });
@@ -84,7 +84,7 @@ describe("dispatchTool", () => {
       { id: "cl1", tenant_id: "t1", caller_number: "+15551234567" },
       { "from public.availability_slots": [] },
     );
-    const result = await dispatchTool(deps, "call_1", "check_availability", {
+    const result = await dispatchTool(deps, "call_0123456789abcdef01234567", "check_availability", {
       date_range: { start: "2026-01-01T00:00:00Z", end: "2026-01-02T00:00:00Z" },
     });
     expect(result.result).toMatchObject({ none_available: true });
@@ -92,13 +92,15 @@ describe("dispatchTool", () => {
 
   it("routes lookup_customer through with the G6 caller-scope check intact", async () => {
     const deps = makeDeps({ id: "cl1", tenant_id: "t1", caller_number: "+15551234567" });
-    const result = await dispatchTool(deps, "call_1", "lookup_customer", { phone: "+15559998888" });
+    const result = await dispatchTool(deps, "call_0123456789abcdef01234567", "lookup_customer", {
+      phone: "+15559998888",
+    });
     expect(result).toEqual({ result: { error: "unauthorized_lookup" } });
   });
 
   it("routes join_waitlist through to a real tool result", async () => {
     const deps = makeDeps({ id: "cl1", tenant_id: "t1", caller_number: "+15551234567" });
-    const result = await dispatchTool(deps, "call_1", "join_waitlist", {
+    const result = await dispatchTool(deps, "call_0123456789abcdef01234567", "join_waitlist", {
       customer: { name: "Jane Doe", phone: "not-a-phone" },
       preferred_window_start: "2026-01-01T00:00:00Z",
       preferred_window_end: "2026-01-02T00:00:00Z",
@@ -109,7 +111,7 @@ describe("dispatchTool", () => {
   it("CALL-2: fills deps.telemetry.tenantId with the resolved tenant, so tool_health rows are no longer always tenant_id: null", async () => {
     const deps = makeDeps({ id: "cl1", tenant_id: "t1", caller_number: "+15551234567" });
     const telemetry: { tenantId: string | null } = { tenantId: null };
-    await dispatchTool({ ...deps, telemetry }, "call_1", "join_waitlist", {
+    await dispatchTool({ ...deps, telemetry }, "call_0123456789abcdef01234567", "join_waitlist", {
       customer: { name: "Jane Doe", phone: "+15551234567" },
       preferred_window_start: "2026-01-01T00:00:00Z",
       preferred_window_end: "2026-01-02T00:00:00Z",

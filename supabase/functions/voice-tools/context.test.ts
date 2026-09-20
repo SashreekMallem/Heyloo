@@ -2,9 +2,16 @@ import { describe, expect, it } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import type { ToolCall } from "../_shared/schemas/voice-tools.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
-import { resolveCallContext } from "./context.ts";
+import { isPlaceholderCallId, resolveCallContext } from "./context.ts";
 
 const logger = createLogger();
+
+// A realistically-shaped real Retell call id (`call_` + lowercase hex) —
+// matches this project's own live `call_logs` rows (docs/BUILD_NOTES.md
+// CALL-6), as opposed to the placeholder-shaped ids ("playground", ad hoc
+// test strings) used elsewhere in this file specifically to exercise the
+// "never trust a cached row for a placeholder id" path.
+const REAL_CALL_ID = "call_0123456789abcdef01234567";
 
 function makeRecordingSql(fixtures: Record<string, unknown[]>): {
   sql: SqlClient;
@@ -38,21 +45,43 @@ function makeWarnCapturingLogger(): {
   };
 }
 
+describe("isPlaceholderCallId", () => {
+  it("treats a real-shaped Retell call id as non-placeholder", () => {
+    expect(isPlaceholderCallId(REAL_CALL_ID)).toBe(false);
+    expect(isPlaceholderCallId("call_30d9a235551f7b5bd80364cab4b")).toBe(false);
+  });
+
+  it("treats 'playground' and anything else non-conforming as a placeholder", () => {
+    expect(isPlaceholderCallId("playground")).toBe(true);
+    expect(isPlaceholderCallId("test_call_9")).toBe(true);
+    expect(isPlaceholderCallId("heyloo-keep-warm-ping")).toBe(true);
+    expect(isPlaceholderCallId("call_1")).toBe(true); // too short to be real
+    expect(isPlaceholderCallId("")).toBe(true);
+  });
+});
+
 describe("resolveCallContext", () => {
-  it("(a) resolves from an existing call_logs row without touching the payload at all", async () => {
+  it("(a) resolves from an existing call_logs row without touching the payload at all — only for a real-shaped call id", async () => {
     const { sql, calls } = makeRecordingSql({
       "from public.call_logs": [
-        { id: "cl1", tenant_id: "t1", caller_number: "+15551234567", vertical: "auto" },
+        {
+          id: "cl1",
+          tenant_id: "t1",
+          caller_number: "+15551234567",
+          vertical: "auto",
+          is_test_call: false,
+        },
       ],
     });
     const call: ToolCall = { agent_id: "agent_should_be_ignored" };
-    const ctx = await resolveCallContext(sql, "call_1", call, logger);
+    const ctx = await resolveCallContext(sql, REAL_CALL_ID, call, logger);
     expect(ctx).toEqual({
       tenantId: "t1",
       callLogId: "cl1",
-      retellCallId: "call_1",
+      retellCallId: REAL_CALL_ID,
       callerNumber: "+15551234567",
       vertical: "auto",
+      isTestCall: false,
     });
     // Only the call_logs lookup ran — the existing-row path never queries
     // agent_configs/phone_numbers or writes anything.
@@ -60,11 +89,104 @@ describe("resolveCallContext", () => {
     expect(calls[0]?.text).toContain("from public.call_logs");
   });
 
+  it("CALL-6: NEVER trusts a cached call_logs row for a placeholder call id, even when one already exists under a different tenant (the exact cross-tenant collision this fix closes)", async () => {
+    // Simulates the live bug: a stale 'playground' row already exists,
+    // owned by tenant "auto-wrong" (the first tenant that ever batch-
+    // tested), but THIS call's own payload resolves — authoritatively, via
+    // agent_id — to tenant "dental-right". The fix must never read the
+    // stale row via path (a) — the cached-row-TRUST query, identifiable by
+    // its `cl.is_test_call` column reference — at all. (A separate,
+    // narrower prior-tenant-for-mismatch-logging lookup DOES still touch
+    // `call_logs` by design — see the dedicated mismatch test below — so
+    // this asserts against the specific trust-the-cache query, not the
+    // table name.)
+    const { sql, calls } = makeRecordingSql({
+      "cl.is_test_call": [
+        { id: "stale-row", tenant_id: "auto-wrong", caller_number: null, vertical: "auto" },
+      ],
+      "from public.agent_configs": [{ tenant_id: "dental-right", vertical: "dental" }],
+      "insert into public.call_logs": [
+        { id: "cl-dental", tenant_id: "dental-right", caller_number: null, is_test_call: true },
+      ],
+    });
+    const call: ToolCall = { agent_id: "agent_dental", call_type: "web_call" };
+    const ctx = await resolveCallContext(sql, "playground", call, logger);
+    expect(ctx?.tenantId).toBe("dental-right");
+    expect(ctx?.tenantId).not.toBe("auto-wrong");
+    // The cached call_logs SELECT (path (a), lookupExistingCallLog) never
+    // ran for a placeholder id — its query is the only one selecting
+    // `cl.is_test_call`.
+    expect(calls.some((c) => c.text.includes("cl.is_test_call"))).toBe(false);
+  });
+
+  it("CALL-6: keys a placeholder row's retell_call_id per agent, not by the shared literal id", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.agent_configs": [{ tenant_id: "t2", vertical: "veterinary" }],
+      "insert into public.call_logs": [
+        { id: "cl-new", tenant_id: "t2", caller_number: null, is_test_call: true },
+      ],
+    });
+    const call: ToolCall = { agent_id: "agent_abc" };
+    await resolveCallContext(sql, "playground", call, logger);
+    const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
+    expect(insertCall?.values).toContain("playground:agent_abc");
+  });
+
+  it("CALL-6: falls back to keying by resolved tenant id when agent_id is absent from the payload", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.tenants where id": [{ id: "t6", vertical: "dental" }],
+      "insert into public.call_logs": [
+        { id: "cl-new4", tenant_id: "t6", caller_number: null, is_test_call: true },
+      ],
+    });
+    const call: ToolCall = {
+      call_type: "web_call",
+      retell_llm_dynamic_variables: { heyloo_tenant_id: "t6" },
+    };
+    await resolveCallContext(sql, "playground", call, logger);
+    const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
+    expect(insertCall?.values).toContain("playground:tenant:t6");
+  });
+
+  it("CALL-6: the strongest signal (agent_id) overrides a stale tenant already stored under the same placeholder key, and logs a warning", async () => {
+    const { sql } = makeRecordingSql({
+      "from public.agent_configs": [{ tenant_id: "new-tenant", vertical: "auto" }],
+      "as prior_tenant_id": [{ prior_tenant_id: "old-tenant" }],
+      "insert into public.call_logs": [
+        { id: "cl-x", tenant_id: "new-tenant", caller_number: null, is_test_call: true },
+      ],
+    });
+    const { logger: warnLogger, warnings } = makeWarnCapturingLogger();
+    const call: ToolCall = { agent_id: "agent_reassigned" };
+    const ctx = await resolveCallContext(sql, "playground", call, warnLogger);
+    expect(ctx?.tenantId).toBe("new-tenant");
+    expect(warnings.some((w) => w.msg === "voice_tools_call_context_agent_id_mismatch")).toBe(true);
+  });
+
+  it("CALL-6: prefers retell_llm_dynamic_variables.heyloo_tenant_id over call.to_number when both are present", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.tenants where id": [{ id: "t-dynamic", vertical: "dental" }],
+      "from public.phone_numbers": [
+        { tenant_id: "t-wrong", vertical: "auto", phone_number_id: "pn1" },
+      ],
+      "insert into public.call_logs": [
+        { id: "cl-new", tenant_id: "t-dynamic", caller_number: null, is_test_call: true },
+      ],
+    });
+    const call: ToolCall = {
+      to_number: "+15551110000",
+      retell_llm_dynamic_variables: { heyloo_tenant_id: "t-dynamic" },
+    };
+    const ctx = await resolveCallContext(sql, "playground", call, logger);
+    expect(ctx?.tenantId).toBe("t-dynamic");
+    expect(calls.some((c) => c.text.includes("from public.phone_numbers"))).toBe(false);
+  });
+
   it("(b) resolves via call.agent_id -> agent_configs when no call_logs row exists yet, and upserts a placeholder row", async () => {
     const { sql, calls } = makeRecordingSql({
       "from public.agent_configs": [{ tenant_id: "t2", vertical: "veterinary" }],
       "insert into public.call_logs": [
-        { id: "cl-new", tenant_id: "t2", caller_number: "+15550001111" },
+        { id: "cl-new", tenant_id: "t2", caller_number: "+15550001111", is_test_call: true },
       ],
     });
     const call: ToolCall = {
@@ -79,6 +201,7 @@ describe("resolveCallContext", () => {
       retellCallId: "test_call_9",
       callerNumber: "+15550001111",
       vertical: "veterinary",
+      isTestCall: true,
     });
     const agentQuery = calls.find((c) => c.text.includes("from public.agent_configs"));
     expect(agentQuery).toBeDefined();
@@ -90,12 +213,14 @@ describe("resolveCallContext", () => {
     expect(calls.some((c) => c.text.includes("from public.phone_numbers"))).toBe(false);
   });
 
-  it("(b) falls back to call.to_number -> phone_numbers only when agent_id is absent", async () => {
+  it("(b) falls back to call.to_number -> phone_numbers only when agent_id and the dynamic variable are both absent", async () => {
     const { sql, calls } = makeRecordingSql({
       "from public.phone_numbers": [
         { tenant_id: "t3", vertical: "dental", phone_number_id: "pn9" },
       ],
-      "insert into public.call_logs": [{ id: "cl-new2", tenant_id: "t3", caller_number: null }],
+      "insert into public.call_logs": [
+        { id: "cl-new2", tenant_id: "t3", caller_number: null, is_test_call: true },
+      ],
     });
     const call: ToolCall = { to_number: "+15559998888", call_type: "phone_call" };
     const ctx = await resolveCallContext(sql, "call_phone_1", call, logger);
@@ -108,7 +233,9 @@ describe("resolveCallContext", () => {
   it("(b) falls back to to_number when agent_id is present but doesn't resolve", async () => {
     const { sql, calls } = makeRecordingSql({
       "from public.phone_numbers": [{ tenant_id: "t4", vertical: "auto", phone_number_id: "pn1" }],
-      "insert into public.call_logs": [{ id: "cl-new3", tenant_id: "t4", caller_number: null }],
+      "insert into public.call_logs": [
+        { id: "cl-new3", tenant_id: "t4", caller_number: null, is_test_call: true },
+      ],
     });
     const call: ToolCall = { agent_id: "agent_unknown", to_number: "+15551110000" };
     const ctx = await resolveCallContext(sql, "call_x", call, logger);
@@ -120,7 +247,9 @@ describe("resolveCallContext", () => {
   it("(b) CALL-2: falls back to retell_llm_dynamic_variables.heyloo_tenant_id when agent_id AND to_number are BOTH absent — the real shape of a Retell batch-test simulator's tool-call payload (RETELL-VERIFIED live)", async () => {
     const { sql, calls } = makeRecordingSql({
       "from public.tenants where id": [{ id: "t6", vertical: "dental" }],
-      "insert into public.call_logs": [{ id: "cl-new4", tenant_id: "t6", caller_number: null }],
+      "insert into public.call_logs": [
+        { id: "cl-new4", tenant_id: "t6", caller_number: null, is_test_call: true },
+      ],
     });
     const call: ToolCall = {
       call_type: "web_call",
@@ -136,27 +265,33 @@ describe("resolveCallContext", () => {
   it("CALL-5: marks a batch-test/'playground' placeholder row is_test_call=true and source='tool_first_seen', so it never pollutes a tenant's real dashboard", async () => {
     const { sql, calls } = makeRecordingSql({
       "from public.tenants where id": [{ id: "t6", vertical: "dental" }],
-      "insert into public.call_logs": [{ id: "cl-new4", tenant_id: "t6", caller_number: null }],
+      "insert into public.call_logs": [
+        { id: "cl-new4", tenant_id: "t6", caller_number: null, is_test_call: true },
+      ],
     });
     const call: ToolCall = {
       call_type: "web_call",
       retell_llm_dynamic_variables: { heyloo_tenant_id: "t6" },
     };
-    await resolveCallContext(sql, "playground", call, logger);
+    const ctx = await resolveCallContext(sql, "playground", call, logger);
     const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
     expect(insertCall?.text).toContain("'tool_first_seen'");
     expect(insertCall?.values).toContain(true); // is_test_call
+    expect(ctx?.isTestCall).toBe(true);
   });
 
-  it("CALL-5: a REAL call resolved via agent_id/to_number is never marked is_test_call from this path", async () => {
+  it("CALL-5/CALL-6: a REAL call resolved via agent_id is never marked is_test_call from this path", async () => {
     const { sql, calls } = makeRecordingSql({
       "from public.agent_configs": [{ tenant_id: "t4", vertical: "auto" }],
-      "insert into public.call_logs": [{ id: "cl-new5", tenant_id: "t4", caller_number: null }],
+      "insert into public.call_logs": [
+        { id: "cl-new5", tenant_id: "t4", caller_number: null, is_test_call: false },
+      ],
     });
     const call: ToolCall = { agent_id: "agent_real", call_type: "phone_call" };
-    await resolveCallContext(sql, "call_real_1", call, logger);
+    const ctx = await resolveCallContext(sql, REAL_CALL_ID, call, logger);
     const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
     expect(insertCall?.values).toContain(false); // is_test_call
+    expect(ctx?.isTestCall).toBe(false);
   });
 
   it("(b) never trusts a spoofed tenant hint — only agent_id -> agent_configs is consulted, and cross-tenant resolution is impossible via args", async () => {
@@ -165,7 +300,9 @@ describe("resolveCallContext", () => {
     // tables keyed by agent_id/to_number.
     const { sql, calls } = makeRecordingSql({
       "from public.agent_configs": [{ tenant_id: "tenant-a", vertical: "auto" }],
-      "insert into public.call_logs": [{ id: "cl-a", tenant_id: "tenant-a", caller_number: null }],
+      "insert into public.call_logs": [
+        { id: "cl-a", tenant_id: "tenant-a", caller_number: null, is_test_call: true },
+      ],
     });
     const call: ToolCall = { agent_id: "agent_of_tenant_a" };
     const ctx = await resolveCallContext(sql, "call_spoof_test", call, logger);
@@ -186,11 +323,16 @@ describe("resolveCallContext", () => {
     const { sql, calls } = makeRecordingSql({
       "from public.agent_configs": [{ tenant_id: "t5", vertical: "auto" }],
       "insert into public.call_logs": [
-        { id: "cl-winner", tenant_id: "t5", caller_number: "+15552223333" },
+        {
+          id: "cl-winner",
+          tenant_id: "t5",
+          caller_number: "+15552223333",
+          is_test_call: false,
+        },
       ],
     });
     const call: ToolCall = { agent_id: "agent_5" };
-    const ctx = await resolveCallContext(sql, "call_race", call, logger);
+    const ctx = await resolveCallContext(sql, REAL_CALL_ID, call, logger);
     expect(ctx?.callLogId).toBe("cl-winner");
     const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
     expect(insertCall?.text).toContain("on conflict (retell_call_id) do update set");
@@ -202,7 +344,7 @@ describe("resolveCallContext", () => {
     const { logger: warnLogger, warnings } = makeWarnCapturingLogger();
     const ctx = await resolveCallContext(
       sql,
-      "call_unknown",
+      REAL_CALL_ID,
       { agent_id: "no_such_agent" },
       warnLogger,
     );
