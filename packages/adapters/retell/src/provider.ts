@@ -12,6 +12,7 @@ import type {
   CallEndedEvent,
   CompiledAgentArtifact,
   CompileTarget,
+  CompileTemplateOptions,
   CreateOrUpdateAgentInput,
   CreateOrUpdateAgentResult,
   CreateOutboundCallInput,
@@ -129,7 +130,11 @@ export class RetellProvider implements VoiceProvider {
     return verifyAndParseRetellCallEndedWebhook(rawBody, signatureHeader, this.apiKey);
   }
 
-  compileTemplate(template: AgentTemplate, target: CompileTarget): CompiledAgentArtifact {
-    return compileTemplateArtifact(template, target, this.defaultToolWebhookUrl);
+  compileTemplate(
+    template: AgentTemplate,
+    target: CompileTarget,
+    options?: CompileTemplateOptions,
+  ): CompiledAgentArtifact {
+    return compileTemplateArtifact(template, target, this.defaultToolWebhookUrl, options);
   }
 }

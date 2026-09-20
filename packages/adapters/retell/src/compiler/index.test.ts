@@ -42,4 +42,67 @@ describe("compileTemplateArtifact — canonical VoiceProvider.compileTemplate co
     expect(artifact.disclosureVerified).toBe(true);
     expect(artifact.providerPayload).toBeDefined();
   });
+
+  // OPS-5 (docs/BUILD_NOTES.md): closes the gap conversation-flow.ts's own
+  // docstring used to flag — a `transferNumber` passed at this, the
+  // PUBLIC `VoiceProvider.compileTemplate` entry point, now really does
+  // reach the compiled `transfer_call` node, the same way it already did
+  // when calling `compileConversationFlow` directly (that function's own
+  // test file covers the compiled-node shape in detail; this just proves
+  // the option isn't dropped anywhere in the
+  // compileTemplateArtifact -> compileRetellTemplate -> buildFlowRequest
+  // -> compileConversationFlow chain).
+  const templateWithTransferState: AgentTemplate = {
+    ...AUTO_CONVERSATION_FLOW_TEMPLATE,
+    states: [
+      ...AUTO_CONVERSATION_FLOW_TEMPLATE.states,
+      {
+        id: "transfer_to_human",
+        name: "Transfer to human",
+        prompt_fragment: "Connecting you now.",
+        allowed_tools: ["transfer_call"],
+        is_terminal: true,
+      },
+    ],
+    tools: [
+      ...AUTO_CONVERSATION_FLOW_TEMPLATE.tools,
+      {
+        name: "transfer_call",
+        description: "Warm-transfer the caller to a human.",
+        parameters: { type: "object", properties: {}, required: [] },
+        authorization: { scope: "tenant_config_only" },
+      },
+    ],
+  };
+
+  it("threads a caller-supplied transferNumber through to the compiled transfer_call node's destination", () => {
+    const artifact = compileTemplateArtifact(
+      templateWithTransferState,
+      "conversation_flow",
+      TOOL_WEBHOOK_URL,
+      { transferNumber: "+15551234567" },
+    );
+    const payload = artifact.providerPayload as {
+      flowRequest: { kind: string; body: { nodes: { id: string; type: string }[] } };
+    };
+    const transferNode = payload.flowRequest.body.nodes.find((n) => n.id === "transfer_to_human");
+    expect(transferNode?.type).toBe("transfer_call");
+    expect(
+      (transferNode as unknown as { transfer_destination: { number: string } }).transfer_destination
+        .number,
+    ).toBe("+15551234567");
+  });
+
+  it("omitting options keeps compiling the honest no-transfer-number fallback (back-compat, unchanged behavior)", () => {
+    const artifact = compileTemplateArtifact(
+      templateWithTransferState,
+      "conversation_flow",
+      TOOL_WEBHOOK_URL,
+    );
+    const payload = artifact.providerPayload as {
+      flowRequest: { kind: string; body: { nodes: { id: string; type: string }[] } };
+    };
+    const transferNode = payload.flowRequest.body.nodes.find((n) => n.id === "transfer_to_human");
+    expect(transferNode?.type).not.toBe("transfer_call");
+  });
 });

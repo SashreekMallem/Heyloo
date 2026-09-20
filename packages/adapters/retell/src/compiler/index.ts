@@ -8,7 +8,12 @@
  * within it.
  */
 
-import type { AgentTemplate, CompiledAgentArtifact, CompileTarget } from "@heyloo/canonical-types";
+import type {
+  AgentTemplate,
+  CompiledAgentArtifact,
+  CompileTarget,
+  CompileTemplateOptions,
+} from "@heyloo/canonical-types";
 import { compileConversationFlow } from "./conversation-flow.js";
 import { verifyDisclosureGate } from "./disclosure-gate.js";
 import { compilePostCallAnalysisData } from "./extraction.js";
@@ -24,12 +29,23 @@ export type {
   RetellPostCallAnalysisField,
 } from "./types.js";
 
+/**
+ * OPS-5 (docs/BUILD_NOTES.md): `options` is the same optional tenant-config
+ * compile input `VoiceProvider.compileTemplate` now carries
+ * (`@heyloo/canonical-types`) — threaded straight through to
+ * `compileConversationFlow`'s own already-existing `transferNumber` option
+ * (this file's `buildFlowRequest`, `conversation_flow` target only;
+ * `multi_prompt`/`single_prompt` have no transfer-call node concept, so
+ * they simply ignore it). Optional and additive — every existing 3-arg
+ * call keeps compiling exactly as it always has.
+ */
 export function compileRetellTemplate(
   template: AgentTemplate,
   target: CompileTarget,
   toolWebhookUrl: string,
+  options: CompileTemplateOptions = {},
 ): CompiledAgentPayload {
-  const flowRequest = buildFlowRequest(template, target, toolWebhookUrl);
+  const flowRequest = buildFlowRequest(template, target, toolWebhookUrl, options);
   const disclosureVerified = verifyDisclosureGate(flowRequest, template.disclosure_line);
   const postCallAnalysisData = compilePostCallAnalysisData(template);
 
@@ -40,10 +56,16 @@ function buildFlowRequest(
   template: AgentTemplate,
   target: CompileTarget,
   toolWebhookUrl: string,
+  options: CompileTemplateOptions,
 ): RetellFlowRequest {
   switch (target) {
     case "conversation_flow":
-      return { kind: "conversation_flow", body: compileConversationFlow(template, toolWebhookUrl) };
+      return {
+        kind: "conversation_flow",
+        body: compileConversationFlow(template, toolWebhookUrl, {
+          transferNumber: options.transferNumber ?? null,
+        }),
+      };
     case "multi_prompt":
       return { kind: "multi_prompt", body: compileMultiPrompt(template, toolWebhookUrl) };
     case "single_prompt":
@@ -56,8 +78,9 @@ export function compileTemplateArtifact(
   template: AgentTemplate,
   target: CompileTarget,
   toolWebhookUrl: string,
+  options?: CompileTemplateOptions,
 ): CompiledAgentArtifact {
-  const compiled = compileRetellTemplate(template, target, toolWebhookUrl);
+  const compiled = compileRetellTemplate(template, target, toolWebhookUrl, options);
   return {
     compileTarget: compiled.compileTarget,
     disclosureVerified: compiled.disclosureVerified,

@@ -382,6 +382,24 @@ export interface CompiledAgentArtifact {
   providerPayload: unknown;
 }
 
+/**
+ * OPS-5 (docs/BUILD_NOTES.md — closing the gap `packages/adapters/retell/
+ * src/compiler/conversation-flow.ts`'s own docstring flagged: "the
+ * canonical `VoiceProvider.compileTemplate(template, target)` interface
+ * has no tenant-context parameter, so `RetellProvider.compileTemplate`/
+ * `compileRetellTemplate` still can't pass a `transferNumber` through").
+ * Optional tenant-config compile input, additive — every existing 2-arg
+ * `compileTemplate(template, target)` call site keeps compiling/behaving
+ * unchanged (the CALL-4 no-transfer-number spoken-fallback default), since
+ * `options` and every field on it are optional. `transferNumber` mirrors
+ * `agent_configs.transfer_number` (tenant-config-only, G6) exactly the way
+ * this package's own `compileConversationFlow`'s already-existing
+ * `transferNumber` option does.
+ */
+export interface CompileTemplateOptions {
+  transferNumber?: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // The VoiceProvider interface itself
 // ---------------------------------------------------------------------------
@@ -408,8 +426,18 @@ export interface VoiceProvider {
   /** Verify signature (fail closed) + parse+normalize a `call_ended` webhook into the canonical event. Throws on failure. */
   verifyAndParseCallEndedWebhook(rawBody: string, signatureHeader: string | null): CallEndedEvent;
 
-  /** Lower a canonical `AgentTemplate` into this provider's agent-config payload for the given compile target. */
-  compileTemplate(template: AgentTemplate, target: CompileTarget): CompiledAgentArtifact;
+  /** Lower a canonical `AgentTemplate` into this provider's agent-config
+   * payload for the given compile target. `options` (OPS-5, optional) is
+   * how the caller threads tenant-scoped compile-time config — currently
+   * just `transferNumber` — through to the provider's compiler; a caller
+   * with no tenant in scope (e.g. a vertical-wide template preview/publish
+   * with no specific tenant) omits it entirely, which compiles exactly as
+   * it always has. */
+  compileTemplate(
+    template: AgentTemplate,
+    target: CompileTarget,
+    options?: CompileTemplateOptions,
+  ): CompiledAgentArtifact;
 
   /**
    * Place an outbound call. Optional — check `capabilities.

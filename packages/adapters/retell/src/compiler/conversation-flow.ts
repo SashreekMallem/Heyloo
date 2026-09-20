@@ -77,19 +77,23 @@
  *   rationale as above), so the escape is structurally present either way —
  *   never model-discretionary (SYSTEM_DESIGN §4.1).
  *
- * NOT mirrored (deliberately out of CALL-4's scope, documented in
- * docs/BUILD_NOTES.md): the canonical `VoiceProvider.compileTemplate(template,
- * target)` interface (`@heyloo/canonical-types`) has no tenant-context
+ * OPS-5 UPDATE (docs/BUILD_NOTES.md): the gap this paragraph used to
+ * describe — the canonical `VoiceProvider.compileTemplate(template,
+ * target)` interface (`@heyloo/canonical-types`) having no tenant-context
  * parameter, so `RetellProvider.compileTemplate`/`compileRetellTemplate`
- * (this package's PUBLIC entry points) still can't pass a `transferNumber`
- * through — only `compileConversationFlow` itself (below) takes the new
- * optional `transferNumber`; every existing public caller keeps its
- * current 2-3-arg call, which now safely defaults to the honest
- * no-transfer-number fallback rather than the previous broken
- * `{{transfer_number}}`-placeholder/bogus-webhook-tool behavior. This
- * package also still isn't wired into any live deploy path (Deno/Node
- * boundary, file-top-of-package README) — its only real consumer today is
- * `packages/templates`' red-team suite (`compiler-gate.test.ts`,
+ * (this package's PUBLIC entry points) couldn't pass a `transferNumber`
+ * through — is now closed: `CompileTemplateOptions` (canonical-types) adds
+ * an optional third `options` param, threaded through
+ * `RetellProvider.compileTemplate` -> `compileTemplateArtifact` ->
+ * `compileRetellTemplate` -> here, unchanged in shape from the
+ * `transferNumber` option this function already accepted. Every existing
+ * 2-3-arg public call keeps compiling exactly as it did before (the
+ * options object is optional at every layer) — this only makes it
+ * POSSIBLE for a caller with tenant context to pass one through; nothing
+ * is forced to yet. This package still isn't wired into any live deploy
+ * path (Deno/Node boundary, file-top-of-package README) — its only real
+ * consumer today is `packages/templates`' red-team suite
+ * (`compiler-gate.test.ts`,
  * `run-simulation.ts`), never live traffic.
  */
 
