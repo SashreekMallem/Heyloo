@@ -73,7 +73,7 @@ function requireEnv(name: string): string {
  */
 const RETELL_SDK_ESM_URL = "https://cdn.jsdelivr.net/npm/retell-client-js-sdk@2.0.8/+esm";
 
-function buildHtml(accessToken: string, callSeconds: number): string {
+function buildHtml(accessToken: string): string {
   // Kept intentionally minimal — this page exists only to host the SDK's
   // WebRTC session inside a real browser context; nothing here is served
   // to real users.
@@ -130,7 +130,9 @@ async function loadPlaywright(): Promise<typeof import("playwright")> {
   }
   const { execSync } = await import("node:child_process");
   const storeRoot = join(
-    execSync("pnpm root -w", { cwd: new URL("../..", import.meta.url).pathname }).toString().trim(),
+    execSync("pnpm root -w", { cwd: new URL("../..", import.meta.url).pathname })
+      .toString()
+      .trim(),
     ".pnpm",
   );
   const { readdirSync } = await import("node:fs");
@@ -142,7 +144,9 @@ async function loadPlaywright(): Promise<typeof import("playwright")> {
         "`pnpm install` at the repo root first.",
     );
   }
-  const modUrl = pathToFileURL(join(storeRoot, match, "node_modules", "playwright", "index.mjs")).href;
+  const modUrl = pathToFileURL(
+    join(storeRoot, match, "node_modules", "playwright", "index.mjs"),
+  ).href;
   return import(modUrl);
 }
 
@@ -164,7 +168,7 @@ async function main(): Promise<void> {
 
   const tmpDir = await mkdtemp(join(tmpdir(), "retell-web-call-"));
   const htmlPath = join(tmpDir, "call.html");
-  await writeFile(htmlPath, buildHtml(tokenBody.access_token, CALL_SECONDS), "utf8");
+  await writeFile(htmlPath, buildHtml(tokenBody.access_token), "utf8");
 
   console.log("[e2e] launching headless Chromium with fake audio/video devices...");
   const browser = await chromium.launch({
