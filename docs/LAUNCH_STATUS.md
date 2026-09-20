@@ -1,5 +1,32 @@
 # Launch Status
 
+**CALL-6 (2026-09-20)**: fixed a real, verified-live cross-tenant write
+(CLAUDE.md Rule 2) that OPS-5/CALL-5 both found but deliberately left
+open: every Retell batch-test/simulator call shares the literal
+`call_id` `"playground"`, and `voice-tools/context.ts` used to trust
+whichever tenant's `call_logs` row happened to win that shared id first
+— all 18 bookings any batch test had ever created, from ANY tenant, were
+landing under one tenant (`test-riverside-auto`), including 3 dental
+should have owned. Fixed by never trusting a cached `call_logs` row for a
+placeholder-shaped call id (`isPlaceholderCallId`) and keying a
+placeholder row's `call_logs.retell_call_id` per resolved tenant instead
+of the shared literal — proven live: `dental`'s own booking(s) now land
+correctly under `dental`'s own tenant_id. Added `bookings.is_test`
+(additive migration + honest repair of the pre-existing 18 rows,
+which stay attributed to whichever tenant they already had — that can't
+be honestly reconstructed — but are now excluded from that tenant's real
+dashboard list and every KPI count that touches bookings). Also
+root-caused and fixed OPS-5's own `wrong_date_caller` finding: the model
+was getting weekday-name date arithmetic wrong ("next Monday" computed 11
+days off and landing on a Thursday) because it had only the anchor date
+and no way to look up "next Monday" itself — a new precomputed
+`upcoming_weekday_dates` dynamic variable (same "timezone math baked in
+at materialization, never left for the model" pattern `current_date`
+already uses) closes it; live transcript evidence post-fix shows the
+model correctly computing "October 1st, 2026, is a Thursday". Final
+re-proving: `auto` 8/8, `dental` 4/4, two full rounds each. Full details:
+`docs/BUILD_NOTES.md`'s CALL-6 entry.
+
 **OPS-5 (2026-09-20)**: four functions (`webhooks-stripe`,
 `webhooks-paypal`, `webhooks-twilio-sms`, `api-text-chat`) crashed at cold
 start (500 `WORKER_ERROR` on every request, including a legitimate signed

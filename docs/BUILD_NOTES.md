@@ -13247,3 +13247,224 @@ from that agent's scope were edited by this task.
   environment rather than a query-syntax issue on this task's end. The
   curl before/after evidence (500 → 503 for all four functions) is the
   reliable proof recorded instead.
+
+## CALL-6 (2026-09-20) — cross-tenant write fix (`voice-tools/context.ts`), `bookings.is_test`, `wrong_date_caller` root cause
+
+**Task 1 — the actual cross-tenant collision fix, closing the gap CALL-5/
+OPS-5 both flagged and deliberately left open.** Root cause, re-confirmed
+live before touching anything: `resolveCallContext`'s path (a) trusted a
+cached `call_logs` row keyed by the RAW `retell_call_id` — but Retell's
+batch-test/simulator/chat-completion harness sends the literal string
+`"playground"` for every tenant's every scenario, and `call_logs` is
+unique on `retell_call_id`, so the first tenant to ever batch-test won
+that row PERMANENTLY; every later batch-test call from ANY tenant
+silently resolved to that first tenant. Live proof pre-fix: `bookings` had
+18 rows, ALL under `test-riverside-auto` (`b2efae9d-...`), `source_call_id`
+all pointing at the SAME `call_logs` row (`retell_call_id = 'playground'`,
+id `3eca7754-3c47-43aa-9e7f-ab982835fe40`) — including bookings dental's
+own test suite created, since dental has 0.
+
+Fix, `voice-tools/context.ts`:
+- `isPlaceholderCallId(retellCallId)` — a real Retell call id is
+  `call_` + lowercase hex (confirmed against THIS project's own live
+  `call_started`-sourced `call_logs` rows, `docs/VERIFY.md` CALL-6 entry
+  has the full discrepancy-with-public-docs note). Deliberately
+  conservative: anything that doesn't confidently match is a placeholder.
+- Path (a) (trust the `call_logs` cache) now runs ONLY for a non-
+  placeholder id. A placeholder id (`"playground"` or anything else
+  non-conforming) ALWAYS re-resolves from the payload, never from cache —
+  this is the actual fix.
+- `resolveTenantFromPayload`'s tier order changed to `agent_id` ->
+  `retell_llm_dynamic_variables.heyloo_tenant_id` -> `to_number` (agent_id
+  moved first — the strongest, most tightly-scoped signal Retell sets).
+- A placeholder row's `call_logs.retell_call_id` is now keyed PER AGENT —
+  `"playground:" + agent_id` (or `"playground:tenant:" + tenantId` when
+  `agent_id` itself is absent, which live evidence confirms is EVERY
+  batch-test call — Retell's simulator never sends `agent_id`/`to_number`
+  at all, only the `heyloo_tenant_id` dynamic variable) — instead of the
+  shared literal id. This is what actually breaks the collision: the
+  unique index now scopes the row per-tenant, so a different tenant's
+  batch test can never resolve through it.
+- When the strongest signal (`agent_id`) resolves, it overrides a stale
+  tenant already stored under the same key on conflict (an agent
+  reassigned to a different tenant between two calls), and logs
+  `voice_tools_call_context_agent_id_mismatch` when that actually changes
+  anything — checked via a narrow separate `select tenant_id as
+  prior_tenant_id ... where retell_call_id = ...` read before the upsert,
+  only on that one path (never the real-call hot path).
+- `CallContext` gained `isTestCall: boolean` (mirrors `call_logs.
+  is_test_call` for the resolved row) so `create_booking` can flag its own
+  write without re-deriving the signal. `_shared/text-agent/tool-router.ts`
+  (a real text/chat conversation, never a Retell batch-test artifact) sets
+  it `false` explicitly.
+
+18 tests updated/added in `context.test.ts` (a dedicated regression test
+proves a placeholder id NEVER reads a pre-existing wrong-tenant cached
+row, even when one exists — the exact bug), `handler.test.ts`'s fixture
+call ids changed from the placeholder-shaped `"call_1"` to a real-shaped
+id so its "existing real call" scenarios still exercise path (a).
+
+**Task 2 — `bookings.is_test`.** Additive migration
+`20260920200000_bookings_is_test.sql`: `bookings.is_test boolean not null
+default false`. `create_booking.ts`'s insert now writes `is_test =
+ctx.isTestCall` directly (no re-derivation). Excluded by default from:
+the tenant dashboard bookings list (`apps/web/.../dashboard/bookings/
+page.tsx`, `.eq("is_test", false)`), `job-value-email`'s weekly
+`bookings_captured` KPI count (the literal "weekly digest" the task
+named — it already excluded `is_test_call` from `calls_answered` but had
+no equivalent guard on bookings until now), and — beyond the two
+explicitly-named surfaces, since they're the same class of "never let a
+batch-test artifact reach a real operational flow" bug — `job-reminder-
+scheduler` and `job-review-request`'s candidate queries (both would
+otherwise text a fake batch-test "customer" number). `customers/[id]/
+page.tsx`'s per-customer booking history was deliberately NOT touched:
+it's scoped by a real `customer_id`, not a KPI count, and a test artifact
+landing there would require a real customer to share a phone number with
+a batch-test caller — out of this task's actual scope.
+`packages/supabase-client/src/database.types.ts`'s `BookingRow` gained
+`is_test: boolean`.
+
+**Task 3 — honest repair, applied live.** `20260920201000_repair_
+playground_test_bookings.sql`: marks every booking whose `source_call_id`
+traces to the `'playground'` `call_logs` row `is_test = true` (a
+checkable fact — that row is only ever created by a placeholder/batch-test
+resolution, never a real call), and flips that row's own `is_test_call` to
+`true` (CALL-5's entry had already noted this specific pre-existing row
+was never retroactively updated). Does NOT attempt to guess which of the
+18 "really" belongs to which tenant's suite — that information was never
+recorded and isn't honestly reconstructable; documented here rather than
+silently reassigned. Both migrations applied live via the management SQL
+endpoint and recorded in `supabase_migrations.schema_migrations`
+(versions `20260920200000`/`20260920201000`), matching CALL-2's own
+established pattern for this session type.
+
+Before: `bookings` — `{auto: 18}` (100% under one tenant, `is_test`
+column didn't exist yet). After migration+repair, before re-proving:
+`{auto: 18 is_test=true}` — `dental: 0` (unchanged; no dental bookings
+existed to repair, only auto's — see Task 5 below for what re-proving then
+adds).
+
+**Task 4 — re-proving.** Two full `api-admin-run-agent-tests` rounds per
+tenant (round 1 immediately after deploying the `context.ts`/
+`create_booking.ts` fix; round 2 after Task 5's date-prompt fix +
+force-recompile, see below). `auto`: 8/8 both rounds. `dental`: 4/4 both
+rounds. **Final state**, confirmed live:
+
+```
+bookings by tenant, is_test:
+  auto (b2efae9d-...):   21 rows, is_test=true  (18 legacy + 3 from re-proving)
+  dental (b8419fe1-...):  2 rows, is_test=true  (0 before this task — the fix)
+
+placeholder/tool_first_seen call_logs rows:
+  'playground'                                   -> auto    (legacy row, now is_test_call=true)
+  'playground:tenant:b2efae9d-8309-...'          -> auto    (source=tool_first_seen)
+  'playground:tenant:b8419fe1-40ac-...'          -> dental  (source=tool_first_seen)
+
+tool_health by tenant, final run window:
+  auto: 37, dental: 13, null: 5 (all 5 are job-keep-warm's synthetic
+    "heyloo-keep-warm-ping" pings — pre-existing, unrelated, no call
+    payload at all so (c) fail-closed is correct)
+```
+
+dental's own booking(s) now correctly land under dental's own tenant_id —
+the actual bug is closed. Keyed by resolved tenant (not agent) in
+practice, since live confirmed: Retell's batch-test payload never sends
+`agent_id`.
+
+**Task 5 — `wrong_date_caller` root cause, found and fixed.** OPS-5's own
+transcript evidence (`docs/BUILD_NOTES.md` OPS-5 entry, and a re-fetched
+pre-fix transcript this task pulled from a fresh run) shows the actual
+failure: given `current_date`/`current_weekday` alone (`2026-09-20`,
+Sunday), the model computed "Next Monday is October 1st, 2026" — wrong on
+BOTH counts (the real next Monday is 2026-09-21, one day later; October
+1st 2026 is actually a Thursday, not a Monday). This is a genuine model
+date-ARITHMETIC failure, not a caller-simulator artifact or anything in
+`check_availability`/`create_booking`'s own date handling (both already
+just pass through whatever absolute `date_range`/`start`/`end` the model
+supplies — confirmed by reading both, no bug there). The prompt fragment
+(`agent-template-seeds.ts`, all 8 verticals, byte-identical block) told
+the model to "resolve every relative date ... against THIS date, never a
+guess" but gave it nothing but the anchor date to compute FROM — exactly
+the kind of multi-step mental arithmetic LLMs are unreliable at.
+
+Fix: `_shared/business-hours.ts`'s new `computeUpcomingWeekdayDates(now,
+timeZone)` precomputes the next 7 calendar days' weekday-name -> date
+lookup (e.g. `"Monday=2026-09-21, Tuesday=2026-09-22, ..."`), the same
+"timezone math baked in at materialization, never left for the model"
+pattern `current_date` itself already uses (SYSTEM_DESIGN §5). Wired as a
+new `upcoming_weekday_dates` dynamic variable at both real-call
+materialization (`voice-inbound/handler.ts`) and the batch-test harness
+(`api-admin-run-agent-tests/handler.ts`) — added to
+`VoiceInboundDynamicVariablesSchema` (required, `_shared/schemas/
+voice-inbound.ts`). All 8 vertical prompt blocks in `agent-template-seeds.
+ts` now tell the model to use `{{upcoming_weekday_dates}}` instead of
+counting days itself. **Not mirrored** into `packages/canonical-types`'
+`zAgentDynamicVariables`/`packages/templates`' `CURRENT_DATE_FRAGMENT`/
+`packages/adapters/retell` — that whole package chain is still "not wired
+into any live deploy path" (OPS-5's own note, unchanged) and adding a new
+REQUIRED field there would ripple through a wide, currently-dead test
+surface for no live benefit; flagged here as the same category of parity
+gap OPS-5's task 4 already flagged for that package, not attempted.
+
+Both test tenants force-recompiled (`api-admin-provision-test-tenant`,
+`force_recompile: true`) so their live `agent_templates`/`agent_configs.
+compiled_config` actually contain the new prompt + token. **Agent ids
+changed as a side effect of recompiling** — `auto`:
+`agent_bd7f3b7cee9e0de1e9ecfbe0f3` -> `agent_c44ca2af9bb44d59d260fc16a9`
+(re-attached to `+12602354330` via `api-admin-attach-retell-number`);
+`dental`: -> `agent_df4621dbda1e0501d6d08e2d57` (no phone attached, same
+as before — matches CALL-5's own precedent).
+
+**Live proof the fix works**: round 2's `wrong_date_caller` transcript
+(post-recompile) shows the agent correctly computing "October 1st, 2026,
+is a Thursday" when the caller corrects their date to "October 1st" — the
+exact category of computation OPS-5's transcript shows it getting wrong
+before (claiming a Sunday->Monday jump landed 11 days later on a date
+that also isn't a Monday). `auto` 8/8 both re-proving rounds; `dental`
+4/4 both rounds — no regression from the prompt change.
+
+### Gates
+
+`cd supabase/functions && npx vitest run` — 110/110 files, 1038/1038
+tests green (new: `context.test.ts` +7 cases incl. `isPlaceholderCallId`
+suite, `create_booking.test.ts` +2 cases, `business-hours.test.ts` +3
+cases; extended: `voice-inbound/handler.test.ts`). `npx tsc -p
+tsconfig.json --noEmit --pretty` clean (one real fixup needed —
+`_shared/text-agent/tool-router.ts`'s `buildCallContext` was the one other
+production `CallContext` literal, missing the new `isTestCall` field).
+`pnpm -w typecheck` — 21/21 tasks green. `pnpm -w test` — 21/21 tasks
+green (`@heyloo/web` 572/572, `@heyloo/edge-functions` 1038/1038).
+`npx biome check .` — 0 errors (43 pre-existing warnings, 1 info,
+unchanged from OPS-5's own baseline), `--write` applied to every file this
+task touched. `pnpm lint` (root, incl. `apps/web`'s eslint) — exit 0, 0
+errors.
+
+### Deploys
+
+`voice-tools`, `voice-inbound`, `api-admin-run-agent-tests` (twice — once
+for the context/booking fix, once more after the date-prompt fix + a
+biome reformat), `api-admin-provision-test-tenant`, `webhooks-twilio-sms`,
+`api-text-chat`, `job-reminder-scheduler`, `job-review-request`,
+`job-value-email` — all via `npx supabase functions deploy <fn>
+--project-ref qulcubtwqsqgqpfgvorn --use-api --yes --import-map
+supabase/functions/deno.json`, confirmed live via the batch-test re-runs
+and direct SQL verification above.
+
+### What remains
+
+- `packages/canonical-types`/`packages/templates`/`packages/adapters/
+  retell`'s `current_date`-adjacent types/fragments were NOT updated with
+  the new `upcoming_weekday_dates` variable (see Task 5) — that package
+  chain remains unwired from any live deploy path (OPS-5's own
+  documented, unchanged finding), so this is a parity gap, not a live bug.
+- `isPlaceholderCallId`'s exact regex is a best-effort, conservative
+  match against THIS account's own live call ids — `docs/VERIFY.md`'s
+  CALL-6 entry has the full discrepancy against the public Retell docs'
+  own (differently-shaped) example. Being wrong in the "too many ids
+  treated as placeholder" direction only costs a few extra queries per
+  real call, never a cross-tenant resolution — but worth confirming
+  against Retell support/dashboard before assuming it's byte-exact
+  forever.
+- The pre-existing 18 `auto`-tenant bookings this task marked `is_test =
+  true` were NOT reassigned to whichever tenant "really" created each one
+  — that information doesn't exist to reconstruct honestly (Task 3).

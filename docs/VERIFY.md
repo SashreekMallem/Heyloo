@@ -2182,3 +2182,33 @@ directly now that the webhook path is fixed.
 handler.ts` + `supabase/functions/api-provision/handler.ts`
 (`webhook_url`/`webhook_timeout_ms` fix), `supabase/functions/
 api-admin-create-web-call/*` (new), `scripts/e2e/retell-web-call.ts` (new).
+
+## CALL-6 (2026-09-20) — real Retell `call_id` shape (`voice-tools/context.ts#isPlaceholderCallId`)
+
+`docs.retellai.com/api-references/get-call` and `.../list-calls` were
+reachable via `WebFetch` this session (unlike CALL-2/CALL-5's own
+`EGRESS_BLOCKED` note above — environment access apparently varies by
+session) but their own example `call_id` values (e.g.
+`"Jabr9TXYYJHfvl6Syypi88rdAHYHmcq6"`) show NO `call_` prefix at all,
+disagreeing with THIS live project's own real `call_logs` rows (all
+`call_started`-sourced, i.e. genuinely webhook-created from a real
+call — never a batch-test/placeholder row), which are uniformly
+`call_` + lowercase hex, e.g. `call_30d9a235551f7b5bd80364cab4b`,
+`call_353a8c7e18fbd42894503c4f5de`, `call_4953f9f8a8fca404604e7275e9f`
+(confirmed live via `select retell_call_id from call_logs where source =
+'call_started'`). Treated the live evidence from THIS account as
+authoritative over the generic public doc example (which may simply be a
+stale/illustrative placeholder in Retell's own OpenAPI spec, not
+necessarily wrong for every account) — `isPlaceholderCallId`'s regex
+(`^call_[0-9a-f]{16,64}$`) is deliberately conservative in the safe
+direction regardless: anything that doesn't confidently match is treated
+as a placeholder (never trusts a cached `call_logs` row for it), so being
+wrong about the exact shape only costs a few extra indexed queries per
+call, never a cross-tenant resolution. Confirm the doc discrepancy against
+a live Retell support channel or account dashboard before relying on the
+regex being byte-exact for every possible real call id Retell might ever
+issue (e.g. a future format change) — until then, the fail-safe direction
+(treat as placeholder, re-resolve from payload) covers it.
+
+**Code:** `supabase/functions/voice-tools/context.ts` (`isPlaceholderCallId`,
+`REAL_RETELL_CALL_ID_RE`).
