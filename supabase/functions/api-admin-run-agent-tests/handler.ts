@@ -13,6 +13,26 @@ import {
 import { scenariosForVertical } from "../_shared/test-scenarios.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import type { Vertical } from "../_shared/vertical-defaults.ts";
+// CALL-7: same cross-function-folder import pattern already established by
+// `worker-tick/handler.ts` (imports from `../worker-adapter-push/handler.ts`
+// etc.) and `job-reconciliation/handler.ts` (imports `../voice-events/
+// handler.ts`) — reused here rather than duplicated, for the SAME reason:
+// `resolveVerticalDynamicVariables` is the one place every per-vertical
+// `{{token}}` a compiled prompt can reference (rate_table, species_treated,
+// practice_areas, menu_text, ...) gets resolved with a safe, non-
+// hallucinated default. A real inbound call always gets these via
+// `/voice-inbound`; a Retell batch-test session never goes through
+// `/voice-inbound` at all (CALL-2's own documented finding), and until this
+// fix this function only ever set `current_date`/`current_weekday`/
+// `upcoming_weekday_dates`/`heyloo_tenant_id` — every OTHER token a
+// vertical's prompt references (e.g. motel's "quote the nightly rate
+// strictly from {{rate_table}}", vet's emergency-referral name/phone, legal's
+// consult-fee text) was left as a literal unresolved dynamic variable on
+// every batch-test run, for every vertical, since CALL-1. Auto/dental's
+// prompts don't lean on these tokens for pass/fail as heavily as this task's
+// new vet/legal/motel/restaurant scenarios do (rate quotes, emergency
+// referrals, consult fees) — this surfaced now, not before.
+import { resolveVerticalDynamicVariables } from "../voice-inbound/dynamic-variables.ts";
 
 /**
  * `api-admin-run-agent-tests` (CALL-1, docs/BUILD_PLAN.md task 3): runs
@@ -399,14 +419,19 @@ export async function runAgentTests(
     caseDefinitions = req.resume.case_definitions;
     startedAt = req.resume.started_at;
   } else {
-    const tenantRows = await sql<{ vertical: Vertical; timezone: string }>`
-      select vertical, timezone from public.tenants where id = ${req.tenant_id}
+    const tenantRows = await sql<{ vertical: Vertical; timezone: string; business_name: string }>`
+      select vertical, timezone, name as business_name from public.tenants where id = ${req.tenant_id}
     `;
     const tenant = tenantRows[0];
     if (!tenant) return { status: 404, body: { error: "tenant_not_found" } };
 
-    const configRows = await sql<{ compiled_config: Record<string, unknown> | null }>`
-      select compiled_config from public.agent_configs where tenant_id = ${req.tenant_id}
+    const configRows = await sql<{
+      compiled_config: Record<string, unknown> | null;
+      assistant_name: string | null;
+      dynamic_variable_overrides: Record<string, unknown> | null;
+    }>`
+      select compiled_config, assistant_name, dynamic_variable_overrides
+      from public.agent_configs where tenant_id = ${req.tenant_id}
     `;
     const compiledConfig = configRows[0]?.compiled_config;
     const responseEngine = (compiledConfig as Record<string, unknown> | null)?.[
@@ -423,6 +448,20 @@ export async function runAgentTests(
     startedAt = now().toISOString();
     const currentDateContext = computeCurrentDateContext(now(), tenant.timezone);
     const upcomingWeekdayDates = computeUpcomingWeekdayDates(now(), tenant.timezone);
+    // CALL-7: the same per-vertical token resolution `/voice-inbound`
+    // already applies for a real call (see this file's own import comment
+    // above) — a test tenant has no `dynamic_variable_overrides` configured,
+    // so every token resolves to its safe built-in default (e.g. vet's
+    // species_treated -> "cats and dogs", motel's rate_table -> an explicit
+    // "no rates on file" string), never a literal unresolved `{{token}}`.
+    const overrides = configRows[0]?.dynamic_variable_overrides ?? {};
+    const verticalTokens = await resolveVerticalDynamicVariables({
+      sql,
+      tenantId: req.tenant_id,
+      vertical: tenant.vertical,
+      overrides,
+      logger: deps.logger,
+    });
     caseDefinitions = [];
     for (const scenario of scenarios) {
       const created = await createTestCaseDefinition(deps.retellFetch, deps.retellApiKey, {
@@ -457,6 +496,12 @@ export async function runAgentTests(
           // current_weekday alone. A precomputed lookup removes the need
           // for the model to compute it itself.
           upcoming_weekday_dates: upcomingWeekdayDates,
+          timezone: tenant.timezone,
+          business_name: tenant.business_name,
+          assistant_name: configRows[0]?.assistant_name ?? "the AI assistant",
+          // CALL-7: see this file's own import comment — every remaining
+          // per-vertical `{{token}}` a compiled prompt may reference.
+          ...verticalTokens,
         },
       });
       const createdBody = created.body as { test_case_definition_id?: string };

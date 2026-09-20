@@ -54,11 +54,15 @@ describe("runAgentTests", () => {
 
   it("creates definitions + a batch test, polls to settlement, and returns per-scenario results plus tool_health counts", async () => {
     const { sql } = makeSql({
-      "from public.tenants where id": [{ vertical: "auto" }],
+      "from public.tenants where id": [{ vertical: "auto", business_name: "Riverside Auto" }],
       "from public.agent_configs": [
         {
           compiled_config: {
             response_engine: { type: "conversation-flow", conversation_flow_id: "flow_1" },
+          },
+          assistant_name: "Riley",
+          dynamic_variable_overrides: {
+            tow_partner: { name: "Acme Towing", phone: "555-0100" },
           },
         },
       ],
@@ -70,9 +74,12 @@ describe("runAgentTests", () => {
     });
 
     let definitionCount = 0;
-    const retellFetch = async (url: string) => {
+    const capturedDynamicVariables: Array<Record<string, string>> = [];
+    const retellFetch = async (url: string, init?: RequestInit) => {
       if (url.includes("/create-test-case-definition")) {
         definitionCount += 1;
+        const parsed = init?.body ? JSON.parse(init.body as string) : {};
+        capturedDynamicVariables.push(parsed.dynamic_variables ?? {});
         return jsonResponse({ test_case_definition_id: `def_${definitionCount}` });
       }
       if (url.includes("/create-batch-test")) {
@@ -108,6 +115,20 @@ describe("runAgentTests", () => {
     expect(body.results).toHaveLength(2);
     expect(body.results.every((r) => r.status === "pass")).toBe(true);
     expect(body.tool_health.total).toBe(4);
+    // CALL-7: every compiled-prompt `{{token}}` this vertical's prompt can
+    // reference — business_name/assistant_name (always) plus this
+    // vertical's own resolveAutoTokens-derived tokens (tow_partner_name,
+    // from the dynamic_variable_overrides fixture above) — must be present
+    // on EVERY test-case definition, not left as a literal unresolved
+    // placeholder (a batch test never goes through `/voice-inbound`, the
+    // only other place these get set).
+    expect(capturedDynamicVariables).toHaveLength(2);
+    for (const vars of capturedDynamicVariables) {
+      expect(vars["business_name"]).toBe("Riverside Auto");
+      expect(vars["assistant_name"]).toBe("Riley");
+      expect(vars["tow_partner_name"]).toBe("Acme Towing");
+      expect(vars["cancellation_policy_text"]).toEqual(expect.any(String));
+    }
   });
 
   it("returns settled:false with a resume payload when the batch doesn't finish within the poll budget", async () => {
