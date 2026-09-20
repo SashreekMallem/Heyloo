@@ -95,14 +95,38 @@ export async function createOrder(
     };
   }
 
-  const offeringIds = args.items.map((i) => i.offering_id).filter((id): id is string => !!id);
-  const offeringRows = offeringIds.length
-    ? await sql<OfferingRow>`
-        select id, name, price_cents from public.offerings
-        where tenant_id = ${ctx.tenantId} and id = any(${offeringIds}) and active
-      `
-    : [];
+  // CALL-7 (docs/BUILD_NOTES.md — recurring `restaurant` batch-test
+  // failure, same class of gap OPS-5 already fixed for `create_booking`'s
+  // `resource_id`): unlike vet/dental's `create_booking` flow, no
+  // restaurant template state ever grants `list_offerings` — the menu is
+  // presented to the model purely as prose (`{{menu_text}}`, `voice-
+  // inbound/dynamic-variables.ts#resolveMenuText`), which never carries an
+  // `offering_id`. `items[].offering_id` was never actually REQUIRED by
+  // the tool's own schema either (`required: ["name","qty"]`,
+  // `agent-template-seeds.ts`), so a model that only ever saw item NAMES
+  // had no way to supply one — live-confirmed: every `create_order` call
+  // arrived with `offering_id` entirely absent, always failing
+  // `item_not_found` on an otherwise perfectly real, spoken menu item,
+  // three retries in a row, until the model gave up and looped/tried to
+  // transfer. Fixed the same way: resolve each item's offering server-
+  // side — exact `offering_id` match first (the fast path when a future
+  // vertical DOES grant `list_offerings`), falling back to a case-
+  // insensitive `name` match against this tenant's active offerings
+  // (the name the model already spoke, taken straight from the same
+  // `menu_text` it was given) — never inventing a price, only matching an
+  // EXISTING catalog row.
+  // Fetches every ACTIVE offering for this tenant (not filtered to the
+  // requested ids/names) — a restaurant's catalog is small (tens of items
+  // at most, never a hot-availability-style table), and fetching it whole
+  // lets the name-fallback below match case-insensitively/robustly in JS
+  // without a second round trip or a fragile SQL `lower(name) = any(...)`
+  // array comparison.
+  const offeringRows = await sql<OfferingRow>`
+    select id, name, price_cents from public.offerings
+    where tenant_id = ${ctx.tenantId} and active
+  `;
   const offeringsById = new Map(offeringRows.map((o) => [o.id, o]));
+  const offeringsByLowerName = new Map(offeringRows.map((o) => [o.name.toLowerCase(), o]));
 
   let subtotalCents = 0;
   const priced: {
@@ -113,9 +137,19 @@ export async function createOrder(
     modifiers: string[];
   }[] = [];
   for (const item of args.items) {
-    const offering = item.offering_id ? offeringsById.get(item.offering_id) : undefined;
-    if (!item.offering_id || !offering || offering.price_cents === null) {
+    const offering =
+      (item.offering_id ? offeringsById.get(item.offering_id) : undefined) ??
+      offeringsByLowerName.get(item.name.toLowerCase());
+    if (!offering || offering.price_cents === null) {
       return { confirmed: false, reason: "item_not_found", item_name: item.name };
+    }
+    if (offering.id !== item.offering_id) {
+      logger.warn("create_order_offering_id_resolved_by_name_fallback", {
+        tenant_id: ctx.tenantId,
+        requested_offering_id: item.offering_id ?? null,
+        requested_name: item.name,
+        resolved_offering_id: offering.id,
+      });
     }
     subtotalCents += offering.price_cents * item.qty;
     priced.push({

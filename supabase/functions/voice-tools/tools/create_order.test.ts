@@ -51,13 +51,38 @@ describe("createOrder", () => {
     expect(result).toEqual({ order_id: "order_1", confirmed: true, total_cents: 2400 });
   });
 
-  it("declines an item that doesn't resolve to a real offering (never trusts model-invented pricing)", async () => {
+  it("declines an item that doesn't resolve to a real offering by id OR name (never trusts model-invented pricing)", async () => {
     const sql = makeStepSql([
       { rows: [] }, // idempotency pre-check
-      { rows: [] }, // offerings lookup — nothing matches offering_id
+      { rows: [] }, // offerings lookup — the tenant has no active offerings at all
     ]);
     const result = await createOrder(sql, ctx, pickupArgs, logger);
     expect(result).toEqual({ confirmed: false, reason: "item_not_found", item_name: "Burger" });
+  });
+
+  it("CALL-7 (docs/BUILD_NOTES.md — live-confirmed: restaurant's template never grants list_offerings, so the model has no way to learn a real offering_id and every create_order call arrived with it entirely absent) resolves an item by NAME (case-insensitively) when offering_id is missing, mirroring OPS-5's create_booking.resource_id fallback", async () => {
+    const sql = makeStepSql([
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "off_1", name: "Margherita Pizza", price_cents: 1600 }] }, // offerings lookup (whole active catalog)
+      { rows: [{ dynamic_variable_overrides: {} }] }, // agent_configs overrides
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+      { rows: [{ id: "order_1" }] }, // order insert
+      { rows: [{ id: "msg_1" }] }, // confirmation message insert
+      { rows: [] }, // enqueue messages_outbound
+      { rows: [] }, // enqueue adapter_push
+    ]);
+    const result = await createOrder(
+      sql,
+      ctx,
+      {
+        ...pickupArgs,
+        // No offering_id at all, and the caller's spoken casing differs
+        // from the catalog's own ("margherita pizza" vs "Margherita Pizza").
+        items: [{ name: "margherita pizza", qty: 1 }],
+      },
+      logger,
+    );
+    expect(result).toEqual({ order_id: "order_1", confirmed: true, total_cents: 1600 });
   });
 
   it("creates a pickup order end-to-end with computed subtotal/tax/total", async () => {
