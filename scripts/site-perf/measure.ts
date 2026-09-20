@@ -130,20 +130,57 @@ async function startServer() {
   throw new Error(`apps/web did not start on ${ORIGIN} within 60s`);
 }
 
+/**
+ * Samples per route per metric (LCP/CLS/initial JS all come from the same
+ * navigation, so one sample count covers all three). A shared CI runner's
+ * own jitter — another job's process scheduling, a GC pause mid-hydration,
+ * a slow tick under `CPU_THROTTLE_RATE` — can turn one specific page load's
+ * hydration-time DOM change into a layout shift that a slightly
+ * differently-timed load of the SAME code never registers (confirmed: two
+ * consecutive `main` CI runs against byte-identical `apps/web` output
+ * measured CLS 0.032 and 0.102 for the exact same route/budget — see
+ * docs/BUILD_NOTES.md OPS-7). A single sample can't distinguish "this
+ * commit made CLS worse" from "this run happened to land on the unlucky
+ * side of that jitter"; the MEDIAN of several samples can, and is what
+ * `report()` below judges against budget — while every individual sample
+ * still prints, so a genuine regression (all 5 samples high) stays visibly
+ * different from one noisy outlier.
+ */
+const SAMPLES_PER_ROUTE = 5;
+
+interface RouteSamples {
+  budget: RouteBudget;
+  lcpMs: number[];
+  cls: number[];
+  initialJsBytesGz: number[];
+}
+
 interface MeasuredRoute {
   budget: RouteBudget;
   lcpMs: number;
   cls: number;
   initialJsBytesGz: number;
+  lcpSamples: number[];
+  clsSamples: number[];
+  initialJsBytesGzSamples: number[];
 }
 
-async function measureRoute(
-  browserType: Awaited<ReturnType<typeof resolvePlaywright>>["chromium"],
+/** Standard "middle value of the sorted samples" median — average of the two middle values on an even count, matching `SAMPLES_PER_ROUTE = 5` (odd, so this is just the 3rd value) but correct for any count. */
+function median(samples: number[]): number {
+  const sorted = [...samples].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
+  }
+  return sorted[mid] as number;
+}
+
+async function measureRouteOnce(
+  browser: Awaited<ReturnType<Awaited<ReturnType<typeof resolvePlaywright>>["chromium"]["launch"]>>,
   budget: RouteBudget,
-): Promise<MeasuredRoute> {
-  const browser = await browserType.launch();
+): Promise<{ lcpMs: number; cls: number; initialJsBytesGz: number }> {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   try {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     const cdp = await page.context().newCDPSession(page);
     // "a mid-range laptop", not this CI runner's own cloud-grade CPU.
     await cdp.send("Emulation.setCPUThrottlingRate", { rate: CPU_THROTTLE_RATE });
@@ -200,10 +237,33 @@ async function measureRoute(
       () => (window as unknown as { __heylooPerf: { lcp: number; cls: number } }).__heylooPerf,
     );
 
-    return { budget, lcpMs: vitals.lcp, cls: vitals.cls, initialJsBytesGz: jsBytes };
+    return { lcpMs: vitals.lcp, cls: vitals.cls, initialJsBytesGz: jsBytes };
   } finally {
-    await browser.close();
+    await page.close();
   }
+}
+
+/** Runs `measureRouteOnce` `SAMPLES_PER_ROUTE` times against `budget` (fresh page per sample, one shared browser) and returns every raw sample plus each metric's median. */
+async function measureRouteSamples(
+  browser: Awaited<ReturnType<Awaited<ReturnType<typeof resolvePlaywright>>["chromium"]["launch"]>>,
+  budget: RouteBudget,
+): Promise<MeasuredRoute> {
+  const samples: RouteSamples = { budget, lcpMs: [], cls: [], initialJsBytesGz: [] };
+  for (let i = 0; i < SAMPLES_PER_ROUTE; i++) {
+    const sample = await measureRouteOnce(browser, budget);
+    samples.lcpMs.push(sample.lcpMs);
+    samples.cls.push(sample.cls);
+    samples.initialJsBytesGz.push(sample.initialJsBytesGz);
+  }
+  return {
+    budget,
+    lcpMs: median(samples.lcpMs),
+    cls: median(samples.cls),
+    initialJsBytesGz: median(samples.initialJsBytesGz),
+    lcpSamples: samples.lcpMs,
+    clsSamples: samples.cls,
+    initialJsBytesGzSamples: samples.initialJsBytesGz,
+  };
 }
 
 function formatBytes(bytes: number) {
@@ -213,30 +273,40 @@ function formatBytes(bytes: number) {
 function report(results: MeasuredRoute[]): boolean {
   let allPassed = true;
   for (const r of results) {
-    const checks: Array<{ name: string; pass: boolean; actual: string; budget: string }> = [
+    const checks: Array<{
+      name: string;
+      pass: boolean;
+      actual: string;
+      budget: string;
+      samples: string;
+    }> = [
       {
         name: "LCP",
         pass: r.lcpMs <= r.budget.lcpMs,
         actual: `${Math.round(r.lcpMs)}ms`,
         budget: `${r.budget.lcpMs}ms`,
+        samples: r.lcpSamples.map((s) => `${Math.round(s)}ms`).join(", "),
       },
       {
         name: "CLS",
         pass: r.cls <= r.budget.cls,
         actual: r.cls.toFixed(3),
         budget: r.budget.cls.toFixed(3),
+        samples: r.clsSamples.map((s) => s.toFixed(3)).join(", "),
       },
       {
         name: "Initial JS (gz)",
         pass: r.initialJsBytesGz <= r.budget.initialJsBytesGz,
         actual: formatBytes(r.initialJsBytesGz),
         budget: formatBytes(r.budget.initialJsBytesGz),
+        samples: r.initialJsBytesGzSamples.map((s) => formatBytes(s)).join(", "),
       },
     ];
-    console.log(`\n${r.budget.label} (${r.budget.path})`);
+    console.log(`\n${r.budget.label} (${r.budget.path}) — median of ${SAMPLES_PER_ROUTE} samples`);
     for (const c of checks) {
       if (!c.pass) allPassed = false;
       console.log(`  ${c.pass ? "PASS" : "FAIL"}  ${c.name}: ${c.actual} (budget ${c.budget})`);
+      console.log(`         samples: [${c.samples}]`);
     }
   }
   return allPassed;
@@ -255,9 +325,14 @@ async function main() {
 
   try {
     const { chromium } = await resolvePlaywright();
+    const browser = await chromium.launch();
     const results: MeasuredRoute[] = [];
-    for (const budget of ROUTE_BUDGETS) {
-      results.push(await measureRoute(chromium, budget));
+    try {
+      for (const budget of ROUTE_BUDGETS) {
+        results.push(await measureRouteSamples(browser, budget));
+      }
+    } finally {
+      await browser.close();
     }
 
     const passed = report(results);

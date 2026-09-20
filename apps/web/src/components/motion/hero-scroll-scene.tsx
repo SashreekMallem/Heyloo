@@ -247,13 +247,31 @@ function HeroScrollSceneVisual({ fallback, className }: HeroScrollVisualProps) {
   // box, see `HERO_VISUAL_CLASSNAME` in `hero-scroll-section.tsx`) is
   // deliberately NOT applied to `fallback` itself — only to the small
   // final-frame image placed above it.
+  //
+  // CLS fix (measured 0.032-0.102 across otherwise-identical runs,
+  // traced via Playwright's `layout-shift` `sources` to THIS branch):
+  // `qualifies` starts `false` on every render — SSR has no `window`,
+  // and even on the client it stays `false` until `useDeviceCapability`'s
+  // layout effect resolves post-hydration (see that hook's own comment).
+  // So a desktop/tablet visitor's FIRST paint is always this "mobile"
+  // branch — final-frame image PLUS the full `fallback` (`LiveCallHero`,
+  // ~330px of its own two-panel grid) stacked beneath it — before
+  // hydration swaps to the single aspect-ratio box above. That swap
+  // removes `fallback`'s ~330px, shifting every section below the hero.
+  // `md:hidden` on the `fallback` wrapper hides it via a CSS media query
+  // — evaluated identically on the very first parsed byte of SSR'd HTML
+  // and after hydration, exactly like `HERO_PIN_RESERVE_CSS` above — so
+  // a ≥768px viewport never paints `fallback` at all, and the swap to
+  // the qualifying tier lands on an already-identically-sized box.
+  // `md:mb-0` matches: the image box's `mb-4` only makes sense when
+  // `fallback` is actually visible beneath it.
   if (!qualifies) {
     return (
       <>
-        <div className={cn(className, "mb-4 overflow-hidden rounded-2xl")}>
+        <div className={cn(className, "mb-4 overflow-hidden rounded-2xl md:mb-0")}>
           <HeroFilmFinalImage />
         </div>
-        {fallback}
+        <div className="md:hidden">{fallback}</div>
       </>
     );
   }

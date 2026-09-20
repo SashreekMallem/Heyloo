@@ -13561,3 +13561,130 @@ logic; it just wasn't in the CI re-apply list.
   full fresh-stack repro (`cron-queues-check.ts` actually turning green)
   was verified by re-reading GitHub Actions CI after pushing rather than
   locally — see the run linked from this task's final report.
+
+## OPS-7 — flaky "Site perf budget (marketing home)" CLS gate, real fix + robust sampling
+
+**Symptom**: `main` run
+https://github.com/SashreekMallem/Heyloo/actions/runs/35537490911 (commit
+`80f173a`, touched only a CI script + docs — no `apps/web` change) failed
+`Site perf budget (marketing home)` on `CLS: 0.102 (budget 0.050)`, LCP and
+initial JS both passing. The immediately preceding `main` run
+https://github.com/SashreekMallem/Heyloo/actions/runs/35537270198 (commit
+`8c42e46`, byte-identical `apps/web` output) passed the SAME check:
+`CLS: 0.032 (budget 0.050)`. Confirmed via
+`mcp__github__get_job_logs`/`actions_list` on both jobs' raw logs (job ids
+106149017339 and 106148437659) — same route, same budget, same code, two
+different CLS numbers from a single Playwright sample per run.
+
+**Root cause (attribution evidence)**: traced via Playwright's
+`layout-shift` `PerformanceObserver` entries (`sources`) against a local
+production build/serve of `apps/web`, following the exact repro CI uses
+(`pnpm exec turbo run build --filter=@heyloo/web^...` then
+`pnpm exec turbo run build --filter=@heyloo/web`, `next start`). The shift
+attributed to the hero's visual slot,
+`apps/web/src/components/motion/hero-scroll-scene.tsx`'s
+`HeroScrollSceneVisual`:
+
+- `useDeviceCapability()` (`use-device-capability.ts`) always starts
+  `{ qualifiesForFilm: false, ready: false }` — SSR has no `window` to
+  probe, and even on the client it only resolves post-hydration, in a
+  `useIsomorphicLayoutEffect`. So the FIRST paint of every page load,
+  including a qualifying desktop/tablet viewport, renders the
+  `!qualifies` branch: the settled final-frame `<img>` (in the
+  `className`-sized, `aspect-video` box) PLUS the full `fallback` prop —
+  `<LiveCallHero />`, a two-panel grid with `min-h-[19rem]` panels,
+  independently sized, ~330px tall — stacked directly beneath it.
+- Once hydration's layout effect resolves `qualifiesForFilm: true` (any
+  viewport ≥768px with no reduced-motion preference — true for this
+  budget test's 1440×900 Chromium), the component re-renders to the
+  `qualifies` branch: just the single `aspect-video` box (the scrubber +
+  overlay), with `fallback`'s ~330px block gone entirely.
+- That removal is the shift — every section below the hero (trust strip,
+  verticals, how-it-works, …) jumps up by `fallback`'s full height the
+  instant hydration completes. Because it depends on exactly when the
+  layout effect's post-hydration paint lands relative to the CDP
+  `layout-shift` session-window algorithm (itself sensitive to a shared
+  CI runner's scheduling jitter under the perf script's own 4x CPU
+  throttle), the SAME code measures a different CLS score run to run —
+  explaining the 0.032 vs 0.102 split on identical commits.
+- This is a smaller, previously-unfixed instance of the exact class of
+  bug `hero-scroll-scene.tsx`'s own `forceCollapse`/`HERO_PIN_RESERVE_CSS`
+  comment already documents and fixed for the PIN's space reservation
+  (measured regression there: 0.230, later 0.471 on a JS-state-driven
+  attempt) — "the browser paints the server-rendered HTML … before any
+  client JS runs … no client effect … can retroactively change what
+  already painted first." The pin-reservation fix moved that decision to
+  a CSS media query, evaluated identically pre- and post-hydration; the
+  VISUAL TIER's branch selection (fixed here) had not received the same
+  treatment.
+
+**Fix** (`apps/web/src/components/motion/hero-scroll-scene.tsx`,
+`HeroScrollSceneVisual`'s `!qualifies` branch): wrap the `fallback` block
+in `<div className="md:hidden">`, and change the final-frame image
+wrapper's `mb-4` to `mb-4 md:mb-0`. Tailwind's default `md:` breakpoint is
+768px — the exact same width `MIN_QUALIFYING_WIDTH` (in
+`use-device-capability.ts`) already gates qualification on — so this CSS
+media query resolves identically on the very first parsed byte of SSR'd
+HTML and after hydration, on every viewport, with no JS involved. On
+≥768px, `fallback` now takes zero layout space on FIRST paint already
+(matching its post-hydration `qualifies` state exactly), so the later
+branch swap lands on an already-identically-sized box — no shift. On
+<768px (where `qualifiesForFilm` is false both before and after
+hydration, so this branch never swaps at all), `fallback` stays visible
+exactly as before — no behavior change for the mobile tier.
+
+Known remaining edge case, out of this budget test's coverage (documented
+here per CLAUDE.md Rule 4 rather than expanded into a redesign): a mobile
+width visitor who also has `prefers-reduced-motion: reduce` still sees one
+swap, from the (now correctly zero-height-on-desktop-only, still-visible
+sub-768px) `fallback` block to `HeroFilmStatic`'s single box, since that
+branch is chosen by the `reducedMotion` JS flag rather than a CSS media
+query. Not exercised by `scripts/site-perf/measure.ts` (default Chromium
+context, no reduced-motion emulation), and no report of it in practice;
+flagged here for a future pass rather than folded into this fix.
+
+**Gate robustness** (`scripts/site-perf/measure.ts`): even with the real
+fix, a single Playwright sample on a shared CI runner is inherently noisy
+(GC pauses, neighbor-job scheduling, throttled-CPU timing jitter). Changed
+`measureRoute` (now `measureRouteOnce` + `measureRouteSamples`) to take
+`SAMPLES_PER_ROUTE = 5` samples per route (fresh page per sample, one
+shared browser), judge PASS/FAIL against each metric's **median**, and
+print every raw sample alongside the median so a genuine regression (all
+samples high) stays visibly distinguishable from one noisy outlier. Budget
+numbers in `scripts/site-perf/budgets.ts` were NOT changed (CLAUDE.md Rule
+4 / the task's explicit instruction — the fix is the site code, not a
+looser gate).
+
+**Before/after** (local repro of the CI job's own build+serve+measure
+steps, `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`,
+`node --experimental-strip-types scripts/site-perf/measure.ts`):
+
+- Before (CI, single sample, two consecutive `main` runs on identical
+  code): CLS 0.032 and 0.102 — one PASS, one FAIL against the 0.050
+  budget; LCP ~612-952ms and initial JS 224.1KB both already comfortably
+  under budget on every run.
+- After (local, 5 samples, post-fix):
+  ```
+  Home (/) — median of 5 samples
+    PASS  LCP: 988ms (budget 2500ms)
+           samples: [1008ms, 988ms, 944ms, 1092ms, 968ms]
+    PASS  CLS: 0.000 (budget 0.050)
+           samples: [0.000, 0.000, 0.000, 0.000, 0.000]
+    PASS  Initial JS (gz): 224.1KB (budget 250.0KB)
+           samples: [224.1KB, 224.1KB, 224.1KB, 224.1KB, 224.1KB]
+  ```
+  CLS is exactly 0.000 across all 5 samples (no measurable layout shift
+  at all on this route post-fix), LCP and initial JS unchanged and still
+  well under budget.
+
+**Verification**:
+- `pnpm lint` — 0 errors (33 pre-existing warnings, none in touched
+  files).
+- `pnpm run typecheck` — 21/21 packages green.
+- `pnpm run test --filter=@heyloo/web` — 110 test files / 572 tests
+  green, including the full `hero-scroll-scene.test.tsx` /
+  `hero-film-static.test.tsx` suites (15 tests) unchanged by this fix.
+- `pnpm run build` (with the same placeholder env CI uses) — clean;
+  `git status --porcelain` empty afterward (no stray build output).
+- `node --experimental-strip-types scripts/site-perf/measure.ts` — see
+  before/after above.
