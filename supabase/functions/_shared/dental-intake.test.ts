@@ -76,13 +76,17 @@ describe("issueDentalIntakeToken", () => {
     expect(smsInsert?.values).toContain("t1");
     expect(smsInsert?.values).toContain("+15551234567");
     expect(smsInsert?.values).toContain("b1");
-    const payload = JSON.parse(
-      smsInsert?.values.find((v) => typeof v === "string" && v.includes("http")) as string,
-    ) as {
-      url: string;
-    };
-    expect(payload.url).toMatch(/^https:\/\/app\.heyloo\.com\/intake\/[A-Za-z0-9_-]+$/);
-    const embeddedToken = payload.url.split("/intake/")[1] as string;
+    // Regression (CALL-3 jsonb double-encoding fix): the `payload` value
+    // bound to the `::jsonb` parameter must be the raw object, never a
+    // caller-pre-stringified JSON string (postgres.js's own learned-type
+    // serializer handles the encoding exactly once).
+    const payload = smsInsert?.values.find(
+      (v) => typeof v === "object" && v !== null && "url" in (v as object),
+    ) as { url: string } | undefined;
+    expect(payload).toBeDefined();
+    expect(typeof payload).not.toBe("string");
+    expect(payload?.url).toMatch(/^https:\/\/app\.heyloo\.com\/intake\/[A-Za-z0-9_-]+$/);
+    const embeddedToken = payload?.url.split("/intake/")[1] as string;
     expect(await sha256Hex(embeddedToken)).toBe(storedHash);
   });
 
@@ -94,10 +98,10 @@ describe("issueDentalIntakeToken", () => {
       { appBaseUrl: "https://app.heyloo.com/" },
     );
     const smsInsert = calls.find((c) => c.text.includes("insert into public.messages_outbound"));
-    const payloadStr = smsInsert?.values.find(
-      (v) => typeof v === "string" && v.includes("http"),
-    ) as string;
-    expect(payloadStr).not.toContain("com//intake");
+    const payload = smsInsert?.values.find(
+      (v) => typeof v === "object" && v !== null && "url" in (v as object),
+    ) as { url: string } | undefined;
+    expect(payload?.url).not.toContain("com//intake");
   });
 
   it("generates a different token on every call", async () => {

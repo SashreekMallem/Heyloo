@@ -106,6 +106,14 @@ export async function handleCallStarted(
   const isTestCall =
     !!callerNumber && !!tenantRow.owner_test_phone && callerNumber === tenantRow.owner_test_phone;
 
+  // CALL-2 (docs/BUILD_NOTES.md): a `tool_first_seen` placeholder
+  // (voice-tools/context.ts#resolveCallContext) may already exist for this
+  // call_id if the caller's first tool call raced ahead of this webhook's
+  // own commit — upsert over ONLY that placeholder with this webhook's
+  // authoritative data (never a row another call_started already wrote;
+  // `where call_logs.source = 'tool_first_seen'` makes a retried/duplicate
+  // call_started delivery a no-op against an already-webhook-sourced row,
+  // same effective behavior the old `do nothing` had for that case).
   await sql`
     insert into public.call_logs (
       tenant_id, phone_number_id, retell_call_id, caller_number, direction, started_at, is_test_call, channel
@@ -114,7 +122,15 @@ export async function handleCallStarted(
       'inbound', ${isoFromUnixSeconds(call.start_timestamp) ?? new Date().toISOString()}, ${isTestCall},
       ${tenantRow.channel}
     )
-    on conflict (retell_call_id) do nothing
+    on conflict (retell_call_id) do update set
+      phone_number_id = coalesce(excluded.phone_number_id, call_logs.phone_number_id),
+      caller_number = coalesce(excluded.caller_number, call_logs.caller_number),
+      direction = excluded.direction,
+      started_at = excluded.started_at,
+      is_test_call = excluded.is_test_call,
+      channel = excluded.channel,
+      source = 'call_started'
+    where call_logs.source = 'tool_first_seen'
   `;
 }
 
@@ -181,7 +197,7 @@ export async function handleCallEnded(
   for (const cost of productCosts) {
     await sql`
       insert into public.cost_events (tenant_id, call_id, provider, product, total_cost_cents, raw, occurred_at)
-      values (${callRow.tenant_id}, ${callRow.id}, 'retell', ${cost.product}, ${cost.cost}, ${JSON.stringify(cost)}::jsonb, ${endedAt})
+      values (${callRow.tenant_id}, ${callRow.id}, 'retell', ${cost.product}, ${cost.cost}, ${cost}::jsonb, ${endedAt})
     `;
   }
 
@@ -231,8 +247,8 @@ export async function handleCallAnalyzed(
         classification = coalesce(${classification}, classification),
         outcome = coalesce(${outcome}, outcome),
         follow_up_needed = follow_up_needed or ${followUpNeeded},
-        extracted_entities = coalesce(${JSON.stringify(customData)}::jsonb, extracted_entities),
-        transcript = coalesce(${call.transcript_object ? JSON.stringify(call.transcript_object) : null}::jsonb, transcript)
+        extracted_entities = coalesce(${customData}::jsonb, extracted_entities),
+        transcript = coalesce(${call.transcript_object ?? null}::jsonb, transcript)
     where retell_call_id = ${call.call_id}
     returning id, tenant_id, urgency_flag
   `;

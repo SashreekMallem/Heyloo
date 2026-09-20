@@ -26,7 +26,7 @@ export async function insertWebhookEventIfNew(
   const { source, eventId, eventType, payload, signatureVerified } = params;
   const rows = await sql<{ id: string }>`
     insert into public.webhook_events (source, event_id, event_type, payload, signature_verified)
-    values (${source}, ${eventId}, ${eventType}, ${JSON.stringify(payload)}::jsonb, ${signatureVerified})
+    values (${source}, ${eventId}, ${eventType}, ${payload}::jsonb, ${signatureVerified})
     on conflict (source, event_id) do nothing
     returning id
   `;

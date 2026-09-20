@@ -727,6 +727,87 @@ describe("routeAdminRequest — templates group", () => {
     ).toBe(true);
     expect(calls.some((c) => c.text.includes("insert into public.admin_actions"))).toBe(true);
   });
+
+  // Regression (CALL-3 jsonb double-encoding fix): `POST /admin-templates`
+  // and `PATCH /admin-templates/:id` used to write
+  // `${JSON.stringify(x)}::jsonb`, which postgres.js (prepare:true) would
+  // re-serialize a second time, storing a jsonb *string* instead of an
+  // array/object — confirmed live-corrupted on `agent_templates.tools`
+  // before the fix. Every jsonb-typed column these routes write must
+  // receive the raw object/array as the bound parameter, never a
+  // caller-pre-stringified string.
+  it("POST /admin-templates binds the raw states/transitions/global_intents/tools objects to their ::jsonb params, never pre-stringified", async () => {
+    const { sql, calls } = makeSql({ "insert into public.agent_templates": [{ id: "tmpl_new" }] });
+    const states = [{ id: "greet", name: "Greet", prompt_fragment: "Hi", allowed_tools: [] }];
+    const transitions = [{ from: "greet", to: "book", on: "book_intent" }];
+    const globalIntents = [{ id: "transfer", trigger: "ask for a human" }];
+    const tools = [{ type: "custom", name: "lookup_customer" }];
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-templates",
+        body: {
+          vertical: "auto",
+          name: "Auto v2",
+          version: 2,
+          compile_target: "conversation_flow",
+          voice_id: "voice_1",
+          model: "gpt",
+          disclosure_line: "This call may be recorded and you are speaking with an AI assistant.",
+          states,
+          transitions,
+          global_intents: globalIntents,
+          tools,
+        },
+      }),
+      logger,
+    );
+    expect(result).toEqual({ status: 201, body: { template_id: "tmpl_new" } });
+    const insertCall = calls.find((c) => c.text.includes("insert into public.agent_templates"));
+    expect(insertCall).toBeDefined();
+    for (const jsonbValue of [states, transitions, globalIntents, tools]) {
+      const bound = insertCall?.values.find(
+        (v) => typeof v !== "string" && JSON.stringify(v) === JSON.stringify(jsonbValue),
+      );
+      expect(bound).toBeDefined();
+      expect(typeof bound).not.toBe("string");
+    }
+  });
+
+  it("PATCH /admin-templates/:id binds the raw states/transitions/global_intents/tools objects to their ::jsonb params, never pre-stringified", async () => {
+    const { sql, calls } = makeSql({
+      "select * from public.agent_templates where id": [templateRow],
+    });
+    const states = [{ id: "greet", name: "Greet", prompt_fragment: "Hi", allowed_tools: [] }];
+    const transitions = [{ from: "greet", to: "book", on: "book_intent" }];
+    const globalIntents = [{ id: "transfer", trigger: "ask for a human" }];
+    const tools = [{ type: "custom", name: "lookup_customer" }];
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "PATCH",
+        path: `/admin-templates/${templateRow.id}`,
+        body: { states, transitions, global_intents: globalIntents, tools },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    for (const [column, jsonbValue] of [
+      ["states", states],
+      ["transitions", transitions],
+      ["global_intents", globalIntents],
+      ["tools", tools],
+    ] as const) {
+      const updateCall = calls.find((c) => c.text.includes(`set ${column} =`));
+      expect(updateCall).toBeDefined();
+      const bound = updateCall?.values.find(
+        (v) => typeof v !== "string" && JSON.stringify(v) === JSON.stringify(jsonbValue),
+      );
+      expect(bound).toBeDefined();
+      expect(typeof bound).not.toBe("string");
+    }
+  });
 });
 
 describe("routeAdminRequest — alerts group", () => {
@@ -1058,7 +1139,11 @@ describe("routeAdminRequest — platform settings group", () => {
 
     const insertCall = calls.find((c) => c.text.includes("insert into public.platform_settings"));
     expect(insertCall).toBeDefined();
-    const writtenValue = JSON.parse(insertCall!.values[1] as string) as Record<string, unknown>;
+    // Regression (CALL-3 jsonb double-encoding fix): the `value` parameter
+    // bound to the `::jsonb` cast must be the raw object, never a
+    // caller-pre-stringified JSON string.
+    const writtenValue = insertCall?.values[1] as Record<string, unknown>;
+    expect(typeof writtenValue).not.toBe("string");
     expect(writtenValue["some_future_field"]).toBe("keep-me");
     expect(writtenValue["included_text_conversations"]).toBe(500);
   });

@@ -92,7 +92,7 @@ export async function sendPaymentLink(
     insert into public.messages_outbound (
       tenant_id, channel, recipient, template_key, payload, related_booking_id, related_order_id
     ) values (
-      ${ctx.tenantId}, 'sms', ${phone}, 'payment_link', ${JSON.stringify({ url: body.url, amount_cents: amountCents })}::jsonb,
+      ${ctx.tenantId}, 'sms', ${phone}, 'payment_link', ${{ url: body.url, amount_cents: amountCents }}::jsonb,
       ${args.booking_id ?? null}, ${args.order_id ?? null}
     )
     returning id

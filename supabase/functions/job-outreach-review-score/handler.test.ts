@@ -131,10 +131,14 @@ describe("scoreLeadReviews", () => {
     expect(result.scored).toBe(true);
     const update = calls.find((c) => c.text.includes("update public.leads"));
     expect(update?.values).toContain(0.85);
-    const evidenceJson = update?.values.find(
-      (v) => typeof v === "string" && v.includes("voicemail"),
-    ) as string;
-    expect(evidenceJson).toContain(
+    // Regression (CALL-3 jsonb double-encoding fix): the evidence value
+    // bound to the ::jsonb parameter must be the raw array, never a
+    // caller-pre-stringified JSON string.
+    const evidence = update?.values.find(
+      (v) => Array.isArray(v) && JSON.stringify(v).includes("voicemail"),
+    ) as unknown[] | undefined;
+    expect(evidence).toBeDefined();
+    expect(JSON.stringify(evidence)).toContain(
       "called three times over two days and just got voicemail every time",
     );
     expect(calls.some((c) => c.text.includes("insert into public.pipeline_costs"))).toBe(true);
@@ -229,11 +233,15 @@ describe("scoreLeadReviews", () => {
 
     expect(result.scored).toBe(true);
     const update = calls.find((c) => c.text.includes("update public.leads"));
-    const evidenceJson = update?.values.find((v) => typeof v === "string" && v.startsWith("["));
+    // Regression (CALL-3 jsonb double-encoding fix): the evidence value
+    // bound to the ::jsonb parameter must be the raw array, never a
+    // caller-pre-stringified JSON string.
+    const evidence = update?.values.find((v) => Array.isArray(v));
+    expect(typeof evidence).not.toBe("string");
     // The fabricated snippet was NOT a substring of the review text, so it
     // must be dropped — evidence ends up empty even though score is
     // whatever the (untrusted) model output claimed.
-    expect(evidenceJson).toBe("[]");
+    expect(evidence).toEqual([]);
   });
 
   it("marks reviews_analyzed_at and records no classification cost when the place has zero reviews", async () => {

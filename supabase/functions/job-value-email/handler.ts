@@ -102,7 +102,7 @@ export async function sendOneValueEmail(
 
   const inserted = await sql<{ id: string }>`
     insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload)
-    values (${row.tenant_id}, 'email', ${row.owner_email}, 'weekly_value_summary', ${JSON.stringify(payload)}::jsonb)
+    values (${row.tenant_id}, 'email', ${row.owner_email}, 'weekly_value_summary', ${payload}::jsonb)
     returning id
   `;
   const message = inserted[0];

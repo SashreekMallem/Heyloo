@@ -14,8 +14,14 @@ function makeSql(connections: { provider: string }[]): {
       return Promise.resolve(connections);
     }
     if (text.includes("pgmq.send")) {
-      const [queue, messageJson] = values as [string, string];
-      enqueued.push({ queue, message: JSON.parse(messageJson) as AdapterPushQueueMsg });
+      const [queue, message] = values as [string, AdapterPushQueueMsg];
+      // Regression (CALL-3 jsonb double-encoding fix): postgres.js's own
+      // learned-type serializer must receive the raw object for a `::jsonb`
+      // parameter, never a caller-pre-stringified value — asserting the
+      // object shape directly (not via JSON.parse of a string) is itself
+      // the regression check for that.
+      expect(typeof message).not.toBe("string");
+      enqueued.push({ queue, message });
       return Promise.resolve([]);
     }
     return Promise.resolve([]);

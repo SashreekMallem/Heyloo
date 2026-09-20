@@ -117,7 +117,7 @@ export async function handleCreateDemo(
 
   const rows = await sql<{ id: string }>`
     insert into public.demo_sessions (business_name, source_url, vertical, scraped_summary, sanitized, expires_at)
-    values (${req.business_name}, ${req.url}, ${req.vertical ?? null}, ${JSON.stringify(summary)}::jsonb, true, ${expiresAt})
+    values (${req.business_name}, ${req.url}, ${req.vertical ?? null}, ${summary}::jsonb, true, ${expiresAt})
     returning id
   `;
   const demoSessionId = rows[0]?.id;
@@ -194,7 +194,7 @@ export async function handleConfirmDemo(
   await sql`
     update public.demo_sessions
     set retell_call_token = ${callBody.access_token}, demo_phone_e164 = ${deps.demoPhoneE164},
-        agent_config_snapshot = ${JSON.stringify(summary)}::jsonb
+        agent_config_snapshot = ${summary}::jsonb
     where id = ${session.id}
   `;
 

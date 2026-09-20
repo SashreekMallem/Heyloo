@@ -66,7 +66,7 @@ export async function issueDentalIntakeToken(
       tenant_id, channel, recipient, template_key, payload, related_booking_id
     ) values (
       ${input.tenantId}, 'sms', ${input.customerPhoneE164}, 'dental_intake_link',
-      ${JSON.stringify({ url })}::jsonb, ${input.bookingId}
+      ${{ url }}::jsonb, ${input.bookingId}
     )
   `;
 

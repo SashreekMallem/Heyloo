@@ -47,7 +47,7 @@ export async function takeMessage(
     update public.call_logs
     set message_text = ${args.message_text},
         classification = coalesce(classification, 'after_hours_message'),
-        structured_booking_payload = coalesce(structured_booking_payload, '{}'::jsonb) || ${JSON.stringify(structuredPayload)}::jsonb
+        structured_booking_payload = coalesce(structured_booking_payload, '{}'::jsonb) || ${structuredPayload}::jsonb
     where id = ${ctx.callLogId} and tenant_id = ${ctx.tenantId}
   `;
 
@@ -61,12 +61,12 @@ export async function takeMessage(
   const messageRows = await sql<{ id: string }>`
     insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload, related_call_id)
     select ${ctx.tenantId}, 'sms', ac.transfer_number, 'take_message',
-      ${JSON.stringify({
+      ${{
         caller_name: args.caller_name ?? null,
         caller_phone: callerPhone,
         message_text: args.message_text,
         callback_window: args.callback_window ?? null,
-      })}::jsonb,
+      }}::jsonb,
       ${ctx.callLogId}
     from public.agent_configs ac
     where ac.tenant_id = ${ctx.tenantId} and ac.transfer_number is not null

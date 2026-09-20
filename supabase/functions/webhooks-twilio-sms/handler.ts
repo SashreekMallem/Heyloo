@@ -217,7 +217,7 @@ export async function processInboundSms(
   // `messages_outbound` queue worker and sent a second time.
   await sql`
     insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload, status, sent_at)
-    values (${tenantId}, 'sms', ${fromNumber}, 'text_agent_reply', ${JSON.stringify({ body: engineResult.reply })}::jsonb, 'sent', now())
+    values (${tenantId}, 'sms', ${fromNumber}, 'text_agent_reply', ${{ body: engineResult.reply }}::jsonb, 'sent', now())
   `;
   return { replyBody: engineResult.reply };
 }

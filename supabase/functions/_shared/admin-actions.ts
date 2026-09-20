@@ -20,8 +20,8 @@ export async function writeAdminAction(
     insert into public.admin_actions (admin_user_id, action, target_type, target_id, before, after, ip_address, user_agent)
     values (
       ${params.adminUserId}, ${params.action}, ${params.targetType}, ${params.targetId ?? null},
-      ${params.before !== undefined ? JSON.stringify(params.before) : null}::jsonb,
-      ${params.after !== undefined ? JSON.stringify(params.after) : null}::jsonb,
+      ${params.before !== undefined ? params.before : null}::jsonb,
+      ${params.after !== undefined ? params.after : null}::jsonb,
       ${params.ipAddress ?? null}::inet, ${params.userAgent ?? null}
     )
   `;

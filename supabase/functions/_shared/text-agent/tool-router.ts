@@ -212,7 +212,7 @@ async function runVerifyPhone(
 
   const rows = await deps.sql<{ id: string }>`
     insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload)
-    values (${deps.conversation.tenantId}, 'sms', ${phone}, 'chat_phone_verification', ${JSON.stringify({ code })}::jsonb)
+    values (${deps.conversation.tenantId}, 'sms', ${phone}, 'chat_phone_verification', ${{ code }}::jsonb)
     returning id
   `;
   const messageId = rows[0]?.id;

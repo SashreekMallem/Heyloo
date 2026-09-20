@@ -19,11 +19,26 @@ function makeFakeSql(rows: unknown[] = []): { sql: SqlClient; calls: unknown[][]
 }
 
 describe("enqueue", () => {
-  it("sends a JSON-encoded message to pgmq.send for the given queue", async () => {
+  it("sends the raw message object to pgmq.send for the given queue", async () => {
     const { sql, calls } = makeFakeSql();
     await enqueue(sql, QUEUE_NAMES.messagesOutbound, { message_id: "m1" });
     expect(calls[0]).toContain(QUEUE_NAMES.messagesOutbound);
-    expect(calls[0]).toContain(JSON.stringify({ message_id: "m1" }));
+    expect(calls[0]).toContainEqual({ message_id: "m1" });
+  });
+
+  // Regression (CALL-3 jsonb double-encoding fix): under postgres.js with
+  // prepare:true, `${JSON.stringify(x)}::jsonb` double-encodes because the
+  // driver's own learned-type serializer re-serializes an already-stringified
+  // value — the parameter passed for a `::jsonb` cast must be the raw
+  // object/array, never a pre-stringified string.
+  it("never pre-stringifies the message parameter passed for the ::jsonb cast", async () => {
+    const { sql, calls } = makeFakeSql();
+    await enqueue(sql, QUEUE_NAMES.messagesOutbound, { message_id: "m1" });
+    const jsonbParam = calls[0]?.find(
+      (v) => typeof v === "object" && v !== null && "message_id" in (v as object),
+    );
+    expect(typeof jsonbParam).not.toBe("string");
+    expect(jsonbParam).toEqual({ message_id: "m1" });
   });
 });
 

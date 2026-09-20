@@ -132,7 +132,7 @@ export async function handleLeadCallback(
     ) values (
       ${tenantId}, ${input.name ?? null}, ${phoneE164}, ${input.source}, ${input.consent_text},
       ${consentGivenAt}::timestamptz, ${input.consent_ip ?? null}, ${input.idempotency_key ?? null},
-      ${JSON.stringify(input.metadata ?? {})}::jsonb, 'pending'
+      ${input.metadata ?? {}}::jsonb, 'pending'
     )
     returning id
   `;

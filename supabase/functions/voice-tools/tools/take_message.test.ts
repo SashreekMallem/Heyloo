@@ -36,7 +36,11 @@ describe("takeMessage", () => {
       ...args,
       structured_payload: { matter_type: "contract_review" },
     });
-    expect(JSON.parse(capturedPayload as string)).toEqual({ matter_type: "contract_review" });
+    // Regression (CALL-3 jsonb double-encoding fix): the structured
+    // payload bound to the ::jsonb parameter must be the raw object, never
+    // a caller-pre-stringified JSON string.
+    expect(typeof capturedPayload).not.toBe("string");
+    expect(capturedPayload).toEqual({ matter_type: "contract_review" });
   });
 
   it("merges callback_window into structured_booking_payload so it's visible on the Call Detail page without depending on the Messages UI", async () => {
@@ -53,7 +57,11 @@ describe("takeMessage", () => {
       structured_payload: { matter_type: "contract_review" },
       callback_window: "weekday afternoons",
     });
-    expect(JSON.parse(capturedPayload as string)).toEqual({
+    // Regression (CALL-3 jsonb double-encoding fix): the structured
+    // payload bound to the ::jsonb parameter must be the raw object, never
+    // a caller-pre-stringified JSON string.
+    expect(typeof capturedPayload).not.toBe("string");
+    expect(capturedPayload).toEqual({
       matter_type: "contract_review",
       callback_window: "weekday afternoons",
     });
@@ -69,7 +77,11 @@ describe("takeMessage", () => {
       return Promise.resolve([]);
     }) as SqlClient;
     await takeMessage(sql, ctx, args);
-    expect(JSON.parse(capturedPayload as string)).toEqual({});
+    // Regression (CALL-3 jsonb double-encoding fix): the structured
+    // payload bound to the ::jsonb parameter must be the raw object, never
+    // a caller-pre-stringified JSON string.
+    expect(typeof capturedPayload).not.toBe("string");
+    expect(capturedPayload).toEqual({});
   });
 
   it("enqueues a staff notification when the tenant has a transfer_number configured", async () => {

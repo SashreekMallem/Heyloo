@@ -46,7 +46,7 @@ export interface OutreachSendQueueMsg {
 }
 
 export async function enqueue(sql: SqlClient, queue: QueueName, message: unknown): Promise<void> {
-  await sql`select pgmq.send(${queue}, ${JSON.stringify(message)}::jsonb)`;
+  await sql`select pgmq.send(${queue}, ${message}::jsonb)`;
 }
 
 export interface PgmqMessageRow<T> {
@@ -93,6 +93,6 @@ export async function moveToDeadLetter(
   msgId: number,
   message: unknown,
 ): Promise<void> {
-  await sql`select pgmq.send(${`${queue}_dlq`}, ${JSON.stringify(message)}::jsonb)`;
+  await sql`select pgmq.send(${`${queue}_dlq`}, ${message}::jsonb)`;
   await archiveMessage(sql, queue, msgId);
 }

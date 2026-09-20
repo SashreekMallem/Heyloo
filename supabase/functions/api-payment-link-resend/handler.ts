@@ -114,7 +114,7 @@ export async function resendPaymentLink(
       tenant_id, channel, recipient, template_key, payload, related_booking_id, related_order_id
     ) values (
       ${tenantId}, 'sms', ${link.recipient_phone}, 'payment_link',
-      ${JSON.stringify({ url: body.url, amount_cents: link.amount_cents })}::jsonb,
+      ${{ url: body.url, amount_cents: link.amount_cents }}::jsonb,
       ${link.booking_id}, ${link.order_id}
     )
     returning id

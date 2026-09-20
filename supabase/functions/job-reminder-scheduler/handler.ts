@@ -75,7 +75,7 @@ export async function scheduleOneReminder(
 
   const inserted = await sql<{ id: string }>`
     insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload, related_booking_id)
-    values (${row.tenant_id}, 'sms', ${row.customer_phone}, 'reminder', ${JSON.stringify({ start_local: row.start_at })}::jsonb, ${row.booking_id})
+    values (${row.tenant_id}, 'sms', ${row.customer_phone}, 'reminder', ${{ start_local: row.start_at }}::jsonb, ${row.booking_id})
     returning id
   `;
   const message = inserted[0];

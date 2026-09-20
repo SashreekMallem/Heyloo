@@ -77,7 +77,7 @@ export async function processStripeEvent(
               insert into public.alerts (rule, severity, tenant_id, payload)
               values (
                 'provisioning_invoke_failed', 'critical', ${tenantId},
-                ${JSON.stringify({ status: invoked.status ?? null, error: invoked.error ?? null })}::jsonb
+                ${{ status: invoked.status ?? null, error: invoked.error ?? null }}::jsonb
               )
             `;
           }

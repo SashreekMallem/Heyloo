@@ -452,7 +452,7 @@ async function readAlertRules(sql: SqlClient): Promise<StoredAlertRule[]> {
 async function writeAlertRules(sql: SqlClient, rules: StoredAlertRule[]): Promise<void> {
   await sql`
     insert into public.platform_settings (key, value)
-    values (${ALERT_RULES_SETTINGS_KEY}, ${JSON.stringify({ rules })}::jsonb)
+    values (${ALERT_RULES_SETTINGS_KEY}, ${{ rules }}::jsonb)
     on conflict (key) do update set value = excluded.value, updated_at = now()
   `;
 }
@@ -770,12 +770,12 @@ async function handlePlatformSettings(
 
     await sql`
       insert into public.platform_settings (key, value)
-      values ('referral_flat_amount_cents', ${JSON.stringify({ amount_cents: parsed.data.flat_amount_cents })}::jsonb)
+      values ('referral_flat_amount_cents', ${{ amount_cents: parsed.data.flat_amount_cents }}::jsonb)
       on conflict (key) do update set value = excluded.value, updated_by = ${ctx.adminUserId}, updated_at = now()
     `;
     await sql`
       insert into public.platform_settings (key, value)
-      values ('referral_qualification_rule', ${JSON.stringify({ rule: parsed.data.qualification_rule })}::jsonb)
+      values ('referral_qualification_rule', ${{ rule: parsed.data.qualification_rule }}::jsonb)
       on conflict (key) do update set value = excluded.value, updated_by = ${ctx.adminUserId}, updated_at = now()
     `;
 
@@ -821,7 +821,7 @@ async function handlePlatformSettings(
     };
     await sql`
       insert into public.platform_settings (key, value, updated_by)
-      values (${key}, ${JSON.stringify(value)}::jsonb, ${ctx.adminUserId})
+      values (${key}, ${value}::jsonb, ${ctx.adminUserId})
       on conflict (key) do update set value = excluded.value, updated_by = excluded.updated_by, updated_at = now()
     `;
 
@@ -1300,8 +1300,8 @@ async function handleTemplates(
         ) values (
           ${body["vertical"] as string}, ${body["name"] as string}, ${body["version"] as number},
           ${body["compile_target"] as string}, ${(body["system_prompt"] as string) ?? null},
-          ${JSON.stringify(body["states"] ?? [])}::jsonb, ${JSON.stringify(body["transitions"] ?? [])}::jsonb,
-          ${JSON.stringify(body["global_intents"] ?? [])}::jsonb, ${JSON.stringify(body["tools"] ?? [])}::jsonb,
+          ${body["states"] ?? []}::jsonb, ${body["transitions"] ?? []}::jsonb,
+          ${body["global_intents"] ?? []}::jsonb, ${body["tools"] ?? []}::jsonb,
           ${body["voice_id"] as string}, ${body["model"] as string}, ${body["disclosure_line"] as string},
           ${ctx.adminUserId}
         )
@@ -1337,19 +1337,19 @@ async function handleTemplates(
     }
     if ("states" in patch) {
       didUpdate = true;
-      await sql`update public.agent_templates set states = ${JSON.stringify(patch["states"])}::jsonb where id = ${templateId}`;
+      await sql`update public.agent_templates set states = ${patch["states"]}::jsonb where id = ${templateId}`;
     }
     if ("transitions" in patch) {
       didUpdate = true;
-      await sql`update public.agent_templates set transitions = ${JSON.stringify(patch["transitions"])}::jsonb where id = ${templateId}`;
+      await sql`update public.agent_templates set transitions = ${patch["transitions"]}::jsonb where id = ${templateId}`;
     }
     if ("global_intents" in patch) {
       didUpdate = true;
-      await sql`update public.agent_templates set global_intents = ${JSON.stringify(patch["global_intents"])}::jsonb where id = ${templateId}`;
+      await sql`update public.agent_templates set global_intents = ${patch["global_intents"]}::jsonb where id = ${templateId}`;
     }
     if ("tools" in patch) {
       didUpdate = true;
-      await sql`update public.agent_templates set tools = ${JSON.stringify(patch["tools"])}::jsonb where id = ${templateId}`;
+      await sql`update public.agent_templates set tools = ${patch["tools"]}::jsonb where id = ${templateId}`;
     }
     if ("voice_id" in patch) {
       didUpdate = true;

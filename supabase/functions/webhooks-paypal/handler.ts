@@ -149,12 +149,12 @@ export async function processPayPalEvent(
     insert into public.alerts (rule, severity, tenant_id, payload)
     values (
       'referral_payout_failed', 'warning', null,
-      ${JSON.stringify({
+      ${{
         referral_partner_id: resource.senderItemId,
         payout_batch_id: resource.payoutBatchId,
         event_type: event.event_type,
         terminal_status: terminalStatus,
-      })}::jsonb
+      }}::jsonb
     )
   `;
   logger.warn("paypal_payout_failed_or_returned", {

@@ -380,7 +380,11 @@ describe("createBooking — customers.metadata vehicles/pets (GAP_REGISTER.md §
       structured_payload: { vehicle_year: 2019, vehicle_make: "Honda", vehicle_model: "Civic" },
     });
     expect(result).toMatchObject({ confirmed: true });
-    expect(JSON.parse(mergedMetadata as string)).toEqual({
+    // Regression (CALL-3 jsonb double-encoding fix): the metadata merge
+    // value bound to the ::jsonb parameter must be the raw object, never a
+    // caller-pre-stringified JSON string.
+    expect(typeof mergedMetadata).not.toBe("string");
+    expect(mergedMetadata).toEqual({
       vehicles: [
         { make: "Toyota", model: "Camry" },
         { year: 2019, make: "Honda", model: "Civic" },
@@ -457,7 +461,11 @@ describe("createBooking — customers.metadata vehicles/pets (GAP_REGISTER.md §
       ...args,
       structured_payload: { pet_name: "Rex", species: "dog", breed: "Lab" },
     });
-    expect(JSON.parse(mergedMetadata as string)).toEqual({
+    // Regression (CALL-3 jsonb double-encoding fix): the metadata merge
+    // value bound to the ::jsonb parameter must be the raw object, never a
+    // caller-pre-stringified JSON string.
+    expect(typeof mergedMetadata).not.toBe("string");
+    expect(mergedMetadata).toEqual({
       pets: [{ name: "Rex", species: "dog", breed: "Lab" }],
     });
   });
@@ -630,6 +638,10 @@ describe("createBooking — structured_payload runtime validation (GAP_REGISTER.
       },
     });
     expect(result).toMatchObject({ confirmed: true });
-    expect(JSON.parse(insertedStructuredPayload as string)).toEqual({ vehicle_make: "Honda" });
+    // Regression (CALL-3 jsonb double-encoding fix): the structured_payload
+    // value bound to the ::jsonb parameter must be the raw object, never a
+    // caller-pre-stringified JSON string.
+    expect(typeof insertedStructuredPayload).not.toBe("string");
+    expect(insertedStructuredPayload).toEqual({ vehicle_make: "Honda" });
   });
 });

@@ -248,7 +248,7 @@ export async function createBooking(
       ) values (
         ${ctx.tenantId}, ${args.resource_id}, ${args.offering_id ?? null}, ${customerId},
         ${args.start}, ${args.end}, ${bookingStatus}, ${args.party_size ?? null}, ${ctx.callLogId},
-        ${idempotencyKey}, ${JSON.stringify(structuredPayload)}::jsonb,
+        ${idempotencyKey}, ${structuredPayload}::jsonb,
         ${quotedRateCents}, ${holdExpiresAt}
       )
       returning id, start_at, end_at
@@ -256,7 +256,7 @@ export async function createBooking(
 
     if (consentPayload && customerId) {
       await sql`
-        update public.customers set consent = ${JSON.stringify(consentPayload)}::jsonb
+        update public.customers set consent = ${consentPayload}::jsonb
         where id = ${customerId}
       `;
     }
@@ -270,7 +270,7 @@ export async function createBooking(
     if (metadataMerge && customerId) {
       await sql`
         update public.customers
-        set metadata = metadata || ${JSON.stringify({ [metadataMerge.key]: metadataMerge.entries })}::jsonb
+        set metadata = metadata || ${{ [metadataMerge.key]: metadataMerge.entries }}::jsonb
         where id = ${customerId}
       `;
     }
@@ -288,7 +288,7 @@ export async function createBooking(
     if (Object.keys(structuredPayload).length > 0) {
       await sql`
         update public.call_logs
-        set structured_booking_payload = ${JSON.stringify(structuredPayload)}::jsonb
+        set structured_booking_payload = ${structuredPayload}::jsonb
         where id = ${ctx.callLogId} and tenant_id = ${ctx.tenantId}
       `;
     }

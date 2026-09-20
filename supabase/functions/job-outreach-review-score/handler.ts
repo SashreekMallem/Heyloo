@@ -254,7 +254,7 @@ export async function scoreLeadReviews(
   await sql`
     update public.leads
     set phone_complaint_score = ${score},
-        phone_complaint_evidence = ${JSON.stringify(evidence)}::jsonb,
+        phone_complaint_evidence = ${evidence}::jsonb,
         reviews_analyzed_at = ${now.toISOString()}::timestamptz
     where id = ${lead.id}
   `;

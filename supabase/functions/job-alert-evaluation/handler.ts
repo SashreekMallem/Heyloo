@@ -91,7 +91,7 @@ export async function evaluateToolFailureSpike(sql: SqlClient): Promise<Alert[]>
 export async function upsertAlert(sql: SqlClient, alert: Alert): Promise<void> {
   await sql`
     insert into public.alerts (rule, severity, tenant_id, payload, status)
-    select ${alert.rule}, ${alert.severity}, ${alert.tenant_id}, ${JSON.stringify(alert.payload)}::jsonb, 'open'
+    select ${alert.rule}, ${alert.severity}, ${alert.tenant_id}, ${alert.payload}::jsonb, 'open'
     where not exists (
       select 1 from public.alerts a
       where a.rule = ${alert.rule}

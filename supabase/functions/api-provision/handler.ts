@@ -207,7 +207,7 @@ export async function runProvisioningSaga(
         compiled.flow.kind === "conversation_flow" ? null : (flowBody.llm_id ?? null);
       await sql`
         insert into public.agent_configs (tenant_id, template_id, template_version, retell_agent_id, retell_llm_id, compiled_config)
-        values (${tenantId}, ${compiled.templateId}, ${compiled.templateVersion}, ${retellAgentId}, ${retellLlmId}, ${JSON.stringify({ compileTarget: compiled.flow.kind, flow: compiled.flow.body, response_engine: responseEngine })}::jsonb)
+        values (${tenantId}, ${compiled.templateId}, ${compiled.templateVersion}, ${retellAgentId}, ${retellLlmId}, ${{ compileTarget: compiled.flow.kind, flow: compiled.flow.body, response_engine: responseEngine }}::jsonb)
         on conflict (tenant_id) do update set
           retell_agent_id = excluded.retell_agent_id, retell_llm_id = excluded.retell_llm_id, compiled_config = excluded.compiled_config
       `;

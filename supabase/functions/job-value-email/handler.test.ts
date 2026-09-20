@@ -56,12 +56,16 @@ describe("sendOneValueEmail", () => {
     const insertValues = calls[0];
     expect(insertValues).toContain("t1");
     expect(insertValues).toContain("owner@example.com");
-    const payloadJson = insertValues?.find(
-      (v): v is string => typeof v === "string" && v.includes("value_saved_cents"),
+    // Regression (CALL-3 jsonb double-encoding fix): the payload bound to
+    // the ::jsonb parameter must be the raw object, never a
+    // caller-pre-stringified JSON string.
+    const payload = insertValues?.find(
+      (v): v is { value_saved_cents: number } =>
+        typeof v === "object" && v !== null && "value_saved_cents" in v,
     );
-    expect(payloadJson).toBeDefined();
-    const payload = JSON.parse(payloadJson as string) as { value_saved_cents: number };
-    expect(payload.value_saved_cents).toBe(17500 * 3);
+    expect(payload).toBeDefined();
+    expect(typeof payload).not.toBe("string");
+    expect(payload?.value_saved_cents).toBe(17500 * 3);
     // second sql call is the enqueue (pgmq.send)
     expect(calls[1]).toContain("messages_outbound_queue");
   });

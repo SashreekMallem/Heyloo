@@ -142,7 +142,7 @@ export async function upsertChurnScore(
 ): Promise<void> {
   await sql`
     insert into public.churn_scores (tenant_id, score, factors, computed_at)
-    values (${tenantId}, ${result.score}, ${JSON.stringify(result.factors)}::jsonb, now())
+    values (${tenantId}, ${result.score}, ${result.factors}::jsonb, now())
     on conflict (tenant_id) do update set
       score = excluded.score, factors = excluded.factors, computed_at = excluded.computed_at
   `;

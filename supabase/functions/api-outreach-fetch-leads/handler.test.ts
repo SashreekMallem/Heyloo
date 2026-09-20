@@ -168,11 +168,15 @@ describe("handleFetchLeads (outscraper)", () => {
     );
 
     const insertCall = calls.find((c) => c.text.includes("insert into public.leads"));
-    const enrichmentJson = insertCall?.values.find(
-      (v) => typeof v === "string" && v.includes("google_place_id"),
-    ) as string | undefined;
-    expect(enrichmentJson).toBeTruthy();
-    expect(JSON.parse(enrichmentJson as string).google_place_id).toBe("ChIJ_joes");
+    // Regression (CALL-3 jsonb double-encoding fix): the enrichment value
+    // bound to the ::jsonb parameter must be the raw object, never a
+    // caller-pre-stringified JSON string.
+    const enrichment = insertCall?.values.find(
+      (v) => typeof v === "object" && v !== null && "google_place_id" in (v as object),
+    ) as { google_place_id: string } | undefined;
+    expect(enrichment).toBeTruthy();
+    expect(typeof enrichment).not.toBe("string");
+    expect(enrichment?.google_place_id).toBe("ChIJ_joes");
   });
 
   it("polls results_location when the initial response has no inline data", async () => {

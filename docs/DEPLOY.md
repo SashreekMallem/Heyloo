@@ -412,6 +412,42 @@ so deploy secrets before deploying functions.)
 
 ### 3.4 Deploy every edge function
 
+**If `packages/templates` changed since the last deploy (any vertical's
+system prompt, states, transitions, global_intents, or tools), sync
+`agent_templates` first, before this step** — CALL-3 (docs/BUILD_NOTES.md):
+
+```bash
+pnpm --filter @heyloo/templates build   # regenerate dist/templates.build.json
+SUPABASE_PROJECT_REF=<project-ref> \
+SUPABASE_ACCESS_TOKEN=<management-api-token> \
+node --experimental-strip-types scripts/sync-agent-templates.ts
+```
+
+`SUPABASE_ACCESS_TOKEN` here is a Management API personal access token
+(Supabase Dashboard → Account → Access Tokens), never a project anon/
+secret key. The script upserts one `agent_templates` row per vertical,
+idempotent on `(vertical, version)` — safe to re-run, and never overwrites
+`voice_id`/`model`/`is_active` on a re-sync (those stay admin-editable via
+`admin`'s template-edit route once set). Prints a per-vertical
+ok/FAILED summary and exits non-zero if any vertical failed — do not
+proceed to deploying functions on a non-zero exit, since a stale/missing
+`agent_templates` row blocks every agent compile for that vertical
+(CALL-1 gap #1). Confirm afterward with
+`select vertical, version, count(*) from agent_templates group by 1,2;`.
+`_shared/agent-template-seeds.ts`'s lazy per-vertical seed
+(`api-admin-provision-test-tenant/handler.ts#ensureTemplateSeeded`) stays
+in place as a fallback for an environment this script was never run
+against — it already defers to a healthy existing DB row and only seeds
+from its own bundled copy when none exists.
+
+Run this before functions deploy so a template change and its compiled
+agents land together — an already-deployed `admin`/`api-provision`
+function reads `agent_templates` at request time (not something baked into
+the function bundle at deploy), so the order relative to `supabase
+functions deploy` itself doesn't strictly matter for correctness, but
+doing it first means nothing serves a stale template even for the brief
+window between the two commands.
+
 `supabase/config.toml`'s `[functions.*]` blocks already declare the correct
 `verify_jwt` per function (CLAUDE.md: "triple-check — the old repo died on
 this inverted"). Deploy them all in one pass:

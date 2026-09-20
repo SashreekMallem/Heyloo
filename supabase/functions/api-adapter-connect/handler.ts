@@ -75,7 +75,7 @@ async function upsertConnection(
     values
       (${params.tenantId}, ${params.provider}, 'connected', ${params.authMode}, ${encryptedAccessToken},
        ${encryptedRefreshToken ?? null}, ${params.expiresAt ?? null}, ${params.providerAccountId ?? null},
-       ${JSON.stringify(params.metadata ?? {})}::jsonb, ${params.connectedBy}, now())
+       ${params.metadata ?? {}}::jsonb, ${params.connectedBy}, now())
     on conflict (tenant_id, provider) do update set
       status = 'connected',
       auth_mode = excluded.auth_mode,

@@ -99,9 +99,12 @@ describe("processPayPalEvent", () => {
     expect(outcome).toBe("failed");
     expect(calls[0]).toContain("failed");
     expect(calls[1]).toContain("partner_1"); // commission_events revert
+    // Regression (CALL-3 jsonb double-encoding fix): the alert payload
+    // bound to the ::jsonb parameter must be the raw object, never a
+    // caller-pre-stringified JSON string.
     const alertPayload = calls[2]?.[0];
-    expect(typeof alertPayload).toBe("string");
-    expect(JSON.parse(alertPayload as string)).toMatchObject({
+    expect(typeof alertPayload).not.toBe("string");
+    expect(alertPayload).toMatchObject({
       referral_partner_id: "partner_1",
       terminal_status: "failed",
     });

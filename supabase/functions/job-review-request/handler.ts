@@ -57,7 +57,7 @@ export async function sendOneReviewRequest(
     insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload, related_booking_id)
     values (
       ${row.tenant_id}, 'sms', ${row.customer_phone}, 'review_request',
-      ${JSON.stringify({ review_url: row.review_url, customer_id: row.customer_id })}::jsonb, ${row.booking_id}
+      ${{ review_url: row.review_url, customer_id: row.customer_id }}::jsonb, ${row.booking_id}
     )
     returning id
   `;

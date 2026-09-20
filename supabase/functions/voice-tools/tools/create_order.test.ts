@@ -104,8 +104,12 @@ describe("createOrder", () => {
     expect(result).toMatchObject({ confirmed: true, order_id: "order_1" });
     // one messages_outbound enqueue + one adapter push
     expect(enqueueCalls).toHaveLength(2);
-    const adapterPushCall = enqueueCalls[1] as [string, string];
-    const pushMessage = JSON.parse(adapterPushCall[1]) as { adapter: string; entity_type: string };
+    // Regression (CALL-3 jsonb double-encoding fix): the message bound to
+    // the ::jsonb parameter (pgmq.send) must be the raw object, never a
+    // caller-pre-stringified JSON string.
+    const adapterPushCall = enqueueCalls[1] as [string, { adapter: string; entity_type: string }];
+    const pushMessage = adapterPushCall[1];
+    expect(typeof pushMessage).not.toBe("string");
     expect(pushMessage.adapter).toBe("square");
     expect(pushMessage.entity_type).toBe("order");
   });
@@ -173,7 +177,11 @@ describe("createOrder", () => {
     }) as SqlClient;
 
     await createOrder(sql, ctx, { ...pickupArgs, consent: { sms: true, call: false } }, logger);
-    expect(JSON.parse(consentUpdatePayload as string)).toMatchObject({ sms: true, call: false });
+    // Regression (CALL-3 jsonb double-encoding fix): the consent value
+    // bound to the ::jsonb parameter must be the raw object, never a
+    // caller-pre-stringified JSON string.
+    expect(typeof consentUpdatePayload).not.toBe("string");
+    expect(consentUpdatePayload).toMatchObject({ sms: true, call: false });
   });
 
   it("persists allergies and special_instructions onto the orders row (GAP_REGISTER.md §2 Restaurant item 2)", async () => {

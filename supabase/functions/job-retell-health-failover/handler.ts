@@ -88,7 +88,7 @@ async function getSettingInt(sql: SqlClient, key: string): Promise<number> {
 
 async function setSettingInt(sql: SqlClient, key: string, count: number): Promise<void> {
   await sql`
-    insert into public.platform_settings (key, value) values (${key}, ${JSON.stringify({ count })}::jsonb)
+    insert into public.platform_settings (key, value) values (${key}, ${{ count }}::jsonb)
     on conflict (key) do update set value = excluded.value, updated_at = now()
   `;
 }
@@ -103,7 +103,7 @@ async function getIncidentActive(sql: SqlClient): Promise<boolean> {
 
 async function setIncidentActive(sql: SqlClient, active: boolean): Promise<void> {
   await sql`
-    insert into public.platform_settings (key, value) values (${INCIDENT_FLAG_KEY}, ${JSON.stringify({ active })}::jsonb)
+    insert into public.platform_settings (key, value) values (${INCIDENT_FLAG_KEY}, ${{ active }}::jsonb)
     on conflict (key) do update set value = excluded.value, updated_at = now()
   `;
 }
@@ -123,7 +123,7 @@ async function setVoiceUrlSnapshot(
   snapshot: Record<string, string>,
 ): Promise<void> {
   await sql`
-    insert into public.platform_settings (key, value) values (${VOICE_URL_SNAPSHOT_KEY}, ${JSON.stringify(snapshot)}::jsonb)
+    insert into public.platform_settings (key, value) values (${VOICE_URL_SNAPSHOT_KEY}, ${snapshot}::jsonb)
     on conflict (key) do update set value = excluded.value, updated_at = now()
   `;
 }

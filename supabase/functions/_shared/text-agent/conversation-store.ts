@@ -247,8 +247,8 @@ export async function saveConversationPatch(
   await sql`
     update public.text_conversations set
       status = ${patch.status ?? conversation.status},
-      structured_state = ${JSON.stringify(patch.structuredState ?? conversation.structuredState)}::jsonb,
-      recent_turns = ${JSON.stringify(nextTurns)}::jsonb,
+      structured_state = ${patch.structuredState ?? conversation.structuredState}::jsonb,
+      recent_turns = ${nextTurns}::jsonb,
       disclosure_sent = ${patch.disclosureSent ?? conversation.disclosureSent},
       phone_e164 = ${patch.phoneE164 ?? conversation.phoneE164},
       customer_id = ${patch.customerId ?? conversation.customerId},

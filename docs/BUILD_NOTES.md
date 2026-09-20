@@ -11989,3 +11989,212 @@ false`, internal-secret-only auth, no hand-decoded JWT).
   are real, live-confirmed bugs a follow-up task should pick up.
 - A proper `agent_templates` seed/sync script (item 1 above) — this task's
   lazy per-vertical seed is a stopgap, not that script.
+
+## CALL-3 (2026-09-20) — jsonb double-encoding fix across edge functions + repair migration; agent_templates sync script
+
+Follow-up to CALL-1's two logged gaps (gap #2, jsonb double-encoding;
+gap #1, missing `agent_templates` seed/sync script) plus one correction to
+CALL-1's own account of gap #2's scope.
+
+### Bug 1 — jsonb double-encoding: every remaining site
+
+CALL-1 fixed the pattern in its own three new functions but explicitly
+left `admin/handler.ts`'s template create/patch routes unfixed, and
+claimed `api-provision/handler.ts` "doesn't hit this (it never writes a
+jsonb literal itself)". **That claim was wrong** — `api-provision/
+handler.ts`'s `agent_configs.compiled_config` insert used the exact same
+`${JSON.stringify(x)}::jsonb` pattern (confirmed by grep, fixed here); it
+was missed, not verified, by CALL-1.
+
+Grepped the entire `supabase/functions` tree (no `apps/web` server code
+uses postgres.js directly — `apps/web` only talks to Supabase via
+PostgREST/the JS client) for `JSON.stringify(` adjacent to a `::jsonb`
+cast, or otherwise bound as a sql-tagged-template parameter into a jsonb
+column. **47 call sites across 24 files**, every one fixed by passing the
+raw JS object/array directly (`${x}::jsonb`, no `JSON.stringify`) —
+postgres.js's own learned-parameter-type serializer (OID 3802 from the
+`::jsonb` cast) then encodes it exactly once, matching CALL-1's own fix
+pattern:
+
+| File | Table.column(s) |
+|---|---|
+| `_shared/admin-actions.ts` | `admin_actions.before`, `.after` |
+| `_shared/dental-intake.ts` | `messages_outbound.payload` |
+| `_shared/queue.ts` (`enqueue`, `moveToDeadLetter`) | every pgmq queue's `message` column — used by every producer in the tree (`_shared/adapter-push.ts`, `_shared/text-agent/tool-router.ts`, `job-reminder-scheduler`, `job-review-request`, `job-value-email`, `voice-tools/tools/*`, `webhooks-twilio-sms`, `worker-*`) |
+| `_shared/text-agent/conversation-store.ts` | `text_conversations.structured_state`, `.recent_turns` |
+| `_shared/text-agent/tool-router.ts` | `messages_outbound.payload` |
+| `_shared/webhook-dedup.ts` | `webhook_events.payload` |
+| `admin/handler.ts` (×4 groups) | `platform_settings.value` (alert rules, referral×2, pricing); `agent_templates.states/transitions/global_intents/tools` (create ×1 stmt, patch ×4 stmts) |
+| `api-adapter-connect/handler.ts` | `adapter_connections.metadata` |
+| `api-demo-agent/handler.ts` (×2) | `demo_sessions.scraped_summary`, `.agent_config_snapshot` |
+| `api-lead-callback/handler.ts` | `lead_callback_requests.metadata` |
+| `api-outreach-fetch-leads/handler.ts` | `leads.enrichment` |
+| `api-payment-link-resend/handler.ts` | `messages_outbound.payload` |
+| `api-provision/handler.ts` | `agent_configs.compiled_config` (the CALL-1 miss above) |
+| `job-alert-evaluation/handler.ts` | `alerts.payload` |
+| `job-churn-scoring/handler.ts` | `churn_scores.factors` |
+| `job-outreach-review-score/handler.ts` | `leads.phone_complaint_evidence` |
+| `job-reminder-scheduler/handler.ts` | `messages_outbound.payload` |
+| `job-retell-health-failover/handler.ts` (×3) | `platform_settings.value` (failure counter, incident flag, VoiceUrl snapshot) |
+| `job-review-request/handler.ts` | `messages_outbound.payload` |
+| `job-value-email/handler.ts` | `messages_outbound.payload` |
+| `voice-events/handler.ts` (×2) | `cost_events.raw`; `call_logs.extracted_entities`, `.transcript` |
+| `voice-tools/tools/create_booking.ts` (×3) | `bookings.structured_payload`; `customers.consent`, `.metadata`; `call_logs.structured_booking_payload` |
+| `voice-tools/tools/create_order.ts` (×5) | `orders.items`, `.delivery_address`; `customers.consent`; `call_logs.structured_booking_payload`; `messages_outbound.payload` (order_confirmation) |
+| `voice-tools/tools/send_payment_link.ts` | `messages_outbound.payload` |
+| `voice-tools/tools/take_message.ts` (×2) | `call_logs.structured_booking_payload`; `messages_outbound.payload` |
+| `webhooks-paypal/handler.ts` | `alerts.payload` |
+| `webhooks-stripe/handler.ts` | `alerts.payload` |
+| `webhooks-twilio-sms/handler.ts` | `messages_outbound.payload` |
+
+**Checked and confirmed NOT a bug**: `worker-messages-outbound/handler.ts`'s
+`error = ${JSON.stringify(result.body)}` (no `::jsonb` cast) —
+`messages_outbound.error` is a plain `text` column
+(`20260907130700_messaging.sql`), so storing pre-stringified JSON text
+there is correct, intentional behavior, left unchanged.
+
+**Regression tests**: one assertion per fixed site, added/updated across
+14 test files (`_shared/adapter-push.test.ts`, `_shared/dental-intake.
+test.ts`, `_shared/queue.test.ts`, `admin/handler.test.ts` — including two
+brand-new tests for the POST/PATCH template routes, which had no test
+coverage at all before this task — `api-outreach-fetch-leads/handler.
+test.ts`, `job-outreach-review-score/handler.test.ts`, `job-retell-health-
+failover/handler.test.ts`, `job-value-email/handler.test.ts`, `voice-tools/
+tools/create_booking.test.ts`, `create_order.test.ts`, `take_message.
+test.ts`, `webhooks-paypal/handler.test.ts`); the fake sql client's
+captured parameter is asserted to be an object/array (`typeof x !==
+"string"`), never a pre-stringified JSON string — the exact regression the
+bug would reintroduce.
+
+**Live corruption check** (every jsonb column any fixed site writes to,
+`select count(*) filter (where jsonb_typeof(col)='string') / count(*)`
+per table.column, 29 columns total): **0 corrupted rows found, before any
+fix or repair, across every column** — the two rows CALL-1's own account
+flagged as corrupted (`tenants.business_hours`, `agent_templates.tools`
+for `auto`) had already self-healed via `ensureTenant`/
+`ensureTemplateSeeded`'s own jsonb_typeof-checking self-heal logic before
+this task ran its check; nothing else in the live database had been
+written through any of the 47 now-fixed sites yet (`platform_settings` had
+12 rows/0 corrupted — none of the referral/pricing/alert-rule/health-
+failover write paths above had fired in production; `agent_configs` had
+1 row/0 corrupted, written via the already-clean `api-admin-provision-
+test-tenant` path, not `api-provision`'s buggy one).
+
+**Repair migration**: `20260920190000_repair_double_encoded_jsonb.sql` —
+additive, idempotent (repaired rows no longer match `jsonb_typeof(col) =
+'string'`, so a re-run is a no-op), covers the same 29 table.column pairs
+above via a migration-scoped helper function
+(`public._call3_try_unwrap_jsonb_document`, created then dropped within
+the same file) that only rewrites a row when the jsonb string's own text
+content parses as JSON **and** the parsed value is an object or array —
+never a legitimate jsonb string-scalar value, and never a string whose
+content isn't valid JSON at all (caught via a PL/pgSQL exception handler
+per row rather than aborting the whole statement on one bad value).
+Applied live via `sbq.sh` (whole file as one query) and recorded in
+`supabase_migrations.schema_migrations` (version `20260920190000`, 38
+statements), matching prior OPS entries' pattern. **Before/after: 0/0
+corrupted** (confirmed by re-running the same corruption-check query
+immediately after) — this migration is a no-op today given the live
+corruption count above, but is now in place as the permanent, idempotent
+repair path for any future write that somehow reintroduces the pattern.
+
+### Bug 2 — `agent_templates` sync script (CALL-1 gap #1)
+
+Built `scripts/sync-agent-templates.ts` (`node --experimental-strip-types`,
+no new deps, matching `scripts/setup-stripe.ts`'s precedent for this
+directory): reads `packages/templates/dist/templates.build.json` (the
+`generate-build-artifact.ts` build output — the same artifact `_shared/
+agent-template-seeds.ts` was manually, one-time generated from) and
+upserts one `agent_templates` row per vertical, idempotent on the table's
+own `(vertical, version)` unique constraint, via the Supabase Management
+API's `POST /v1/projects/{ref}/database/query` raw-SQL endpoint (env vars
+`SUPABASE_PROJECT_REF`/`SUPABASE_ACCESS_TOKEN`, never hardcoded — see
+`docs/VERIFY.md`'s new CALL-3 entry for what was/wasn't confirmed about
+that endpoint). Every value is bound as a Postgres dollar-quoted SQL
+literal (a random-tag-verified `$tag$...$tag$`, never string-concatenated
+with quote-escaping) since this raw-SQL endpoint takes one query string
+with no separate parameter binding — deliberately not the postgres.js
+`prepare:true` double-encoding bug from Bug 1 above (that bug is specific
+to postgres.js's learned-parameter-type re-serialization, which doesn't
+exist on this HTTP endpoint; there's only one JSON-encode step here, so
+`dollarQuote(JSON.stringify(x))::jsonb` is correct). `voice_id`/`model`/
+`is_active` are only ever set on a template's first INSERT for a given
+`(vertical, version)` and deliberately excluded from the `ON CONFLICT ...
+DO UPDATE SET` clause, so a re-sync never clobbers an admin's later edit
+to those fields via `admin`'s template-edit route. Prints a per-vertical
+ok/FAILED summary table and exits non-zero if any vertical failed.
+
+Documented in `docs/DEPLOY.md` §3.4 (inserted before "Deploy every edge
+function," with the explicit instruction to run this after any
+`packages/templates` change and before `supabase functions deploy`) and
+`.env.example` (`SUPABASE_PROJECT_REF` added; `SUPABASE_ACCESS_TOKEN`'s
+existing comment extended to note this script also reads it).
+
+`_shared/agent-template-seeds.ts`'s lazy per-vertical seed
+(`ensureTemplateSeeded`) already deferred to a healthy existing DB row
+before this task (`if (existing[0]?.tools_ok) return;`) — verified, not
+changed; it remains in place as the fallback for an environment this
+script hasn't been run against yet, exactly per CLAUDE.md Rule 4 scope
+(this task adds the real sync script, not a redesign of the fallback).
+
+**Run live**: `SUPABASE_PROJECT_REF=qulcubtwqsqgqpfgvorn
+SUPABASE_ACCESS_TOKEN=$(cat .../sb-token.txt) node --experimental-strip-
+types scripts/sync-agent-templates.ts` — 8/8 verticals synced (`auto`,
+`vet`, `legal`, `dental`, `real_estate`, `motel`, `restaurant`, `generic`,
+all version 1, all `is_active=true`, `tools` column confirmed
+`jsonb_typeof = 'array'` per-vertical in the script's own response
+check). Re-run a second time to confirm idempotency: same 8/8 result, row
+count unchanged (still 8 total rows, no duplicates). Confirmed live via
+`sbq.sh`:
+
+```
+select vertical, version, count(*) from agent_templates group by 1,2;
+-- auto/1/1, dental/1/1, generic/1/1, legal/1/1, motel/1/1,
+-- real_estate/1/1, restaurant/1/1, vet/1/1
+```
+
+### Gates
+
+`cd supabase/functions && npx vitest run` — 106/106 files, 969/969 tests
+green (28 pre-existing tests updated to assert the fixed raw-object
+parameter shape instead of a pre-stringified JSON string; 2 brand-new
+tests added for `admin/handler.ts`'s previously-uncovered template create/
+patch routes). `pnpm -w typecheck` — clean. `pnpm run lint` / `npx biome
+check --write` on every changed file — clean.
+
+Deployed `admin` and every other function whose writes this task fixed
+(all files in the table above except the shared/`_shared/*` files, which
+ship as part of whichever function imports them) — 25 functions total,
+including every function that only transitively depends on a fixed
+`_shared/*` file (e.g. `webhooks-pos`/`webhooks-outreach` for `_shared/
+webhook-dedup.ts`; `worker-recording-fetch`/`worker-adapter-push`/`worker-
+messages-outbound` for `_shared/queue.ts`; `api-text-chat` for `_shared/
+text-agent/conversation-store.ts`+`tool-router.ts`+`queue.ts`), not just
+the ones whose own `handler.ts` this task edited directly. Post-deploy
+boot-check (unauthenticated POST): `admin`/`api-provision`/`voice-tools`/
+`voice-events`/`job-value-email`/`worker-messages-outbound` all correctly
+401 (auth rejected before any handler work). `webhooks-stripe`/`webhooks-
+paypal`/`webhooks-twilio-sms`/`api-text-chat` 500 `WORKER_ERROR` —
+**confirmed pre-existing, not a regression**: `supabase secrets list`
+shows `STRIPE_WEBHOOK_SIGNING_SECRET`/`PAYPAL_CLIENT_ID`+`_SECRET`/
+`TWILIO_AUTH_TOKEN`/`ANTHROPIC_API_KEY` are simply not set on this live
+project at all (this test/sandbox project never had those third-party
+integrations configured), and each of those four functions' `index.ts`
+calls `requireEnv()` on exactly one of those names at module scope —
+identical to the `worker-messages-outbound` cold-start-crash class CALL-1
+already documented as pre-existing, not something this task's jsonb fix
+touched or could have caused (none of the sites this task fixed are in
+any of these four functions' module-scope code, only inside their request
+handlers, which a module-scope crash never reaches). Out of this task's
+scope per CLAUDE.md Rule 4 — flagged here, not fixed.
+
+### What remains
+
+- The batch-test/chat call-context-resolution gap (CALL-1's "Still
+  unresolved" item) is untouched — out of this task's scope.
+- `docs/VERIFY.md`'s new CALL-3 entry: the Management API "run a query"
+  endpoint's documented request/response schema beyond what was
+  empirically exercised this session (no dry-run/timeout param, no
+  observed error-body shape) is still unconfirmed against the official
+  reference — genuinely open, not blocking (every live call this session
+  made against it succeeded with the expected shape).

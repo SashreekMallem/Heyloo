@@ -1822,3 +1822,111 @@ Chat works against that response engine instead.
 
 **Code:** `supabase/functions/_shared/providers/retell.ts#createChat`,
 `supabase/functions/api-admin-run-agent-tests/handler.ts#runChatSmoke`.
+
+## CALL-2 (2026-09-20) — Chat API prerequisite RESOLVED; `/voice-tools`
+## custom-function/tool webhook body shape re-verified
+
+**Endpoint/feature 1 — resolves CALL-1's open Chat API question above.**
+Fetched live: docs.retellai.com/build/create-chat-agent (2026-09-20).
+Confirmed: Retell's Chat API requires a dedicated **chat agent** — created
+either via the dashboard ("Create an Agent" -> "Chat Agent") or
+`POST /create-chat-agent` — which is a *separate agent resource* from a
+voice agent, even when both use the same `response_engine` type
+("Chat agents support Retell LLM (single and multi prompt) and
+conversation flow response engines."). This tenant's
+`agent_configs.retell_agent_id` is always a VOICE agent (`api-admin-
+provision-test-tenant`/`api-provision` only ever call `create-agent`/
+`create-conversation-flow`) — `create-chat` against it 422s regardless of
+`response_engine`, which is exactly the live 422 CALL-1 hit
+(`agent_7d5a837becbbe2c36d7f6ada12`, published, `conversation_flow`). Not
+a conversation-flow-specific limitation as CALL-1 left it open — resolved.
+**Action taken:** `runChatSmoke` (`api-admin-run-agent-tests/handler.ts`)
+now returns `{mode: "chat_smoke", unsupported: true, reason: "..."}`
+without calling `create-chat` at all (the 422 is guaranteed). The original
+create-chat/create-chat-completion-driving implementation is kept, renamed
+`runChatSmokeAgainstChatAgent` (exported, still unit tested) — for a
+follow-up task that provisions a real Retell chat agent per tenant and
+passes its id here instead of the voice agent's.
+
+**Endpoint/feature 2 — `/voice-tools` custom-function/tool webhook request
+body.** Fetched live: docs.retellai.com/build/conversation-flow/custom-
+function (the compile target every shipped template actually uses) and
+docs.retellai.com/build/single-multi-prompt/custom-function (identical
+example). **What was confirmed:** the real body is `{name, call, args}` —
+`call_id` is nested at `call.call_id`, NOT a top-level sibling of `name`/
+`args` as `_shared/schemas/voice-tools.ts`'s `ToolDispatchEnvelopeSchema`
+previously assumed (unconfirmed at the time, flagged in that file's own
+header comment). `call` also always carries `agent_id` and `call_type`
+(`"web_call"` in the one worked example either page shows) — both
+RETELL-VERIFIED present. Fixed: the schema now accepts `call_id` at either
+location (top-level kept too, for back-compat with anything already
+sending the old assumed shape, e.g. `job-keep-warm`'s synthetic ping body);
+`voice-tools/handler.ts#resolveEnvelopeCallId` picks whichever is present.
+This is a real, load-bearing correction, not a nice-to-have — if the real
+production shape genuinely never had a top-level `call_id` (which the
+fetched docs indicate), then EVERY real tool call before this fix would
+have failed schema validation (`400 invalid_request`) rather than merely
+hitting CALL-1's traced fallback-envelope gap; no real call had been
+placed yet to observe this directly (CALL-1's "What remains").
+
+**What was NOT confirmed:** `call.from_number`/`call.to_number`/
+`call.direction` — CALL-2's task brief assumed these are present on a
+real phone call's tool-webhook body (BACKEND_SPEC's original assumption,
+matching what `voice-events`'s already-live `/voice-events` webhook body
+DOES carry on `call_started`/`call_ended`/`call_analyzed`). Neither
+fetched custom-function doc page's single worked example (a `web_call`)
+shows these fields, and no separate `phone_call` example is shown on
+either page to check against. Docs examples in this API are demonstrably
+non-exhaustive already (this same investigation found the missing
+`call_id`-nesting fact was NOT stated as a warning anywhere, only
+inferable from the example's literal shape), so this is treated as
+"unconfirmed for phone calls," not "confirmed absent." **Code posture:**
+`_shared/schemas/voice-tools.ts`'s `ToolCallSchema` types these fields
+optional + `.passthrough()`s the rest, and `voice-tools/context.ts`'s new
+payload-based context-resolution fallback (CALL-2, docs/BUILD_NOTES.md)
+treats `agent_id` as the PRIMARY/authoritative resolution signal (RETELL-
+VERIFIED always present) and only opportunistically uses `to_number`/
+`from_number`/`direction`/`call_type` if Retell does send them — the
+fallback degrades gracefully either way and was exercised live in CALL-2's
+own batch-test run (see docs/BUILD_NOTES.md CALL-2) with whatever the real
+account's payload actually contains. A follow-up should inspect a real
+`tool_health`/logged raw request body once real call volume exists to
+settle this definitively.
+
+**Code:** `supabase/functions/_shared/schemas/voice-tools.ts`,
+`supabase/functions/voice-tools/context.ts#resolveCallContext`,
+`supabase/functions/voice-tools/handler.ts#resolveEnvelopeCallId`,
+`supabase/functions/api-admin-run-agent-tests/handler.ts#runChatSmoke`.
+
+## CALL-3 (2026-09-20) — Supabase Management API "run a query" endpoint
+
+**Endpoint:** `POST https://api.supabase.com/v1/projects/{ref}/database/
+query` (Management API's raw-SQL-over-HTTP endpoint), used by
+`scripts/sync-agent-templates.ts` to upsert `agent_templates` rows, and
+already relied on throughout this build by this session's read-only
+`sbq.sh` helper and by prior OPS entries to apply migrations live
+(docs/BUILD_NOTES.md OPS-1..4).
+
+**What was confirmed:** empirically, not from current docs text — the
+official reference page (`api.supabase.com/api/v1`, a Scalar-rendered API
+reference) returned no usable documentation content when fetched this
+session (client-side-rendered, egress/fetch limitation of this
+environment, not a Supabase outage). The shape used
+(`Authorization: Bearer <management API personal access token>`,
+JSON body `{"query": "<raw sql>"}`, JSON array-of-rows response for a
+`returning`-bearing statement, empty array for a bare DDL/DML statement)
+is confirmed working by direct, repeated live use this session and prior
+sessions (BUILD_NOTES OPS-1 through OPS-4, CALL-1) — every call this
+session made against it (the corruption-count queries, the repair
+migration, `scripts/sync-agent-templates.ts`'s 8 upserts, twice) returned
+exactly this shape with 200s.
+
+**What was NOT confirmed:** any documented request/response fields beyond
+what's exercised above (e.g. whether there's a read-only/dry-run mode, a
+statement-timeout parameter, or a distinct error-body schema for a SQL
+syntax error vs. a permissions error) — this session never hit an error
+response from it to observe that shape. Re-confirm against the official
+reference before depending on anything beyond "send one query string, get
+back its rows or an error status" if a future task needs finer control.
+
+**Code:** `scripts/sync-agent-templates.ts#runQuery`.

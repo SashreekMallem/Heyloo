@@ -269,8 +269,8 @@ export async function createOrder(
         subtotal_cents, tax_cents, delivery_fee_cents, total_cents, source_call_id, idempotency_key,
         allergies, special_instructions
       ) values (
-        ${ctx.tenantId}, ${customerId}, ${JSON.stringify(priced)}::jsonb, ${args.fulfillment_type},
-        ${resolvedDeliveryAddress ? JSON.stringify(resolvedDeliveryAddress) : null}::jsonb,
+        ${ctx.tenantId}, ${customerId}, ${priced}::jsonb, ${args.fulfillment_type},
+        ${resolvedDeliveryAddress ?? null}::jsonb,
         ${subtotalCents}, ${taxCents}, ${deliveryFeeCents}, ${totalCents}, ${ctx.callLogId}, ${idempotencyKey},
         ${args.allergies && args.allergies.length > 0 ? args.allergies : null},
         ${args.special_instructions ?? null}
@@ -306,7 +306,7 @@ export async function createOrder(
 
   if (consentPayload && customerId) {
     await sql`
-      update public.customers set consent = ${JSON.stringify(consentPayload)}::jsonb
+      update public.customers set consent = ${consentPayload}::jsonb
       where id = ${customerId}
     `;
   }
@@ -319,10 +319,10 @@ export async function createOrder(
   if ((args.allergies && args.allergies.length > 0) || args.special_instructions) {
     await sql`
       update public.call_logs
-      set structured_booking_payload = ${JSON.stringify({
+      set structured_booking_payload = ${{
         allergies: args.allergies ?? [],
         special_instructions: args.special_instructions ?? null,
-      })}::jsonb
+      }}::jsonb
       where id = ${ctx.callLogId} and tenant_id = ${ctx.tenantId}
     `;
   }
@@ -368,7 +368,7 @@ export async function createOrder(
 
   const messageRows = await sql<{ id: string }>`
     insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload, related_order_id)
-    values (${ctx.tenantId}, 'sms', ${phone}, 'order_confirmation', ${JSON.stringify({ total_cents: totalCents })}::jsonb, ${order.id})
+    values (${ctx.tenantId}, 'sms', ${phone}, 'order_confirmation', ${{ total_cents: totalCents }}::jsonb, ${order.id})
     returning id
   `;
   const message = messageRows[0];

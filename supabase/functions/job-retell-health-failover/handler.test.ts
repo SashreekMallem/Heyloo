@@ -16,7 +16,15 @@ function makeSql(settingsStore: Map<string, unknown>): SqlClient {
     }
     if (text.includes("insert into public.platform_settings")) {
       const key = values[0] as string;
-      const value = JSON.parse(values[1] as string);
+      const value = values[1];
+      // Regression (CALL-3 jsonb double-encoding fix): the ::jsonb parameter
+      // must be the raw object, never a caller-pre-stringified JSON string
+      // (postgres.js's own learned-type serializer handles the encoding).
+      if (typeof value === "string") {
+        throw new Error(
+          `platform_settings.value bound as a pre-stringified string, not an object: ${value}`,
+        );
+      }
       settingsStore.set(key, value);
       return Promise.resolve([]);
     }

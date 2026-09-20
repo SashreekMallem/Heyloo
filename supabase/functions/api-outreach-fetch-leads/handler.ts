@@ -226,7 +226,7 @@ export async function handleFetchLeads(
       insert into public.leads (source, vertical, company_name, contact_name, email, phone, enrichment)
       values (
         ${req.source}, ${req.vertical}, ${candidate.companyName}, ${candidate.contactName},
-        ${candidate.email}, ${candidate.phone}, ${JSON.stringify(enrichment)}::jsonb
+        ${candidate.email}, ${candidate.phone}, ${enrichment}::jsonb
       )
       returning id
     `;
