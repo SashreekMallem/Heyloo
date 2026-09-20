@@ -35,6 +35,18 @@ import type {
 
 const TRANSFER_CALL_TOOL_NAME = "transfer_call";
 
+/** CALL-7: see `RetellEndCallTool`'s own doc comment (types.ts) — makes the
+ * general_tools end_call tool actually get used; granting the tool alone
+ * doesn't tell the model WHEN to call it. Appended to every multi_prompt
+ * template's own `system_prompt`, independent of any per-vertical authored
+ * content. */
+const END_CALL_INSTRUCTION =
+  "\n\nWhen the caller's request has been fully handled and they have nothing further to " +
+  "discuss (they say goodbye, thank you, that's all, or similar, or you have already clearly " +
+  "wrapped up the call), say a warm goodbye and then call the end_call tool to hang up. Never " +
+  "just stop responding or repeat the same goodbye more than once — always end the call with " +
+  "this tool once you've said goodbye.";
+
 function nativeTransferCallTool(description: string): RetellTransferCallTool {
   return {
     type: "transfer_call",
@@ -86,6 +98,14 @@ export function compileMultiPrompt(
   for (const transition of template.transitions) {
     const fromState = statesByName.get(transition.from);
     if (!fromState) continue;
+    // CALL-7 (docs/BUILD_NOTES.md): mirrors the live Deno compiler's fix
+    // (`supabase/functions/_shared/compiler/template-compiler.ts#
+    // compileMultiPrompt`) for a real, live-confirmed Retell rejection —
+    // `create-retell-llm` 400s with "Destination states must be unique
+    // for a particular state, found duplicate destination state: <id>"
+    // when one state has two edges to the same destination. Guarded here
+    // too in case two authored transitions ever share a from/to pair.
+    if (fromState.edges.some((e) => e.destination_state_name === transition.to)) continue;
     fromState.edges.push({
       destination_state_name: transition.to,
       description: transition.on.intent ?? transition.on.predicate ?? "",
@@ -103,6 +123,16 @@ export function compileMultiPrompt(
       if (sourceId === globalIntent.target_state) continue;
       const sourceState = statesByName.get(sourceId);
       if (!sourceState) continue;
+      // CALL-7: the actual bug this session hit live, via the Deno
+      // compiler — a `reachable_from: "any"` global intent (e.g. legal's
+      // "give_up" -> take_message_fallback) blindly added a SECOND edge
+      // to a state that already had an authored `transitions` edge to
+      // that exact same target. The first edge to claim a destination
+      // wins (authored transitions run first, above); every additional
+      // edge to an already-covered destination is dropped.
+      if (sourceState.edges.some((e) => e.destination_state_name === globalIntent.target_state)) {
+        continue;
+      }
       sourceState.edges.push({
         destination_state_name: globalIntent.target_state,
         description: globalIntent.description,
@@ -119,8 +149,15 @@ export function compileMultiPrompt(
   }
 
   return {
-    general_prompt: template.system_prompt ?? "",
+    general_prompt: (template.system_prompt ?? "") + END_CALL_INSTRUCTION,
     starting_state: startState?.id ?? "",
     states: [...statesByName.values()],
+    general_tools: [
+      {
+        type: "end_call",
+        name: "end_call",
+        description: "End the call once it's fully wrapped up.",
+      },
+    ],
   };
 }

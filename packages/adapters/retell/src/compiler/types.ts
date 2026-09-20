@@ -119,7 +119,26 @@ export type RetellTransferDestination =
  */
 export type RetellTransferOption = { type: "cold_transfer" } | { type: "warm_transfer" };
 
-export type RetellStateTool = RetellFunctionTool | RetellTransferCallTool;
+/**
+ * CALL-7 (docs/BUILD_NOTES.md): RETELL-VERIFIED live (docs.retellai.com/
+ * build/single-multi-prompt/end-call, corroborated by the real retell-sdk
+ * TypeScript source's `LlmCreateParams.EndCallTool`) — "By default, the
+ * agent won't end the call automatically"; a Retell LLM response engine
+ * (single- or multi-prompt) MUST be explicitly granted a `type: "end_call"`
+ * tool or it has no way to hang up at all, ever, regardless of what its
+ * prompt says. Live-confirmed the missing case: a real batch-test run
+ * against `legal`'s (multi_prompt) compiled agent settled 0/6 scenarios,
+ * every single one `error: "Ending the conversation early as there might
+ * be a loop"` — including a plain FAQ call with nothing left to discuss —
+ * because the model had no mechanism to actually end the conversation.
+ */
+export interface RetellEndCallTool {
+  type: "end_call";
+  name: string;
+  description?: string;
+}
+
+export type RetellStateTool = RetellFunctionTool | RetellTransferCallTool | RetellEndCallTool;
 
 // ---------------------------------------------------------------------------
 // Conversation Flow target
@@ -290,6 +309,12 @@ export interface RetellMultiPromptRequest {
   general_prompt: string;
   starting_state: string;
   states: RetellMultiPromptState[];
+  /** CALL-7: see `RetellEndCallTool`'s own doc comment — was missing from
+   * this type (and from every multi_prompt template this package ever
+   * compiled) entirely; `general_tools` (not a per-state field) makes the
+   * granted `end_call` tool callable from every state, matching
+   * `general_prompt`'s own "no matter what state" semantics. */
+  general_tools: RetellStateTool[];
   model?: string;
 }
 

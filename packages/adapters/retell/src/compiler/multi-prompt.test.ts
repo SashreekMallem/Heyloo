@@ -36,9 +36,19 @@ describe("compileMultiPrompt", () => {
     );
   });
 
-  it("carries general_prompt from system_prompt", () => {
+  it("carries general_prompt from system_prompt, plus the CALL-7 end-call instruction", () => {
     const result = compileMultiPrompt(LEGAL_MULTI_PROMPT_TEMPLATE, TOOL_WEBHOOK_URL);
-    expect(result.general_prompt).toBe(LEGAL_MULTI_PROMPT_TEMPLATE.system_prompt);
+    expect(result.general_prompt.startsWith(LEGAL_MULTI_PROMPT_TEMPLATE.system_prompt ?? "")).toBe(
+      true,
+    );
+    expect(result.general_prompt).toMatch(/end_call/);
+  });
+
+  it("CALL-7 (docs/BUILD_NOTES.md, live-confirmed: a multi_prompt agent granted no end_call tool never hangs up) grants a general_tools end_call tool", () => {
+    const result = compileMultiPrompt(LEGAL_MULTI_PROMPT_TEMPLATE, TOOL_WEBHOOK_URL);
+    expect(result.general_tools).toEqual([
+      { type: "end_call", name: "end_call", description: expect.any(String) },
+    ]);
   });
 
   it("compiles a declared transfer_call tool to Retell LLM's native transfer_call tool, not a custom webhook (GAP_REGISTER §1.4 item 4)", () => {

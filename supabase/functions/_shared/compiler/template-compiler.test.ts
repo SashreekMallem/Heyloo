@@ -202,8 +202,9 @@ describe("compileTemplate — conversation_flow", () => {
   });
 });
 
-function transferTemplate(): CompilerAgentTemplate {
+function transferTemplate(overrides: Partial<CompilerAgentTemplate> = {}): CompilerAgentTemplate {
   return baseTemplate({
+    ...overrides,
     states: [
       { id: "greeting", name: "Greeting", prompt_fragment: "Greet.", allowed_tools: [] },
       {
@@ -309,6 +310,79 @@ describe("compileTemplate — multi_prompt", () => {
     const greeting = compiled.flow.body.states.find((s) => s.name === "greeting");
     expect(greeting?.edges.some((e) => e.destination_state_name === "booking")).toBe(true);
   });
+
+  it("CALL-7 (live-confirmed Retell 400: 'Destination states must be unique for a particular state') never emits two edges from the same state to the same destination, even when an authored transition and a reachable_from:any global intent target the exact same state — the exact `legal`/`real_estate` template shape (greeting -> take_message_fallback transition + a give_up global intent to the same target) that hit this live", () => {
+    const compiled = compileTemplate(
+      baseTemplate({
+        compile_target: "multi_prompt",
+        // greeting already transitions straight to "booking" (baseTemplate's
+        // own fixture) AND the "emergency" global intent (reachable_from:
+        // "any") ALSO targets "booking" — before the CALL-7 fix, "greeting"
+        // ended up with two edges to "booking".
+      }),
+      "https://x/y",
+    );
+    if (compiled.flow.kind !== "multi_prompt") throw new Error("wrong kind");
+    for (const state of compiled.flow.body.states) {
+      const destinations = state.edges.map((e) => e.destination_state_name);
+      expect(new Set(destinations).size).toBe(destinations.length);
+    }
+    const greeting = compiled.flow.body.states.find((s) => s.name === "greeting");
+    expect(greeting?.edges.filter((e) => e.destination_state_name === "booking")).toHaveLength(1);
+  });
+
+  it("CALL-7 (live-confirmed: a multi_prompt agent granted no end_call tool never hangs up — 0/6 real batch-test scenarios all settled 'Ending the conversation early as there might be a loop' because the model had no way to end the call once its business was done) grants a general_tools end_call tool and instructs the model to use it", () => {
+    const compiled = compileTemplate(
+      baseTemplate({ compile_target: "multi_prompt" }),
+      "https://x/y",
+    );
+    if (compiled.flow.kind !== "multi_prompt") throw new Error("wrong kind");
+    expect(compiled.flow.body.general_tools).toEqual([
+      { type: "end_call", name: "end_call", description: expect.any(String) },
+    ]);
+    expect(compiled.flow.body.general_prompt).toMatch(/end_call/);
+  });
+
+  it("CALL-7 (live-confirmed: a real batch-test transcript showed the model calling the old custom-webhook 'transfer_call' 4 times in a row, each time getting the generic voice-tools fallbackEnvelope since nothing dispatches a tool by that name, settling 'Ending the conversation early as there might be a loop') with a transferNumber configured: compiles a native transfer_call state tool, destination baked from tenant config, never a webhook tool", () => {
+    const compiled = compileTemplate(
+      transferTemplate({ compile_target: "multi_prompt" }),
+      "https://example.com/voice-tools",
+      { transferNumber: "+15551234567" },
+    );
+    if (compiled.flow.kind !== "multi_prompt") throw new Error("wrong kind");
+    const transferState = compiled.flow.body.states.find((s) => s.name === "transfer_to_human");
+    expect(transferState?.tools).toEqual([
+      {
+        type: "transfer_call",
+        name: "transfer_call",
+        description: "warm-transfers the caller",
+        transfer_destination: { type: "predefined", number: "+15551234567" },
+        transfer_option: { type: "warm_transfer" },
+      },
+    ]);
+    for (const state of compiled.flow.body.states) {
+      expect(state.tools.some((t) => t.type === "custom" && t.name === "transfer_call")).toBe(
+        false,
+      );
+    }
+  });
+
+  it("CALL-7 with NO transferNumber configured: compiles an honest spoken fallback (take_message granted, no transfer_call tool anywhere)", () => {
+    const compiled = compileTemplate(
+      transferTemplate({ compile_target: "multi_prompt" }),
+      "https://example.com/voice-tools",
+      { transferNumber: null },
+    );
+    if (compiled.flow.kind !== "multi_prompt") throw new Error("wrong kind");
+    const transferState = compiled.flow.body.states.find((s) => s.name === "transfer_to_human");
+    expect(transferState?.tools.some((t) => t.type === "custom" && t.name === "take_message")).toBe(
+      true,
+    );
+    expect(transferState?.state_prompt).toMatch(/take_message/);
+    for (const state of compiled.flow.body.states) {
+      expect(state.tools.some((t) => t.type === "transfer_call")).toBe(false);
+    }
+  });
 });
 
 describe("compileTemplate — single_prompt", () => {
@@ -329,5 +403,55 @@ describe("compileTemplate — single_prompt", () => {
     );
     if (compiled.flow.kind !== "single_prompt") throw new Error("wrong kind");
     expect(compiled.flow.body.general_prompt).toContain("Escape: emergency");
+  });
+
+  it("CALL-7: grants an end_call tool (same platform-wide gap as multi_prompt — a Retell LLM response engine never ends a call on its own) alongside the authored custom-function tools", () => {
+    const compiled = compileTemplate(
+      baseTemplate({ compile_target: "single_prompt" }),
+      "https://x/y",
+    );
+    if (compiled.flow.kind !== "single_prompt") throw new Error("wrong kind");
+    const endCallTool = compiled.flow.body.general_tools.find((t) => t.type === "end_call");
+    expect(endCallTool).toEqual({
+      type: "end_call",
+      name: "end_call",
+      description: expect.any(String),
+    });
+    const customTools = compiled.flow.body.general_tools.filter((t) => t.type === "custom");
+    expect(customTools.length).toBe(2); // check_availability + create_booking from baseTemplate
+    expect(compiled.flow.body.general_prompt).toMatch(/end_call/);
+  });
+
+  it("CALL-7: with a transferNumber configured, compiles a native transfer_call general_tools entry, never a custom-webhook tool named transfer_call", () => {
+    const compiled = compileTemplate(
+      transferTemplate({ compile_target: "single_prompt" }),
+      "https://example.com/voice-tools",
+      { transferNumber: "+15551234567" },
+    );
+    if (compiled.flow.kind !== "single_prompt") throw new Error("wrong kind");
+    const transferTool = compiled.flow.body.general_tools.find((t) => t.type === "transfer_call");
+    expect(transferTool).toEqual({
+      type: "transfer_call",
+      name: "transfer_call",
+      description: "warm-transfers the caller",
+      transfer_destination: { type: "predefined", number: "+15551234567" },
+      transfer_option: { type: "warm_transfer" },
+    });
+    expect(
+      compiled.flow.body.general_tools.some(
+        (t) => t.type === "custom" && t.name === "transfer_call",
+      ),
+    ).toBe(false);
+  });
+
+  it("CALL-7: with NO transferNumber configured, never grants a transfer_call tool at all and adds an honest spoken-fallback instruction instead", () => {
+    const compiled = compileTemplate(
+      transferTemplate({ compile_target: "single_prompt" }),
+      "https://example.com/voice-tools",
+      { transferNumber: null },
+    );
+    if (compiled.flow.kind !== "single_prompt") throw new Error("wrong kind");
+    expect(compiled.flow.body.general_tools.some((t) => t.type === "transfer_call")).toBe(false);
+    expect(compiled.flow.body.general_prompt).toMatch(/take_message/);
   });
 });

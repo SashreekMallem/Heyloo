@@ -74,9 +74,27 @@ export function compileSinglePrompt(
       }`,
     );
   }
+  // CALL-7: see `RetellEndCallTool`'s own doc comment (types.ts) — the same
+  // "a Retell LLM response engine never ends a call on its own" gap applies
+  // equally here (identical create-retell-llm resource, just without
+  // `states`).
+  sections.push(
+    "## Ending the call\nWhen the caller's request has been fully handled and they have " +
+      "nothing further to discuss (they say goodbye, thank you, that's all, or similar, or " +
+      "you have already clearly wrapped up the call), say a warm goodbye and then call the " +
+      "end_call tool to hang up. Never just stop responding or repeat the same goodbye more " +
+      "than once — always end the call with this tool once you've said goodbye.",
+  );
 
   return {
     general_prompt: sections.join("\n\n"),
-    general_tools: generalTools,
+    general_tools: [
+      ...generalTools,
+      {
+        type: "end_call",
+        name: "end_call",
+        description: "End the call once it's fully wrapped up.",
+      },
+    ],
   };
 }

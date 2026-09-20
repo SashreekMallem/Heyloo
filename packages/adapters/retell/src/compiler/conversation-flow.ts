@@ -396,10 +396,20 @@ export function compileConversationFlow(
       },
     ],
     global_node_setting: {
+      // CALL-7 (docs/BUILD_NOTES.md): mirrors the live Deno compiler's
+      // live-confirmed fix — a caller who never states any business
+      // request (only asks "are you an AI?" then says goodbye) had no
+      // matching edge anywhere, so the model just re-rendered the start
+      // node's own instruction turn after turn. Widened to also cover the
+      // caller saying goodbye / indicating they're done with NOTHING
+      // resolved yet.
       condition:
         "The caller's current question or request has just been fully answered or handled " +
         "(for example an FAQ about hours or pricing) and nothing else in this call is actively " +
-        "in progress, so it's a natural moment to check whether they need anything else.",
+        "in progress, so it's a natural moment to check whether they need anything else; OR the " +
+        "caller says goodbye, thanks you, or otherwise indicates they're done with the call even " +
+        "though nothing was actually resolved yet (for example they declined to book or ask " +
+        "anything after the greeting).",
     },
   };
   const wrapUpEndNode: RetellEndNode = {
@@ -440,6 +450,15 @@ function applyGlobalIntents(
       if (!fromNode) continue;
       if (fromNode.type === "transfer_call" || fromNode.type === "end") continue;
       fromNode.edges ??= [];
+      // CALL-7 (docs/BUILD_NOTES.md): mirrors the live Deno compiler's
+      // dedup fix for a real, live-confirmed Retell rejection ("Destination
+      // states must be unique for a particular state") when one node has
+      // two edges to the same destination — not currently reachable by any
+      // shipped template (every `global_intents` entry today uses
+      // `reachable_from: "any"`, handled above), kept in sync defensively.
+      if (fromNode.edges.some((e) => e.destination_node_id === globalIntent.target_state)) {
+        continue;
+      }
       fromNode.edges.push({
         id: `global_${globalIntent.name}_${fromStateId}_${globalIntent.target_state}`,
         destination_node_id: globalIntent.target_state,

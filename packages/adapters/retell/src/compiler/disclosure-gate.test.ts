@@ -31,6 +31,7 @@ function multiPromptFixture(startPrompt: string): RetellFlowRequest {
       general_prompt: "shared context",
       starting_state: "s1",
       states: [{ name: "s1", state_prompt: startPrompt, edges: [], tools: [] }],
+      general_tools: [],
     },
   };
 }

@@ -70,10 +70,15 @@ function assertFunctionToolShape(tool: RetellFunctionTool): void {
   assertAssignable<LlmCreateParams.CustomTool>(tool);
 }
 
-/** `RetellStateTool` (multi_prompt/single_prompt tool slots) — either a custom function or the native transfer_call tool (GAP_REGISTER §1.4 item 4). */
+/** `RetellStateTool` (multi_prompt/single_prompt tool slots) — a custom
+ * function, the native transfer_call tool (GAP_REGISTER §1.4 item 4), or
+ * the native end_call tool (CALL-7, docs/BUILD_NOTES.md — types.ts's
+ * `RetellEndCallTool` doc comment). */
 function assertStateToolShape(tool: RetellStateTool): void {
   if (tool.type === "custom") {
     assertFunctionToolShape(tool);
+  } else if (tool.type === "end_call") {
+    assertAssignable<LlmCreateParams.EndCallTool>(tool);
   } else {
     assertAssignable<LlmCreateParams.TransferCallTool>(tool);
   }

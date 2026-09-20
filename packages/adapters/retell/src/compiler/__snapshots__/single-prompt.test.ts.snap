@@ -4,7 +4,10 @@ exports[`compileSinglePrompt > matches the golden-file snapshot for the real_est
 {
   "general_prompt": "Thanks for calling Riverside Realty, this is their AI assistant — this call may be recorded.
 
-You are a friendly assistant for a real estate agency. Qualify buyers/sellers conversationally in about 2 minutes.",
+You are a friendly assistant for a real estate agency. Qualify buyers/sellers conversationally in about 2 minutes.
+
+## Ending the call
+When the caller's request has been fully handled and they have nothing further to discuss (they say goodbye, thank you, that's all, or similar, or you have already clearly wrapped up the call), say a warm goodbye and then call the end_call tool to hang up. Never just stop responding or repeat the same goodbye more than once — always end the call with this tool once you've said goodbye.",
   "general_tools": [
     {
       "description": "Record contact info and callback preference.",
@@ -22,6 +25,11 @@ You are a friendly assistant for a real estate agency. Qualify buyers/sellers co
       },
       "type": "custom",
       "url": "https://example.supabase.co/functions/v1/voice-tools",
+    },
+    {
+      "description": "End the call once it's fully wrapped up.",
+      "name": "end_call",
+      "type": "end_call",
     },
   ],
 }

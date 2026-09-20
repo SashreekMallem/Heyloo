@@ -277,6 +277,25 @@ const NO_TRANSFER_FALLBACK_INSTRUCTION =
   "repeating yourself: calmly acknowledge you can't do more right now and that's the end of " +
   "what you can help with today — the call is done either way.";
 
+/** CALL-7 (docs/BUILD_NOTES.md): `compileMultiPrompt`/`compileSinglePrompt`
+ * append this onto `NO_TRANSFER_FALLBACK_INSTRUCTION` above (conversation_
+ * flow never does — it has no `end_call` tool/concept, it forces the exit
+ * structurally via a dedicated edge instead, CALL-4). Without this, a real
+ * batch-test transcript showed the model still gently re-offering to take a
+ * message turn after turn against an adversarial caller who keeps refusing
+ * to leave one — technically obeying "don't repeat the same apology" (each
+ * turn's wording genuinely varied) while never actually calling `end_call`,
+ * which still reads as a loop to Retell's own detector. Explicit and
+ * unconditional: hang up yourself, don't wait for the caller's agreement. */
+const NO_TRANSFER_FALLBACK_END_CALL_SUFFIX =
+  " Once you've offered to take a message twice (whether or not they gave you a callback " +
+  "number), you MUST call the end_call tool yourself right then, no matter what the caller " +
+  "says next — even if they explicitly ask you not to hang up, keep insisting, or repeat the " +
+  "same demand a third time. Do not wait for the caller to agree or say goodbye first, do not " +
+  "send them back through the same offer again, and do not let them talk you out of ending " +
+  "the call once you've reached this point — there is nothing more you can do for them on " +
+  "this call, and continuing to repeat yourself helps no one.";
+
 function compileConversationFlow(
   template: CompilerAgentTemplate,
   toolWebhookUrl: string,
@@ -396,6 +415,16 @@ function compileConversationFlow(
     for (const fromStateId of globalIntent.reachable_from) {
       const fromNode = nodesById.get(fromStateId);
       if (!fromNode || fromNode.type === "transfer_call") continue;
+      // CALL-7: same dedup guard as `compileMultiPrompt`'s live-confirmed
+      // fix below (see that function's own doc comment) — not currently
+      // reachable by any shipped template (every `global_intents` entry
+      // today uses `reachable_from: "any"`, handled by the branch above
+      // instead), kept in sync defensively so an explicit-list global
+      // intent never reintroduces the same duplicate-destination class of
+      // bug if one is ever authored.
+      if (fromNode.edges.some((e) => e.destination_node_id === globalIntent.target_state)) {
+        continue;
+      }
       fromNode.edges.push({
         id: `global_${globalIntent.name}_${fromStateId}_${globalIntent.target_state}`,
         destination_node_id: globalIntent.target_state,
@@ -494,10 +523,25 @@ function compileConversationFlow(
       },
     ],
     global_node_setting: {
+      // CALL-7 (docs/BUILD_NOTES.md): live-confirmed gap — the original
+      // condition only covered "a request was just answered", so a caller
+      // who never states any business request at all (e.g. asks only
+      // "are you an AI?" and then says goodbye without ever booking/
+      // asking an FAQ) had no matching edge anywhere in the flow. With
+      // nowhere to go, the model just re-rendered the start node's own
+      // instruction (disclosure line included) turn after turn — a real,
+      // visible repeated-disclosure-line loop, not simulator noise,
+      // confirmed via a live transcript that settled "Ending the
+      // conversation early as there might be a loop." Widened to also
+      // cover the caller saying goodbye / indicating they're done with
+      // NOTHING resolved yet, not only after something was.
       condition:
         "The caller's current question or request has just been fully answered or handled " +
         "(for example an FAQ about hours or pricing) and nothing else in this call is actively " +
-        "in progress, so it's a natural moment to check whether they need anything else.",
+        "in progress, so it's a natural moment to check whether they need anything else; OR the " +
+        "caller says goodbye, thanks you, or otherwise indicates they're done with the call even " +
+        "though nothing was actually resolved yet (for example they declined to book or ask " +
+        "anything after the greeting).",
     },
   };
   const wrapUpEndNode: EndNode = {
@@ -522,33 +566,127 @@ function compileConversationFlow(
 // multi_prompt
 // ---------------------------------------------------------------------
 
+/** CALL-7 (docs/BUILD_NOTES.md): the same native-transfer-tool design
+ * `compileConversationFlow`'s `TransferCallNode` already uses (RETELL-
+ * VERIFIED against the real retell-sdk TypeScript source's
+ * `LlmCreateParams.TransferCallTool`, which shares this exact shape with
+ * a Retell LLM's per-state `tools`/`general_tools`) — a multi_prompt
+ * state's tool-call slot, not a node. */
+interface MultiPromptTransferCallTool {
+  type: "transfer_call";
+  name: string;
+  description?: string | undefined;
+  transfer_destination: { type: "predefined"; number: string };
+  transfer_option: { type: "warm_transfer" };
+}
+
 interface MultiPromptState {
   name: string;
   state_prompt: string;
   edges: Array<{ destination_state_name: string; description: string }>;
-  tools: FunctionTool[];
+  tools: (FunctionTool | MultiPromptTransferCallTool)[];
+}
+
+interface EndCallTool {
+  type: "end_call";
+  name: string;
+  description?: string;
 }
 
 export interface MultiPromptBody {
   general_prompt: string;
   starting_state: string;
   states: MultiPromptState[];
+  /** CALL-7 (docs/BUILD_NOTES.md): RETELL-VERIFIED live (docs.retellai.com/
+   * build/single-multi-prompt/end-call, corroborated by the real retell-sdk
+   * TypeScript source's `LlmCreateParams.EndCallTool`) — a Retell LLM
+   * response engine (single/multi-prompt) NEVER ends a call on its own; "By
+   * default, the agent won't end the call automatically" — it must be
+   * explicitly granted a `type: "end_call"` tool. This was missing
+   * ENTIRELY from every multi_prompt template this platform has ever
+   * compiled (`legal`, `real_estate`) — live-confirmed root cause of a 0/6
+   * batch-test run where EVERY scenario, including a plain FAQ call,
+   * settled `error: "Ending the conversation early as there might be a
+   * loop"`: once the conversation's business was done, the model had no
+   * way to actually hang up, so it and the simulated caller kept trading
+   * near-identical goodbye turns until Retell's own loop-detector aborted
+   * the call. `general_tools` (not a per-state field) makes it callable
+   * from every state, matching `general_prompt`'s own "no matter what
+   * state" semantics.
+   */
+  general_tools: EndCallTool[];
 }
+
+/** The general_prompt instruction that makes the `general_tools` end_call
+ * tool (see `MultiPromptBody#general_tools`'s own doc comment) actually get
+ * used — granting the tool alone doesn't tell the model WHEN to call it,
+ * and an ungranted-but-unused tool leaves the exact same "never actually
+ * hangs up" bug. Appended to every multi_prompt template's own
+ * `system_prompt`, independent of any per-vertical authored content. */
+const END_CALL_INSTRUCTION =
+  "\n\nWhen the caller's request has been fully handled and they have nothing further to " +
+  "discuss (they say goodbye, thank you, that's all, or similar, or you have already clearly " +
+  "wrapped up the call), say a warm goodbye and then call the end_call tool to hang up. Never " +
+  "just stop responding or repeat the same goodbye more than once — always end the call with " +
+  "this tool once you've said goodbye.";
 
 function compileMultiPrompt(
   template: CompilerAgentTemplate,
   toolWebhookUrl: string,
+  options: CompileConversationFlowOptions = {},
 ): MultiPromptBody {
-  const tools = toolsFor(template, toolWebhookUrl);
+  const transferNumber = options.transferNumber?.trim() || null;
+  // CALL-7 live-confirmed bug (docs/BUILD_NOTES.md): unlike
+  // `compileConversationFlow` (CALL-4), this function NEVER special-cased
+  // `transfer_call` — it compiled to an ordinary custom `/voice-tools`
+  // webhook call, an unrecognized tool name that dispatcher (`voice-tools/
+  // handler.ts`) always answers with the generic `fallbackEnvelope()`. Live
+  // transcript evidence: the model called it 4 times in a row against an
+  // insistent caller, each time getting back `{"result":{"fallback":true,
+  // ...}}`, repeating "I'm transferring you now" each time — the exact
+  // "Ending the conversation early as there might be a loop" failure mode.
+  // Fixed identically to `compileConversationFlow`: a native
+  // `MultiPromptTransferCallTool` when `transferNumber` is configured, the
+  // same honest take_message-based spoken fallback (never a dead-end
+  // custom-webhook call to a name nothing dispatches) when it isn't.
+  const transferToolDescription = template.tools.find(
+    (t) => t.name === TRANSFER_CALL_TOOL_NAME,
+  )?.description;
+  const tools = toolsFor(template, toolWebhookUrl).filter(
+    (t) => t.name !== TRANSFER_CALL_TOOL_NAME,
+  );
   const toolsByName = new Map(tools.map((t) => [t.name, t]));
 
   const statesByName = new Map<string, MultiPromptState>();
   for (const state of template.states) {
+    const transferOnly = isTransferOnlyState(state);
+
+    if (transferOnly && transferNumber) {
+      statesByName.set(state.id, {
+        name: state.id,
+        state_prompt: state.prompt_fragment,
+        edges: [],
+        tools: [
+          {
+            type: "transfer_call",
+            name: TRANSFER_CALL_TOOL_NAME,
+            description: transferToolDescription,
+            transfer_destination: { type: "predefined", number: transferNumber },
+            transfer_option: { type: "warm_transfer" },
+          },
+        ],
+      });
+      continue;
+    }
+
+    const requestedTools = transferOnly ? [TAKE_MESSAGE_TOOL_NAME] : (state.allowed_tools ?? []);
     statesByName.set(state.id, {
       name: state.id,
-      state_prompt: state.prompt_fragment,
+      state_prompt: transferOnly
+        ? `${state.prompt_fragment}\n\n${NO_TRANSFER_FALLBACK_INSTRUCTION}${NO_TRANSFER_FALLBACK_END_CALL_SUFFIX}`
+        : state.prompt_fragment,
       edges: [],
-      tools: (state.allowed_tools ?? [])
+      tools: requestedTools
         .map((t) => toolsByName.get(t))
         .filter((t): t is FunctionTool => t !== undefined),
     });
@@ -557,6 +695,14 @@ function compileMultiPrompt(
   for (const transition of template.transitions) {
     const fromState = statesByName.get(transition.from);
     if (!fromState || !statesByName.has(transition.to)) continue;
+    // CALL-7 live-confirmed bug (docs/BUILD_NOTES.md): Retell's
+    // create-retell-llm rejects a multi_prompt state with two edges to the
+    // SAME destination state ("Destination states must be unique for a
+    // particular state, found duplicate destination state: <id>") —
+    // confirmed via a real 400 against `legal`'s compiled flow. Guarded
+    // here too (not just the global_intents loop below) in case a future
+    // template ever authors two transitions with the same from/to.
+    if (fromState.edges.some((e) => e.destination_state_name === transition.to)) continue;
     fromState.edges.push({
       destination_state_name: transition.to,
       description: transition.on?.intent ?? transition.on?.predicate ?? "",
@@ -573,6 +719,24 @@ function compileMultiPrompt(
       if (sourceId === globalIntent.target_state) continue;
       const sourceState = statesByName.get(sourceId);
       if (!sourceState) continue;
+      // CALL-7 (docs/BUILD_NOTES.md): the actual bug this session hit
+      // live — a `reachable_from: "any"` global intent (e.g. legal's/
+      // real_estate's "give_up" -> take_message_fallback) blindly added a
+      // SECOND edge to a state that already had an authored `transitions`
+      // edge to that exact same target (e.g. legal's own `greeting ->
+      // take_message_fallback` on "after_hours_or_wants_to_leave_a_
+      // message") — Retell's real 400 above, every time. A state having
+      // multiple DIFFERENT reasons to reach the same destination is a
+      // real, valid design (the caller can get there via either path);
+      // only the destination itself needs to stay unique per Retell's own
+      // constraint, so the two descriptions are never merged — the first
+      // edge to claim a destination (authored transitions always run
+      // first, above) simply wins, and every ADDITIONAL edge that would
+      // have gone to the same already-covered destination is dropped as
+      // structurally redundant to Retell either way.
+      if (sourceState.edges.some((e) => e.destination_state_name === globalIntent.target_state)) {
+        continue;
+      }
       sourceState.edges.push({
         destination_state_name: globalIntent.target_state,
         description: globalIntent.description,
@@ -589,9 +753,16 @@ function compileMultiPrompt(
   }
 
   return {
-    general_prompt: template.system_prompt ?? "",
+    general_prompt: (template.system_prompt ?? "") + END_CALL_INSTRUCTION,
     starting_state: startState?.id ?? "",
     states: [...statesByName.values()],
+    general_tools: [
+      {
+        type: "end_call",
+        name: "end_call",
+        description: "End the call once it's fully wrapped up.",
+      },
+    ],
   };
 }
 
@@ -601,14 +772,36 @@ function compileMultiPrompt(
 
 export interface SinglePromptBody {
   general_prompt: string;
-  general_tools: FunctionTool[];
+  /** CALL-7: see `MultiPromptBody#general_tools`'s own doc comment — the
+   * SAME "a Retell LLM response engine never ends a call on its own"
+   * platform-wide gap applies equally to `single_prompt` (`generic`'s own
+   * compile target) since it's the identical `create-retell-llm` resource,
+   * just without `states` — always includes the `end_call` entry alongside
+   * every authored custom-function tool. */
+  general_tools: (FunctionTool | EndCallTool | MultiPromptTransferCallTool)[];
 }
 
 function compileSinglePrompt(
   template: CompilerAgentTemplate,
   toolWebhookUrl: string,
+  options: CompileConversationFlowOptions = {},
 ): SinglePromptBody {
-  const generalTools = toolsFor(template, toolWebhookUrl);
+  const transferNumber = options.transferNumber?.trim() || null;
+  // CALL-7: the SAME native-transfer-tool fix as `compileMultiPrompt` above
+  // (see that function's own doc comment for the live-confirmed bug this
+  // closes) — single_prompt has no per-state tool gating at all (every
+  // granted tool is always available, by this compile target's own design,
+  // this file's header), so there's no one state to special-case: exclude
+  // `transfer_call` from the ordinary custom-webhook tools list entirely,
+  // and either grant the native tool (transferNumber configured) or add an
+  // honest "no live transfer" instruction section (not configured) instead.
+  const transferToolDescription = template.tools.find(
+    (t) => t.name === TRANSFER_CALL_TOOL_NAME,
+  )?.description;
+  const generalTools = toolsFor(template, toolWebhookUrl).filter(
+    (t) => t.name !== TRANSFER_CALL_TOOL_NAME,
+  );
+  const hasTransferCallTool = template.tools.some((t) => t.name === TRANSFER_CALL_TOOL_NAME);
 
   const sections: string[] = [template.disclosure_line];
   if (template.system_prompt) sections.push(template.system_prompt);
@@ -623,8 +816,35 @@ function compileSinglePrompt(
       `## Escape: ${globalIntent.name}\nIf ${globalIntent.description}, immediately: ${targetFragment}`,
     );
   }
+  if (hasTransferCallTool && !transferNumber) {
+    sections.push(
+      `## Transferring to a human\n${NO_TRANSFER_FALLBACK_INSTRUCTION}${NO_TRANSFER_FALLBACK_END_CALL_SUFFIX}`,
+    );
+  }
+  sections.push(`## Ending the call\n${END_CALL_INSTRUCTION.trim()}`);
 
-  return { general_prompt: sections.join("\n\n"), general_tools: generalTools };
+  return {
+    general_prompt: sections.join("\n\n"),
+    general_tools: [
+      ...generalTools,
+      {
+        type: "end_call",
+        name: "end_call",
+        description: "End the call once it's fully wrapped up.",
+      },
+      ...(hasTransferCallTool && transferNumber
+        ? [
+            {
+              type: "transfer_call" as const,
+              name: TRANSFER_CALL_TOOL_NAME,
+              description: transferToolDescription,
+              transfer_destination: { type: "predefined" as const, number: transferNumber },
+              transfer_option: { type: "warm_transfer" as const },
+            },
+          ]
+        : []),
+    ],
+  };
 }
 
 // ---------------------------------------------------------------------
@@ -683,8 +903,8 @@ export function compileTemplate(
           body: compileConversationFlow(template, toolWebhookUrl, options),
         }
       : template.compile_target === "multi_prompt"
-        ? { kind: "multi_prompt", body: compileMultiPrompt(template, toolWebhookUrl) }
-        : { kind: "single_prompt", body: compileSinglePrompt(template, toolWebhookUrl) };
+        ? { kind: "multi_prompt", body: compileMultiPrompt(template, toolWebhookUrl, options) }
+        : { kind: "single_prompt", body: compileSinglePrompt(template, toolWebhookUrl, options) };
 
   return {
     compileTarget: template.compile_target,

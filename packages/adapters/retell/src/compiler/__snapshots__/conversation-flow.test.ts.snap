@@ -153,7 +153,7 @@ Greet the caller and ask how you can help today.",
         },
       ],
       "global_node_setting": {
-        "condition": "The caller's current question or request has just been fully answered or handled (for example an FAQ about hours or pricing) and nothing else in this call is actively in progress, so it's a natural moment to check whether they need anything else.",
+        "condition": "The caller's current question or request has just been fully answered or handled (for example an FAQ about hours or pricing) and nothing else in this call is actively in progress, so it's a natural moment to check whether they need anything else; OR the caller says goodbye, thanks you, or otherwise indicates they're done with the call even though nothing was actually resolved yet (for example they declined to book or ask anything after the greeting).",
       },
       "id": "__wrap_up",
       "instruction": {
