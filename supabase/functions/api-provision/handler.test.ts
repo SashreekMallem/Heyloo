@@ -70,6 +70,7 @@ function makeDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDeps {
     retellApiKey: "key",
     retellSipTerminationUri: "heyloo-trunk.pstn.twilio.com",
     retellInboundWebhookUrl: "https://example.supabase.co/functions/v1/voice-inbound",
+    retellEventsWebhookUrl: "https://example.supabase.co/functions/v1/voice-events",
     twilioFetch: (() =>
       Promise.resolve(
         new Response(JSON.stringify({ sid: "PN1", phone_number: "+15551230000" }), { status: 201 }),

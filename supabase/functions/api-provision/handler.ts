@@ -71,6 +71,15 @@ export interface ProvisionDeps {
    * agent (RETELL-VERIFY, VERIFY-6 resolved: `inbound_webhook_url` doesn't
    * exist on the Agent resource at all). */
   retellInboundWebhookUrl: string;
+  /** CALL-5: the deployed `/voice-events` function URL — set as the
+   * AGENT resource's own `webhook_url` (call_started/call_ended/
+   * call_analyzed event delivery). Distinct from `retellInboundWebhookUrl`
+   * above. Previously missing entirely from this saga's `createAgent` call
+   * — every tenant provisioned through here got an agent with no events
+   * webhook at all, so `webhook_events`/`call_logs` post-call fields never
+   * populated for a single one of them (docs/BUILD_NOTES.md CALL-5 entry,
+   * found via the test-tenant path that shares this exact bug). */
+  retellEventsWebhookUrl: string;
   twilioFetch: TwilioFetch;
   twilioAccountSid: string;
   twilioAuthToken: string;
@@ -186,6 +195,9 @@ export async function runProvisioningSaga(
         agent_name: compiled.agentName,
         voice_id: compiled.voiceId,
         response_engine: responseEngine,
+        // CALL-5 fix — see ProvisionDeps#retellEventsWebhookUrl.
+        webhook_url: deps.retellEventsWebhookUrl,
+        webhook_timeout_ms: 10000,
       });
       const createdBody = created.body as { agent_id?: string };
       if (!created.ok || !createdBody.agent_id) {

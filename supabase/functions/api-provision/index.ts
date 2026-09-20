@@ -30,6 +30,9 @@ const RETELL_SIP_TRUNK_TERMINATION_URI = requireEnv("RETELL_SIP_TRUNK_TERMINATIO
 // The `/voice-inbound` webhook is phone-number-scoped, not agent-scoped
 // (RETELL-VERIFY, VERIFY-6 resolved) — wired onto the imported number here.
 const RETELL_INBOUND_WEBHOOK_URL = requireEnv("RETELL_INBOUND_WEBHOOK_URL");
+// CALL-5: the deployed `/voice-events` function URL — see handler.ts's
+// ProvisionDeps#retellEventsWebhookUrl doc comment.
+const VOICE_EVENTS_WEBHOOK_URL = requireEnv("VOICE_EVENTS_WEBHOOK_URL");
 const TWILIO_ACCOUNT_SID = requireEnv("TWILIO_ACCOUNT_SID");
 const TWILIO_AUTH_TOKEN = requireEnv("TWILIO_AUTH_TOKEN");
 const SERVICE_ROLE_INTERNAL_SECRET = requireEnv("PROVISION_INTERNAL_SECRET");
@@ -91,6 +94,7 @@ Deno.serve(async (req: Request) => {
     retellApiKey: RETELL_API_KEY,
     retellSipTerminationUri: RETELL_SIP_TRUNK_TERMINATION_URI,
     retellInboundWebhookUrl: RETELL_INBOUND_WEBHOOK_URL,
+    retellEventsWebhookUrl: VOICE_EVENTS_WEBHOOK_URL,
     twilioFetch: fetch,
     twilioAccountSid: TWILIO_ACCOUNT_SID,
     twilioAuthToken: TWILIO_AUTH_TOKEN,
