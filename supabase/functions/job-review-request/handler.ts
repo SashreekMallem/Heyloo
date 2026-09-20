@@ -30,6 +30,7 @@ export async function findReviewCandidates(
     join public.tenants t on t.id = b.tenant_id
     join public.customers c on c.id = b.customer_id
     where b.status = 'completed'
+      and not b.is_test
       and coalesce(t.review_request_enabled, false) = true
       and t.review_url is not null
       and c.sms_opt_out = false

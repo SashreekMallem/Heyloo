@@ -10,6 +10,7 @@ const ctx: CallContext = {
   retellCallId: "call_1",
   callerNumber: "+15551234567",
   vertical: "generic",
+  isTestCall: false,
 };
 
 type Step = { rows?: unknown[]; throws?: unknown };
@@ -131,6 +132,50 @@ describe("createBooking", () => {
     });
   });
 
+  it("CALL-6: writes bookings.is_test from ctx.isTestCall — true for a resolved test/placeholder call", async () => {
+    const steps: Step[] = [
+      RESOURCE_FOUND,
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+      { rows: [{ id: "booking_1", start_at: args.start, end_at: args.end }] }, // booking insert
+      NO_ADAPTER_CONNECTIONS,
+    ];
+    let i = 0;
+    let insertValues: unknown[] | undefined;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.bookings")) insertValues = values;
+      const step = steps[i];
+      i += 1;
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+
+    await createBooking(sql, { ...ctx, isTestCall: true }, args);
+    expect(insertValues).toContain(true);
+  });
+
+  it("CALL-6: writes bookings.is_test=false for a real (non-test) call", async () => {
+    const steps: Step[] = [
+      RESOURCE_FOUND,
+      { rows: [] },
+      { rows: [{ id: "customer_1" }] },
+      { rows: [{ id: "booking_1", start_at: args.start, end_at: args.end }] },
+      NO_ADAPTER_CONNECTIONS,
+    ];
+    let i = 0;
+    let insertValues: unknown[] | undefined;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.bookings")) insertValues = values;
+      const step = steps[i];
+      i += 1;
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+
+    await createBooking(sql, { ...ctx, isTestCall: false }, args);
+    expect(insertValues).toContain(false);
+  });
+
   it("EDGE_AUDIT B4: enqueues an adapter_push_queue booking entry per connected adapter", async () => {
     const enqueueCalls: unknown[] = [];
     let i = 0;
@@ -247,7 +292,9 @@ describe("createBooking — motel deposit hold (GAP_REGISTER.md §2 Motel item 4
         const text = strings.join(" ");
         if (text.includes("insert into public.bookings")) {
           insertedStatus = values[6];
-          insertedHoldExpiresAt = values.at(-1);
+          // CALL-6: `is_test` was appended after `hold_expires_at` in the
+          // insert column list — hold_expires_at is now second-to-last.
+          insertedHoldExpiresAt = values.at(-2);
           return Promise.resolve([{ id: "booking_1", start_at: args.start, end_at: args.end }]);
         }
         return (routed.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(
@@ -341,7 +388,7 @@ describe("createBooking — motel deposit hold (GAP_REGISTER.md §2 Motel item 4
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join(" ");
       if (text.includes("insert into public.bookings")) {
-        insertedQuotedRate = values.at(-2);
+        insertedQuotedRate = values.at(-3); // CALL-6: is_test appended after hold_expires_at
         return Promise.resolve([{ id: "booking_1", start_at: args.start, end_at: args.end }]);
       }
       return (routed.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(
@@ -370,7 +417,7 @@ describe("createBooking — motel deposit hold (GAP_REGISTER.md §2 Motel item 4
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join(" ");
       if (text.includes("insert into public.bookings")) {
-        insertedQuotedRate = values.at(-2);
+        insertedQuotedRate = values.at(-3); // CALL-6: is_test appended after hold_expires_at
         return Promise.resolve([{ id: "booking_1", start_at: args.start, end_at: args.end }]);
       }
       return (routed.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(

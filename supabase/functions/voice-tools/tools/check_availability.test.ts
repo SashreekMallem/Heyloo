@@ -9,6 +9,7 @@ const ctx: CallContext = {
   retellCallId: "call_1",
   callerNumber: "+15551234567",
   vertical: "restaurant",
+  isTestCall: false,
 };
 
 const dateRange = { start: "2026-01-15T00:00:00.000Z", end: "2026-01-16T00:00:00.000Z" };

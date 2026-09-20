@@ -11,6 +11,7 @@ const ctx: CallContext = {
   retellCallId: "call_1",
   callerNumber: "+15551234567",
   vertical: "generic",
+  isTestCall: false,
 };
 
 type Step = { rows?: unknown[]; throws?: unknown };

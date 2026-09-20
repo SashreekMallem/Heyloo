@@ -296,6 +296,11 @@ export type BookingRow = {
   cancel_reason: Nullable<string>;
   cancelled_at: Nullable<string>;
   identity_verified_by: Nullable<"phone_match" | "knowledge">;
+  /** CALL-6 (docs/BUILD_NOTES.md) — true for a booking created from a
+   * Retell batch-test/simulator call (`call_logs.is_test_call`). Excluded
+   * from the tenant dashboard bookings list and every KPI count by
+   * default. */
+  is_test: boolean;
   created_at: string;
   updated_at: string;
 };

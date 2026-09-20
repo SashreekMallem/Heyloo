@@ -60,6 +60,7 @@ export async function findValueEmailCandidates(sql: SqlClient): Promise<ValueEma
       coalesce((
         select count(*) from public.bookings b
         where b.tenant_id = t.id and b.created_at >= now() - interval '7 days'
+          and not b.is_test
       ), 0)::int as bookings_captured,
       (
         select u.email from auth.users u

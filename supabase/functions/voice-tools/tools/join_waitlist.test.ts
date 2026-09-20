@@ -9,6 +9,7 @@ const ctx: CallContext = {
   retellCallId: "call_1",
   callerNumber: "+15551234567",
   vertical: "restaurant",
+  isTestCall: false,
 };
 
 type Step = { rows?: unknown[]; throws?: unknown };

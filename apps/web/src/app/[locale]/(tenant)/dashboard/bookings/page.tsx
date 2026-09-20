@@ -104,6 +104,9 @@ export default function BookingsPage() {
         .from("bookings")
         .select("id, start_at, status, customer_id")
         .eq("tenant_id", tenantId as string)
+        // CALL-6 (docs/BUILD_NOTES.md): never show a Retell batch-test/
+        // simulator booking on the tenant's real bookings list.
+        .eq("is_test", false)
         .order("start_at", { ascending: true })
         .limit(200);
 

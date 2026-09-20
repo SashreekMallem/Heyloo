@@ -119,6 +119,12 @@ async function buildCallContext(deps: TextToolRouterDeps): Promise<CallContext> 
     retellCallId: `text:${deps.conversation.id}`,
     callerNumber: deps.conversation.phoneE164,
     vertical: deps.vertical,
+    // CALL-6 (docs/BUILD_NOTES.md): a text/chat conversation is a real
+    // customer channel, never a Retell batch-test/simulator artifact —
+    // `isTestCall` is always false here, unlike `voice-tools/context.ts`'s
+    // resolver, which derives it from the placeholder-call-id detection
+    // that only applies to actual Retell voice calls.
+    isTestCall: false,
   };
 }
 

@@ -52,6 +52,7 @@ export async function findReminderCandidates(
     left join public.customers c on c.id = b.customer_id
     left join public.agent_configs ac on ac.tenant_id = b.tenant_id
     where b.status = 'confirmed'
+      and not b.is_test
       and b.start_at between ${now.toISOString()}::timestamptz + interval '23 hours'
                           and ${now.toISOString()}::timestamptz + interval '25 hours'
       and not exists (

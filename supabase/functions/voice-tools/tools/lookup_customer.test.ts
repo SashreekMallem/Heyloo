@@ -12,6 +12,7 @@ const ctx: CallContext = {
   retellCallId: "call_1",
   callerNumber: CALLER_NUMBER,
   vertical: "generic",
+  isTestCall: false,
 };
 
 describe("lookupCustomer (G6 caller-scope authorization)", () => {

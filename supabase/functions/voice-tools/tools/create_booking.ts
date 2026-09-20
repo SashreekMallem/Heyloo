@@ -163,6 +163,12 @@ async function resolveBookingResourceId(
  * `(tenant_id, idempotency_key)` — a Retell retry of the same tool call
  * with the same args returns the existing booking rather than erroring or
  * duplicating.
+ *
+ * CALL-6 (docs/BUILD_NOTES.md): `is_test` mirrors `ctx.isTestCall`
+ * (ultimately `call_logs.is_test_call`) directly — never re-derived here —
+ * so a Retell batch-test/simulator booking is flagged from the moment it's
+ * written, before the dashboard bookings list or any KPI aggregate ever
+ * reads it.
  */
 export async function createBooking(
   sql: SqlClient,
@@ -310,12 +316,12 @@ export async function createBooking(
       insert into public.bookings (
         tenant_id, resource_id, offering_id, customer_id, start_at, end_at,
         status, party_size, source_call_id, idempotency_key, structured_payload,
-        quoted_rate_cents, hold_expires_at
+        quoted_rate_cents, hold_expires_at, is_test
       ) values (
         ${ctx.tenantId}, ${resolvedResourceId}, ${args.offering_id ?? null}, ${customerId},
         ${args.start}, ${args.end}, ${bookingStatus}, ${args.party_size ?? null}, ${ctx.callLogId},
         ${idempotencyKey}, ${structuredPayload}::jsonb,
-        ${quotedRateCents}, ${holdExpiresAt}
+        ${quotedRateCents}, ${holdExpiresAt}, ${ctx.isTestCall}
       )
       returning id, start_at, end_at
     `;
