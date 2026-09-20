@@ -6,7 +6,7 @@
 // Supabase JWT (BACKEND_SPEC §7.1).
 
 import { getSql } from "../_shared/deno/db.ts";
-import { requireEnv } from "../_shared/deno/env.ts";
+import { requireRetellWebhookKey } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { verifyRetellSignature } from "../_shared/retell-signature.ts";
@@ -14,7 +14,7 @@ import { VoiceInboundRequestSchema } from "../_shared/schemas/voice-inbound.ts";
 import { handleVoiceInbound } from "./handler.ts";
 
 const logger = createLogger({ fn: "voice-inbound" });
-const RETELL_WEBHOOK_SIGNING_SECRET = requireEnv("RETELL_WEBHOOK_SIGNING_SECRET");
+const RETELL_WEBHOOK_SIGNING_SECRET = requireRetellWebhookKey();
 
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {

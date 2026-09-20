@@ -1,5 +1,13 @@
 # Launch Status
 
+**OPS-4 (2026-09-20)**: the Retell first-call prerequisite listed below as
+owner-blocked is now met on the Retell side — Retell signs webhooks with
+the account's API key (no separate signing secret exists;
+docs.retellai.com/features/webhook-overview, confirmed 2026-09-20), and
+`RETELL_API_KEY` is already provisioned. `voice-tools`, `voice-events`,
+`voice-inbound`, and `job-keep-warm` no longer require a separately-set
+`RETELL_WEBHOOK_SIGNING_SECRET` — see `docs/BUILD_NOTES.md` OPS-4.
+
 **OPS-2 (2026-09-20)**: ~30% of pg_cron→pg_net calls were timing out
 chronically (flat across all 25 jobs, independent of schedule overlap) —
 root cause is a single-worker pg_net/libcurl DNS-resolver-state bug
@@ -64,8 +72,8 @@ secret — out of OPS-1's scope and correctly still `requireEnv`'d at
 module scope (CLAUDE.md Rule 2, fail-closed). It is not in the current
 `supabase secrets list` output. Added to the still-blocked list below.
 
-**Still blocked on the owner**: `RETELL_WEBHOOK_SIGNING_SECRET`, a Twilio
-account (`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`), `RETELL_FAILOVER_VOICE_URL`,
+**Still blocked on the owner**: a Twilio account
+(`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`), `RETELL_FAILOVER_VOICE_URL`,
 outreach vendor keys (`ANTHROPIC_API_KEY`, `OUTSCRAPER_API_KEY`,
 `SMARTLEAD_API_KEY`), **`OUTREACH_CAN_SPAM_FOOTER`** (newly flagged this
 pass — blocks `job-outreach-personalize-collect`'s cold start entirely,

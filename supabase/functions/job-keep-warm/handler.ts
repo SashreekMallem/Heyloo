@@ -26,7 +26,9 @@ import type { Logger } from "../_shared/types.ts";
  *
  * Both target functions gate on the Retell webhook HMAC signature only
  * (`verify_jwt = false` in supabase/config.toml) — this job holds the same
- * `RETELL_WEBHOOK_SIGNING_SECRET` those functions already require, and signs
+ * Retell webhook signing key (`requireRetellWebhookKey()`, OPS-4 —
+ * `RETELL_WEBHOOK_SIGNING_SECRET` if set, else `RETELL_API_KEY`) those
+ * functions already require, and signs
  * its ping bodies exactly as `_shared/retell-signature.ts` verifies them.
  */
 

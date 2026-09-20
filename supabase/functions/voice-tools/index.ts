@@ -6,7 +6,7 @@
 import { ToolCircuitBreaker } from "../_shared/circuit-breaker.ts";
 import { runInBackground } from "../_shared/deno/background.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { optionalEnv, requireRetellWebhookKey } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { fallbackEnvelope, jsonResponse } from "../_shared/responses.ts";
 import { verifyRetellSignature } from "../_shared/retell-signature.ts";
@@ -21,7 +21,7 @@ import { dispatchTool, isKnownTool, validateEnvelope } from "./handler.ts";
 export { withTimeout };
 
 const logger = createLogger({ fn: "voice-tools" });
-const RETELL_WEBHOOK_SIGNING_SECRET = requireEnv("RETELL_WEBHOOK_SIGNING_SECRET");
+const RETELL_WEBHOOK_SIGNING_SECRET = requireRetellWebhookKey();
 const STRIPE_SECRET_KEY = optionalEnv("STRIPE_SECRET_KEY") ?? "";
 const PAYMENT_LINK_SUCCESS_URL =
   optionalEnv("PAYMENT_LINK_SUCCESS_URL") ?? "https://heyloo.app/pay/success";

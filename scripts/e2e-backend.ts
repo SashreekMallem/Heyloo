@@ -36,9 +36,14 @@
  *   FUNCTIONS_URL                 e.g. http://127.0.0.1:54321/functions/v1
  *                                  (defaults to `${SUPABASE_URL}/functions/v1`)
  *   RETELL_WEBHOOK_SIGNING_SECRET  must match what `voice-tools`/`voice-events`
- *                                  were started with — this script signs
+ *   (or RETELL_API_KEY, fallback)  were started with — this script signs
  *                                  every request the same way `_shared/
- *                                  retell-signature.ts` verifies it.
+ *                                  retell-signature.ts` verifies it. Retell
+ *                                  signs webhooks with the account's API
+ *                                  key (OPS-4, docs.retellai.com/features/
+ *                                  webhook-overview) — RETELL_API_KEY is
+ *                                  the normal source; RETELL_WEBHOOK_
+ *                                  SIGNING_SECRET is an explicit override.
  */
 
 import { createHmac } from "node:crypto";
@@ -60,7 +65,7 @@ const FUNCTIONS_URL = (process.env["FUNCTIONS_URL"] ?? `${SUPABASE_URL}/function
   /\/$/,
   "",
 );
-const RETELL_SECRET = env("RETELL_WEBHOOK_SIGNING_SECRET");
+const RETELL_SECRET = env("RETELL_WEBHOOK_SIGNING_SECRET", "RETELL_API_KEY");
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {

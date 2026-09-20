@@ -3,7 +3,7 @@
 // is false in supabase/config.toml for this function.
 import { runInBackground } from "../_shared/deno/background.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { requireEnv } from "../_shared/deno/env.ts";
+import { requireRetellWebhookKey } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { verifyRetellSignature } from "../_shared/retell-signature.ts";
@@ -12,7 +12,7 @@ import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/w
 import { processVoiceEvent } from "./handler.ts";
 
 const logger = createLogger({ fn: "voice-events" });
-const RETELL_WEBHOOK_SIGNING_SECRET = requireEnv("RETELL_WEBHOOK_SIGNING_SECRET");
+const RETELL_WEBHOOK_SIGNING_SECRET = requireRetellWebhookKey();
 
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {

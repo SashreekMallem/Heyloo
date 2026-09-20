@@ -51,6 +51,16 @@ exactly.
 **Code:** `packages/adapters/retell/src/signature.ts`,
 `supabase/functions/_shared/retell-signature.ts`.
 
+**OPS-4 follow-up (2026-09-20):** the signature-verification logic above
+was always correct, but the edge functions' ENV WIRING wasn't — `voice-
+tools`, `voice-events`, `voice-inbound`, and `job-keep-warm` all read a
+distinct `RETELL_WEBHOOK_SIGNING_SECRET` var via `requireEnv`, which is
+unset on the live project (only `RETELL_API_KEY` is), crashing cold start.
+Fixed with `requireRetellWebhookKey()` in
+`supabase/functions/_shared/deno/env.ts` — `RETELL_WEBHOOK_SIGNING_SECRET`
+if set (explicit override), else `RETELL_API_KEY`. See
+`docs/BUILD_NOTES.md` OPS-4.
+
 ### VERIFY-2 — inbound call webhook (`call_inbound`) request shape — **code fix applied (LIVE-MINE-FIXES); one live test call still the final confirmation**
 
 **Assumed:** flat body `{call_id, from_number, to_number, agent_id?}`, per

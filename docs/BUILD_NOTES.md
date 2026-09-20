@@ -11468,3 +11468,63 @@ commit for pass/fail; `npx biome check --write` on every changed file —
 clean (the `.sql`/`.md` files touched aren't in biome's configured file
 set, only `scripts/ci/cron-queues-check.ts` was linted, no changes
 needed).
+
+## OPS-4 — Retell webhook signature key is the API key (2026-09-20)
+
+**Problem**: `voice-tools`, `voice-events`, `voice-inbound`, and
+`job-keep-warm` all read a distinct `RETELL_WEBHOOK_SIGNING_SECRET` env
+var via `requireEnv` to verify the `X-Retell-Signature` header, and
+crashed at cold start with `Missing required env var:
+RETELL_WEBHOOK_SIGNING_SECRET` — that var is unset on the live project,
+while `RETELL_API_KEY` is set. Per Retell's own docs
+(docs.retellai.com/features/webhook-overview, confirmed 2026-09-20):
+webhooks are signed with the account's API key as the HMAC secret; there
+is no separate webhook-signing secret. `docs/VERIFY.md` VERIFY-1 already
+confirmed the SAME fact byte-for-byte against the `retell-typescript-sdk`
+source and both signature-verification files
+(`packages/adapters/retell/src/signature.ts`,
+`supabase/functions/_shared/retell-signature.ts`) were already correct —
+only the env var each function read to get that key was wrong.
+
+**Fix**: added `requireRetellWebhookKey(): string` to
+`supabase/functions/_shared/deno/env.ts` — returns
+`RETELL_WEBHOOK_SIGNING_SECRET` if set (kept as an explicit override, e.g.
+for rotation) else `RETELL_API_KEY`, throwing only if neither is set
+(fail closed, CLAUDE.md Rule 2). Switched `voice-tools/index.ts`,
+`voice-events/index.ts`, `voice-inbound/index.ts`, and
+`job-keep-warm/index.ts` from `requireEnv("RETELL_WEBHOOK_SIGNING_SECRET")`
+to it. `job-keep-warm`'s OPS-1 optional-integration skip now checks both
+vars (`missingEnv(["RETELL_WEBHOOK_SIGNING_SECRET", "RETELL_API_KEY"])`,
+skip only when BOTH are unset) since `requireRetellWebhookKey()` itself
+covers the fallback. Signature verification itself
+(`_shared/retell-signature.ts`, `verifyRetellSignature`) is untouched —
+raw body, timestamp tolerance, fail-closed on a missing header, all
+unchanged; only where the `secret` param's VALUE comes from changed.
+`apps/web` was checked (`apps/web/src/lib/env.ts` and a repo-wide grep) —
+no server route reads this var, no change needed there.
+`scripts/e2e-backend.ts` (manual Node E2E smoke, not deployed) updated
+the same way: `env("RETELL_WEBHOOK_SIGNING_SECRET", "RETELL_API_KEY")`.
+
+**Tests**: `supabase/functions/_shared/deno/env.ts` is Deno-only
+(excluded from this package's `tsconfig.json`, reads `Deno.env.get`) — no
+Deno test runner was invented. Instead, added
+`supabase/functions/_shared/deno/env.test.ts` using the same
+`vi.stubGlobal("Deno", {...})` shim `admin/index.test.ts` already
+established for exercising a Deno-only entrypoint under Vitest/Node:
+covers the `RETELL_WEBHOOK_SIGNING_SECRET` override, the `RETELL_API_KEY`
+fallback, the empty-string-doesn't-count-as-set case, and the fail-closed
+throw when neither is set.
+
+**Deploy + boot-check** (`npx supabase functions deploy <name>
+--project-ref qulcubtwqsqgqpfgvorn --use-api --yes --import-map
+supabase/functions/deno.json`, then `curl -X POST
+https://qulcubtwqsqgqpfgvorn.supabase.co/functions/v1/<name> -d '{}'`
+with no signature header — expect 401, never 500): see this task's commit
+message / PR for the exact codes recorded at deploy time.
+
+**Docs**: `.env.example` — `RETELL_WEBHOOK_SIGNING_SECRET` now documented
+as an optional override, not a separately-required secret.
+`docs/VERIFY.md` VERIFY-1 — added an OPS-4 follow-up note pointing at this
+entry. `docs/LAUNCH_STATUS.md` — removed `RETELL_WEBHOOK_SIGNING_SECRET`
+from the owner-blocked list (the first-call prerequisite on the Retell
+side is now met via `RETELL_API_KEY`, already provisioned).

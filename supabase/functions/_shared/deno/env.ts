@@ -70,11 +70,43 @@ export function requireServiceRoleKey(): string {
   return key;
 }
 
+/**
+ * Key used to verify the `X-Retell-Signature` header on inbound Retell
+ * webhooks (`/voice-inbound`, `/voice-tools`, `/voice-events`,
+ * `job-keep-warm`'s keep-warm pings). Per Retell's own docs (OPS-4,
+ * docs.retellai.com/features/webhook-overview, confirmed 2026-09-20):
+ * "we sign each webhook event we send to your endpoints... using your API
+ * key as a secret" — `Retell.verify(rawBody, apiKey, signature)`. There is
+ * no separate webhook-signing secret; `packages/adapters/retell/src/
+ * signature.ts` and `supabase/functions/_shared/retell-signature.ts` were
+ * already built against exactly this (confirmed independently against the
+ * `retell-typescript-sdk` source, docs/VERIFY.md VERIFY-1).
+ *
+ * `RETELL_WEBHOOK_SIGNING_SECRET` is honoured first, but only as an
+ * explicit override (e.g. mid-rotation, or a deployment that deliberately
+ * signs with a key other than `RETELL_API_KEY`); every deployment
+ * otherwise falls back to `RETELL_API_KEY`, which the same account already
+ * needs for outbound Retell API calls. Throws only when NEITHER is set —
+ * fail closed (CLAUDE.md Rule 2), never silently skip verification.
+ */
+export function requireRetellWebhookKey(): string {
+  const override = Deno.env.get("RETELL_WEBHOOK_SIGNING_SECRET");
+  if (override) return override;
+  const apiKey = Deno.env.get("RETELL_API_KEY");
+  if (apiKey) return apiKey;
+  throw new Error(
+    "Missing Retell webhook signing key: set RETELL_API_KEY (Retell signs webhooks with the account's API key — docs.retellai.com/features/webhook-overview) or RETELL_WEBHOOK_SIGNING_SECRET to override",
+  );
+}
+
 export const ENV_VAR_NAMES = {
   supabaseDbUrl: "SUPABASE_DB_URL",
   supabaseUrl: "SUPABASE_URL",
   supabaseServiceRoleKey: "SB_SECRET_KEY",
   retellApiKey: "RETELL_API_KEY",
+  // OPS-4: optional override only — see requireRetellWebhookKey() above,
+  // which falls back to RETELL_API_KEY (Retell signs webhooks with the
+  // account's API key; no separate signing secret exists).
   retellWebhookSecret: "RETELL_WEBHOOK_SIGNING_SECRET",
   twilioAccountSid: "TWILIO_ACCOUNT_SID",
   twilioAuthToken: "TWILIO_AUTH_TOKEN",
