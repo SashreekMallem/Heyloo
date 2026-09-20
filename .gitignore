@@ -45,3 +45,6 @@ playwright-report/
 # tokens, never committed even though they're only ever valid against a
 # throwaway local `supabase start` instance.
 playwright/.auth/
+
+# per-agent git worktrees created by Claude Code (never commit a nested checkout)
+.claude/worktrees/
