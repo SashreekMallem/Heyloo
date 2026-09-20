@@ -92,9 +92,10 @@ const rawStates: AgentState[] = [
       "broken — any of those is a same-day urgency tier, so flag it clearly and prioritize " +
       "the earliest possible slot in the next step. If there's severe facial swelling " +
       "affecting breathing or swallowing, treat this as a safety emergency instead of " +
-      "routine triage. Once you know the visit type, call list_offerings and match it to " +
+      "routine triage. Once you know the visit type, call list_offerings ONCE and match it to " +
       "the closest offering — pass its offering_id (never invented) into check_availability " +
-      "and create_booking next.",
+      "and create_booking next. Never call list_offerings again for the rest of this call — " +
+      "reuse the result you already have.",
     allowed_tools: ["list_offerings"],
     // GAP_REGISTER.md §1.1/§2 Dental item 1 — lowered into Retell
     // post-call-analysis (`compiler/extraction.ts`) and read back by

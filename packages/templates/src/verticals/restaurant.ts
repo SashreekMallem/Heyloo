@@ -95,8 +95,10 @@ export const RESTAURANT_TEMPLATE: AgentTemplate = {
       id: "order_or_reservation",
       name: "Order vs reservation (branch early)",
       prompt_fragment:
-        "Ask right away: order (pickup/delivery) or a table reservation? This determines the " +
-        "whole rest of the call — decide it before asking anything else.",
+        "If the caller has a quick question (hours, menu items, etc.) before deciding, answer " +
+        "it briefly first — then ask right away: order (pickup/delivery) or a table " +
+        "reservation? This determines the whole rest of the call once they are ready to " +
+        "proceed.",
       allowed_tools: [],
     },
     // --- Reservation branch ---

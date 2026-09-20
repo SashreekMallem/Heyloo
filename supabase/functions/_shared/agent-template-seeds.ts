@@ -1041,7 +1041,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "symptom_or_routine",
           name: "Symptom vs routine",
           prompt_fragment:
-            "No red flags were present. Ask whether this is for a specific symptom or a routine visit (wellness, vaccines, grooming, etc.) and note it for the appointment. Call list_offerings and match it to the closest offering \u2014 pass its offering_id (never invented) into check_availability and create_booking next.",
+            "No red flags were present. Ask whether this is for a specific symptom or a routine visit (wellness, vaccines, grooming, etc.) and note it for the appointment. Call list_offerings ONCE and match it to the closest offering \u2014 pass its offering_id (never invented) into check_availability and create_booking next. Never call list_offerings again for the rest of this call \u2014 reuse the result you already have.",
           allowed_tools: ["list_offerings"],
           extraction: [
             {
@@ -2557,7 +2557,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "pain_triage",
           name: "Pain triage",
           prompt_fragment:
-            "Ask if this visit is for pain or a routine check-up, and \u2014 either way \u2014 what the visit is actually for in the caller's own words (e.g. cleaning, filling, a broken tooth, a check-up); note that as the reason for visit. If pain: ask about pain level (0-10), swelling, fever, and specifically whether a tooth was knocked out or badly broken \u2014 any of those is a same-day urgency tier, so flag it clearly and prioritize the earliest possible slot in the next step. If there's severe facial swelling affecting breathing or swallowing, treat this as a safety emergency instead of routine triage. Once you know the visit type, call list_offerings and match it to the closest offering \u2014 pass its offering_id (never invented) into check_availability and create_booking next.",
+            "Ask if this visit is for pain or a routine check-up, and \u2014 either way \u2014 what the visit is actually for in the caller's own words (e.g. cleaning, filling, a broken tooth, a check-up); note that as the reason for visit. If pain: ask about pain level (0-10), swelling, fever, and specifically whether a tooth was knocked out or badly broken \u2014 any of those is a same-day urgency tier, so flag it clearly and prioritize the earliest possible slot in the next step. If there's severe facial swelling affecting breathing or swallowing, treat this as a safety emergency instead of routine triage. Once you know the visit type, call list_offerings ONCE and match it to the closest offering \u2014 pass its offering_id (never invented) into check_availability and create_booking next. Never call list_offerings again for the rest of this call \u2014 reuse the result you already have.",
           allowed_tools: ["list_offerings"],
           extraction: [
             {
@@ -4574,7 +4574,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "order_or_reservation",
           name: "Order vs reservation (branch early)",
           prompt_fragment:
-            "Ask right away: order (pickup/delivery) or a table reservation? This determines the whole rest of the call \u2014 decide it before asking anything else.",
+            "If the caller has a quick question (hours, menu items, etc.) before deciding, answer it briefly first \u2014 then ask right away: order (pickup/delivery) or a table reservation? This determines the whole rest of the call once they are ready to proceed.",
           allowed_tools: [],
           extraction: [
             {

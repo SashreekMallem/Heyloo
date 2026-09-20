@@ -116,8 +116,9 @@ const rawStates: AgentState[] = [
     prompt_fragment:
       "No red flags were present. Ask whether this is for a specific symptom or a routine " +
       "visit (wellness, vaccines, grooming, etc.) and note it for the appointment. Call " +
-      "list_offerings and match it to the closest offering — pass its offering_id (never " +
-      "invented) into check_availability and create_booking next.",
+      "list_offerings ONCE and match it to the closest offering — pass its offering_id (never " +
+      "invented) into check_availability and create_booking next. Never call list_offerings " +
+      "again for the rest of this call — reuse the result you already have.",
     allowed_tools: ["list_offerings"],
   },
   {
