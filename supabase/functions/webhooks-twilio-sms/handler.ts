@@ -52,7 +52,7 @@ async function tryWaitlistAutoBook(
     where id = ${entryId} and tenant_id = ${tenantId} and customer_id = ${customerId}
   `;
   const entry = entryRows[0];
-  if (!entry || entry.status !== "notified") return null;
+  if (entry?.status !== "notified") return null;
 
   const freedRows = await sql<{ resource_id: string; start_at: string; end_at: string }>`
     select resource_id, start_at, end_at from public.bookings where id = ${notification.related_booking_id}
