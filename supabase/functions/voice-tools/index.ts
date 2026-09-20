@@ -11,7 +11,7 @@ import { createLogger } from "../_shared/logger.ts";
 import { fallbackEnvelope, jsonResponse } from "../_shared/responses.ts";
 import { verifyRetellSignature } from "../_shared/retell-signature.ts";
 import { withTimeout } from "../_shared/timeout.ts";
-import { recordToolStat } from "../_shared/tool-stats.ts";
+import { recordToolStat, resolveTelemetryTenantId } from "../_shared/tool-stats.ts";
 import { dispatchTool, isKnownTool, resolveEnvelopeCallId, validateEnvelope } from "./handler.ts";
 
 // Re-exported so `withTimeout`'s actual race/rejection/no-dangling-timer
@@ -136,7 +136,14 @@ Deno.serve(async (req: Request) => {
   runInBackground(
     () =>
       recordToolStat(sql, {
-        tenantId: telemetry.tenantId,
+        // OPS-5 (docs/BUILD_NOTES.md): tags the health row with the
+        // per-call `heyloo_tenant_id` dynamic variable when present (every
+        // batch-test scenario sets it) instead of the resolved
+        // `telemetry.tenantId` alone — see resolveTelemetryTenantId's own
+        // docstring for why the latter can be stale for a batch-test call
+        // specifically (a shared `call_logs` row collision this fix works
+        // around without touching context.ts). No-op for a real call.
+        tenantId: resolveTelemetryTenantId(telemetry.tenantId, call),
         toolName: name,
         callId: call_id,
         latencyMs,
