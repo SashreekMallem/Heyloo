@@ -146,7 +146,7 @@ describe("provisionTestTenant", () => {
       retellFetch,
       retellApiKey: "key",
       voiceToolsWebhookUrl: "https://example.com/voice-tools",
-        eventsWebhookUrl: "https://example.com/voice-events",
+      eventsWebhookUrl: "https://example.com/voice-events",
       logger,
     });
 
@@ -186,7 +186,7 @@ describe("provisionTestTenant", () => {
       },
       retellApiKey: "key",
       voiceToolsWebhookUrl: "https://example.com/voice-tools",
-        eventsWebhookUrl: "https://example.com/voice-events",
+      eventsWebhookUrl: "https://example.com/voice-events",
       logger,
     });
 
@@ -365,7 +365,7 @@ describe("provisionTestTenant", () => {
       },
       retellApiKey: "key",
       voiceToolsWebhookUrl: "https://example.com/voice-tools",
-        eventsWebhookUrl: "https://example.com/voice-events",
+      eventsWebhookUrl: "https://example.com/voice-events",
       logger,
     });
 
@@ -410,7 +410,7 @@ describe("provisionTestTenant", () => {
       retellFetch,
       retellApiKey: "key",
       voiceToolsWebhookUrl: "https://example.com/voice-tools",
-        eventsWebhookUrl: "https://example.com/voice-events",
+      eventsWebhookUrl: "https://example.com/voice-events",
       logger,
     });
 
@@ -438,7 +438,7 @@ describe("provisionTestTenant", () => {
       },
       retellApiKey: "key",
       voiceToolsWebhookUrl: "https://example.com/voice-tools",
-        eventsWebhookUrl: "https://example.com/voice-events",
+      eventsWebhookUrl: "https://example.com/voice-events",
       logger,
     });
 

@@ -1,5 +1,10 @@
 import type { RetellFetch } from "../_shared/providers/retell.ts";
-import { listPhoneNumbers, updatePhoneNumber } from "../_shared/providers/retell.ts";
+import {
+  getAgent,
+  getPhoneNumber,
+  listPhoneNumbers,
+  updatePhoneNumber,
+} from "../_shared/providers/retell.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
@@ -136,4 +141,126 @@ export async function attachRetellNumber(
   `;
 
   return { status: 200, body: { phone_e164: phoneE164 } };
+}
+
+/**
+ * `action: "inspect"` (CALL-5, docs/BUILD_PLAN.md — item 1 of this task):
+ * a read-only sibling of `attachRetellNumber` above, guarded by the SAME
+ * `x-internal-secret` (index.ts never distinguishes — auth is identical),
+ * added because nothing else in this repo can read `RETELL_API_KEY` from
+ * outside a Deno edge function isolate (CLAUDE.md: never print secrets).
+ * Calls Retell's own `GET /get-agent/{id}` + `GET /get-phone-number/{e164}`
+ * for the tenant's CURRENT `agent_configs.retell_agent_id` and its primary
+ * `phone_numbers` row, and returns only non-secret routing fields —
+ * `webhook_url`/`webhook_timeout_ms`/`is_published`/`version` for the
+ * agent, `inbound_agents`/`inbound_webhook_url` for the number. Never
+ * mutates anything; never calls Twilio.
+ */
+export interface InspectRetellConfigRequest {
+  tenant_id: string;
+}
+
+export interface InspectedAgent {
+  agent_id: string;
+  webhook_url: string | null;
+  webhook_timeout_ms: number | null;
+  is_published: boolean | null;
+  version: number | null;
+}
+
+export interface InspectedPhoneNumber {
+  phone_number: string;
+  inbound_agents: unknown;
+  inbound_webhook_url: string | null;
+}
+
+export interface InspectRetellConfigResult {
+  status: number;
+  body:
+    | { agent: InspectedAgent | null; phone_number: InspectedPhoneNumber | null }
+    | { error: string };
+}
+
+export function validateInspectRequest(
+  body: unknown,
+): { ok: true; data: InspectRetellConfigRequest } | { ok: false; error: string } {
+  if (typeof body !== "object" || body === null) return { ok: false, error: "invalid_body" };
+  const tenantId = (body as Record<string, unknown>)["tenant_id"];
+  if (typeof tenantId !== "string" || tenantId.length === 0) {
+    return { ok: false, error: "invalid_tenant_id" };
+  }
+  return { ok: true, data: { tenant_id: tenantId } };
+}
+
+export async function inspectRetellConfig(
+  sql: SqlClient,
+  rawBody: unknown,
+  deps: Pick<AttachRetellNumberDeps, "retellFetch" | "retellApiKey" | "logger">,
+): Promise<InspectRetellConfigResult> {
+  const parsed = validateInspectRequest(rawBody);
+  if (!parsed.ok) return { status: 422, body: { error: parsed.error } };
+  const req = parsed.data;
+
+  const agentRows = await sql<{ retell_agent_id: string | null }>`
+    select retell_agent_id from public.agent_configs where tenant_id = ${req.tenant_id}
+  `;
+  const agentId = agentRows[0]?.retell_agent_id ?? null;
+
+  const phoneRows = await sql<{ e164: string }>`
+    select e164 from public.phone_numbers
+    where tenant_id = ${req.tenant_id} and released_at is null
+    order by is_primary desc, created_at asc
+    limit 1
+  `;
+  const phoneE164 = phoneRows[0]?.e164 ?? null;
+
+  let agent: InspectedAgent | null = null;
+  if (agentId) {
+    const agentResult = await getAgent(deps.retellFetch, deps.retellApiKey, agentId);
+    if (agentResult.ok) {
+      const b = agentResult.body as {
+        agent_id?: string;
+        webhook_url?: string | null;
+        webhook_timeout_ms?: number | null;
+        is_published?: boolean | null;
+        version?: number | null;
+      };
+      agent = {
+        agent_id: b.agent_id ?? agentId,
+        webhook_url: b.webhook_url ?? null,
+        webhook_timeout_ms: b.webhook_timeout_ms ?? null,
+        is_published: b.is_published ?? null,
+        version: b.version ?? null,
+      };
+    } else {
+      deps.logger.error("inspect_retell_config_get_agent_failed", {
+        tenant_id: req.tenant_id,
+        status: agentResult.status,
+      });
+    }
+  }
+
+  let phoneNumber: InspectedPhoneNumber | null = null;
+  if (phoneE164) {
+    const phoneResult = await getPhoneNumber(deps.retellFetch, deps.retellApiKey, phoneE164);
+    if (phoneResult.ok) {
+      const b = phoneResult.body as {
+        phone_number?: string;
+        inbound_agents?: unknown;
+        inbound_webhook_url?: string | null;
+      };
+      phoneNumber = {
+        phone_number: b.phone_number ?? phoneE164,
+        inbound_agents: b.inbound_agents ?? null,
+        inbound_webhook_url: b.inbound_webhook_url ?? null,
+      };
+    } else {
+      deps.logger.error("inspect_retell_config_get_phone_number_failed", {
+        tenant_id: req.tenant_id,
+        status: phoneResult.status,
+      });
+    }
+  }
+
+  return { status: 200, body: { agent, phone_number: phoneNumber } };
 }

@@ -238,6 +238,9 @@ describe("runProvisioningSaga", () => {
       agent_name: "heyloo-tenant-tenant_1",
       voice_id: "voice_1",
       response_engine: { type: "conversation-flow", conversation_flow_id: "flow_1" },
+      // CALL-5 fix.
+      webhook_url: "https://example.supabase.co/functions/v1/voice-events",
+      webhook_timeout_ms: 10000,
     });
   });
 

@@ -8,7 +8,7 @@ import { getSql } from "../_shared/deno/db.ts";
 import { requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
-import { attachRetellNumber } from "./handler.ts";
+import { attachRetellNumber, inspectRetellConfig } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-admin-attach-retell-number" });
 const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
@@ -33,6 +33,23 @@ Deno.serve(async (req: Request) => {
   }
 
   const sql = getSql();
+
+  // CALL-5: `action: "inspect"` is a read-only sibling behind the SAME
+  // `x-internal-secret` check above — see handler.ts's inspectRetellConfig
+  // doc comment for why it lives here rather than a separate function.
+  if (
+    typeof body === "object" &&
+    body !== null &&
+    (body as { action?: unknown }).action === "inspect"
+  ) {
+    const result = await inspectRetellConfig(sql, body, {
+      retellFetch: fetch,
+      retellApiKey: RETELL_API_KEY,
+      logger,
+    });
+    return jsonResponse(result.body, { status: result.status });
+  }
+
   const result = await attachRetellNumber(sql, body, {
     retellFetch: fetch,
     retellApiKey: RETELL_API_KEY,

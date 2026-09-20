@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import type { SqlClient } from "../_shared/types.ts";
-import { attachRetellNumber, validateRequest } from "./handler.ts";
+import { attachRetellNumber, inspectRetellConfig, validateRequest } from "./handler.ts";
 
 const logger = createLogger();
 
@@ -141,5 +141,123 @@ describe("attachRetellNumber", () => {
       status: 422,
       body: { error: "ambiguous_number_selection_pass_phone_e164" },
     });
+  });
+});
+
+describe("inspectRetellConfig", () => {
+  it("returns redacted agent + phone_number config for a fully-provisioned tenant", async () => {
+    const { sql } = makeSql({
+      "from public.agent_configs": [{ retell_agent_id: "agent_1" }],
+      "from public.phone_numbers": [{ e164: "+14155551234" }],
+    });
+    const retellFetch = async (url: string) => {
+      if (url.includes("/get-agent/agent_1")) {
+        return jsonResponse({
+          agent_id: "agent_1",
+          webhook_url: "https://example.com/voice-events",
+          webhook_timeout_ms: 10000,
+          is_published: true,
+          version: 3,
+        });
+      }
+      if (url.includes("/get-phone-number/")) {
+        return jsonResponse({
+          phone_number: "+14155551234",
+          inbound_agents: [{ agent_id: "agent_1", weight: 1 }],
+          inbound_webhook_url: "https://example.com/voice-inbound",
+        });
+      }
+      throw new Error(`unexpected call: ${url}`);
+    };
+
+    const result = await inspectRetellConfig(
+      sql,
+      { action: "inspect", tenant_id: "t1" },
+      { retellFetch, retellApiKey: "key", logger },
+    );
+
+    expect(result).toEqual({
+      status: 200,
+      body: {
+        agent: {
+          agent_id: "agent_1",
+          webhook_url: "https://example.com/voice-events",
+          webhook_timeout_ms: 10000,
+          is_published: true,
+          version: 3,
+        },
+        phone_number: {
+          phone_number: "+14155551234",
+          inbound_agents: [{ agent_id: "agent_1", weight: 1 }],
+          inbound_webhook_url: "https://example.com/voice-inbound",
+        },
+      },
+    });
+  });
+
+  it("surfaces a null webhook_url plainly (CALL-5's own real live bug shape) rather than masking it", async () => {
+    const { sql } = makeSql({
+      "from public.agent_configs": [{ retell_agent_id: "agent_1" }],
+      "from public.phone_numbers": [],
+    });
+    const retellFetch = async (url: string) => {
+      if (url.includes("/get-agent/agent_1")) {
+        return jsonResponse({ agent_id: "agent_1", is_published: true, version: 1 });
+      }
+      throw new Error(`unexpected call: ${url}`);
+    };
+
+    const result = await inspectRetellConfig(
+      sql,
+      { tenant_id: "t1" },
+      { retellFetch, retellApiKey: "key", logger },
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({
+      agent: {
+        agent_id: "agent_1",
+        webhook_url: null,
+        webhook_timeout_ms: null,
+        is_published: true,
+        version: 1,
+      },
+      phone_number: null,
+    });
+  });
+
+  it("returns null agent/phone_number rather than erroring when the tenant has neither yet", async () => {
+    const { sql } = makeSql({
+      "from public.agent_configs": [],
+      "from public.phone_numbers": [],
+    });
+    const result = await inspectRetellConfig(
+      sql,
+      { tenant_id: "t1" },
+      {
+        retellFetch: async () => {
+          throw new Error("should never call Retell");
+        },
+        retellApiKey: "key",
+        logger,
+      },
+    );
+    expect(result).toEqual({ status: 200, body: { agent: null, phone_number: null } });
+  });
+
+  it("rejects a missing tenant_id", async () => {
+    const { sql } = makeSql();
+    const result = await inspectRetellConfig(
+      sql,
+      {},
+      {
+        retellFetch: async () => {
+          throw new Error("should not be called");
+        },
+        retellApiKey: "key",
+        logger,
+      },
+    );
+    expect(result).toEqual({ status: 422, body: { error: "invalid_tenant_id" } });
   });
 });
