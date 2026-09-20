@@ -5,6 +5,7 @@ import {
   createChatCompletion,
   createPhoneCall,
   createTestCaseDefinition,
+  deleteAgent,
   listPhoneNumbers,
   listTestRuns,
   updatePhoneNumber,
@@ -130,6 +131,26 @@ describe("updatePhoneNumber", () => {
       inbound_webhook_url: "https://example.com/voice-inbound",
     });
     expect(result.ok).toBe(true);
+  });
+});
+
+describe("deleteAgent", () => {
+  it("DELETEs /delete-agent/{agent_id} with no body and handles a 204 No Content response", async () => {
+    let capturedUrl: string | undefined;
+    let capturedMethod: string | undefined;
+    let capturedBody: unknown;
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      capturedUrl = url;
+      capturedMethod = init?.method;
+      capturedBody = init?.body;
+      return new Response(null, { status: 204 });
+    };
+    const result = await deleteAgent(fetchImpl, "key", "agent_abc123");
+    expect(capturedUrl).toBe("https://api.retellai.com/delete-agent/agent_abc123");
+    expect(capturedMethod).toBe("DELETE");
+    expect(capturedBody).toBeUndefined();
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe(204);
   });
 });
 

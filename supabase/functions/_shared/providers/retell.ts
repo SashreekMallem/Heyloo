@@ -416,6 +416,24 @@ export async function listTestRuns(
 }
 
 /**
+ * DELETE /delete-agent/{agent_id} (CALL-7, docs/BUILD_PLAN.md task 4 —
+ * "do not accumulate Retell agents"). RETELL-VERIFY: confirmed both via a
+ * live `docs.retellai.com/api-references/delete-agent` fetch AND the
+ * official `retell-typescript-sdk` source (`Agent.delete`,
+ * `src/resources/agent.ts`: `this._client.delete(path\`/delete-agent/${id}\`)`)
+ * 2026-09-20 — no request body, `204 No Content` on success ("Deletes all
+ * versions of the agent."). Used by `api-admin-provision-test-tenant`'s
+ * opt-in `cleanup_superseded_agent` (see handler.ts) to remove the OLD
+ * agent a `force_recompile` just superseded, never called for an agent this
+ * codebase didn't itself just create.
+ */
+export async function deleteAgent(fetchImpl: RetellFetch, apiKey: string, agentId: string) {
+  return retellRequest(fetchImpl, apiKey, `/delete-agent/${encodeURIComponent(agentId)}`, {
+    method: "DELETE",
+  });
+}
+
+/**
  * POST /create-chat, POST /create-chat-completion (CALL-1) — the headless
  * text-mode path `docs/research/RETELL_TESTABILITY_2026-09-20.md` row 4a/4b
  * confirms against `docs.retellai.com/api-references/create-chat` and
