@@ -12,7 +12,12 @@ import { handleTextChat } from "./handler.ts";
 import { TextChatRequestSchema } from "./schema.ts";
 
 const logger = createLogger({ fn: "api-text-chat" });
-const ANTHROPIC_API_KEY = requireEnv("ANTHROPIC_API_KEY");
+// OPS-5 (docs/BUILD_NOTES.md): Anthropic credentials aren't provisioned on
+// every deploy yet — `optionalEnv` (not `requireEnv`) keeps cold start
+// from crashing the isolate; the handler below returns a clean 503
+// `{error:"not_configured"}` instead whenever it's unset, never attempting
+// the text-agent engine call without it.
+const ANTHROPIC_API_KEY = optionalEnv("ANTHROPIC_API_KEY");
 const ANTHROPIC_TEXT_AGENT_MODEL = optionalEnv("ANTHROPIC_TEXT_AGENT_MODEL") ?? "claude-sonnet-5";
 const APP_BASE_URL = optionalEnv("APP_BASE_URL") ?? "https://heyloo.app";
 const STRIPE_SECRET_KEY = optionalEnv("STRIPE_SECRET_KEY") ?? "";
@@ -49,6 +54,11 @@ Deno.serve(async (req: Request) => {
 
   if (req.method !== "POST") {
     return jsonResponse({ error: "method_not_allowed" }, { status: 405, headers: cors });
+  }
+
+  if (!ANTHROPIC_API_KEY) {
+    logger.error("api_text_chat_not_configured");
+    return jsonResponse({ error: "not_configured" }, { status: 503, headers: cors });
   }
 
   let rawBody: unknown;

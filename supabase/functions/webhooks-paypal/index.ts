@@ -3,7 +3,7 @@
 // checked below (fail closed), same posture as webhooks-stripe/index.ts.
 import { runInBackground } from "../_shared/deno/background.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { optionalEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { getAccessToken, paypalBaseUrl } from "../_shared/providers/paypal.ts";
 import { jsonResponse } from "../_shared/responses.ts";
@@ -13,14 +13,25 @@ import { PayPalWebhookEventSchema } from "./schema.ts";
 import { extractPayPalWebhookHeaders, verifyPayPalWebhookSignature } from "./signature.ts";
 
 const logger = createLogger({ fn: "webhooks-paypal" });
-const PAYPAL_CLIENT_ID = requireEnv("PAYPAL_CLIENT_ID");
-const PAYPAL_CLIENT_SECRET = requireEnv("PAYPAL_CLIENT_SECRET");
+// OPS-5 (docs/BUILD_NOTES.md): PayPal isn't provisioned on every deploy
+// yet — `optionalEnv` (not `requireEnv`) keeps cold start from crashing;
+// the handler below fails CLOSED whenever either credential is missing,
+// rejecting every request with 503 before the OAuth/signature-verification
+// calls that need them ever run (CLAUDE.md Rule 2 — never skip
+// verification, never process without it).
+const PAYPAL_CLIENT_ID = optionalEnv("PAYPAL_CLIENT_ID");
+const PAYPAL_CLIENT_SECRET = optionalEnv("PAYPAL_CLIENT_SECRET");
 const PAYPAL_WEBHOOK_ID = optionalEnv("PAYPAL_WEBHOOK_ID");
 const BASE_URL = paypalBaseUrl(optionalEnv("PAYPAL_ENV") === "live" ? "live" : "sandbox");
 
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return jsonResponse({ error: "method_not_allowed" }, { status: 405 });
+  }
+
+  if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
+    logger.error("paypal_webhook_not_configured");
+    return jsonResponse({ error: "not_configured" }, { status: 503 });
   }
 
   const rawBody = await req.text();

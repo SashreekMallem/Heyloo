@@ -2,8 +2,9 @@
 // supabase/config.toml — Twilio calls this directly with its own
 // X-Twilio-Signature scheme (BACKEND_SPEC Rule 2 fail-closed).
 import { getSql } from "../_shared/deno/db.ts";
-import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { optionalEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
+import { jsonResponse } from "../_shared/responses.ts";
 import { formParamsToObject, TwilioInboundSmsSchema } from "../_shared/schemas/twilio-sms.ts";
 import type { TextAgentDeps } from "../_shared/text-agent/engine.ts";
 import { verifyTwilioSignature } from "../_shared/twilio-signature.ts";
@@ -11,11 +12,16 @@ import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/w
 import { processInboundSms } from "./handler.ts";
 
 const logger = createLogger({ fn: "webhooks-twilio-sms" });
-const TWILIO_AUTH_TOKEN = requireEnv("TWILIO_AUTH_TOKEN");
+// OPS-5 (docs/BUILD_NOTES.md): Twilio isn't provisioned on every deploy yet
+// — `optionalEnv` (not `requireEnv`) keeps cold start from crashing; the
+// handler below fails CLOSED whenever either is missing, rejecting every
+// request with 503 before signature verification runs (CLAUDE.md Rule 2 —
+// never skip verification, never process without it).
+const TWILIO_AUTH_TOKEN = optionalEnv("TWILIO_AUTH_TOKEN");
 // The exact URL Twilio signed against — must match the number's configured
 // webhook URL byte-for-byte (VERIFY.md: confirm no trailing-slash/query
 // mismatch against the actual Twilio console config before go-live).
-const FUNCTION_URL = requireEnv("WEBHOOKS_TWILIO_SMS_URL");
+const FUNCTION_URL = optionalEnv("WEBHOOKS_TWILIO_SMS_URL");
 
 // Text-agent engine deps (Cluster T). `ANTHROPIC_API_KEY` optional here
 // (not required): a deploy that hasn't provisioned Anthropic credentials
@@ -66,6 +72,11 @@ function escapeXml(s: string): string {
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response("method not allowed", { status: 405 });
+  }
+
+  if (!TWILIO_AUTH_TOKEN || !FUNCTION_URL) {
+    logger.error("twilio_sms_webhook_not_configured");
+    return jsonResponse({ error: "not_configured" }, { status: 503 });
   }
 
   const rawBody = await req.text();
