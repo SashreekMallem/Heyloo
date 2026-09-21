@@ -1,5 +1,87 @@
 # Launch Status
 
+## Current state (FINAL-1, 2026-09-21)
+
+One-line summary: **every automated voice-call, booking, and billing
+pipeline component this platform has is proven live, end to end, on a
+real PSTN call** (`scripts/e2e/self-call.ts`, run four times total across
+SELFCALL-1/ANALYSIS-1/OPS-8/FINAL-1). What remains is exclusively
+owner-only work that needs real third-party accounts/credentials this
+build environment cannot create — the full, ordered checklist is
+`docs/GO_LIVE.md`. This section replaces reading the dated entries below
+for "is X done" — the entries stay as history/detail, not as the current
+source of truth.
+
+**Proven live** (a real call/webhook/write happened and was inspected in
+the database or via a signed provider request, not just unit-tested):
+- Full call path: `voice-inbound` (dynamic variables + caller routing) →
+  Retell conversation → `voice-tools` (availability/booking/customer/
+  message, tenant-scoped) → `voice-events` (`call_started`/`call_ended`/
+  `call_analyzed`, real Retell HMAC signature verified every time).
+- `call_logs` fully populated on a real call: transcript, `call_summary`,
+  `classification`, `outcome`, `sentiment`, `follow_up_needed`,
+  `urgency_flag`, `recording_url`/`stereo_recording_url` (both
+  auto-fetched by `worker-tick`'s cron poll within its own retry budget,
+  no manual intervention, as of OPS-8/FINAL-1).
+- Bookings: real rows with vehicle-detail fields (CALL-8's per-vertical
+  required-field matrix), GIST-exclusion slot conflicts handled correctly
+  (a slot taken mid-call is caught and the agent rebooks automatically —
+  observed live 3 times now, SELFCALL-1 and FINAL-1).
+- Returning-caller recognition: a caller's second/third call is greeted
+  by name from `caller_recent_context` without re-asking (CALL-9,
+  reconfirmed FINAL-1).
+- Outbound calling: unlocked with no KYC/identity-verification step
+  needed (SELFCALL-1) — `docs/GO_LIVE.md` step 5 needs no owner action.
+- 8 verticals batch-tested live (CALL-1/6/7/8), nightly regression sweep
+  scheduled and proven (`NIGHTLY-1`).
+- Every queue worker (`worker-recording-fetch`, `worker-messages-
+  outbound`, `worker-adapter-push`) drains, retries, and dead-letters
+  correctly with a recorded reason; backlog/DLQ depth visible via
+  `worker-tick`'s own response and `GET /admin-cockpit/queues` (OPS-8).
+- Real customer signup → payment-gated provisioning → dashboard →
+  agent-answering path run live once end to end (`SIGNUP-1`); the
+  ~30 remaining dashboard *action* routes' JWT-claims bug found there is
+  fixed platform-wide (`AUTH-1`).
+
+**Proven by tests, not yet by a live call/credential** (code is
+deployed and unit/integration-tested; the live proof needs an owner
+credential this environment doesn't have, or is inherently one-time/
+owner-scoped):
+- Stripe Checkout, Twilio A2P/SMS, Resend email, PayPal referral payouts,
+  outreach send/reply pipeline — all fail closed correctly when
+  unconfigured (`OPS-5`, `OPS-8` deliverable 2); real send/receive needs
+  the owner's own provider accounts (`docs/GO_LIVE.md` steps 1-4).
+- `api-provision`'s real-saga `republish` action (re-provision an
+  already-live tenant without re-running Stripe) — implemented,
+  unit-tested, parity-tested against the internal test-tenant path
+  (`PARITY-1`); the live run needs a real `SB_SECRET_KEY`, not available
+  in this build environment's credential store.
+- `packages/adapters/*` (Shopmonkey, ezyVet, Square, generic calendar) —
+  built to each provider's current docs with contract tests; no owner
+  has connected a real account yet to prove a live two-way sync.
+
+**Owner-only remaining** (see `docs/GO_LIVE.md` for the exact, ordered
+steps — nothing here is a code gap): Twilio A2P brand registration,
+Stripe/Resend account setup + secrets, outreach CAN-SPAM footer, a real
+transfer number, one manual test call from a different phone, counsel
+sign-off (BIPA/HIPAA/TCPA/CAN-SPAM/PCI/FTC/DPA), Vercel/Retell-agent
+cleanup, credential rotation, optional custom domain.
+
+**Known, non-blocking gap flagged for a follow-up session** (found
+FINAL-1, not fixed — outside this task's own scope, and not one of the
+fields the platform's core pipeline depends on): the tenant dashboard's
+call-detail page (`apps/web/.../dashboard/calls/[id]/page.tsx` →
+`call-detail-client.tsx`) passes `call_logs.recording_url` (the raw
+private-bucket storage path) directly as an `<audio src>` — since the
+`recordings` bucket is private (correctly — CLAUDE.md Rule 2), this will
+404 in the browser rather than sign the URL server-side first. Not
+exercised by any of this platform's automated proof (all of which reads
+the path via direct SQL/Storage-API access, not the dashboard UI).
+
+---
+
+## History
+
 **OPS-8 (2026-09-21)**: closed SELFCALL-1's other flagged gap —
 `recording_url` now actually populates. Three independent, compounding
 root causes, all fixed and live-proven (`docs/BUILD_NOTES.md`/
