@@ -34,6 +34,7 @@ import type {
 } from "./types.js";
 
 const TRANSFER_CALL_TOOL_NAME = "transfer_call";
+const TAKE_MESSAGE_TOOL_NAME = "take_message";
 
 /** CALL-7: see `RetellEndCallTool`'s own doc comment (types.ts) — makes the
  * general_tools end_call tool actually get used; granting the tool alone
@@ -92,7 +93,15 @@ export function compileMultiPrompt(
     };
     return functionTool;
   });
-  const toolsByName = new Map(tools.map((t) => [t.name, t]));
+  // CALL-8 (docs/BUILD_PLAN.md): mirrors the Deno compiler's identical fix
+  // (`supabase/functions/_shared/compiler/template-compiler.ts`) — see that
+  // file's own comment for the live-observed bug this closes. take_message
+  // moves to `general_tools` (structurally callable from EVERY state)
+  // instead of only whichever per-state `allowed_tools` list it.
+  const takeMessageTool = tools.find((t) => t.name === TAKE_MESSAGE_TOOL_NAME);
+  const toolsByName = new Map(
+    tools.filter((t) => t.name !== TAKE_MESSAGE_TOOL_NAME).map((t) => [t.name, t]),
+  );
 
   const statesByName = new Map<string, RetellMultiPromptState>();
   for (const state of template.states) {
@@ -169,6 +178,7 @@ export function compileMultiPrompt(
         name: "end_call",
         description: "End the call once it's fully wrapped up.",
       },
+      ...(takeMessageTool ? [takeMessageTool] : []),
     ],
   };
 }

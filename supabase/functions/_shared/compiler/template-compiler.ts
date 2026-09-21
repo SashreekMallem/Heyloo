@@ -613,8 +613,14 @@ export interface MultiPromptBody {
    * the call. `general_tools` (not a per-state field) makes it callable
    * from every state, matching `general_prompt`'s own "no matter what
    * state" semantics.
+   *
+   * CALL-8 (docs/BUILD_PLAN.md): also where `take_message` is now added
+   * when the template declares it (RETELL-VERIFIED: `general_tools`
+   * accepts any `Tool` variant, including `type: "custom"`, not just
+   * `end_call` — docs.retellai.com/api-references/create-retell-llm,
+   * confirmed 2026-09-21) — see `compileMultiPrompt`'s own comment on why.
    */
-  general_tools: EndCallTool[];
+  general_tools: (EndCallTool | FunctionTool)[];
 }
 
 /** The general_prompt instruction that makes the `general_tools` end_call
@@ -670,8 +676,22 @@ function compileMultiPrompt(
   const transferToolDescription = template.tools.find(
     (t) => t.name === TRANSFER_CALL_TOOL_NAME,
   )?.description;
+  // CALL-8 (docs/BUILD_PLAN.md): `take_message` is filtered out of the
+  // regular per-state tool pool the SAME way `transfer_call` already is —
+  // it moves to `general_tools` below (RETELL-VERIFIED: `general_tools`
+  // accepts a `type: "custom"` entry, not just `end_call`) so it's
+  // structurally callable from EVERY state, not just whichever ones happen
+  // to list it in their own `allowed_tools`. Root cause this closes,
+  // live-observed: a caller who front-loads later-state information (e.g.
+  // legal's urgency/referral-source, volunteered early) leads the model to
+  // consider intake done and call `end_call` directly from whichever
+  // EARLIER state it's still in — a state that, before this fix, may never
+  // have granted `take_message` at all (only the terminal/final state did),
+  // silently losing the intake even though Retell's own transcript-
+  // relevance judge still scored the call "pass".
+  const takeMessageTool = template.tools.find((t) => t.name === TAKE_MESSAGE_TOOL_NAME);
   const tools = toolsFor(template, toolWebhookUrl).filter(
-    (t) => t.name !== TRANSFER_CALL_TOOL_NAME,
+    (t) => t.name !== TRANSFER_CALL_TOOL_NAME && t.name !== TAKE_MESSAGE_TOOL_NAME,
   );
   const toolsByName = new Map(tools.map((t) => [t.name, t]));
 
@@ -780,6 +800,22 @@ function compileMultiPrompt(
         name: "end_call",
         description: "End the call once it's fully wrapped up.",
       },
+      // CALL-8: see this function's own comment above (`takeMessageTool`) —
+      // present on every shipped template (`takeMessageTool()`,
+      // `packages/templates/src/shared/tools.ts`), so this is effectively
+      // unconditional in practice; the `undefined` guard is defensive only.
+      ...(takeMessageTool
+        ? [
+            {
+              type: "custom" as const,
+              tool_id: takeMessageTool.name,
+              name: takeMessageTool.name,
+              description: takeMessageTool.description,
+              url: toolWebhookUrl,
+              parameters: takeMessageTool.parameters,
+            },
+          ]
+        : []),
     ],
   };
 }

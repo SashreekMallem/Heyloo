@@ -13,6 +13,23 @@ Before you say goodbye or call end_call: if this call was ABOUT booking an appoi
       "name": "end_call",
       "type": "end_call",
     },
+    {
+      "description": "Record intake details for attorney follow-up.",
+      "name": "take_message",
+      "parameters": {
+        "properties": {
+          "message_text": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "message_text",
+        ],
+        "type": "object",
+      },
+      "type": "custom",
+      "url": "https://example.supabase.co/functions/v1/voice-tools",
+    },
   ],
   "starting_state": "greeting",
   "states": [
@@ -48,25 +65,7 @@ Greet the caller and ask what brings them in today.",
       "edges": [],
       "name": "conflict_check",
       "state_prompt": "Ask for the opposing party's full name BEFORE any substantive discussion — flag for human review, never auto-clear.",
-      "tools": [
-        {
-          "description": "Record intake details for attorney follow-up.",
-          "name": "take_message",
-          "parameters": {
-            "properties": {
-              "message_text": {
-                "type": "string",
-              },
-            },
-            "required": [
-              "message_text",
-            ],
-            "type": "object",
-          },
-          "type": "custom",
-          "url": "https://example.supabase.co/functions/v1/voice-tools",
-        },
-      ],
+      "tools": [],
     },
   ],
 }

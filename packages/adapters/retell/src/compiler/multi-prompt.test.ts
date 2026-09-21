@@ -48,7 +48,21 @@ describe("compileMultiPrompt", () => {
     const result = compileMultiPrompt(LEGAL_MULTI_PROMPT_TEMPLATE, TOOL_WEBHOOK_URL);
     expect(result.general_tools).toEqual([
       { type: "end_call", name: "end_call", description: expect.any(String) },
+      // CALL-8 (docs/BUILD_PLAN.md): take_message also lands in
+      // general_tools now — see this file's own describe block below for
+      // the dedicated test on why.
+      expect.objectContaining({ type: "custom", name: "take_message" }),
     ]);
+  });
+
+  it("CALL-8 (docs/BUILD_PLAN.md): take_message is always reachable via general_tools, not only the states whose own allowed_tools lists it — never duplicated into any state's own per-state tools", () => {
+    const result = compileMultiPrompt(LEGAL_MULTI_PROMPT_TEMPLATE, TOOL_WEBHOOK_URL);
+    expect(result.general_tools.some((t) => t.type === "custom" && t.name === "take_message")).toBe(
+      true,
+    );
+    for (const state of result.states) {
+      expect(state.tools.some((t) => t.type === "custom" && t.name === "take_message")).toBe(false);
+    }
   });
 
   it("compiles a declared transfer_call tool to Retell LLM's native transfer_call tool, not a custom webhook (GAP_REGISTER §1.4 item 4)", () => {

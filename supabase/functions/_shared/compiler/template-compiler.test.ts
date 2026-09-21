@@ -301,6 +301,53 @@ describe("compileTemplate — multi_prompt", () => {
     expect(startState?.state_prompt.startsWith(DISCLOSURE)).toBe(true);
   });
 
+  it("CALL-8 (docs/BUILD_PLAN.md): take_message is always reachable via general_tools, structurally available from EVERY state — not only the ones whose own allowed_tools lists it — closing a live-observed bug where a state that never granted it left the model unable to record anything before ending the call", () => {
+    const compiled = compileTemplate(
+      baseTemplate({
+        compile_target: "multi_prompt",
+        states: [
+          { id: "greeting", name: "Greeting", prompt_fragment: "Greet.", allowed_tools: [] },
+          {
+            id: "qualification",
+            // Deliberately does NOT list take_message — mirrors real_estate's
+            // own "qualification" state, the exact live-confirmed shape a
+            // caller who front-loads info can end a call from without ever
+            // reaching the one state that used to be the sole take_message
+            // grant.
+            name: "Qualification",
+            prompt_fragment: "Ask qualifying questions.",
+            allowed_tools: [],
+          },
+          {
+            id: "lead_only",
+            name: "Lead only",
+            prompt_fragment: "Take a message.",
+            allowed_tools: ["take_message"],
+            is_terminal: true,
+          },
+        ],
+        transitions: [
+          { from: "greeting", to: "qualification", on: { intent: "starts" } },
+          { from: "qualification", to: "lead_only", on: { intent: "not_ready" } },
+        ],
+        global_intents: [],
+        tools: [{ name: "take_message", description: "takes a message", parameters: {} }],
+      }),
+      "https://x/y",
+    );
+    if (compiled.flow.kind !== "multi_prompt") throw new Error("wrong kind");
+    expect(
+      compiled.flow.body.general_tools.some(
+        (t) => t.type === "custom" && t.name === "take_message",
+      ),
+    ).toBe(true);
+    // Never duplicated into any state's own per-state tools, including the
+    // one whose authored allowed_tools explicitly named it.
+    for (const state of compiled.flow.body.states) {
+      expect(state.tools.some((t) => t.type === "custom" && t.name === "take_message")).toBe(false);
+    }
+  });
+
   it("adds an edge from every other state to a global-intent target (no separate global-node primitive)", () => {
     const compiled = compileTemplate(
       baseTemplate({ compile_target: "multi_prompt" }),
@@ -367,7 +414,7 @@ describe("compileTemplate — multi_prompt", () => {
     }
   });
 
-  it("CALL-7 with NO transferNumber configured: compiles an honest spoken fallback (take_message granted, no transfer_call tool anywhere)", () => {
+  it("CALL-7 with NO transferNumber configured: compiles an honest spoken fallback (take_message reachable via general_tools, no transfer_call tool anywhere)", () => {
     const compiled = compileTemplate(
       transferTemplate({ compile_target: "multi_prompt" }),
       "https://example.com/voice-tools",
@@ -375,12 +422,20 @@ describe("compileTemplate — multi_prompt", () => {
     );
     if (compiled.flow.kind !== "multi_prompt") throw new Error("wrong kind");
     const transferState = compiled.flow.body.states.find((s) => s.name === "transfer_to_human");
-    expect(transferState?.tools.some((t) => t.type === "custom" && t.name === "take_message")).toBe(
-      true,
-    );
+    // CALL-8 (docs/BUILD_PLAN.md): take_message moved from a per-state tool
+    // grant to `general_tools` (RETELL-VERIFIED: general_tools accepts a
+    // `type: "custom"` entry) so it's callable from EVERY state, not just
+    // whichever ones list it — see template-compiler.ts's own comment for
+    // the live-observed bug this closes.
+    expect(
+      compiled.flow.body.general_tools.some(
+        (t) => t.type === "custom" && t.name === "take_message",
+      ),
+    ).toBe(true);
     expect(transferState?.state_prompt).toMatch(/take_message/);
     for (const state of compiled.flow.body.states) {
       expect(state.tools.some((t) => t.type === "transfer_call")).toBe(false);
+      expect(state.tools.some((t) => t.type === "custom" && t.name === "take_message")).toBe(false);
     }
   });
 });
