@@ -14403,3 +14403,56 @@ passed, 49 functions checked (`config.toml` unchanged by this task).
   per tenant (CALL-6) — not fixed here (would mean redesigning
   `voice-tools/context.ts`'s call-id keying, out of this task's scope);
   documented and worked around via isolated-scenario verification instead.
+
+## DOCS-1 (2026-09-21) — Go-live checklist and .env.example audit
+
+**Goal**: Produce the single checklist the owner will follow to go live
+(production secrets, account setups, final smoke test), and ensure
+`.env.example` is complete and honest about every variable the codebase
+reads.
+
+**Deliverables**:
+
+1. `.env.example` audit (grep `Deno.env.get()`, `process.env.X`,
+   `requireEnv()`, `optionalEnv()` across all packages):
+   - Added: `VOICE_EVENTS_WEBHOOK_URL` (used by api-provision and
+     api-admin-provision-test-tenant to pass to Retell at agent creation)
+   - Added: `AIRTABLE_OAUTH_STATE_SECRET` (used by apps/web and
+     api-adapter-connect for OAuth state HMAC signing)
+   - Verified: `INSTANTLY_API_KEY` / `INSTANTLY_WEBHOOK_SIGNING_SECRET`
+     listed as "future feature" (MASTER_SPEC binds Smartlead, not Instantly;
+     campaign-create rejects it with 422 today) — intentionally left in
+     `.env.example` per DEPLOY.md §1.10
+   - Verified: `AIRTABLE_API_KEY` / `AIRTABLE_BASE_ID` listed as "partner
+     portal" (T5, not yet wired; intentionally placeholder per DEPLOY.md
+     §1.14)
+   - Verified: Every var used in code is now documented with a one-line
+     comment, required-vs-optional status, and value source
+
+2. `docs/GO_LIVE.md` — two sections:
+   - **Section A: Owner-only steps** (18 steps, in exact order):
+     Twilio A2P brand registration → Retell VERIFY pass → Supabase setup →
+     schema + cron jobs → Stripe → Resend → all edge-function secrets →
+     agent templates + function deploy → Vercel vars + redeploy → first
+     tenant signup → first test call → verify instrumentation → billing job
+     → counsel sign-off → cleanup projects/agents → token rotation →
+     optional custom domain → final smoke test call to +1 260-235-4330.
+     Each step includes: why it matters, exact commands with placeholder
+     values, how to verify completion, and common failure debugging.
+   - **Section B: Verified by automation** — table listing every CALL-*,
+     OPS-*, SIGNUP-*, NIGHTLY-* entry in BUILD_NOTES.md/LAUNCH_STATUS.md,
+     noting what was proven vs. what remains (e.g., SIGNUP-1 "pending" —
+     owner must test via step A10; NIGHTLY-1 "pending" — owner waits 24h
+     after first call). Summary: all platform-level voice/billing/call
+     pipelines are verified live (CALL-1..8, OPS-1..7); owner must test
+     signup, first call, and billing to complete the picture.
+
+**No code changes**. Task scope was docs only (per this task's assignment to
+edit ONLY `docs/GO_LIVE.md`, `.env.example`, and `BUILD_NOTES.md`).
+
+**Verification**: `.env.example` now lists 2 additional vars (VOICE_EVENTS_
+WEBHOOK_URL, AIRTABLE_OAUTH_STATE_SECRET) with one-line comments matching
+their usage in code. `GO_LIVE.md` sections A1-A18 cover every account setup,
+every env var, every command, and every verification step the owner needs
+to follow. Section B's automation table accurately reflects the live-tested
+state as of 2026-09-21.
