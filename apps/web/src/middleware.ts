@@ -1,8 +1,8 @@
-import { extractClaims } from "@heyloo/supabase-client";
 import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 import createIntlMiddleware from "next-intl/middleware";
 import { routing } from "./i18n/routing";
+import { claimsFromSupabaseClient } from "./lib/auth/claims";
 import { env } from "./lib/env";
 
 const intlMiddleware = createIntlMiddleware(routing);
@@ -53,7 +53,11 @@ export async function middleware(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const pathname = withoutLocalePrefix(request.nextUrl.pathname);
-  const claims = extractClaims(user?.app_metadata);
+  // SIGNUP-1 fix (docs/BUILD_NOTES.md): `user.app_metadata` never carries
+  // the Custom Access Token Hook's tenant_id/role/platform_admin/
+  // referral_partner_id — only the JWT's own claims do. `getClaims()`
+  // (verified, falls back to {} on no/invalid session) is the correct read.
+  const claims = await claimsFromSupabaseClient(supabase);
 
   function redirectToLogin() {
     const url = request.nextUrl.clone();

@@ -2,7 +2,7 @@ import "server-only";
 
 import { redirect } from "next/navigation";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
-import { claimsFromUser } from "./claims";
+import { claimsFromSupabaseClient } from "./claims";
 
 /**
  * Guard #2 for `(admin)` (FRONTEND_SPEC.md §0.1/§0.2) — platform_admin
@@ -17,7 +17,8 @@ export async function requireAdminSession(nextPath: string) {
   } = await supabase.auth.getUser();
   if (!user) redirect(`/login?next=${encodeURIComponent(nextPath)}`);
 
-  const claims = claimsFromUser(user);
+  // SIGNUP-1 fix (docs/BUILD_NOTES.md): see claims.ts's doc comment.
+  const claims = await claimsFromSupabaseClient(supabase);
   if (!claims.platform_admin) redirect("/?toast=no_access");
 
   const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();

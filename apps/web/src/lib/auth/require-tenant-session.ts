@@ -2,7 +2,7 @@ import "server-only";
 
 import { redirect } from "next/navigation";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
-import { claimsFromUser } from "./claims";
+import { claimsFromSupabaseClient } from "./claims";
 
 /**
  * Guard #2 (the real backstop, FRONTEND_SPEC.md §0.1) for every page that
@@ -19,7 +19,10 @@ export async function requireTenantSession(nextPath: string) {
 
   if (!user) redirect(`/login?next=${encodeURIComponent(nextPath)}`);
 
-  const claims = claimsFromUser(user);
+  // SIGNUP-1 fix: claims live only in the JWT itself (see claims.ts's doc
+  // comment) — `claimsFromUser(user)` never sees the Custom Access Token
+  // Hook's tenant_id/role here.
+  const claims = await claimsFromSupabaseClient(supabase);
   if (!claims.tenant_id) redirect("/?toast=no_access");
 
   const { data: tenant } = await supabase

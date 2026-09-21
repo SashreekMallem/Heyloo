@@ -19,15 +19,24 @@ function makeFrom(queue: Record<string, unknown[]>) {
   });
 }
 
-const mockUser = { id: "u1", app_metadata: { tenant_id: "t1", role: "owner" } };
+const mockUser = { id: "u1", app_metadata: {} };
 let mockGetUser: () => Promise<{ data: { user: unknown } }> = async () => ({
   data: { user: mockUser },
 });
+// SIGNUP-1: claims now come from `auth.getClaims()`, not `user.app_metadata`.
+let mockClaimsAppMetadata: unknown = { tenant_id: "t1", role: "owner" };
 let serverQueue: Record<string, unknown[]> = {};
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({
-    auth: { getUser: () => mockGetUser() },
+    auth: {
+      getUser: () => mockGetUser(),
+      getClaims: () =>
+        Promise.resolve({
+          data: { claims: { app_metadata: mockClaimsAppMetadata } },
+          error: null,
+        }),
+    },
     from: makeFrom(serverQueue),
   }),
 }));
@@ -79,12 +88,14 @@ describe("GET /api/tenant/setup-progress", () => {
 
   it("403s without a tenant_id claim", async () => {
     mockGetUser = async () => ({ data: { user: { id: "u1", app_metadata: {} } } });
+    mockClaimsAppMetadata = {};
     const res = await GET();
     expect(res.status).toBe(403);
   });
 
   it("marks every required step done and complete:true for a fully set-up tenant", async () => {
     mockGetUser = async () => ({ data: { user: mockUser } });
+    mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
     serverQueue = fullyDoneQueue();
     const res = await GET();
     expect(res.status).toBe(200);
@@ -103,6 +114,7 @@ describe("GET /api/tenant/setup-progress", () => {
 
   it("marks a brand-new tenant incomplete with no required step falsely done", async () => {
     mockGetUser = async () => ({ data: { user: mockUser } });
+    mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
     serverQueue = {
       tenants: [
         {
@@ -126,6 +138,7 @@ describe("GET /api/tenant/setup-progress", () => {
 
   it("does not let the optional team/integration steps count toward requiredTotal", async () => {
     mockGetUser = async () => ({ data: { user: mockUser } });
+    mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
     serverQueue = fullyDoneQueue();
     serverQueue["memberships"] = [{ count: 1, error: null }];
     serverQueue["adapter_connections"] = [{ count: 0, error: null }];

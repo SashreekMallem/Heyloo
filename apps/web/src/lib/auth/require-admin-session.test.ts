@@ -13,6 +13,8 @@ vi.mock("next/navigation", () => ({
 }));
 
 let mockUser: unknown = null;
+// SIGNUP-1: claims now come from `auth.getClaims()`, not `user.app_metadata`.
+let mockClaimsAppMetadata: unknown = {};
 let aalResult: unknown = { data: { currentLevel: "aal1", nextLevel: "aal2" } };
 let factorsResult: unknown = { data: { totp: [] } };
 
@@ -20,6 +22,11 @@ vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({
     auth: {
       getUser: () => Promise.resolve({ data: { user: mockUser } }),
+      getClaims: () =>
+        Promise.resolve({
+          data: { claims: { app_metadata: mockClaimsAppMetadata } },
+          error: null,
+        }),
       mfa: {
         getAuthenticatorAssuranceLevel: () => Promise.resolve(aalResult),
         listFactors: () => Promise.resolve(factorsResult),
@@ -48,20 +55,23 @@ describe("requireAdminSession", () => {
   });
 
   it("redirects to the no_access toast when the caller has no platform_admin claim", async () => {
-    mockUser = { id: "u1", app_metadata: { tenant_id: "t1", role: "owner" } };
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
     const dest = await redirectedTo(requireAdminSession("/cockpit"));
     expect(dest).toBe("/?toast=no_access");
   });
 
   it("redirects to MFA enrollment when platform_admin has no verified TOTP factor", async () => {
-    mockUser = { id: "u1", app_metadata: { platform_admin: true } };
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { platform_admin: true };
     factorsResult = { data: { totp: [] } };
     const dest = await redirectedTo(requireAdminSession("/cockpit"));
     expect(dest).toBe("/mfa/enroll");
   });
 
   it("redirects to the AAL2 challenge when enrolled but the session hasn't stepped up", async () => {
-    mockUser = { id: "u1", app_metadata: { platform_admin: true } };
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { platform_admin: true };
     factorsResult = { data: { totp: [{ status: "verified" }] } };
     aalResult = { data: { currentLevel: "aal1", nextLevel: "aal2" } };
     const dest = await redirectedTo(requireAdminSession("/cockpit/tenants"));
@@ -69,10 +79,18 @@ describe("requireAdminSession", () => {
   });
 
   it("returns the session for a platform_admin with a verified factor and an AAL2 session", async () => {
-    mockUser = { id: "u1", app_metadata: { platform_admin: true } };
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { platform_admin: true };
     factorsResult = { data: { totp: [{ status: "verified" }] } };
     aalResult = { data: { currentLevel: "aal2", nextLevel: "aal2" } };
     const result = await requireAdminSession("/cockpit");
     expect(result.claims.platform_admin).toBe(true);
+  });
+
+  it("SIGNUP-1 regression: ignores a stale platform_admin flag in user.app_metadata that isn't in the JWT's own claims", async () => {
+    mockUser = { id: "u1", app_metadata: { platform_admin: true } };
+    mockClaimsAppMetadata = {};
+    const dest = await redirectedTo(requireAdminSession("/cockpit"));
+    expect(dest).toBe("/?toast=no_access");
   });
 });

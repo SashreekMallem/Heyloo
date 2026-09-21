@@ -11,12 +11,21 @@ function chain(result: unknown) {
   return obj;
 }
 
-let session: { user: { app_metadata: { tenant_id?: string } } } | null = null;
+let session: { user: { app_metadata: unknown } } | null = null;
+// SIGNUP-1: claims now come from `auth.getClaims()`, not `session.user.app_metadata`.
+let mockClaimsAppMetadata: unknown = {};
 let serviceQueue: Record<string, unknown[]> = {};
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({
-    auth: { getSession: async () => ({ data: { session } }) },
+    auth: {
+      getSession: async () => ({ data: { session } }),
+      getClaims: () =>
+        Promise.resolve({
+          data: { claims: { app_metadata: mockClaimsAppMetadata } },
+          error: null,
+        }),
+    },
   }),
 }));
 
@@ -41,12 +50,14 @@ describe("GET /api/platform-settings/tenant-plan", () => {
 
   it("403s when the session has no tenant_id claim", async () => {
     session = { user: { app_metadata: {} } };
+    mockClaimsAppMetadata = {};
     const res = await GET();
     expect(res.status).toBe(403);
   });
 
   it("defaults included_text_conversations/overage to the documented BACKEND_SPEC defaults when absent from the price card", async () => {
-    session = { user: { app_metadata: { tenant_id: "t1" } } };
+    session = { user: { app_metadata: {} } };
+    mockClaimsAppMetadata = { tenant_id: "t1" };
     serviceQueue = {
       tenants: [{ data: { vertical: "dental" }, error: null }],
       platform_settings: [
@@ -67,7 +78,8 @@ describe("GET /api/platform-settings/tenant-plan", () => {
   });
 
   it("passes through explicit price-card values when present", async () => {
-    session = { user: { app_metadata: { tenant_id: "t1" } } };
+    session = { user: { app_metadata: {} } };
+    mockClaimsAppMetadata = { tenant_id: "t1" };
     serviceQueue = {
       tenants: [{ data: { vertical: "auto" }, error: null }],
       platform_settings: [

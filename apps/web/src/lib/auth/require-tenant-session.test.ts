@@ -24,11 +24,22 @@ function chain(result: unknown) {
 }
 
 let mockUser: unknown = null;
+// SIGNUP-1: claims now come from `auth.getClaims()` (the JWT's own,
+// hook-injected claims), not `user.app_metadata` — see
+// require-tenant-session.ts / claims.ts's doc comments for why.
+let mockClaimsAppMetadata: unknown = {};
 let tenantResult: unknown = { data: null, error: null };
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({
-    auth: { getUser: () => Promise.resolve({ data: { user: mockUser } }) },
+    auth: {
+      getUser: () => Promise.resolve({ data: { user: mockUser } }),
+      getClaims: () =>
+        Promise.resolve({
+          data: { claims: { app_metadata: mockClaimsAppMetadata } },
+          error: null,
+        }),
+    },
     from: vi.fn(() => chain(tenantResult)),
   }),
 }));
@@ -53,23 +64,33 @@ describe("requireTenantSession", () => {
   });
 
   it("redirects to the no_access toast when the caller has no tenant_id claim", async () => {
-    mockUser = { id: "u1", app_metadata: { platform_admin: true } };
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { platform_admin: true };
     const dest = await redirectedTo(requireTenantSession("/dashboard"));
     expect(dest).toBe("/?toast=no_access");
   });
 
   it("redirects to the no_access toast when the tenant_id claim doesn't resolve to a real tenant row", async () => {
-    mockUser = { id: "u1", app_metadata: { tenant_id: "t1", role: "owner" } };
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
     tenantResult = { data: null, error: null };
     const dest = await redirectedTo(requireTenantSession("/dashboard"));
     expect(dest).toBe("/?toast=no_access");
   });
 
   it("returns the session, claims, and tenant row for a valid tenant member", async () => {
-    mockUser = { id: "u1", app_metadata: { tenant_id: "t1", role: "owner" } };
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
     tenantResult = { data: { id: "t1", name: "Acme", status: "active" }, error: null };
     const result = await requireTenantSession("/dashboard");
     expect(result.claims.tenant_id).toBe("t1");
     expect(result.tenant).toEqual({ id: "t1", name: "Acme", status: "active" });
+  });
+
+  it("SIGNUP-1 regression: ignores a stale tenant_id in user.app_metadata that isn't in the JWT's own claims (the exact bug this fix closes)", async () => {
+    mockUser = { id: "u1", app_metadata: { tenant_id: "stale-tenant" } };
+    mockClaimsAppMetadata = {};
+    const dest = await redirectedTo(requireTenantSession("/dashboard"));
+    expect(dest).toBe("/?toast=no_access");
   });
 });

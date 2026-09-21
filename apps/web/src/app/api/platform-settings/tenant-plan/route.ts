@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { claimsFromUser } from "@/lib/auth/claims";
+import { claimsFromSupabaseClient } from "@/lib/auth/claims";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-role";
 
@@ -41,7 +41,11 @@ export async function GET() {
   } = await supabase.auth.getSession();
   if (!session) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
 
-  const claims = claimsFromUser(session.user);
+  // SIGNUP-1 fix (docs/BUILD_NOTES.md): see claims.ts's doc comment —
+  // `session.user.app_metadata` never carries the Custom Access Token
+  // Hook's tenant_id. Confirmed live: this endpoint 403'd for a real,
+  // freshly provisioned tenant owner before this fix.
+  const claims = await claimsFromSupabaseClient(supabase);
   if (!claims.tenant_id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   const service = createSupabaseServiceRoleServerClient();

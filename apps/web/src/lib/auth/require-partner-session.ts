@@ -2,7 +2,7 @@ import "server-only";
 
 import { redirect } from "next/navigation";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
-import { claimsFromUser } from "./claims";
+import { claimsFromSupabaseClient } from "./claims";
 
 const CURRENT_FTC_POLICY_VERSION = "2026-09";
 
@@ -14,7 +14,8 @@ export async function requirePartnerSession(nextPath: string) {
   } = await supabase.auth.getUser();
   if (!user) redirect(`/login?next=${encodeURIComponent(nextPath)}`);
 
-  const claims = claimsFromUser(user);
+  // SIGNUP-1 fix (docs/BUILD_NOTES.md): see claims.ts's doc comment.
+  const claims = await claimsFromSupabaseClient(supabase);
   if (!claims.referral_partner_id) redirect("/?toast=no_access");
 
   const { data: partner } = await supabase

@@ -1,7 +1,6 @@
 "use client";
 
 import { type Login, loginSchema } from "@heyloo/canonical-types";
-import { extractClaims } from "@heyloo/supabase-client";
 import {
   Button,
   Form,
@@ -18,6 +17,7 @@ import { Suspense, useState } from "react";
 import { useForm } from "react-hook-form";
 import { AuthShell } from "@/components/marketing/auth-shell";
 import { Link, useRouter } from "@/i18n/navigation";
+import { claimsFromSupabaseClient } from "@/lib/auth/claims";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
 /** `/login` (FRONTEND_SPEC.md §9.1) — role-based post-login redirect. */
@@ -47,7 +47,10 @@ function LoginForm() {
       setError("Incorrect email or password.");
       return;
     }
-    const claims = extractClaims(data.user.app_metadata);
+    // SIGNUP-1 fix (docs/BUILD_NOTES.md): `data.user.app_metadata` never
+    // carries the Custom Access Token Hook's tenant_id/role/platform_admin/
+    // referral_partner_id — only the freshly-minted JWT's own claims do.
+    const claims = await claimsFromSupabaseClient(supabaseBrowserClient);
     const next = searchParams.get("next");
     if (next) {
       router.push(next);
