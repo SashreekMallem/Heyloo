@@ -47,14 +47,20 @@ the database or via a signed provider request, not just unit-tested):
   a real resource create+delete all returned 200/200/200/200 with the
   hook-minted JWT, and 401 with no session).
 
-**Known live bug**: the tenant call-detail recording player's signing
-route (`GET /api/tenant/calls/[id]/recording`, added by `DASH-1`) 502s
-`{"error":"sign_failed"}` for every real recording — confirmed live
-(`LOGIN-1`, 2026-09-21) against tenant `test-riverside-auto`'s real
-calls, both audio channels, two different call ids. Root cause diagnosed
-(a `recordings/` bucket-prefix double-applied before `createSignedUrl`)
-but not fixed — see the DASH-1 callout below and `docs/BUILD_NOTES.md`'s
-LOGIN-1 entry for the exact code-level fix needed.
+**Fixed and live-reproven, `DASH-2` (2026-09-21)**: the tenant
+call-detail recording player's signing route (`GET /api/tenant/calls/
+[id]/recording`, added by `DASH-1`) used to 502 `{"error":"sign_failed"}`
+for every real recording (`LOGIN-1`, 2026-09-21 — a `recordings/`
+bucket-prefix double-applied before `createSignedUrl`). Fixed at both
+the read side (strips the prefix before signing, tolerant of both the
+legacy prefixed form and the new bucket-relative form) and the write
+side (`worker-recording-fetch` no longer bakes the prefix in). Live
+re-tested against the SAME pre-fix, legacy-prefixed `call_logs` row
+LOGIN-1 used: now 200 `{"url", "expires_in"}`, and a `HEAD` of that
+signed URL returns 200 `content-type: audio/wav`. See the DASH-2
+callout below and `docs/BUILD_NOTES.md`'s DASH-2 entry for the full
+results table, including a real regression this fix introduced and
+corrected before merge (caught by CI's RLS cross-tenant probe).
 
 **Proven by tests, not yet by a live call/credential** (code is
 deployed and unit/integration-tested; the live proof needs an owner
@@ -80,37 +86,39 @@ transfer number, one manual test call from a different phone, counsel
 sign-off (BIPA/HIPAA/TCPA/CAN-SPAM/PCI/FTC/DPA), Vercel/Retell-agent
 cleanup, credential rotation, optional custom domain.
 
-**Partially fixed, DASH-1 (2026-09-21); live-tested and found still
-broken, LOGIN-1 (2026-09-21)** — the gap FINAL-1 flagged just below is
-half-resolved: the tenant dashboard's call-detail page
-(`apps/web/.../dashboard/calls/[id]/page.tsx` → `call-detail-client.tsx`)
-no longer puts `call_logs.recording_url`/`stereo_recording_url` (raw
-private-bucket paths) into `<audio src>`, and the Client Component no
-longer even receives those paths as props — that part is proven live.
-But the new signing route itself,
+**Fixed, DASH-1 (2026-09-21) + DASH-2 (2026-09-21); proven live,
+DASH-2 (2026-09-21)** — the gap FINAL-1 flagged just below is now fully
+resolved and live-proven, not just unit-tested. The tenant dashboard's
+call-detail page (`apps/web/.../dashboard/calls/[id]/page.tsx` →
+`call-detail-client.tsx`) no longer puts `call_logs.recording_url`/
+`stereo_recording_url` (raw private-bucket paths) into `<audio src>`,
+and the Client Component no longer even receives those paths as props
+(`DASH-1`). The signing route itself,
 `apps/web/src/app/api/tenant/calls/[id]/recording/route.ts` (re-verifies
 the caller's own `tenant_id` via `claimsFromSupabaseClient` before
 minting a 5-minute signed URL server-side, `?channel=stereo` for the
-second file), was live-tested against a real tenant owner session and a
-real recorded call (`LOGIN-1`, `docs/BUILD_NOTES.md`) and **fails every
-time with a 502 `{"error":"sign_failed"}`**. Root cause (diagnosed, not
-fixed — out of LOGIN-1's scope): `worker-recording-fetch` stores
-`call_logs.recording_url` WITH a `recordings/` bucket-name prefix baked
-in (`recordings/<tenant>/<call>.wav`), but the real Storage object key
-is bucket-relative (no prefix — `worker-recording-fetch`'s own upload
-call strips it before writing). This route passes the raw, prefixed DB
-value straight into `.storage.from("recordings").createSignedUrl(...)`,
-which already scopes to the `recordings` bucket, so the effective
-lookup becomes `recordings/recordings/<tenant>/<call>.wav` and never
-matches a real object. Proven by unit tests (12 new, all green —
-`docs/BUILD_NOTES.md`'s DASH-1 entry) but those tests mock the signing
-call, so they didn't (and couldn't) catch this path mismatch. Fix
-needed: strip a leading `recordings/` from the stored path before
-signing (or stop double-prefixing at write time and update both
-readers) — not yet queued as a task (`docs/BUILD_NOTES.md`'s LOGIN-1
-entry has the full diagnosis for whoever picks this up).
+second file), 502'd `{"error":"sign_failed"}` for every real recording
+when LOGIN-1 live-tested it (2026-09-21) — root cause: `worker-
+recording-fetch` stored `call_logs.recording_url` WITH a `recordings/`
+bucket-name prefix baked in, but the real Storage object key is
+bucket-relative, so the route's `.storage.from("recordings")
+.createSignedUrl(...)` call effectively looked up
+`recordings/recordings/<tenant>/<call>.wav` and never matched. `DASH-2`
+fixed both ends — the route strips a leading `recordings/` before
+signing (tolerant of both the legacy prefixed form on existing rows,
+which are not migrated, and the new bucket-relative form), and the
+worker stores bucket-relative keys going forward — and live-retested
+the EXACT SAME pre-fix, legacy-prefixed `call_logs` row LOGIN-1 used:
+now 200 `{"url", "expires_in": 300}`, and a `HEAD` of that signed URL
+returns 200 `content-type: audio/wav`, `content-length: 10260030`. Unit
+tests cover both forms in both the route and worker suites (`route.
+test.ts`: 8 total, DASH-1's 7 plus DASH-2's 1 new legacy-prefix case;
+`worker-recording-fetch/handler.test.ts`: 1 new bucket-relative-write
+assertion).
 `docs/VERIFY.md`'s DASH-1 entry has the `createSignedUrl` doc
-confirmation.
+confirmation. Full results table: `docs/BUILD_NOTES.md`'s DASH-2 entry,
+including a real regression this fix introduced and corrected before
+merge (caught by CI's RLS cross-tenant probe, not by manual testing).
 
 ---
 

@@ -4691,3 +4691,127 @@ scope here; flagged for awareness only, no code changed).
 proven live with today's date; DASH-1's "Fixed" callout updated to record
 that live testing was performed and found the signing step broken, with
 the root cause above, rather than left as "unverified."
+
+**DASH-2 (2026-09-21)**: fixed both bugs LOGIN-1 diagnosed and re-proved
+the recording-signing path live, end to end.
+
+**Fix 1 — recording-signing double-prefix**: `apps/web/.../calls/[id]/
+recording/route.ts` now strips a leading `recordings/` from
+`call_logs.recording_url`/`stereo_recording_url` before calling
+`storage.from("recordings").createSignedUrl(...)` (a
+`normalizeRecordingObjectPath` helper, no-op when the value is already
+bucket-relative). `worker-recording-fetch/handler.ts` now stores the
+bucket-relative key at write time (`${tenantId}/${callId}.wav`, no
+`recordings/` prefix baked in) instead of the double-prefixed form
+LOGIN-1 found. `worker-recording-fetch/index.ts`'s `uploadToStorage`
+already stripped a `recordings/` prefix defensively before hitting the
+Storage REST endpoint, so it needed no behavior change — just a comment
+explaining it's now tolerance, not load-bearing, for new writes. Per the
+brief, existing rows are NOT migrated; both readers now tolerate either
+form so old and new rows work side by side. Tests added for both forms:
+`route.test.ts` gained "strips a legacy recordings/ prefix before
+signing (pre-DASH-2 rows)"; `handler.test.ts` gained an explicit
+assertion the write side never bakes the prefix in, with the
+legacy-tolerance case cross-referenced to the route test (the worker
+only ever writes one form going forward, so there's no "both forms" to
+exercise on the write side itself). `worker-recording-fetch` redeployed
+live via `npx supabase functions deploy worker-recording-fetch
+--project-ref qulcubtwqsqgqpfgvorn --use-api --yes --import-map
+functions/deno.json` (version 26 per the Management API's function
+listing) — note the `--import-map functions/deno.json` flag was
+required this time (bare `--use-api --yes` 400'd on `Failed to bundle
+the function ... Relative import path "postgres" not prefixed with /
+or ./ or ../`, since `_shared/deno/db.ts` imports the bare specifier
+`postgres` that only resolves via `supabase/functions/deno.json`'s
+import map); prior tasks' deploys of functions that don't import
+`postgres` directly didn't need it, which is presumably why this hadn't
+surfaced before — worth carrying the flag forward for any future
+deploy of a function on this import path.
+
+**Fix 2 — hook's unordered membership pick**: new migration
+`20260921163000_custom_access_token_hook_deterministic_membership.sql`
+redeclares `custom_access_token_hook` (never edits the original) adding
+`order by created_at asc, id asc` to the membership lookup — `public.
+memberships` has no primary/default-tenant flag column, so this is the
+earliest-membership, id-tiebreak deterministic order LOGIN-1's brief
+asked for.
+
+**A regression this task introduced and fixed before merge — full
+honesty, since CLAUDE.md Rule 2 treats the RLS cross-tenant probe as a
+hard gate**: `custom_access_token_hook` had already been redeclared
+once before, by `20260910110000_impersonation_claim.sql`, to add the
+`impersonated_by`/`impersonation_edit_enabled` claims every tenant-write
+RLS policy's `(not fn_jwt_is_impersonating() or
+fn_jwt_impersonation_edit_enabled())` guard depends on. The first version
+of `20260921163000` copied the deterministic-order change onto the
+function body from the ORIGINAL `20260907131400_functions_triggers.sql`
+migration instead of the current one — since `20260921163000` runs
+AFTER `20260910110000` (migrations apply in filename order), this
+silently deleted the impersonation-claim logic. Net effect: the hook
+stopped stamping impersonation claims onto any session's JWT at all, so
+`fn_jwt_is_impersonating()` was always false and the write guard's
+`(not fn_jwt_is_impersonating() or ...)` was vacuously true for every
+write — a read-only impersonated admin session could write. CI's own
+"RLS cross-tenant probe" job caught this on the very first push (commit
+`418f0d1`, run 47,
+`https://github.com/SashreekMallem/Heyloo/actions/runs/35625975420`):
+"IMPERSONATION REGRESSION: a read-only impersonated session ... was
+able to INSERT a booking (status 201)". Root-caused within minutes by
+reading the job's own failure log (`mcp__github__get_job_logs`) and
+diffing which migrations redeclare that function
+(`grep -rl "create or replace function public.custom_access_token_hook"
+supabase/migrations`). Fixed live IMMEDIATELY (before the fix commit
+even existed) by reapplying the correct, full function body via the
+management API SQL proxy — the live gap between "CI caught it" and
+"live DB corrected" was under 5 minutes, confirmed via
+`pg_get_functiondef`. Per CLAUDE.md Rule 2 ("never edit an applied
+migration"), `20260921163000` itself was left exactly as originally
+committed/pushed (broken) rather than rewritten — a NEW, forward-fixing
+migration, `20260921164500_custom_access_token_hook_restore_
+impersonation_claims.sql`, redeclares the function once more with the
+deterministic order AND the impersonation claims both present. Applied
+live and reconfirmed via `pg_get_functiondef` (order by + impersonation
+logic both present) before committing/pushing the fix. CI run 48
+(commit `426b612`) is the one that must be green, not run 47 — see the
+CI section below.
+
+**Gates** (before either code commit): `pnpm lint` (0 errors, same
+pre-existing warnings), `pnpm typecheck` (clean), `pnpm test
+--filter=@heyloo/web` (595/595, includes the two new recording-route
+tests), `pnpm run test` in `supabase/functions` (1153/1153, includes
+the new worker test).
+
+**Live re-proof, `https://heyloo-voice.vercel.app`, after the Vercel
+deploy of `main` picked up the code fix** (same owner session/cookie as
+LOGIN-1 — the JWT minted while this account was temporarily attached to
+`test-riverside-auto` was still valid, so no membership re-swap was
+needed this round; verified via SQL the membership was still exactly
+`signup-1-auto`, untouched):
+
+| # | Check | LOGIN-1 (before) | DASH-2 (after) |
+|---|-------|-------------------|-----------------|
+| 7 | `GET /api/tenant/calls/<id>/recording` (real recording, pre-DASH-2 row with the legacy `recordings/`-prefixed `recording_url`) | 502 `sign_failed` | **200** `{"url": "https://.../storage/v1/object/sign/recordings/<tenant>/<call>.wav?token=...", "expires_in": 300}` |
+| 8 | `HEAD` the signed URL | N/A (no URL to HEAD) | **200**, `content-type: audio/wav`, `content-length: 10260030` |
+| 9 | Same route, no session cookie | 401 `unauthenticated` | **401** `unauthenticated` (unchanged, as expected) |
+
+Check 7 signing a PRE-DASH-2, legacy-prefixed row live is exactly the
+"both forms" proof the brief asked for — this specific `call_logs` row
+(`03097a3c-2206-4699-a6b7-f42573f6fc39`, tenant
+`b2efae9d-8309-46d6-a950-31d683616cdc`) was never touched/migrated; only
+the route's read-side normalization changed.
+
+**CI**: run 47 (`418f0d1`,
+`https://github.com/SashreekMallem/Heyloo/actions/runs/35625975420`) —
+10/11 jobs green, "RLS cross-tenant probe" failed (the regression above,
+already root-caused and fixed by the time this entry was written). Run
+48 (`426b612`,
+`https://github.com/SashreekMallem/Heyloo/actions/runs/35626822240`) —
+**11/11 jobs green** (Lint, Typecheck, Test, Build, Playwright E2E,
+RLS cross-tenant probe, Migrations check, Cron jobs + pgmq queues
+check, verify_jwt drift guard, Repo hygiene, Site perf budget),
+including "RLS cross-tenant probe" — the job that caught the
+regression above now passes clean on the corrected commit.
+
+**Docs**: this entry; `docs/LAUNCH_STATUS.md`'s DASH-1 callout and the
+LOGIN-1 "Known live bug" callout both updated to record the fix and the
+live re-proof above.
