@@ -5410,20 +5410,21 @@ is now proven live post-deploy, closing the "chicken-and-egg" gap
 ONBOARD-1 itself flagged (its own fix shipped in the same commit that
 found it, so it couldn't be re-tested live before this task's session).
 
-**Not re-provable live this session**: the "Publish changes" button and
-its `/api/tenant/agent/publish` Next.js proxy route only exist in THIS
-task's own commits — `https://heyloo-voice.vercel.app` is still serving
-whatever Vercel last deployed from `main` (pre-PUBLISH-1), so a live
-`POST` to that exact URL 404's until Vercel redeploys off this task's
-push. The underlying mechanism (the edge function itself, same owner-JWT
-authorization rule, `tenant_id` from the JWT only) is fully live-proven
-above via a direct call to `api-tenant-agent-publish` — the Next.js route
-is a zero-logic forwarding shim over it (6 passing route tests cover its
-own behavior: 401/403/200/502/503, body/header forwarding), not
-independently re-verified against the live Vercel deployment in this
-same session for the same reason PARITY-1's own booking-cancel fix
-wasn't (the fix and the live re-proof can't both happen before the same
-deploy).
+**Step 7 — the Next.js route itself, re-checked after Vercel redeployed**:
+immediately after the push, `https://heyloo-voice.vercel.app` was still
+serving the pre-PUBLISH-1 build (a live `POST /api/tenant/agent/publish`
+404'd — the route didn't exist yet), the same "fix and live re-proof
+can't both happen before the same deploy" shape PARITY-1's own
+booking-cancel note already established. Once CI on `main` (commit
+`1b0c9fb`) finished green and Vercel's own auto-deploy caught up, the
+SAME request was re-tried: `POST https://heyloo-voice.vercel.app/api/
+tenant/agent/publish` with the owner's session cookie — **200
+`{"tenant_id":"5a446e12-...","agent_id":"agent_fba934f5770ae992b9fe2441a7","published_at":"2026-09-21T19:48:46.072Z"}`**,
+a third distinct agent id in this session's own timeline. `inspect`
+confirms it live: `is_published: true`, and the tenant's number
+re-pointed to this exact agent id. The full chain — dashboard button ->
+Next.js proxy -> edge function -> Retell -> DB — is now proven live
+end to end, not just the edge function in isolation.
 
 ### Deliverable 4 — `orders`/notification-bell `is_test` consistency
 
@@ -5482,13 +5483,21 @@ tabs.tsx`, `packages/supabase-client/src/database.types.ts`.
 
 ### Still open, not chased further (CLAUDE.md Rule 4)
 
-- The "Publish changes" button/route's live behavior against the
-  deployed Vercel site itself (as opposed to the edge function it calls,
-  which IS live-proven above) needs a re-check once this push deploys —
-  same "fix and live re-proof can't both happen pre-deploy" shape as
-  PARITY-1's own booking-cancel note.
 - Dental's `insurances_accepted`, restaurant's `prep_time_text`/
   `delivery_terms_text` (ONBOARD-1) — untouched, out of this task's scope.
 - `admin/handler.ts`'s template-publish route (`toCompilerTemplate`) was
   touched only to drop its now-pointless `transferNumber` argument — not
   otherwise exercised live this session.
+
+### CI note
+
+First push (commit `f6330ba`) failed `verify_jwt drift guard (EDGE_AUDIT
+M3)` — the new `api-tenant-agent-publish` function had no explicit
+`[functions.api-tenant-agent-publish]` block in `supabase/config.toml`
+(the guard requires one for every function directory, unlike Supabase's
+own platform default it can't otherwise verify against). Fixed in commit
+`1b0c9fb` (same `verify_jwt = true` posture as its sibling
+`api-tenant-test-call`) — confirmed locally
+(`node --experimental-strip-types scripts/ci/verify-jwt-guard.ts`) before
+pushing again. All 11 jobs green on `main` at `1b0c9fb`:
+`https://github.com/SashreekMallem/Heyloo/actions/runs/35646572837`.
