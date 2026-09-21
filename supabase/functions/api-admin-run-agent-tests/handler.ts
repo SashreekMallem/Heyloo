@@ -161,11 +161,29 @@ async function fetchScenarioIntakeArgs(
   sql: SqlClient,
   tenantId: string,
   scenario: TestScenario,
-  startedAt: string,
 ): Promise<{ found: boolean; args: Record<string, unknown> }> {
   const phone = scenario.expectedPhone;
   if (!phone) return { found: false, args: {} };
 
+  // CALL-8: deliberately NO `created_at >= startedAt` filter on any of the
+  // three lookups below (bookings/orders/call_logs) — live-observed root
+  // cause, confirmed against a real duplicate run: Retell's batch-test
+  // simulator reuses the SAME synthetic `call_id` ("playground", or this
+  // codebase's own per-tenant-keyed variant, CALL-6) across DIFFERENT test
+  // invocations for the same tenant, and `create_booking`/`create_order`'s
+  // idempotency keys are derived from `(call_id, start)`/`(call_id, items)`
+  // — so a scenario whose persona picks the same slot/items run after run
+  // (e.g. "the earliest available time") can hit `bookingIdempotencyKey`'s
+  // REPLAY path and return an EARLIER run's already-existing row rather
+  // than writing a new one. That's correct, load-bearing behavior for a
+  // REAL call (a genuine retry must never duplicate) — but it means a
+  // fresh time-windowed query can miss a booking that, from this scenario's
+  // own point of view, absolutely did get created with every field intact,
+  // just not inside this exact wall-clock window. Matching by this
+  // scenario's own unique-within-vertical `expectedPhone` (querying for
+  // the MOST RECENT matching row) is the reliable signal instead: unique
+  // phones mean this can only ever match a row this exact scenario's own
+  // persona produced.
   if (scenario.writeIntent === "create_booking") {
     const rows = await sql<{
       start_at: string;
@@ -179,7 +197,7 @@ async function fetchScenarioIntakeArgs(
         c.name as customer_name, c.phone_e164 as customer_phone
       from public.bookings b
       join public.customers c on c.id = b.customer_id
-      where b.tenant_id = ${tenantId} and c.phone_e164 = ${phone} and b.created_at >= ${startedAt}
+      where b.tenant_id = ${tenantId} and c.phone_e164 = ${phone}
       order by b.created_at desc
       limit 1
     `;
@@ -202,7 +220,7 @@ async function fetchScenarioIntakeArgs(
       select c.name as customer_name, c.phone_e164 as customer_phone
       from public.orders o
       join public.customers c on c.id = o.customer_id
-      where o.tenant_id = ${tenantId} and c.phone_e164 = ${phone} and o.created_at >= ${startedAt}
+      where o.tenant_id = ${tenantId} and c.phone_e164 = ${phone}
       order by o.created_at desc
       limit 1
     `;
@@ -276,7 +294,6 @@ async function verifyScenarioFields(
   tenantId: string,
   vertical: Vertical,
   scenarios: TestScenario[],
-  startedAt: string,
   results: ScenarioResult[],
 ): Promise<void> {
   const byId = new Map(scenarios.map((s) => [s.id, s]));
@@ -284,7 +301,7 @@ async function verifyScenarioFields(
     const scenario = byId.get(result.case_id);
     if (!scenario || scenario.writeIntent === "none") continue;
     if (result.status !== "pass" && result.status !== "fail") continue; // pending/in_progress/error: nothing settled to check
-    const { found, args } = await fetchScenarioIntakeArgs(sql, tenantId, scenario, startedAt);
+    const { found, args } = await fetchScenarioIntakeArgs(sql, tenantId, scenario);
     const required = getMissingRequiredFields(vertical, scenario.writeIntent, {});
     const requiredPaths = required.map((f) => f.path);
     const missing = found
@@ -734,7 +751,6 @@ export async function runAgentTests(
       req.tenant_id,
       vertical,
       scenariosForVertical(vertical),
-      startedAt,
       results,
     );
   }
