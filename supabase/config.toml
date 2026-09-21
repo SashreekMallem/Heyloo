@@ -253,3 +253,9 @@ verify_jwt = false
 # (scripts/e2e/retell-web-call.ts).
 [functions.api-admin-create-web-call]
 verify_jwt = false
+# api-admin-complete-test-checkout (SIGNUP-1): same internal-only posture —
+# stands in for the tenant/membership-creation half of /api-checkout when
+# Stripe is not configured, only ever for an explicitly `is_test = true`
+# tenant (docs/BUILD_NOTES.md SIGNUP-1 entry).
+[functions.api-admin-complete-test-checkout]
+verify_jwt = false
