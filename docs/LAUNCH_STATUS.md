@@ -12,6 +12,36 @@ build environment cannot create — the full, ordered checklist is
 for "is X done" — the entries stay as history/detail, not as the current
 source of truth.
 
+**ONBOARD-1 (2026-09-21)**: closes the owner's own "can a customer
+onboard, set up, and start working instantly?" question, live, through
+the real portal routes/pages (`docs/BUILD_NOTES.md` has the full
+results). Short answer: **yes, once one real gap is fixed (done in this
+task) — a newly created resource had ZERO bookable `availability_slots`
+for up to 24 hours** (only the once-daily cron populated them; nothing
+fired on resource creation) — meaning a fresh tenant's AI could answer
+and quote real services/hours but could never actually book anything
+until the next nightly run. Fixed at the root (`POST /api/tenant/
+resources` now regenerates slots for the new resource immediately,
+service-role, narrowly scoped) and live-reproven: a real booking with
+every required field, `status: confirmed`. Hours/services/prices/
+greeting-name/special-instructions/vertical-details all take effect on
+the VERY NEXT call, no republish, live-confirmed via batch-test
+transcripts; the ONE thing that still needs a republish is the
+transfer-call destination (compiled in at publish time), and there is
+**no self-service way to trigger that republish today** (no dashboard
+action; the only mechanism, `api-provision`'s `action: "republish"`, is
+internal-secret-only) — flagged as a real, unbuilt follow-up, not fixed.
+Owner notifications today are in-portal only (calls/bookings/orders
+pages + a notification bell); SMS/email both fail closed cleanly
+(`provider_not_configured`) since Twilio/Resend aren't configured — no
+change from `OPS-8`. A second real bug found and fixed live: cancelling
+a booking with a matching active waitlist entry 500'd (an RLS gap in a
+trigger's own side-effect insert, invisible to every prior voice-hot-path
+test since that path already used service-role). 6 of 8 verticals have
+no gap between what the portal can set and what the compiled prompt
+actually speaks; dental's "insurances accepted" field is portal-settable
+but fully inert by design (PHI avoidance), flagged not removed.
+
 **Proven live** (a real call/webhook/write happened and was inspected in
 the database or via a signed provider request, not just unit-tested):
 - Full call path: `voice-inbound` (dynamic variables + caller routing) →

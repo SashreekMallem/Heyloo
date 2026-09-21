@@ -52,6 +52,16 @@ vi.mock("@/lib/supabase/server", () => ({
   }),
 }));
 
+// ONBOARD-1: the route's own POST handler calls this (service-role,
+// narrowly scoped) after every resource insert to populate
+// `availability_slots` immediately rather than waiting for the next
+// nightly `fn_cron_availability_rollforward` run — see route.ts's own
+// comment and docs/BUILD_NOTES.md ONBOARD-1.
+const mockRpc = vi.fn(async () => ({ data: null, error: null }) as { data: null; error: unknown });
+vi.mock("@/lib/supabase/service-role", () => ({
+  createSupabaseServiceRoleServerClient: () => ({ rpc: mockRpc }),
+}));
+
 const { GET, POST } = await import("./route");
 
 function postRequest(body: unknown) {
@@ -130,10 +140,28 @@ describe("POST /api/tenant/resources", () => {
   it("creates a resource scoped to the caller's tenant", async () => {
     serverQueue = { resources: [{ data: { id: "r1" }, error: null }] };
     mockGetUser = async () => ({ data: { user: mockUser } });
+    mockRpc.mockClear();
     const res = await POST(
       postRequest({ type: "room", name: "Room 1", capacity: 2, room_type: "queen" }),
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, id: "r1" });
+    // ONBOARD-1: the new resource's own id + the caller's own (JWT-derived)
+    // tenant_id are passed, never anything client-supplied.
+    expect(mockRpc).toHaveBeenCalledWith("fn_regenerate_availability_slots", {
+      p_tenant_id: "t1",
+      p_resource_id: "r1",
+      p_days_ahead: null,
+    });
+  });
+
+  it("ONBOARD-1: still returns 200 (resource already created) when availability-slot regeneration itself errors", async () => {
+    serverQueue = { resources: [{ data: { id: "r2" }, error: null }] };
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    mockRpc.mockClear();
+    mockRpc.mockResolvedValueOnce({ data: null, error: { message: "boom" } });
+    const res = await POST(postRequest({ type: "bay", name: "Bay 1" }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, id: "r2" });
   });
 });

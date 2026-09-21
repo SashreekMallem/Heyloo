@@ -870,6 +870,15 @@ export type Database = {
         Args: { p_message_id: string };
         Returns: undefined;
       };
+      // ONBOARD-1: called by `apps/web/.../api/tenant/resources/route.ts`
+      // (service-role, after a resource insert) so a newly created resource
+      // has real `availability_slots` rows before the next nightly
+      // `fn_cron_availability_rollforward` run — see that route's own
+      // comment and docs/BUILD_NOTES.md ONBOARD-1.
+      fn_regenerate_availability_slots: {
+        Args: { p_tenant_id: string; p_resource_id: string; p_days_ahead: number | null };
+        Returns: undefined;
+      };
     };
   };
 };

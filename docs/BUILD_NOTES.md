@@ -4815,3 +4815,400 @@ regression above now passes clean on the corrected commit.
 **Docs**: this entry; `docs/LAUNCH_STATUS.md`'s DASH-1 callout and the
 LOGIN-1 "Known live bug" callout both updated to record the fix and the
 live re-proof above.
+
+## ONBOARD-1 (2026-09-21) — "can a customer onboard, set up, and start working instantly?" answered live, through the real portal; one root-cause onboarding blocker found and fixed (new resources had zero bookable slots for up to 24h); one operator-action 500 found and fixed (cancelling a booking with a matching waitlist entry)
+
+**Owner's question**: can a customer onboard, set up, and start working
+instantly? Do they get messages or check the portal? Is it designed for
+all verticals? Answered below with live evidence through the real portal
+routes/pages against `signup-1-auto` (owner `signup-test-1789974718826-
+891@gmail.com`'s tenant, 5a446e12-1fc3-4b2a-a4c9-7f9a1ab09737) — never SQL
+shortcuts for anything this task claims as "verified."
+
+### Setup — session, per this task's own instructed fallback path
+
+The known owner's password was not available to this session (never
+printed by any prior task). Per this task's own explicit fallback: called
+`auth.signUp` ONCE (`onboard1-<ts>@gmail.com` — `@example.com`, the
+literal domain this task's brief suggested, is rejected by this project's
+own signup validator, already documented in SIGNUP-1; substituted `@gmail.
+com` as SIGNUP-1 did, one deviation, documented here per CLAUDE.md Rule 4),
+then `update auth.users set email_confirmed_at = now()` ONCE via `sbq.sh`
+— both succeeded, no retry needed. Attached the new user as `owner` of
+`signup-1-auto` via one `public.memberships` insert (no `auth.*` write
+beyond the one permitted `email_confirmed_at` update). Signed in via
+GoTrue REST (publishable key fetched live via the Management API's
+`api-keys` listing — `heyloo.env`'s copy was a placeholder, same gap
+AUTH-1 hit; unlike AUTH-1, fetching the real key this time was not denied),
+confirmed the minted JWT's `app_metadata.tenant_id`/`role` via direct
+decode, then built the real `@supabase/ssr` session cookie
+(`sb-qulcubtwqsqgqpfgvorn-auth-token`, LOGIN-1's established format) and
+used it as a `Cookie` header on Node/curl requests against the LIVE
+`https://heyloo-voice.vercel.app` deployment for every check below —
+genuinely the same request shape a real browser sends, not a shortcut.
+When deliverable 3's addendum needed a second tenant (`test-restaurant-
+trattoria`), swapped this same user's membership row (delete + insert +
+refresh, LOGIN-1's exact precedent), did that work, then swapped back and
+confirmed via SQL the membership is a single row on `signup-1-auto` again.
+
+### Deliverable 1 — portal self-setup, through the real routes, every write 2xx and SQL-verified
+
+`apps/web/src/app/api/tenant/**` route inventory (30 `route.ts` files):
+`agent/vertical-details`, `bookings/[id]`, `calls/[id]/recording`,
+`calls/export`, `customers/[id]/notes`, `delivery/airtable/*` (4),
+`integrations/*` (5), `messages/[phone]`, `offerings` + `[id]` + `bulk` +
+`import`, `orders/[id]`, `payment-links/[id]/resend`, `refer/ensure-link`,
+`resources` + `[id]`, `settings/reminders-review`, `setup-progress`,
+`team` + `team/invite`, `test-agent/web-call`, `waitlist/[id]`. Reading
+the dashboard pages that call them showed a real architectural split, not
+a gap: `hours`/`greeting`/`instructions`/`agent/services` tabs and the
+`setup/offerings`+`setup/resources` wizard pages write straight to
+PostgREST (`supabaseBrowserClient.from(...).update/insert(...)`, RLS-
+scoped) rather than through a dedicated Route Handler — only `vertical-
+details` and `settings/reminders-review` are actual POST routes for
+settings. Both surfaces are "the real portal API" (PostgREST IS
+Supabase's REST API, gated by the same RLS the browser client uses) — this
+task exercised both, exactly as the UI does, never a raw admin/SQL write.
+
+| # | Setting | Surface exercised | Result |
+|---|---|---|---|
+| 1 | 3 offerings w/ prices (Oil Change $75, Brake Inspection $0, Check Engine Diagnostic $149) | `POST /api/tenant/offerings` ×3 | 200, 200, 200 |
+| 2 | 2 resources (Bay 1, Bay 2) | `POST /api/tenant/resources` ×2 | 200, 200 |
+| 3 | Business hours: Sun closed, Sat 9–1, Mon–Fri 8–6; 1 exception (2026-11-26 Thanksgiving, closed) | PostgREST `PATCH tenants` (mirrors `HoursTabPage`) | 200 |
+| 4 | Vertical details (auto): tow partner (Riverside Towing (ONBOARD-1), +16105550199), vehicle makes serviced, cancellation policy ($25/24h) | `POST /api/tenant/agent/vertical-details` | 200 |
+| 5 | Special instructions, transfer number, voicemail message, manager name/phone, parking info, accessibility notes | PostgREST `PATCH agent_configs` (mirrors `InstructionsTabPage`) | 200 |
+| 6 | Assistant/greeting name ("Nova") | PostgREST `PATCH agent_configs` (mirrors `GreetingTabPage`) | 200 |
+| 7 | Reminders/review settings (voice reminders + review request on, review URL, avg ticket) | `POST /api/tenant/settings/reminders-review` | 200 |
+
+All 10 writes returned 2xx and were confirmed via SQL immediately after
+(exact values — `business_hours.sun.closed: true`, `hours_exceptions[0].
+date: 2026-11-26`, `agent_configs.assistant_name: "Nova"`, `dynamic_
+variable_overrides.tow_partner.name: "Riverside Towing (ONBOARD-1)"`,
+3 `offerings` rows, 2 `resources` rows). **No route 4xx/5xx'd** on this
+first pass — the one real onboarding blocker this task found was NOT a
+route status code at all; see "Root-cause finding" below.
+
+`auto`'s `verticalDetailsSchema` fields are `cancellation_policy`,
+`tow_partner`, `vehicle_makes_serviced` — no separate "drop-off policy"
+field exists, and none is needed: drop-off-vs-wait is a per-call CALLER
+choice (`structured_payload.drop_off_or_wait`, `_shared/schemas/booking-
+payloads.ts`), not a tenant setting, confirmed by reading `agent-template-
+seeds.ts`'s auto flow (`drop_off_or_wait` state, always asked live). This
+task's brief phrase ("drop-off policy") maps to nothing configurable by
+design, not a gap.
+
+### Root-cause finding — a freshly created resource has ZERO bookable slots for up to 24 hours (fixed)
+
+Live-observed proving deliverable 2: after setting up hours/offerings/
+resources above and running the `auto` batch suite, `book_new_caller`
+consistently failed to produce a booking (`field_capture.row_found:
+false`, 2 independent runs) even though `check_availability` was called
+correctly for TODAY and TOMORROW, both real open business-hours days with
+2 active resources. Root cause, read from the schema: `public.
+availability_slots` (the ONLY table `check_availability`/`create_booking`
+read) is populated exclusively by `fn_regenerate_availability_slots`
+(`20260907131400_functions_triggers.sql`) — and the ONLY thing that ever
+calls it is `fn_cron_availability_rollforward`, scheduled once daily at
+04:00 UTC (`20260910093000_queues_and_scheduled_jobs.sql`, confirmed live:
+`select jobname, schedule from cron.job` → `job-internal-availability-
+rollforward`, `0 4 * * *`). **No trigger fires it on `resources` insert.**
+Confirmed live: `select count(*) from availability_slots where tenant_id
+= ...` → `0`, for a tenant with 2 real active resources and real business
+hours. This directly breaks this task's own central question — a
+freshly-onboarded tenant's AI can answer the phone and quote real
+services/hours, but can never actually book anything until the next
+nightly cron run, up to 24 hours of dead air.
+
+**Fix** (small, root-caused, in `apps/web`, per this task's own
+authorization to fix onboarding blockers at the root): `POST /api/tenant/
+resources` now calls `fn_regenerate_availability_slots(tenant_id,
+resource_id, null)` immediately after a successful insert, via a
+narrowly-scoped service-role client (`availability_slots` has "no client
+write policy... via service_role" per `20260907131500_rls.sql`, and the
+function isn't `security definer`, so it can't run under the owner's own
+RLS-scoped session) — never a migration/RLS change, and the tenant_id +
+resource_id passed are both server-derived from the already-authorized
+request, never client input. Best-effort: a regeneration failure never
+fails the resource creation itself (logged, and the next nightly rollforward
+still covers it). `fn_regenerate_availability_slots` added to `packages/
+supabase-client/src/database.types.ts`'s `Functions` map so the typed
+`.rpc()` call typechecks.
+
+**Live re-proof**: manually invoked the same RPC for the 2 resources this
+task had already created (736 `availability_slots` rows generated), then
+re-ran `book_new_caller` in isolation: **`row_found: true`, all 8 required
+fields captured, `fields_missing: []`** — a real `bookings` row,
+`status: confirmed`, `structured_payload: {vehicle_make: "Honda",
+vehicle_year: 2019, vehicle_model: "Civic", symptom_category: "oil
+change", drop_off_or_wait: "drop_off"}`. This is the live, end-to-end
+proof the fix closes the gap; the code fix itself ships with this commit
+so every NEW resource created from now on gets it automatically, without
+the manual RPC step.
+
+New tests: `route.test.ts` — "creates a resource... " now asserts the RPC
+is called with exactly `{p_tenant_id: "t1", p_resource_id: "r1",
+p_days_ahead: null}` (never client-supplied); new test proves a
+regeneration RPC error still returns 200 (best-effort, never blocks
+resource creation).
+
+### Deliverable 2 — live vs. needs-publish, proven by transcript, not just code
+
+Read `_shared/inbound-dynamic-variables.ts#buildInboundDynamicVariables`
+and `voice-inbound/dynamic-variables.ts#resolveVerticalDynamicVariables`:
+every field below is resolved FRESH from the DB on every call/batch-test
+run (`api-admin-run-agent-tests/handler.ts`'s non-resume path calls the
+IDENTICAL shared function a real `/voice-inbound` webhook does — CALL-9)
+and passed as a Retell dynamic variable, substituted into whatever
+`{{token}}` the ALREADY-COMPILED prompt contains — so anything the
+compiled prompt template references via `{{}}` is live-immediately; only
+what the COMPILER bakes as a literal (not a `{{token}}`) at compile time
+needs a republish.
+
+| Setting | Live immediately? | Evidence |
+|---|---|---|
+| Business hours / exceptions | **Yes** | `greeting_hours_context` computed from `tenants.business_hours`/`hours_exceptions` on every call; `check_availability` reads `availability_slots`, itself regenerated from current hours by the (now request-time-triggered) RPC — live-confirmed via the `book_new_caller` re-run above |
+| Assistant/greeting name | **Yes** | Batch transcript, `auto` suite: *"Hello! Thank you for calling SIGNUP-1 Test Auto. This is **Nova**."* — set via the portal minutes earlier, zero republish |
+| Special instructions, manager name/phone, parking info, accessibility notes, voicemail message | **Yes** (passed as dynamic variables) | Confirmed present verbatim in the batch harness's own `dynamicVariables` dump for `transfer_request` (`"special_instructions":"Ask every caller if their vehicle is currently driveable...", "manager_name":"Jordan Alvarez", "parking_info":"Free customer parking..."`); NOT spoken in any scenario this suite happened to exercise (none of `auto`'s 9 scenarios' compiled states reference `{{manager_name}}`/`{{parking_info}}`/`{{accessibility_notes}}`/`{{voicemail_message}}` at all — same class of gap as dental's `insurances_accepted` below, portal-settable, resolved, never spoken) |
+| Vertical-details tokens (`tow_partner_name/phone`, `vehicle_makes_serviced`, `cancellation_policy_text`) | **Yes** | Same `dynamicVariables` dump: `"tow_partner_name":"Riverside Towing (ONBOARD-1)"`, `"vehicle_makes_serviced":"Toyota, Honda, Ford, and Chevrolet"`, `"cancellation_policy_text":"a $25 fee applies for cancellations inside 24 hours"` — the last one also spoken verbatim by the agent in the `wrong_date_caller` transcript's waitlist read-back |
+| Services/offerings + prices | **Yes**, for every vertical EXCEPT restaurant's spoken menu | `list_offerings` (`voice-tools/tools/list_offerings.ts`) queries `public.offerings` live, per call — no compiled/cached copy. Restaurant's `{{menu_text}}` is also resolved live from `offerings` (`resolveMenuText`) when no override string is set |
+| Reminders/review settings | **Yes** (read by cron/worker jobs, not the live call itself) | `tenants.voice_reminders_enabled`/`review_request_enabled`/`review_url` read fresh by whichever job consumes them; not a spoken dynamic variable |
+| **Transfer-call destination** | **NO — needs republish** | `_shared/compiler/template-compiler.ts`'s `TransferCallNode.transfer_destination.number` is the LITERAL `agent_configs.transfer_number` baked in AT COMPILE TIME (CALL-4, RETELL-VERIFIED: Retell's own SDK supports a `{{}}` indirection here, but this compiler deliberately never uses it, "resolved HERE, at compile time"). **Live-proven**: set `transfer_number` to `+16105550111` via the portal, then ran `transfer_request` — the agent said *"we don't have a live transfer line set up right now"* (the no-transfer fallback state) even though `dynamicVariables.transfer_number` in the SAME transcript correctly shows `"+16105550111"` — the spoken value updated instantly, the actual routing did not, because the compiled conversation-flow node still points at the OLD (null) destination from the last publish |
+
+**"Publish changes" action — does not exist.** Grepped the entire tenant
+dashboard for `recompile`/`republish`/`force_recompile`/"Publish
+changes": zero matches outside the initial `/signup/provisioning` polling
+client. `api-provision`'s own `action: "republish"` path (`PARITY-1`) is
+the only republish mechanism that exists at all — and it is
+**`x-internal-secret`-only** (`index.ts`: `if (!isInternalCall) return
+403`), gated behind Supabase's own `verify_jwt: true` at the function
+gateway besides. There is no code path — dashboard button OR direct API
+call — by which a tenant owner can trigger a republish themselves, today.
+Exercised the mechanism directly (internal secret + a valid JWT, per this
+task's own access) to confirm it's real and would have closed the loop
+above: it reached Retell's `create-conversation-flow` call and returned
+`{"error":"retell_flow_create_failed"}` (a Retell-API-side 5xx, confirmed
+no partial mutation — `agent_configs.retell_agent_id`/`published_at`
+unchanged via SQL before/after) — a genuine live Retell hiccup unrelated
+to any change in this task, not chased further given the code-level proof
+above (CALL-4's own RETELL-VERIFIED doc comment) already establishes the
+mechanism. **Net: there is a real product gap here — a tenant who changes
+their transfer number (or anything else compile-time-baked) today has no
+self-service way to make it take effect, ever, without a human running
+`action: "republish"` by hand.** Flagged, not fixed — this is a genuinely
+new feature (a dashboard action + a JWT-owner-reachable route), out of
+this task's "audit + small fixes" scope per CLAUDE.md Rule 4.
+
+### Deliverable 3 — notifications: what the owner sees today vs. after Twilio/Resend
+
+From code (`worker-messages-outbound/handler.ts`, `OPS-8`'s own prior
+finding, re-confirmed unchanged): every SMS/email send attempt parks then
+resolves `status: 'failed', error: 'provider_not_configured'` — Twilio
+and Resend are both unconfigured secrets on this project today. **SMS to
+the owner: none. Email to the owner: none.** The ONLY notification
+surface that works today is in-portal:
+- Calls/bookings/orders pages, all real routes, all RLS-scoped to the
+  logged-in owner.
+- A header notification bell (`useTenantNotifications`) sourced from
+  recent `bookings` rows, unread-vs-`memberships.last_seen_notifications_
+  at`.
+- Supabase Realtime (see "Operator screens" below) — no polling needed
+  once the tab is open.
+
+**Verified live** (real batch-test writes, then the real pages/routes,
+logged in as the owner): `GET /dashboard/calls` → 200; the tenant's one
+`call_logs` row (`channel: web_voice`, matches `calls-list-client.tsx`'s
+own `channel in (phone, web_voice)` filter) is real and RLS-visible via
+PostgREST as the owner. `GET /dashboard/bookings` → 200, but the new
+booking this task's own live test created (`465a5f63-...`) does **not**
+show on that list — see "Operator screens" below, this is by design
+(`is_test` filtering), not a bug.
+
+### Operator screens (added mid-task per the coordinator's follow-up)
+
+| Screen | Exists? | Actions available (route) | Verified live? |
+|---|---|---|---|
+| Bookings list (`/dashboard/bookings`) | Yes | — | Yes, 200; **empty for `signup-1-auto`** — see below |
+| Booking detail / actions | Yes | confirm / reschedule / cancel (`PATCH /api/tenant/bookings/[id]`) | Yes — confirm 200, reschedule 200 (against a real `availability_slots` row), **cancel 500 — found and fixed, see below** |
+| Orders list (`/dashboard/orders`) | Yes | — | Yes, 200, real order with items ("Margherita pizza", "Tiramisu") + total ($25.00) visible via the page's own query and PostgREST as owner |
+| Order detail / status | Yes | `received→confirmed→preparing→ready→completed` (`PATCH /api/tenant/orders/[id]`) | Yes — **all 4 transitions 200**, `ready` correctly queued an `order_ready` SMS (`messages_outbound`, parked — no Twilio, per above), final `status: completed` confirmed via SQL and re-fetch |
+| Calls list (`/dashboard/calls`) | Yes | — | Yes, 200, real row visible |
+
+**Bookings list shows nothing for a batch-tested tenant, by design, not
+by bug**: `bookings/page.tsx`'s own list query has `.eq("is_test",
+false)` (CALL-6 — never show a Retell batch-test/simulator booking mixed
+with a tenant's real customer bookings). Every booking this task's own
+live proof created was written by the batch-test harness
+(`retell_call_id` = the `"playground"` placeholder), so `bookings.
+is_test` is `true` by construction (`voice-tools/context.ts`, mirrors
+`call_logs.is_test_call`) — it genuinely cannot appear on the real list
+page without a real (non-batch, non-placeholder) call, which this
+sandbox cannot place into `signup-1-auto` (SELFCALL-1's own real-PSTN-call
+mechanism is hardcoded, for safety, to one specific caller→callee pair
+that does NOT include this tenant, and was not touched here). This is
+**correct product behavior for a real tenant** (whose real customers'
+calls are never placeholder calls), but is a genuine testing-environment
+limitation for THIS task's own live-proof, documented honestly rather
+than worked around with a direct SQL flip of `is_test`. Orders has NO
+`is_test` filter on its list query at all (`orders-list-client.tsx`) —
+inconsistent with bookings, which is why the order above DID show live
+while the booking did not; not fixed (a genuine, small, real
+inconsistency worth a follow-up, flagged not fixed per Rule 4 — unclear
+which behavior is "correct" without a product decision). The header
+notification bell (`useTenantNotifications`) also has **no** `is_test`
+filter, so it WOULD have surfaced this task's own test booking as
+"Booking confirmed" even though the bookings list itself hides it — a
+second small, real inconsistency, flagged not fixed.
+
+**Booking cancel 500 — found live, root-caused, fixed**: `PATCH .../
+bookings/[id]` with `action: "cancel"` on a real booking with a matching
+active `waitlist_entries` row returned `{"error":"update_failed"}` (500).
+Root cause: `fn_notify_waitlist_on_cancellation`
+(`20260907131400_functions_triggers.sql`), an AFTER UPDATE trigger on
+`bookings`, itself `insert`s into `messages_outbound` when the freed slot
+overlaps an active waitlist window — and `messages_outbound` has "no
+tenant write policy" (this same route's own pre-existing comment; sends
+are otherwise queue-worker-only). The route's own `bookings` UPDATE ran
+under the CALLER's own RLS-scoped session (not service-role), so the
+trigger's own insert — which runs as whatever role executed the
+statement that fired it — hit an RLS violation and rolled back the WHOLE
+update. `cancel_booking`/`update_booking` on the voice hot path were
+never affected (already service-role), so this was invisible to every
+prior CALL-* batch-test task; only a real dashboard cancel click ever
+exercises this trigger under the owner's own session. **Fix**: the
+`bookings` status-changing UPDATE (all 3 actions — confirm/cancel/
+reschedule, for consistency) now goes through the SAME narrowly-scoped
+service-role client the route already used for its `messages_outbound`
+insert, never re-deriving `resource_id`/`customer_id` from client input
+(still read from the caller's own already-RLS-verified row, or from an
+`availability_slots` row itself filtered by `claims.tenant_id`) — the
+`.eq("tenant_id", claims.tenant_id)` filter on every write is the real
+authorization boundary now, per CLAUDE.md Rule 2. The pre-fix 500 was
+reproduced live against the real deployed site (the `cancel` call above);
+the fix ships in this same commit and only takes effect once Vercel
+deploys `main` — a live post-fix re-test against the deployed site could
+not happen before that deploy, so it is NOT claimed as done here
+(chicken-and-egg, documented honestly). What stands in for it: a new
+regression test ("cancels via the service-role client") that fails
+against the pre-fix route shape and passes against the fixed one, plus
+the orders `[id]` route (same "status update + best-effort service-role
+notification" shape, but its own UPDATE was already on the caller's own
+session and has no analogous trigger) working live end-to-end above as a
+structural sanity check that the pattern itself is sound.
+
+**Realtime — read precisely, not asserted**: `tenant-realtime-provider.
+tsx` subscribes one private channel per tenant (`tenant:<tenant_id>`,
+`private: true`) and invalidates the TanStack Query key `["tenant",
+tenantId, payload.table]` on every broadcast. Real DB triggers
+(`fn_broadcast_tenant_update`, `20260907131400_functions_triggers.sql`)
+fire on INSERT/UPDATE of `call_logs`, `bookings`, `orders`,
+`support_requests`, plus (later migrations) `messages_inbound`, `text_
+conversations`, `text_conversation_messages` — confirmed by reading the
+`create trigger` statements directly, not inferred. The 3 list pages'
+own `useTenantQuery` calls key exactly `"bookings"`/`"orders"`/
+`"call_logs"` — TanStack's prefix-matching `invalidateQueries` therefore
+DOES match and refetch each list on a broadcast for that table. **Not
+proven live** in this task (would need two simultaneous open sessions —
+one to write, one with the page open watching for the refetch — out of
+this task's scope/time to set up); reported as "wired correctly by code
+inspection, live-untested," never claimed as proven. **No sound/audio
+notification exists anywhere in `apps/web`** (grepped for `new Audio(`,
+`.wav"`, `.mp3"` — zero hits in any component).
+
+### Deliverable 4 — all 8 verticals, portal vs. prompt tokens
+
+Cross-checked `verticalDetailsSchema` (`packages/canonical-types/src/
+schemas/vertical-details.ts`) against `voice-inbound/dynamic-variables.
+ts`'s per-vertical resolvers AND the actual `{{token}}` placeholders used
+in each vertical's compiled prompt (`grep -noE '\{\{[a-zA-Z0-9_]+\}\}'
+supabase/functions/_shared/agent-template-seeds.ts`, cross-referenced by
+line range per vertical section) — not just the schema/resolver pair, so
+a "resolved but never spoken" gap (like dental's, below) couldn't hide.
+
+| Vertical | Portal fields | Resolver | Actually referenced in compiled prompt? | Gap |
+|---|---|---|---|---|
+| auto | `tow_partner`, `vehicle_makes_serviced` | `resolveAutoTokens` | `{{tow_partner_name/phone}}`, `{{vehicle_makes_serviced}}` — yes | none |
+| vet | `species_treated`, `emergency_referral` | `resolveVetTokens` | `{{species_treated}}`, `{{emergency_referral_name/phone}}` — yes | none |
+| legal | `practice_areas`, `consult_fee_cents` | `resolveLegalTokens` | `{{practice_areas}}`, `{{consult_fee_text}}` — yes | none |
+| motel | `deposit_policy`, `rate_table` | `resolveMotelTokens` | `{{rate_table}}`, `{{deposit_policy_text}}` — yes | none |
+| restaurant | `menu_text`, `delivery_radius_m`, `min_order_cents`, `delivery_fee_cents`, `tax_rate_bps`, `prep_time_minutes` | `resolveMenuText` + `resolveRestaurantSpokenTerms` | `{{menu_text}}` — yes. `{{prep_time_text}}`/`{{delivery_terms_text}}` are RESOLVED but never appear in the compiled prompt at all (that resolver's own doc comment already says so: "NOT yet referenced... kept here, resolved and ready") | portal collects, agent never speaks prep-time/delivery-fee terms — pre-existing, documented gap, not new |
+| **dental** | `insurances_accepted` | none — no `resolveDentalTokens` exists | **never appears anywhere** — not in `agent-template-seeds.ts`, not read by `dental-intake.ts`, zero non-test references in the whole repo | **the portal form (`vertical-details/page.tsx` line 297) collects "Insurances accepted (one per line)", saves it successfully (200, SQL-verified), and it is 100% dead** — this is deliberate-by-design for the CALL-8-documented PHI-avoidance rule (never discuss insurance on the call), but the FORM FIELD implies to an owner that it does something. Flagged, not removed (a UI/UX call, not a code-correctness one, out of this task's "small fix" scope) |
+| real_estate | none in schema | none | no vertical-specific `{{token}}` anywhere in its section | consistent — nothing to add |
+| generic | none in schema | none | no vertical-specific `{{token}}` anywhere in its section | consistent — nothing to add |
+
+**Net**: 6 of 8 verticals have zero gaps between what the portal can set
+and what the compiled prompt actually speaks. 1 (dental) has one
+dead-but-harmless portal field. 1 (restaurant) has a pre-existing,
+already-documented "resolved but unspoken" gap for 2 of its 6 fields.
+Nothing here rose to "small fix, do it now" — dental's field is
+intentional-by-design elsewhere in the product (PHI avoidance) and
+removing a form field is a product decision, not a bug fix; restaurant's
+gap was already flagged by the code itself before this task started.
+
+### Deliverable 5 — call forwarding: what's verified vs. what the customer must do
+
+Read `/signup/forwarding` (`SignupForwardingPage` → `PhoneSetupWizard`,
+onboarding mode) and `POST /api/phone/forwarding-test` →
+`forwarding-verify` edge function. Honest split:
+- **Heyloo does**: shows the tenant's carrier-specific conditional-
+  forwarding dial code (e.g. AT&T `*72{number}`, from `PhoneSetupWizard`'s
+  own `CARRIER_CODES` table) for the tenant to dial ON THEIR OWN PHONE,
+  then polls `call_logs` for a NEW inbound call landing on the tenant's
+  Heyloo number within a timeout window (`forwarding-verify/handler.ts#
+  verifyForwarding`) — if one lands, forwarding is genuinely, automatically
+  confirmed working (a call really did reach Heyloo's number via the
+  carrier's own forward), and `phone_numbers.forwarding_verified_at` is
+  stamped.
+- **Heyloo does NOT**: program the carrier forward itself (no API access
+  to the tenant's own existing carrier account — impossible by
+  construction, not a gap) or reliably auto-detect the carrier
+  (`detected_carrier` "falls back to the wizard's own `carrier_hint`" per
+  the handler's own doc comment — a real Twilio Lookup call is a
+  documented, unbuilt follow-up, not implemented).
+- **The customer must**: know/select their own carrier, manually dial the
+  forwarding code on their existing business line, then place ONE test
+  call to that line so the wizard can observe it land on the Heyloo
+  number. No carrier forwarding was attempted live in this task (per this
+  task's own explicit instruction not to).
+
+### Gates
+
+`pnpm -w lint` — 0 errors (33 pre-existing warnings, none introduced).
+`pnpm -w typecheck` — 21/21 packages clean (after rebuilding `@heyloo/
+supabase-client` to pick up the new `fn_regenerate_availability_slots`
+`Functions` type entry). `pnpm -w test` — 21/21 tasks green, `@heyloo/web`
+597/597 (a net +2 over DASH-2's own 595 baseline: 1 new resources-route
+test, 1 new bookings-route test). `cd supabase/functions && pnpm run test` — 115/115 files,
+1153/1153 green (untouched by this task, re-run per instruction).
+
+### Code
+
+`apps/web/src/app/api/tenant/resources/route.ts` (service-role
+`fn_regenerate_availability_slots` call after insert),
+`apps/web/src/app/api/tenant/resources/route.test.ts` (2 new tests),
+`apps/web/src/app/api/tenant/bookings/[id]/route.ts` (status-changing
+UPDATE moved to the service-role client), `apps/web/src/app/api/tenant/
+bookings/[id]/route.test.ts` (updated mocks + 1 new regression test),
+`packages/supabase-client/src/database.types.ts`
+(`fn_regenerate_availability_slots` added to `Functions`). No migrations,
+no `supabase/functions/**` code touched (CALL-9's owned paths untouched,
+confirmed by re-running its own edge-function test suite green above).
+
+### What remains / flagged, not fixed (CLAUDE.md Rule 4)
+
+1. No self-service "publish changes" action exists anywhere — the only
+   republish mechanism is internal-secret-only. A real, scoped follow-up
+   (a new dashboard action + an owner-JWT-reachable route/edge-function
+   branch) is needed before compile-time-baked settings (transfer number
+   today; potentially more later) are practically usable by a real
+   customer without support intervention.
+2. `bookings` list filters `is_test`, `orders` list does not, the
+   notification bell does not — three different answers to the same
+   question for the same kind of data. Needs a product decision, not a
+   unilateral code change.
+3. Dental's `insurances_accepted` portal field is fully inert.
+4. Restaurant's `prep_time_text`/`delivery_terms_text` are resolved but
+   never spoken (pre-existing, restated here for completeness).
+5. `api-provision`'s `action: "republish"` hit a live `retell_flow_create_
+   failed` when exercised directly in this task (Retell-side, no partial
+   mutation, not chased further) — worth a retry by whoever picks up
+   finding #1 above.

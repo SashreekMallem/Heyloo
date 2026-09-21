@@ -100,7 +100,6 @@ describe("PATCH /api/tenant/bookings/[id]", () => {
           data: { id: "b1", customer_id: "c1", resource_id: "r1", status: "scheduled" },
           error: null,
         },
-        { error: null },
       ],
       tenants: [{ data: { timezone: "America/New_York" }, error: null }],
       availability_slots: [
@@ -115,7 +114,11 @@ describe("PATCH /api/tenant/bookings/[id]", () => {
         },
       ],
     };
+    // ONBOARD-1: the status-changing `bookings` update itself now goes
+    // through the service-role client (see route.ts's own doc comment) —
+    // its result queues on `serviceQueue`, not `serverQueue`, now.
     serviceQueue = {
+      bookings: [{ error: null }],
       customers: [{ data: { phone_e164: "+15551234567", sms_opt_out: false }, error: null }],
       messages_outbound: [{ data: { id: "msg1" }, error: null }],
     };
@@ -140,7 +143,6 @@ describe("PATCH /api/tenant/bookings/[id]", () => {
           data: { id: "b1", customer_id: "c1", resource_id: "r1", status: "scheduled" },
           error: null,
         },
-        { error: { code: "23P01" } },
       ],
       tenants: [{ data: { timezone: "America/New_York" }, error: null }],
       availability_slots: [
@@ -155,7 +157,9 @@ describe("PATCH /api/tenant/bookings/[id]", () => {
         },
       ],
     };
-    serviceQueue = {};
+    // ONBOARD-1: see the "reschedules..." test above — the update-result
+    // queues on the service-role client now.
+    serviceQueue = { bookings: [{ error: { code: "23P01" } }] };
     mockGetUser = async () => ({ data: { user: mockUser } });
 
     const res = await PATCH(patchRequest({ action: "reschedule", new_slot_id: "s1" }), {
@@ -163,5 +167,30 @@ describe("PATCH /api/tenant/bookings/[id]", () => {
     });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ confirmed: false, reason: "slot_taken" });
+  });
+
+  it("ONBOARD-1: cancels via the service-role client (fn_notify_waitlist_on_cancellation's own messages_outbound insert has no RLS policy for the caller's own session)", async () => {
+    serverQueue = {
+      bookings: [
+        {
+          data: { id: "b1", customer_id: "c1", resource_id: "r1", status: "confirmed" },
+          error: null,
+        },
+      ],
+      tenants: [{ data: { timezone: "America/New_York" }, error: null }],
+    };
+    serviceQueue = {
+      bookings: [{ error: null }],
+      customers: [{ data: { phone_e164: "+15551234567", sms_opt_out: false }, error: null }],
+      messages_outbound: [{ data: { id: "msg1" }, error: null }],
+    };
+    rpcMock = vi.fn(async (..._args: unknown[]) => ({ data: null, error: null }));
+    mockGetUser = async () => ({ data: { user: mockUser } });
+
+    const res = await PATCH(patchRequest({ action: "cancel", reason: "test" }), {
+      params: Promise.resolve({ id: "b1" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, sms_queued: true });
   });
 });

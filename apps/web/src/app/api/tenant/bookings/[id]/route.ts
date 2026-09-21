@@ -23,9 +23,35 @@ function formatLocal(iso: string, timeZone: string): string {
 }
 
 /**
- * Confirm/reschedule/cancel a booking (FRONTEND_SPEC.md §6.4) — the DB
- * update goes through the caller's own session (RLS `bookings_update`
- * allows tenant-initiated changes); the customer-notification SMS is a
+ * Confirm/reschedule/cancel a booking (FRONTEND_SPEC.md §6.4).
+ *
+ * ONBOARD-1 (docs/BUILD_NOTES.md): the `bookings` UPDATE itself now goes
+ * through the narrowly-scoped service-role client too, not the caller's own
+ * RLS-scoped session — live-discovered while proving the "operator screens"
+ * cancel action end to end: `fn_notify_waitlist_on_cancellation`
+ * (`supabase/migrations/20260907131400_functions_triggers.sql`), an AFTER
+ * UPDATE trigger on `bookings`, itself `insert`s into `messages_outbound`
+ * when an active waitlist entry overlaps the freed slot — and
+ * `messages_outbound` has "no tenant write policy" (this same file's own
+ * comment below; sends are otherwise queue-worker-only), so that trigger's
+ * insert ran under whatever role actually executed the `UPDATE`. Under the
+ * owner's own RLS-scoped session (this route's pre-fix behavior) that
+ * insert hit an RLS violation and the WHOLE update rolled back — a real,
+ * live 500 (`update_failed`) on cancelling any booking with a matching
+ * active waitlist entry, confirmed against `signup-1-auto`'s own seeded
+ * waitlist data. `cancel_booking`/`update_booking` on the voice hot path
+ * were never affected (they already run on a service-role DB connection),
+ * so this was invisible to every prior CALL-* batch-test task. The ownership
+ * check above (the caller's OWN session reading this row) still verifies
+ * the booking belongs to this tenant before any mutation is attempted;
+ * `resource_id`/`customer_id` used below always come from THAT
+ * already-verified row or from an `availability_slots` row itself filtered
+ * by `claims.tenant_id` — never re-derived from client input — so the
+ * `.eq("tenant_id", claims.tenant_id)` filter on every write below remains
+ * the real authorization boundary, per CLAUDE.md Rule 2's "still explicitly
+ * filter by a verified tenant_id" even off the RLS-scoped session.
+ *
+ * The customer-notification SMS is a
  * best-effort `messages_outbound` insert via service-role (that table has
  * no tenant write policy — sends are otherwise queue-worker-only) so a
  * failed notification never blocks the booking mutation itself, per §6.4's
@@ -84,6 +110,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     .maybeSingle();
   const timeZone = tenant?.timezone ?? "America/New_York";
 
+  // ONBOARD-1: instantiated once, reused for both the status-changing
+  // `bookings` update below (see this file's own doc comment) and the
+  // pre-existing `messages_outbound` insert further down.
+  const service = createSupabaseServiceRoleServerClient();
+
   let templateKey: string;
   let payload: Record<string, unknown> = {};
   let updateResult: { error: { code?: string } | null };
@@ -96,7 +127,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       .maybeSingle();
     templateKey = "booking_confirmation";
     payload = { start_local: current ? formatLocal(current.start_at, timeZone) : undefined };
-    updateResult = await supabase
+    updateResult = await service
       .from("bookings")
       .update({ status: "confirmed" })
       .eq("id", id)
@@ -113,7 +144,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       );
     }
     templateKey = "booking_cancelled";
-    updateResult = await supabase
+    updateResult = await service
       .from("bookings")
       .update({
         status: "cancelled",
@@ -149,7 +180,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
     templateKey = "booking_confirmation";
     payload = { start_local: formatLocal(range.start, timeZone) };
-    updateResult = await supabase
+    updateResult = await service
       .from("bookings")
       .update({ start_at: range.start, end_at: range.end, status: "confirmed" })
       .eq("id", id)
@@ -167,7 +198,6 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
   let smsQueued = true;
   if (booking.customer_id) {
-    const service = createSupabaseServiceRoleServerClient();
     const { data: customer } = await service
       .from("customers")
       .select("phone_e164, sms_opt_out")
