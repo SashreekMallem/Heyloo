@@ -115,6 +115,33 @@ const STRUCTURED_INTAKE_CAPTURE_FRAGMENT =
   "has cleared is always decided by a human at the firm, never by you, so leave that key out " +
   "even when you have the opposing party's name.";
 
+/**
+ * CALL-8 (docs/BUILD_PLAN.md): live-observed real bug — the caller often
+ * volunteers urgency/referral-source information ahead of schedule (during
+ * `matter_type`/`conflict_check`/`open_discovery`, before the state graph
+ * ever reaches the dedicated `urgency`/`referral_source` states), and the
+ * model, believing intake is functionally complete, thanks the caller and
+ * calls `end_call` directly from whichever state it's currently in —
+ * WITHOUT ever transitioning to `intake_complete`, the only state
+ * `allowed_tools` originally granted `take_message` on. Since `take_message`
+ * wasn't even a callable tool in the model's current state, the intake was
+ * silently lost even though Retell's own transcript-relevance judge still
+ * scored the call "pass" (it never checks whether a tool call happened,
+ * only whether replies stayed on topic). Fixed at the root: `take_message`
+ * is now granted on every state from `matter_type` onward (not just
+ * `intake_complete`), and this fragment — appended to each of those
+ * states' own prompt — tells the model explicitly it can and must call it
+ * from wherever it currently is if it's about to end the call early,
+ * rather than only being ABLE to record from the one state it may never
+ * actually reach.
+ */
+const EARLY_WRAP_UP_FRAGMENT =
+  "If the caller seems ready to end the call, or you're about to say goodbye, BEFORE any of " +
+  "that: call take_message right now with whatever intake you've gathered so far, even if " +
+  "it's incomplete — you do not need to wait until every question above has been asked. " +
+  "Never end the call having promised the firm will follow up without actually calling " +
+  "take_message first.";
+
 const SYSTEM_PROMPT = buildSystemPrompt(
   "You are an intake assistant for a law firm. Your job is to gather intake information " +
     "warmly and thoroughly so an attorney can follow up — not to practice law yourself. " +
@@ -166,8 +193,9 @@ const rawStates: AgentState[] = [
     name: "Matter type",
     prompt_fragment:
       "Ask what type of legal matter this is, guiding toward one of {{practice_areas}} if it " +
-      "fits.",
-    allowed_tools: [],
+      "fits. " +
+      EARLY_WRAP_UP_FRAGMENT,
+    allowed_tools: ["take_message"],
     extraction: [
       {
         field: "matter_type",
@@ -187,8 +215,9 @@ const rawStates: AgentState[] = [
       "open-discovery conversation, every time, no exceptions. This is a conflict-of-interest " +
       "check: record what the caller says and let them know the firm will confirm there's no " +
       "conflict before anything proceeds. Never tell the caller a conflict check has 'passed' " +
-      "or 'cleared' — that determination is always made by a human at the firm, never by you.",
-    allowed_tools: [],
+      "or 'cleared' — that determination is always made by a human at the firm, never by you. " +
+      EARLY_WRAP_UP_FRAGMENT,
+    allowed_tools: ["take_message"],
   },
   {
     id: "open_discovery",
@@ -196,8 +225,9 @@ const rawStates: AgentState[] = [
     prompt_fragment:
       'Now invite the caller to explain, in their own words: "Walk me through what happened." ' +
       "Listen and ask open, empathetic follow-up questions without steering them or evaluating " +
-      "what they say.",
-    allowed_tools: [],
+      "what they say. " +
+      EARLY_WRAP_UP_FRAGMENT,
+    allowed_tools: ["take_message"],
   },
   {
     id: "urgency",
@@ -205,8 +235,9 @@ const rawStates: AgentState[] = [
     prompt_fragment:
       "Ask about anything time-sensitive: a statute-of-limitations concern, a custody " +
       "situation, or an upcoming court date. Flag anything urgent for the attorney clearly in " +
-      "the message.",
-    allowed_tools: [],
+      "the message. " +
+      EARLY_WRAP_UP_FRAGMENT,
+    allowed_tools: ["take_message"],
     extraction: [
       {
         field: "urgency",
@@ -222,8 +253,8 @@ const rawStates: AgentState[] = [
   {
     id: "referral_source",
     name: "Referral source",
-    prompt_fragment: "Ask how the caller heard about this firm.",
-    allowed_tools: [],
+    prompt_fragment: `Ask how the caller heard about this firm. ${EARLY_WRAP_UP_FRAGMENT}`,
+    allowed_tools: ["take_message"],
     extraction: [
       {
         field: "referral_source",
