@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from "@heyloo/ui";
 import type { ReactNode } from "react";
+import { AgentPublishStatus } from "@/components/tenant/agent-publish-status";
 import { Link, usePathname, useRouter } from "@/i18n/navigation";
 
 const TABS = [
@@ -31,7 +32,7 @@ export function AgentSettingsTabs({ children }: { children: ReactNode }) {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Agent settings" />
+      <PageHeader title="Agent settings" actions={<AgentPublishStatus />} />
 
       {/* Desktop/tablet sub-nav — plain nav+links (not Tabs/TabsTrigger: there's
           no matching TabsContent panel per route, so reusing Tabs ARIA here
