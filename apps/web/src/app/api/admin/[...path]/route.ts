@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { claimsFromUser } from "@/lib/auth/claims";
+import { claimsFromSupabaseClient, impersonatedByFromSupabaseClient } from "@/lib/auth/claims";
 import { env } from "@/lib/env";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
@@ -46,13 +46,6 @@ function isImpersonationSelfServicePath(path: string[]): boolean {
   );
 }
 
-function impersonatedByClaim(user: { app_metadata?: unknown } | null | undefined): string | null {
-  const appMetadata = user?.app_metadata;
-  if (!appMetadata || typeof appMetadata !== "object") return null;
-  const value = (appMetadata as Record<string, unknown>)["impersonated_by"];
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
 async function handle(request: Request, path: string[]) {
   const supabase = await createSupabaseServerComponentClient();
   const {
@@ -60,11 +53,15 @@ async function handle(request: Request, path: string[]) {
   } = await supabase.auth.getSession();
   if (!session) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
 
-  const claims = claimsFromUser(session.user);
+  // AUTH-1 fix (docs/BUILD_NOTES.md, SIGNUP-1 root cause #3): claims live
+  // only in the JWT itself, never in the User/session object's
+  // app_metadata; claimsFromUser(user) always evaluated to {} for a real
+  // tenant/admin/partner here.
+  const claims = await claimsFromSupabaseClient(supabase);
   const isSelfServiceImpersonation =
     request.method === "POST" &&
     isImpersonationSelfServicePath(path) &&
-    impersonatedByClaim(session.user) !== null;
+    (await impersonatedByFromSupabaseClient(supabase)) !== null;
   if (!claims.platform_admin && !isSelfServiceImpersonation) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }

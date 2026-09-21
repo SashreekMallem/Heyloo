@@ -51,6 +51,30 @@ export async function claimsFromSupabaseClient(
   return extractClaims(data.claims.app_metadata);
 }
 
+/**
+ * AUTH-1 (docs/BUILD_NOTES.md): `impersonated_by` is stamped into the JWT's
+ * own `app_metadata` by `custom_access_token_hook`
+ * (`supabase/migrations/20260910110000_impersonation_claim.sql`) — the
+ * exact same JWT-only pattern as `tenant_id`/`role`/`platform_admin`, and
+ * NOT part of `AppMetadataClaims` (that type lives in
+ * `@heyloo/supabase-client`, outside this cluster's ownership). Reading it
+ * off a `User`/session object's `app_metadata` (as
+ * `api/admin/[...path]/route.ts` previously did) always returns `null` for
+ * a real impersonation session, for the identical reason `claimsFromUser`
+ * was broken — the self-service impersonate-end/edit-mode routes 403 for
+ * every real platform admin today. Use this instead.
+ */
+export async function impersonatedByFromSupabaseClient(
+  supabase: Pick<SupabaseClient, "auth">,
+): Promise<string | null> {
+  const { data, error } = await supabase.auth.getClaims();
+  if (error || !data) return null;
+  const appMetadata = data.claims.app_metadata;
+  if (!appMetadata || typeof appMetadata !== "object") return null;
+  const value = (appMetadata as Record<string, unknown>)["impersonated_by"];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 export type Aal = "aal1" | "aal2";
 
 /** Supabase's built-in Authenticator Assurance Level claim (not a custom claim — set by GoTrue itself once an MFA factor is verified). Read from the user's session via `supabase.auth.mfa.getAuthenticatorAssuranceLevel()` at call sites; this type alias just documents the shape. */
