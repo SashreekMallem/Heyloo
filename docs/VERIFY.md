@@ -2258,3 +2258,43 @@ it 4 times in a row against an insistent caller before giving up.
 (`compileMultiPrompt`, `compileSinglePrompt`, `EndCallTool`,
 `MultiPromptTransferCallTool`), `packages/adapters/retell/src/compiler/
 {types,multi-prompt,single-prompt}.ts` (mirrored for parity).
+
+## CALL-8 (2026-09-21) — `general_tools` accepts a `type: "custom"` entry (multi_prompt)
+
+Required-field verification (`_shared/vertical-intake.ts`) and its live
+batch-test proof: full per-vertical matrix + results table,
+`docs/BUILD_NOTES.md`'s CALL-8 entry.
+
+**`general_tools[]` on a multi_prompt `create-retell-llm` body accepts
+ANY `Tool` variant, not only `end_call`/`transfer_call`** — RETELL-
+VERIFIED via a live `docs.retellai.com/api-references/create-retell-llm`
+fetch 2026-09-21: the field is typed against the same `Tool` union every
+per-state `tools[]` entry uses (`end_call | transfer_call | agent_swap |
+press_digit | send_sms | custom | code | extract_dynamic_variable |
+bridge_transfer | cancel_transfer | mcp`), including `type: "custom"`
+(`CustomTool`: `url`, `method`, `headers`, `parameters`,
+`response_variables`) — the exact same shape this codebase's own
+`FunctionTool`/`RetellFunctionTool` compiler types already emit for a
+per-state custom tool. Confirms `general_tools` is a genuine "callable
+from every state" mechanism for an arbitrary business tool, not
+special-cased to the two tool types this platform had used it for so
+far (CALL-7's `EndCallTool`, CALL-4's native `TransferCallTool`).
+
+Live-confirmed root cause this closes: a state that never listed
+`take_message` in its own `allowed_tools` (e.g. real_estate's
+`qualification`, legal's `matter_type`/`conflict_check`/`open_discovery`/
+`urgency`/`referral_source` before this fix) left the model structurally
+unable to call it if it decided the call was done while still in that
+state — it would say goodbye and call `end_call` having recorded
+nothing, and Retell's own transcript-relevance judge still scored the
+call "pass" (it never checks whether a tool call happened). Moving
+`take_message` to `general_tools` (filtered out of the regular per-state
+tool pool the same way `transfer_call` already is) makes it reachable
+from every state unconditionally, closing the whole class of bug rather
+than requiring a per-state, per-vertical patch each time a caller
+front-loads information ahead of the state graph's own schedule.
+
+**Code:** `supabase/functions/_shared/compiler/template-compiler.ts`
+(`compileMultiPrompt`'s `general_tools` construction, `takeMessageTool`),
+`packages/adapters/retell/src/compiler/multi-prompt.ts` (mirrored for
+parity).
