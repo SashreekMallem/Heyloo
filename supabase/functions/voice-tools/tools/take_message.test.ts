@@ -41,7 +41,12 @@ describe("takeMessage", () => {
     // payload bound to the ::jsonb parameter must be the raw object, never
     // a caller-pre-stringified JSON string.
     expect(typeof capturedPayload).not.toBe("string");
-    expect(capturedPayload).toEqual({ matter_type: "contract_review" });
+    // CALL-8: caller_phone (normalized) is always folded in too — see the
+    // dedicated test below for the full caller_name/caller_phone case.
+    expect(capturedPayload).toEqual({
+      matter_type: "contract_review",
+      caller_phone: "+15551234567",
+    });
   });
 
   it("merges callback_window into structured_booking_payload so it's visible on the Call Detail page without depending on the Messages UI", async () => {
@@ -65,10 +70,11 @@ describe("takeMessage", () => {
     expect(capturedPayload).toEqual({
       matter_type: "contract_review",
       callback_window: "weekday afternoons",
+      caller_phone: "+15551234567",
     });
   });
 
-  it("writes an empty jsonb object (not null) when no structured_payload was given", async () => {
+  it("writes only caller_phone (never null) when no structured_payload/caller_name was given", async () => {
     let capturedPayload: unknown;
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join(" ");
@@ -82,7 +88,23 @@ describe("takeMessage", () => {
     // payload bound to the ::jsonb parameter must be the raw object, never
     // a caller-pre-stringified JSON string.
     expect(typeof capturedPayload).not.toBe("string");
-    expect(capturedPayload).toEqual({});
+    expect(capturedPayload).toEqual({ caller_phone: "+15551234567" });
+  });
+
+  it("CALL-8: durably folds caller_name/caller_phone into structured_booking_payload — required so a required-field check (voice-tools/handler.ts) can ever be satisfied regardless of whether agent_configs.transfer_number is configured", async () => {
+    let capturedPayload: unknown;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("update public.call_logs")) {
+        capturedPayload = values[1];
+      }
+      return Promise.resolve([]);
+    }) as SqlClient;
+    await takeMessage(sql, ctx, { ...args, caller_name: "Jamie Rivera" });
+    expect(capturedPayload).toEqual({
+      caller_name: "Jamie Rivera",
+      caller_phone: "+15551234567",
+    });
   });
 
   it("enqueues a staff notification when the tenant has a transfer_number configured", async () => {

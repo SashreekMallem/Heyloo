@@ -19,7 +19,12 @@ const zSlotAlternative = z.object({ start: z.string(), end: z.string() });
 
 const zCustomerInput = z.looseObject({
   name: z.string().min(1),
-  phone: z.string().min(1),
+  // CALL-8 (docs/BUILD_PLAN.md): optional, mirroring `_shared/schemas/
+  // voice-tools.ts`'s `CustomerInputSchema` — see that schema's own comment
+  // for why (phone is now defaulted from the live call's caller-id and
+  // required-field-checked at runtime, rather than a hard shape-validation
+  // failure on a model that omitted it).
+  phone: z.string().min(1).optional(),
 });
 
 /** Every tool's failure branch when a graceful message-taking fallback is used instead of an error (BACKEND_SPEC §7.2). */
@@ -170,7 +175,13 @@ export type LookupCustomerResult = z.infer<typeof zLookupCustomerResult>;
 
 export const zTakeMessageRequest = z.object({
   caller_name: z.string().min(1).optional(),
-  caller_phone: z.string().min(1),
+  // CALL-8 (docs/BUILD_PLAN.md): optional, mirroring `_shared/schemas/
+  // voice-tools.ts`'s `TakeMessageArgsSchema` — the RUNTIME-enforced side
+  // now defaults a missing phone from the live call's own caller-id before
+  // enforcing it's present via `_shared/vertical-intake.ts`'s required-field
+  // check, rather than failing SHAPE validation outright on a model that
+  // omitted it. See that schema's own comment for the full reasoning.
+  caller_phone: z.string().min(1).optional(),
   message_text: z.string().min(1),
   callback_window: z.string().min(1).optional(),
   /** GAP_REGISTER.md §2 Legal item 4 / real_estate — reuses the SAME

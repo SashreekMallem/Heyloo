@@ -39,9 +39,26 @@ export async function takeMessage(
   // transient `messages_outbound.payload` row below) so it's durably
   // visible on the Call Detail page's `structured_booking_payload` render
   // regardless of which channel/template renders the staff SMS.
+  //
+  // CALL-8 (docs/BUILD_PLAN.md): `caller_name`/`caller_phone` are ALSO
+  // folded in here now, not just left on the transient `messages_outbound`
+  // row below. Previously the caller's spoken name/callback number (as
+  // distinct from the call's own real caller-id, `call_logs.caller_number`)
+  // was durably recorded ONLY when the tenant had `agent_configs.
+  // transfer_number` configured (the row below's own gate) — for a tenant
+  // with none configured, every `take_message` call's captured name/phone
+  // was silently dropped the moment the request finished, recoverable only
+  // by re-reading the free-text `message_text` if the model happened to say
+  // it there. This is what `_shared/vertical-intake.ts`'s required-field
+  // check enforces the presence of before this function is ever called, so
+  // it must be durably stored regardless of notification configuration —
+  // exactly the same "record it even if the SMS can't be sent" posture this
+  // column already has for every other field.
   const structuredPayload = {
     ...(args.structured_payload ?? {}),
     ...(args.callback_window ? { callback_window: args.callback_window } : {}),
+    ...(args.caller_name ? { caller_name: args.caller_name } : {}),
+    ...(callerPhone ? { caller_phone: callerPhone } : {}),
   };
   await sql`
     update public.call_logs
@@ -63,9 +80,12 @@ export async function takeMessage(
     select ${ctx.tenantId}, 'sms', ac.transfer_number, 'take_message',
       ${{
         caller_name: args.caller_name ?? null,
-        caller_phone: callerPhone,
+        caller_phone: callerPhone ?? null,
         message_text: args.message_text,
         callback_window: args.callback_window ?? null,
+        ...(Object.keys(structuredPayload).length > 0
+          ? { structured_payload: structuredPayload }
+          : {}),
       }}::jsonb,
       ${ctx.callLogId}
     from public.agent_configs ac

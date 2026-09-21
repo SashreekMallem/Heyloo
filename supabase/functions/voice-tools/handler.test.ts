@@ -147,6 +147,151 @@ describe("dispatchTool", () => {
     // fallback because no call_logs row exists for a synthetic call_id).
     expect(result.result).not.toMatchObject({ fallback: true });
   });
+
+  // CALL-8 (docs/BUILD_PLAN.md) — `_shared/vertical-intake.ts` required-field
+  // enforcement, applied via `applyIntakeGate` before create_booking/
+  // create_order/take_message ever reach their real tool function.
+  describe("CALL-8: required-intake-field enforcement", () => {
+    it("blocks create_booking with a named-field error (never the generic fallback) when a vertical-required structured_payload field is missing, and never touches the DB beyond context resolution", async () => {
+      let extraQueryRan = false;
+      const deps = makeDeps({
+        id: "cl1",
+        tenant_id: "t1",
+        caller_number: "+15551234567",
+        vertical: "auto",
+      });
+      const sql = ((strings: TemplateStringsArray) => {
+        const text = strings.join(" ");
+        if (text.includes("from public.call_logs") && text.includes("retell_call_id")) {
+          return Promise.resolve([
+            { id: "cl1", tenant_id: "t1", caller_number: "+15551234567", vertical: "auto" },
+          ]);
+        }
+        // create_booking's resolveBookingResourceId/offering lookups would
+        // hit these — asserting they never run proves the gate short-
+        // circuited BEFORE any tool-level DB work, not after a failed one.
+        if (text.includes("from public.resources") || text.includes("from public.offerings")) {
+          extraQueryRan = true;
+        }
+        return Promise.resolve([]);
+      }) as SqlClient;
+      const result = await dispatchTool(
+        { ...deps, sql },
+        "call_0123456789abcdef01234567",
+        "create_booking",
+        {
+          resource_id: "r1",
+          start: "2026-01-05T15:00:00Z",
+          end: "2026-01-05T15:30:00Z",
+          customer: { name: "Jamie Rivera", phone: "+15552010199" },
+          // No structured_payload at all — every auto-specific field missing.
+        },
+      );
+      expect(result.result).toMatchObject({ error: "missing_required_fields" });
+      const body = result.result as { missing_fields: string[]; message: string };
+      expect(body.missing_fields).toEqual(
+        expect.arrayContaining([
+          "structured_payload.vehicle_year",
+          "structured_payload.vehicle_make",
+          "structured_payload.vehicle_model",
+          "structured_payload.symptom_category",
+        ]),
+      );
+      expect(body.missing_fields).not.toContain("customer.name");
+      expect(body.missing_fields).not.toContain("customer.phone");
+      expect(body.message).toContain("vehicle");
+      expect(extraQueryRan).toBe(false);
+    });
+
+    it("defaults customer.phone from ctx.callerNumber instead of blocking on it, per the 'default to caller number, only confirm, never re-ask' rule — vertical with no structured_payload requirements (generic minus the new 'reason' field) still blocks on the field it truly never got", async () => {
+      const deps = makeDeps({
+        id: "cl1",
+        tenant_id: "t1",
+        caller_number: "+15552010199",
+        vertical: "generic",
+      });
+      const result = await dispatchTool(deps, "call_0123456789abcdef01234567", "create_booking", {
+        resource_id: "r1",
+        start: "2026-01-05T15:00:00Z",
+        end: "2026-01-05T15:30:00Z",
+        customer: { name: "Jamie Rivera" }, // no phone — must default from caller id
+        structured_payload: {},
+      });
+      expect(result.result).toMatchObject({ error: "missing_required_fields" });
+      const body = result.result as { missing_fields: string[] };
+      expect(body.missing_fields).not.toContain("customer.phone");
+      expect(body.missing_fields).toContain("structured_payload.reason");
+    });
+
+    it("blocks take_message on legal's matter_type/opposing_party/urgency overlay (its own template's primary intake tool, not just an after-hours fallback) while never blocking on caller_phone once ctx.callerNumber covers it", async () => {
+      const deps = makeDeps({
+        id: "cl1",
+        tenant_id: "t1",
+        caller_number: "+15551234567",
+        vertical: "legal",
+      });
+      const result = await dispatchTool(deps, "call_0123456789abcdef01234567", "take_message", {
+        caller_name: "Taylor Brooks",
+        message_text: "Wants an intake callback.",
+      });
+      expect(result.result).toMatchObject({ error: "missing_required_fields" });
+      const body = result.result as { missing_fields: string[] };
+      expect(body.missing_fields).not.toContain("caller_phone");
+      expect(body.missing_fields).toEqual(
+        expect.arrayContaining([
+          "structured_payload.matter_type",
+          "structured_payload.opposing_party",
+          "structured_payload.urgency",
+        ]),
+      );
+    });
+
+    it("lets take_message through to a real recorded result once every required field is present (auto's baseline: name/phone/message_text only)", async () => {
+      const deps = makeDeps({
+        id: "cl1",
+        tenant_id: "t1",
+        caller_number: "+15551234567",
+        vertical: "auto",
+      });
+      const result = await dispatchTool(deps, "call_0123456789abcdef01234567", "take_message", {
+        caller_name: "Pat Okafor",
+        caller_phone: "+15552010177",
+        message_text: "Car making a strange noise, call back please.",
+      });
+      expect(result).toEqual({ result: { recorded: true } });
+    });
+
+    it("blocks create_order on missing customer.name/phone (restaurant) without invoking the offerings lookup", async () => {
+      let offeringsQueryRan = false;
+      const sql = ((strings: TemplateStringsArray) => {
+        const text = strings.join(" ");
+        if (text.includes("from public.call_logs") && text.includes("retell_call_id")) {
+          return Promise.resolve([
+            { id: "cl1", tenant_id: "t1", caller_number: null, vertical: "restaurant" },
+          ]);
+        }
+        if (text.includes("from public.offerings")) offeringsQueryRan = true;
+        return Promise.resolve([]);
+      }) as SqlClient;
+      const deps = makeDeps(null);
+      const result = await dispatchTool(
+        { ...deps, sql },
+        "call_0123456789abcdef01234567",
+        "create_order",
+        {
+          items: [{ name: "Margherita pizza", qty: 1 }],
+          fulfillment_type: "pickup",
+          customer: {},
+        },
+      );
+      expect(result.result).toMatchObject({ error: "missing_required_fields" });
+      const body = result.result as { missing_fields: string[] };
+      expect(body.missing_fields).toEqual(
+        expect.arrayContaining(["customer.name", "customer.phone"]),
+      );
+      expect(offeringsQueryRan).toBe(false);
+    });
+  });
 });
 
 describe("resolveEnvelopeCallId", () => {

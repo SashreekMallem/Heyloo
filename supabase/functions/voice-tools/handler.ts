@@ -1,6 +1,6 @@
 import type { GeocodeFetch } from "../_shared/providers/geocode.ts";
 import type { StripeFetch } from "../_shared/providers/stripe.ts";
-import { fallbackEnvelope, toolEnvelope } from "../_shared/responses.ts";
+import { fallbackEnvelope, missingFieldsEnvelope, toolEnvelope } from "../_shared/responses.ts";
 import {
   CancelBookingArgsSchema,
   CheckAvailabilityArgsSchema,
@@ -17,6 +17,8 @@ import {
   UpdateBookingArgsSchema,
 } from "../_shared/schemas/voice-tools.ts";
 import type { Logger, SqlClient, ToolResultEnvelope } from "../_shared/types.ts";
+import { getMissingRequiredFields } from "../_shared/vertical-intake.ts";
+import type { CallContext } from "./context.ts";
 import { resolveCallContext } from "./context.ts";
 import { cancelBooking } from "./tools/cancel_booking.ts";
 import { checkAvailability } from "./tools/check_availability.ts";
@@ -90,6 +92,52 @@ export function isKnownTool(name: string): boolean {
   return KNOWN_TOOLS.has(name);
 }
 
+/**
+ * CALL-8 (docs/BUILD_PLAN.md): shared pre-write gate for every tool
+ * `_shared/vertical-intake.ts` declares requirements for
+ * (create_booking/create_order/take_message). Two things, in order, both
+ * BEFORE any DB write:
+ *
+ *  1. Default the caller's callback phone from the live call's own
+ *     caller-id (`ctx.callerNumber`) when the model didn't supply one —
+ *     "when the caller is on a real call, default callback phone to the
+ *     caller number and only confirm it rather than re-ask" (this task's
+ *     own instruction). A batch-test/simulator call never has a caller-id
+ *     at all (CALL-2's documented finding, `voice-tools/context.ts`), so
+ *     this is a no-op there — a batch-test scenario must still have the
+ *     model ask/collect a phone number itself, which is exactly what the
+ *     required-field check below then verifies happened.
+ *  2. Check this vertical/tool's required fields (`getMissingRequiredFields`)
+ *     against the (now phone-defaulted) args. Any miss short-circuits with
+ *     `missingFieldsEnvelope` — naming exactly what to ask, so the model
+ *     has an actionable next step — instead of writing an incomplete row.
+ *
+ * Zero new DB round trips either way (hot-path budget, CLAUDE.md Rule 2):
+ * pure object manipulation over data already in hand (`ctx` was already
+ * resolved for this call; `args` already parsed).
+ */
+function applyIntakeGate<T extends Record<string, unknown>>(
+  ctx: CallContext,
+  tool: "create_booking" | "create_order" | "take_message",
+  args: T,
+  phoneField: "customer" | "caller_phone",
+): { ok: true; args: T } | { ok: false; envelope: ToolResultEnvelope } {
+  let next: T = args;
+  if (phoneField === "customer") {
+    const customer = args["customer"] as Record<string, unknown> | undefined;
+    if (customer && !customer["phone"] && ctx.callerNumber) {
+      next = { ...args, customer: { ...customer, phone: ctx.callerNumber } };
+    }
+  } else if (!args["caller_phone"] && ctx.callerNumber) {
+    next = { ...args, caller_phone: ctx.callerNumber };
+  }
+  const missing = getMissingRequiredFields(ctx.vertical, tool, next);
+  if (missing.length > 0) {
+    return { ok: false, envelope: missingFieldsEnvelope(missing) };
+  }
+  return { ok: true, args: next };
+}
+
 export async function dispatchTool(
   deps: DispatchDeps,
   callId: string,
@@ -114,8 +162,10 @@ export async function dispatchTool(
     case "create_booking": {
       const parsed = CreateBookingArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
+      const gated = applyIntakeGate(ctx, "create_booking", parsed.data, "customer");
+      if (!gated.ok) return gated.envelope;
       return toolEnvelope(
-        await createBooking(sql, ctx, parsed.data, { logger, appBaseUrl: dentalIntake.appBaseUrl }),
+        await createBooking(sql, ctx, gated.args, { logger, appBaseUrl: dentalIntake.appBaseUrl }),
       );
     }
     case "update_booking": {
@@ -136,7 +186,9 @@ export async function dispatchTool(
     case "take_message": {
       const parsed = TakeMessageArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
-      return toolEnvelope(await takeMessage(sql, ctx, parsed.data));
+      const gated = applyIntakeGate(ctx, "take_message", parsed.data, "caller_phone");
+      if (!gated.ok) return gated.envelope;
+      return toolEnvelope(await takeMessage(sql, ctx, gated.args));
     }
     case "send_sms_confirmation": {
       const parsed = SendSmsConfirmationArgsSchema.safeParse(rawArgs);
@@ -146,8 +198,10 @@ export async function dispatchTool(
     case "create_order": {
       const parsed = CreateOrderArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
+      const gated = applyIntakeGate(ctx, "create_order", parsed.data, "customer");
+      if (!gated.ok) return gated.envelope;
       return toolEnvelope(
-        await createOrder(sql, ctx, parsed.data, logger, geocode ? { geocode } : {}),
+        await createOrder(sql, ctx, gated.args, logger, geocode ? { geocode } : {}),
       );
     }
     case "send_payment_link": {

@@ -78,10 +78,26 @@ export const ListOfferingsArgsSchema = z
   })
   .passthrough();
 
+/**
+ * CALL-8 (docs/BUILD_PLAN.md): `phone` is now OPTIONAL at the Zod-shape
+ * level — it used to be `z.string().min(3)` (hard-required), which meant a
+ * model that omitted it entirely (rather than passing an obviously-invalid
+ * value) failed SHAPE validation and got the generic, unhelpful
+ * `fallbackEnvelope()` ("I'll take your details...") instead of a chance to
+ * ask again. `voice-tools/handler.ts` now defaults it from the live call's
+ * own caller-id (`ctx.callerNumber`) when the model doesn't supply one —
+ * "default the callback phone to the caller number and only confirm it,
+ * never re-ask" — and `_shared/vertical-intake.ts`'s required-field check
+ * (also in handler.ts, after this defaulting) is what actually enforces a
+ * phone end up on the row: a real STILL-missing phone (no caller id either,
+ * e.g. a blocked-caller-ID real call where the model also never asked)
+ * returns `missingFieldsEnvelope` naming exactly this field, not a silent
+ * `invalid_phone` failure deep inside the tool.
+ */
 export const CustomerInputSchema = z
   .object({
     name: z.string().optional(),
-    phone: z.string().min(3),
+    phone: z.string().min(3).optional(),
   })
   .passthrough();
 
@@ -135,9 +151,15 @@ export const LookupCustomerArgsSchema = z.object({
   phone: z.string().min(3),
 });
 
+/**
+ * CALL-8: `caller_phone` is now optional at the shape level for the same
+ * reason `CustomerInputSchema.phone` is (see its own comment) — defaulted
+ * from `ctx.callerNumber` in `voice-tools/handler.ts` before the
+ * `_shared/vertical-intake.ts` required-field check runs.
+ */
 export const TakeMessageArgsSchema = z.object({
   caller_name: z.string().optional(),
-  caller_phone: z.string().min(3),
+  caller_phone: z.string().min(3).optional(),
   message_text: z.string().min(1),
   callback_window: z.string().optional(),
   structured_payload: z.record(z.string(), z.unknown()).optional(),
