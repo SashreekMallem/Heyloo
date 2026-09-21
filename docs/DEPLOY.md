@@ -54,10 +54,21 @@ weeks and should not be the last thing blocking launch.
    Twilio's 2026-06-30 campaign-registration change made these required
    fields (`docs/VERIFY.md`'s T4 entry), and a placeholder/localhost URL
    will fail registration.
-6. Buy phone numbers as tenants provision (the provisioning saga,
+6. **Updated SIGNUP-1 (2026-09-21):** the real per-tenant provisioning
+   saga (`api-provision`) no longer purchases a Twilio number at all — it
+   buys the number directly through Retell's own `POST
+   /create-phone-number` (confirmed live against docs.retellai.com,
+   `docs/VERIFY.md`'s SIGNUP-1 entry), since this platform's own Twilio
+   account was never going to be wired for that path. Twilio is still
+   needed for everything ELSE in this section (A2P/SMS sending, the
+   Messaging Service, and `job-offboarding`'s Twilio-side number release
+   — none of those were touched, and none work yet for a Retell-purchased
+   number specifically, a known follow-up gap). Item 6's own original
+   text is struck through below for the history, not deleted:
+   ~~Buy phone numbers as tenants provision (the provisioning saga,
    `api-provision`, purchases one Twilio number per tenant — no
    pre-purchasing needed) or pre-buy a small pool if you want zero-latency
-   number assignment at signup.
+   number assignment at signup.~~
 7. Note the account SID/auth token and, if you'd rather scope credentials
    more tightly, create a **restricted API key** (`TWILIO_API_KEY_SID`/
    `TWILIO_API_KEY_SECRET` — preferred over the raw auth token per

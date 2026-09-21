@@ -15158,3 +15158,320 @@ per scenario), `packages/canonical-types/src/tools.ts`
 one booking per tenant) and every `force_recompile`/re-attach/inspect
 call applied live via the documented SQL helper and internal admin
 endpoints — no migration needed (no schema change this task).
+
+## SIGNUP-1 (2026-09-21) — the real customer path, signup→payment→provision→answer, run live end to end for the first time; two root-cause launch blockers found and fixed along the way
+
+Task: prove the REAL customer signup flow works live — not the internal
+`api-admin-provision-test-tenant` shortcut every prior CALL-* task used
+(no checkout, no Custom Access Token Hook round-trip, no dashboard
+guard). This had never been run as one flow before this task.
+
+### Flow map (every step, every function)
+
+1. **`/signup`** (`apps/web/.../signup/page.tsx` → `BusinessTypeForm`) —
+   posts `{business_type, business_name}` to `POST /api/signup/draft`
+   (Route Handler), which signs a `SIGNUP_DRAFT_SECRET`-HMAC'd cookie
+   (`lib/signup/draft-cookie.ts`) carrying the draft — no DB row yet.
+2. **`/signup/plan`** (`PlanStepClient`) — reads the draft cookie
+   server-side, fetches `GET /api/platform-settings/price-card` (reads
+   `platform_settings.price_card_<vertical>`), continues to `/signup/account`.
+3. **`/signup/account`** (`AccountStepClient`) — real
+   `supabase.auth.signUp()` (client-side, direct to Supabase Auth), then
+   `POST /api/checkout/session` → proxies to the `api-checkout` edge
+   function (the REAL tenant-creation point: inserts `tenants` +
+   `memberships` with `status: 'trialing'`, then calls Stripe to create a
+   Checkout Session) → on success, redirects to Stripe; the browser
+   session is refreshed so its JWT picks up the new `tenant_id`/`role`
+   claim before the Stripe redirect lands back.
+4. **Stripe Checkout** (external, out of this build's control) →
+   `checkout.session.completed` → `webhooks-stripe` (raw-body signature
+   verify → `webhook_events` idempotent insert → fast-ack →
+   `processStripeEvent`: flips `tenants.status` to `active`, calls
+   `invoke-provisioning.ts`'s `createInvokeProvisioning`, which POSTs
+   `api-provision` with `x-internal-secret` + a service-role bearer token).
+5. **`api-provision`** (the real per-tenant saga, `verify_jwt: true` —
+   reachable either via that internal-secret call OR directly by the
+   tenant owner's own JWT, checked against the target `tenant_id`+`role`
+   in the body): `tenant_finalize` → `agent_compile` (real template
+   compile + `create-conversation-flow`/`create-retell-llm` +
+   `create-agent`, disclosure-line hard-gate per CLAUDE.md Rule 2) →
+   `retell_number_provision` (see "root cause #1" below) →
+   `billing_wiring` (no-op confirm) → `publish_agent` (`get-agent` →
+   `publish-agent-version`) → `notify` (enqueues a welcome SMS, never
+   sent inline).
+6. **`/signup/provisioning`** (`ProvisioningClient`, needs
+   `requireTenantSession`) — polls `provisioning_runs` via
+   `@tanstack/react-query` + a Supabase Realtime broadcast subscription,
+   redirects to `/signup/forwarding` once every step succeeds.
+7. **`/signup/forwarding`** (`PhoneSetupWizard`, onboarding mode) — call-
+   forwarding verification wizard for the tenant's number.
+8. **Dashboard** (`(tenant)/dashboard/*`, guarded by `middleware.ts`
+   guard #1 + `requireTenantSession` guard #2) — overview
+   (`/dashboard`, reads `setup-progress` + `tenant-plan` + stats),
+   `/dashboard/calls`, `/dashboard/bookings`, `/dashboard/agent`, etc.
+
+### Root cause #1 — the real provisioning saga could never have succeeded, live, for any tenant
+
+`api-provision/index.ts` called `requireEnv("TWILIO_ACCOUNT_SID")`,
+`requireEnv("TWILIO_AUTH_TOKEN")`, and `requireEnv("RETELL_SIP_TRUNK_TERMINATION_URI")`
+at Deno module load (cold-start) — none of the three exist as Supabase
+secrets on this project (confirmed via the Management API's
+`GET /v1/projects/{ref}/secrets`, names-only). `requireEnv` throws
+synchronously before `Deno.serve` ever runs, so EVERY invocation of this
+function has always failed with an opaque `WORKER_ERROR`, for every
+tenant, since the day it was written — invisible to every prior CALL-*
+task because none of them ever drove a real signup (they all used
+`api-admin-provision-test-tenant`, which has no Twilio dependency at
+all). On top of that, even with Twilio configured, `index.ts`'s own
+`resolvePhoneNumberToProvision` was an explicit unimplemented stub that
+always returned `""` (its own comment says so) — the Twilio purchase call
+would 4xx regardless.
+
+**Fix:** switched the whole number-provisioning step from
+Twilio-purchase-then-Retell-`import-phone-number` to Retell's own
+`POST /create-phone-number` (confirmed live against docs.retellai.com —
+see `docs/VERIFY.md`'s new SIGNUP-1 entry — this endpoint buys the number
+directly through Retell's own Twilio/Telnyx sub-account, no Twilio
+account of ours required at all, and accepts `inbound_agents`/
+`inbound_webhook_url` in the SAME call, so there's no separate import
+step). `supabase/functions/_shared/providers/retell.ts` gained
+`createPhoneNumber`; `api-provision/handler.ts`'s `STEPS` collapsed the
+old `twilio_number_provision`+`retell_number_import` pair into one
+`retell_number_provision` step; `index.ts` no longer requires any Twilio
+env var. `phone_numbers.twilio_sid` made nullable (migration
+`20260921065200_phone_numbers_twilio_sid_optional.sql` — a number bought
+this way has no Twilio PhoneNumberSid at all). The `provisioning_runs`
+table's own `step` CHECK constraint had to be updated too (migration
+`20260921071000_provisioning_runs_step_check.sql`) — a live saga run hit
+this constraint on its very first real invocation before the fix,
+confirming the old constraint was itself untested against a real run.
+`apps/web/.../provisioning-client.tsx`'s `STEP_ORDER` updated to match.
+This is a genuine, permanent architecture change (not a test-only patch):
+Twilio was never going to be configured for this platform per this
+task's own context, and Retell's native purchase path is strictly
+simpler (one call instead of two, one less external account to manage).
+SMS sending / A2P registration (`_shared/providers/twilio.ts`'s other
+functions, `api-a2p-register`, `job-offboarding`'s number release) still
+assume a Twilio-owned number and are untouched — a real, separate,
+pre-existing gap for a Retell-purchased number, out of this task's scope,
+flagged here for whoever picks up SMS/A2P for these tenants.
+
+### Root cause #2 — `/api-checkout` crashed instead of failing closed when Stripe isn't configured
+
+Same bug class as #1: `api-checkout/index.ts` called
+`requireEnv("STRIPE_SECRET_KEY")`/`requireEnv("CHECKOUT_SUCCESS_URL")`/
+`requireEnv("CHECKOUT_CANCEL_URL")` at module load. None are configured
+(confirmed via the same secrets listing) — so every real signup attempt
+today crashes with a raw `{"code":"WORKER_ERROR",...}` 500, not the
+clean `{"error":"stripe_not_configured"}` `handleCheckout`'s own logic
+was already written to produce (that check — `priceCard.stripe_base_price_id`
+missing — can never be reached; the function dies before it's called at
+all). This directly violates CLAUDE.md Rule 2's fail-closed mandate in
+spirit (a missing secret should reject cleanly, not crash) and the
+task's own explicit requirement ("must fail closed with a clear message,
+not crash"). **Fix:** switched all three to `optionalEnv`, added an
+explicit request-time check that returns a clean `stripe_not_configured`
+500 before touching `handleCheckout` at all. Verified live before and
+after: before, `POST /api-checkout` → `WORKER_ERROR`; after, a clean
+`{"error":"stripe_not_configured"}`, and — critically — confirmed via SQL
+that NO `tenants` row is created either way (fails closed, never
+provisions without payment).
+
+### Root cause #3 — every authenticated page/route in `apps/web` read authorization claims from the wrong place
+
+Found while verifying dashboard pages render for the newly signed-up
+user (task step 5) — the single most consequential finding of this task,
+well beyond its own scope but blocking the literal deliverable. Supabase's
+Custom Access Token Hook (`custom_access_token_hook`,
+`supabase/migrations/20260907131400_functions_triggers.sql`) injects
+`tenant_id`/`role`/`platform_admin`/`referral_partner_id` ONLY into the
+signed JWT's own `claims.app_metadata` at token-mint time — it never
+writes back to the `auth.users` DB row. `apps/web/src/lib/auth/claims.ts`'s
+`claimsFromUser(user)` reads `user.app_metadata` — from
+`supabase.auth.getUser()`, `getSession()`, or a sign-in response — which
+reflects that DB row, NOT the JWT. **Confirmed live, unambiguously**: a
+freshly-refreshed real access token's own decoded JWT payload carried
+`{tenant_id: "5a446e12-...", role: "owner"}`; the SAME request's
+`getUser()`/`getSession()` result had `app_metadata: {}` — no tenant_id
+at all. This means `claimsFromUser` has NEVER correctly resolved a
+tenant/admin/partner claim for ANY user on this entire product — every
+`requireTenantSession`/`requireAdminSession`/`requirePartnerSession` call
+and `middleware.ts`'s guard #1 always redirected a real, legitimately
+authorized user to `/?toast=no_access`, appearing to work only because
+every prior test used `api-admin-provision-test-tenant` + `x-internal-secret`
+server-to-server calls, never a real browser session.
+
+**Fix:** added `claimsFromSupabaseClient(supabase)` to `claims.ts` —
+calls `supabase.auth.getClaims()` (the SDK's own documented, signature-
+verified way to read hook-injected claims; falls back to
+`getUser()`-verification for symmetric-key projects, per its own source)
+and reads `app_metadata` from the DECODED JWT
+(`data.claims.app_metadata`), never from a `User` object. Fixed the 5
+central page-load guards: `middleware.ts`, `require-tenant-session.ts`,
+`require-admin-session.ts`, `require-partner-session.ts`,
+`login/page.tsx` (post-login redirect). Each existing test suite updated
+to mock `auth.getClaims()` instead of `user.app_metadata`, plus one
+regression test per file proving a stale `user.app_metadata` claim with
+no matching JWT claim is correctly ignored.
+
+Also fixed the two SPECIFIC `/api/*` routes this task's own dashboard
+verification directly exercised and found broken live
+(`403 Forbidden`, confirmed via a real browser network trace):
+`/api/tenant/setup-progress` (drives the overview page's setup
+checklist) and `/api/platform-settings/tenant-plan`. ~27 MORE files still
+call the old, broken `claimsFromUser(user)` directly
+(`/api/tenant/*`, `/api/admin/*`, `/api/partner/*`, `/api/billing/*`,
+`/api/phone/*` Route Handlers — every dashboard/admin/partner ACTION,
+not page load) — out of this task's scope (SIGNUP-1 is the signup→
+provision→answer path, not a full auth audit), but genuinely broken for
+every real user today. A follow-up task was queued for the full fix
+(the `spawn_task` call itself twice hit a tool timeout in this session —
+if it never lands, the exact file list + fix pattern is: replace
+`claimsFromUser(user)`/`claimsFromUser(session.user)` with
+`await claimsFromSupabaseClient(supabase)`, mock `auth.getClaims()` in
+each file's existing tests the same way `require-tenant-session.test.ts`
+now does).
+
+### The Stripe/payment bypass (test-only, documented, guarded)
+
+Stripe is not configured, so the real Checkout hop (step 4 above) cannot
+run at all in this environment. New `api-admin-complete-test-checkout`
+(internal-only, `x-internal-secret`-guarded, same posture as every other
+`api-admin-*` function) does the exact tenant+membership-creation half of
+`api-checkout`'s `handleCheckout` — same slugify, same idempotent
+"reuse an existing trialing tenant" guard — but never touches Stripe and
+ALWAYS sets a new `tenants.is_test = true` column (migration
+`20260921070000_tenants_is_test.sql`). It resolves the owner `user_id`
+from an `email` argument (an already-signed-up Supabase Auth user) via
+`auth.users`, since there's no browser session on an internal call. NEVER
+sets `is_test = false` — this function cannot be used to create a real,
+billable tenant, by construction. Used exactly once, for this task's own
+`signup-1-auto` test tenant.
+
+### Live run — every artifact confirmed
+
+Real browser (Playwright, `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`,
+Next.js built with `next build --webpack` and run locally
+(`next start -p 3100`) so the browser talks to `localhost` while the
+server talks to the live `qulcubtwqsqgqpfgvorn` project, per this task's
+own instructions) drove `/signup` → business type (`auto`) → `/signup/plan`
+→ `/signup/account`. **Environment limitation, not a code bug** (same
+class as CALL-5's LiveKit finding): this sandbox's TLS interception makes
+Chromium reject EVERY direct browser→external-host connection
+(`ERR_CERT_AUTHORITY_INVALID`) — this blocks `supabase.auth.signUp()`
+itself (a direct browser→GoTrue call), plus every client-side Realtime/
+PostgREST call the dashboard's own live-data widgets make. Node's own
+`fetch` (server-side, this session's own scripts) is NOT affected — it
+goes through the sandbox's trusted CA. Worked around exactly like CALL-5
+documented for its own analogous limitation: the real `POST /auth/v1/signup`
+call was made from Node (real GoTrue REST call, real user row,
+`signup-test-1789974718826-891@gmail.com` — `example.com` addresses are
+rejected by this project's own email validator, a legitimate anti-abuse
+check, not a bug), the resulting REAL session (access + refresh token)
+was injected into the browser as an `@supabase/ssr`-format cookie
+(`sb-qulcubtwqsqgqpfgvorn-auth-token`, chunked past the library's own
+3180-byte-per-cookie limit) so every SERVER-SIDE guard/render for the
+rest of the flow ran exactly as it would for a real user — every dashboard
+page load, `requireTenantSession`, the Custom Access Token Hook round-trip
+(confirmed via a real token refresh picking up the new `tenant_id` claim)
+are all genuinely proven; only the two client-to-Supabase-direct hops
+(sign-up itself, and the dashboard's own live-data Realtime/PostgREST
+widgets) were substituted with an equivalent server-side call, exactly
+per CALL-5's own established precedent for this exact sandbox constraint.
+`mailer_autoconfirm: false` on this project (confirmed via
+`GET /v1/projects/{ref}/config/auth`) means a real signup needs email
+confirmation with no SMTP configured — this specific test user's email
+was confirmed directly via SQL (`auth.users.email_confirmed_at`), the
+same "test-only, narrowly targeted, documented" posture as the Stripe
+bypass, never a global `mailer_autoconfirm` flip (that would weaken
+confirmation for every real signup).
+
+**Tenant**: `signup-1-auto` / `5a446e12-1fc3-4b2a-a4c9-7f9a1ab09737`,
+`is_test: true`, `status: active`, vertical `auto`.
+**Agent**: `agent_26be039497f49d5fb604f79b89`, published, `webhook_url`
+correctly set to `/voice-events`.
+**Phone number** (real Retell spend, ~$2/mo — KEEP for a later self-call-
+loop task, per this task's own instructions): **+16105383920**,
+`inbound_agents` correctly points at the agent, `inbound_webhook_url`
+correctly set to `/voice-inbound`. All confirmed via
+`api-admin-attach-retell-number`'s `action: "inspect"`, not just DB state.
+`provisioning_runs`: all 6 steps `succeeded` (`tenant_finalize`,
+`agent_compile`, `retell_number_provision`, `billing_wiring`,
+`publish_agent`, `notify`).
+
+**Batch tests** (`api-admin-run-agent-tests`, real call): 6/9 pass. The
+2 `error`s (`ai_disclosure_check`, `returning_caller` —
+"Ending the conversation early as there might be a loop") are the SAME
+documented Retell-simulator-caller non-determinism already established
+as out-of-scope noise across CALL-1/CALL-2/CALL-4/CALL-5/CALL-9 (this
+file's own prior entries). The 1 `fail` (`wrong_date_caller` — a real
+date-arithmetic mistake in the agent's relative-date handling,
+transcript-confirmed) is a pre-existing template behavior issue,
+`_shared/agent-template-seeds.ts`/`test-scenarios.ts` territory
+(CALL-9-owned this task, untouched) — not a regression from anything
+this task changed, and this tenant's pass profile is consistent with the
+existing test-tenant baseline this same suite already runs against. A
+batch-test transcript also directly confirms the agent's greeting uses
+the real tenant name: *"Thank you for calling SIGNUP-1 Test Auto. This
+is the AI assistant..."*.
+
+**Dashboard**: logged in as the real signed-up owner, all four checked
+pages (`/dashboard`, `/dashboard/calls`, `/dashboard/bookings`,
+`/dashboard/agent` — there is no literal `/dashboard/settings` route;
+settings are split across `/agent`, `/phone-setup`, `/team`, `/billing`,
+`/setup`) render with no error boundary and no page errors. The overview
+page correctly shows "SIGNUP-1 Test Auto" in the header and a real,
+live-computed setup-progress checklist (3/9 steps done: payment, agent
+published, test call — exactly matching what this task's own live run
+actually did). Stat-tile widgets show loading skeletons, not data or
+errors — those specific widgets fetch via client-side Realtime/PostgREST,
+the one sandbox-TLS-blocked surface noted above; they read real,
+already-proven-correct RLS-scoped queries and would render on a real
+deployment (Vercel) where Chromium trusts the actual CA.
+
+### What still needs Stripe (the one gap this task cannot close)
+
+The real signup→Checkout→`checkout.session.completed`→`invoke-provisioning`
+chain (flow-map steps 3-4-5's real trigger) has never run — only proven
+piece by piece: step 3 proven to fail closed correctly without Stripe;
+steps 5-8 proven fully live via the test-checkout bypass +
+`api-provision`'s owner-JWT-authenticated call path (the SAME call shape
+`invoke-provisioning.ts` makes, just authenticated as the real tenant
+owner instead of the internal secret — genuinely exercises `index.ts`'s
+"authenticated tenant owner" branch, not a shortcut around it). Configure
+`STRIPE_SECRET_KEY`/`CHECKOUT_SUCCESS_URL`/`CHECKOUT_CANCEL_URL` +
+`platform_settings.price_card_<vertical>.stripe_base_price_id`/
+`stripe_meter_price_id` (`docs/DEPLOY.md` §1.3/§2) and this task's own
+`api-admin-complete-test-checkout` bypass becomes provably unnecessary —
+delete it once a real Stripe-driven signup has been run once, live.
+
+### Gates
+
+`pnpm -w lint` / `pnpm -w typecheck` / `pnpm -w test` all green (576/576
+web tests, 1098/1098 edge-function tests); `cd supabase/functions &&
+npx vitest run` 1098/1098 green independently per this task's own
+instructions.
+
+### Code
+
+`supabase/functions/_shared/providers/retell.ts` (`createPhoneNumber`),
+`supabase/functions/api-provision/{handler,index,handler.test}.ts`,
+`supabase/functions/api-checkout/index.ts`, new
+`supabase/functions/api-admin-complete-test-checkout/*`,
+`supabase/migrations/20260921065200_phone_numbers_twilio_sid_optional.sql`,
+`supabase/migrations/20260921070000_tenants_is_test.sql`,
+`supabase/migrations/20260921071000_provisioning_runs_step_check.sql`,
+`supabase/config.toml` (new function's `verify_jwt = false` entry),
+`packages/supabase-client/src/database.types.ts` (`ProvisioningRunRow.step`,
+`PhoneNumberRow.twilio_sid` nullable), `apps/web/src/lib/auth/claims.ts`
+(`claimsFromSupabaseClient`), `apps/web/src/middleware.ts`,
+`apps/web/src/lib/auth/require-{tenant,admin,partner}-session.ts`,
+`apps/web/src/app/[locale]/login/page.tsx`,
+`apps/web/src/app/api/tenant/setup-progress/route.ts`,
+`apps/web/src/app/api/platform-settings/tenant-plan/route.ts`,
+`apps/web/src/components/signup/provisioning-client.tsx` (`STEP_ORDER`),
+plus every corresponding test file. `docs/VERIFY.md` new SIGNUP-1 entry
+(Retell `create-phone-number`, confirmed live). Nothing touched under
+CALL-9's owned paths (`voice-tools/context.ts`, `voice-inbound/*`,
+`api-admin-run-agent-tests/*`, `_shared/test-scenarios.ts`,
+`_shared/inbound-dynamic-variables.ts`, agent templates).

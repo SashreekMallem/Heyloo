@@ -2298,3 +2298,43 @@ front-loads information ahead of the state graph's own schedule.
 (`compileMultiPrompt`'s `general_tools` construction, `takeMessageTool`),
 `packages/adapters/retell/src/compiler/multi-prompt.ts` (mirrored for
 parity).
+
+## SIGNUP-1 — Retell `POST /create-phone-number` — **RESOLVED, confirmed live against docs.retellai.com**
+
+**Confirmed 2026-09-21** via a direct `WebFetch` of
+`docs.retellai.com/api-references/create-phone-number` — unlike every
+prior task in this build, that host was NOT egress-blocked from this
+session (worth re-testing in future sessions; may be a per-environment
+difference rather than a permanent change). Every field is optional:
+`inbound_agents`/`outbound_agents` (weighted arrays, same shape as
+`import-phone-number`), `area_code` (int, US only), `nickname`,
+`inbound_webhook_url`, `allowed_inbound_country_list`/
+`allowed_outbound_country_list`, `number_provider` (`"twilio"` default |
+`"telnyx"`), `country_code` (`"US"` default | `"CA"`), `toll_free`,
+`phone_number` (E.164, to bring your own number instead), `transport`,
+`fallback_number`. Response (201): `phone_number` (E.164 — the resource's
+own identifier, same convention as `import-phone-number`/
+`list-phone-numbers`), `phone_number_type` (`"retell-twilio"` |
+`"retell-telnyx"` | `"custom"`), plus `inbound_agents`,
+`inbound_webhook_url`, `area_code`, `nickname`,
+`last_modification_timestamp`, `sip_outbound_trunk_config`,
+`fallback_number`.
+
+**Why this matters:** confirms Retell provisions the number directly
+through its own `number_provider` sub-account — no Twilio account of our
+own is required at all, unlike `import-phone-number` (which needs a
+number WE already own, purchased separately, plus our own SIP trunk
+`termination_uri`). `api-provision`'s real per-tenant saga now uses this
+endpoint instead of Twilio-purchase-then-`import-phone-number`, since
+`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` are not configured on this
+platform (docs/BUILD_NOTES.md SIGNUP-1 entry) — that Twilio-based path
+could never have succeeded regardless of this endpoint's existence.
+
+**Proved live**: a real `api-provision` run purchased a real number
+(`+16105383920`, ~$2/mo, live spend) through this exact endpoint for
+tenant `signup-1-auto`, with `inbound_agents`/`inbound_webhook_url` set
+in the same call — confirmed via `api-admin-attach-retell-number`'s
+`action: "inspect"` afterward.
+
+**Code:** `supabase/functions/_shared/providers/retell.ts`
+(`createPhoneNumber`), `supabase/functions/api-provision/handler.ts`.

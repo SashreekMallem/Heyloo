@@ -1,5 +1,44 @@
 # Launch Status
 
+**SIGNUP-1 (2026-09-21)**: ran the real customer signup path — sign up →
+payment → provisioning → dashboard → agent answering — live, end to end,
+for the first time ever (every prior task used the internal
+`api-admin-provision-test-tenant` shortcut instead). Found and fixed
+three real, root-cause launch blockers along the way: (1) the real
+`api-provision` saga could never have succeeded for ANY tenant —
+`requireEnv("TWILIO_ACCOUNT_SID"/"TWILIO_AUTH_TOKEN"/
+"RETELL_SIP_TRUNK_TERMINATION_URI")` crashed the function at cold-start
+since none are configured, and the phone-number-purchase step was
+switched to Retell's own `POST /create-phone-number` (no Twilio account
+of ours needed at all — confirmed against docs.retellai.com); (2)
+`/api-checkout` crashed with an opaque `WORKER_ERROR` instead of failing
+closed with a clean message when Stripe isn't configured — fixed to
+respond `{"error":"stripe_not_configured"}`, confirmed no tenant row is
+ever created either way; (3) the single most consequential finding —
+EVERY authenticated page/route across the whole product
+(`apps/web`) read authorization claims from `user.app_metadata`, which
+Supabase's Custom Access Token Hook never actually populates (only the
+signed JWT's own claims carry `tenant_id`/`role`/`platform_admin`/
+`referral_partner_id`) — confirmed live that a real, correctly-provisioned
+tenant owner's dashboard redirected to "no access" before this fix. Fixed
+the 5 central page-load guards (`middleware.ts` + the three
+`require-*-session.ts` files + `/login`) and the 2 specific API routes
+this task's own dashboard check found broken live; ~27 more
+`/api/tenant|admin|partner|billing|phone/*` action routes still have the
+same bug (page loads work, in-page actions don't) — flagged as a
+priority follow-up, not fixed here (out of this task's own scope).
+Live proof: a real tenant (`signup-1-auto`), a real Retell agent
+(published, correct `webhook_url`), and a REAL new Retell phone number
+(**+16105383920**, ~$2/mo live spend) purchased, wired, and answering —
+6/9 batch-test scenarios pass (the other 3 match already-documented,
+pre-existing simulator/template noise, not a regression), and the
+dashboard renders correctly for the real signed-up owner. Stripe itself
+is still not configured, so the literal Checkout hop is proven only in
+pieces (fails closed correctly; the rest of the saga is proven live via
+a documented, `is_test`-scoped internal bypass, not a shortcut around the
+real saga's own logic). Full detail: `docs/BUILD_NOTES.md`'s SIGNUP-1
+entry.
+
 **CALL-9 (2026-09-21)**: answers the owner's own question — "does it pull
 data from our database before the call, and use the database during the
 call, like recognizing an existing caller by phone?" `voice-inbound`'s
@@ -1147,6 +1186,20 @@ new finding, only a consolidated one.
   never executed anywhere (no Docker/no browser install in any build
   agent's sandbox) — run them for real, locally or in an expanded CI job,
   before treating them as a release gate. Same for `scripts/e2e-backend.ts`.
+- **Update (SIGNUP-1, 2026-09-21)**: Playwright/Chromium IS available in
+  at least one build-agent sandbox as of this task
+  (`PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`, pre-installed, no
+  `cdn.playwright.dev` needed) — this task drove a real browser through
+  the signup flow and dashboard pages live (see its `docs/BUILD_NOTES.md`
+  entry). That sandbox's own TLS interception still blocks Chromium's
+  DIRECT connections to external hosts (`ERR_CERT_AUTHORITY_INVALID` —
+  the same class of limitation CALL-5 hit for LiveKit), which is why the
+  existing `apps/web/tests/e2e/` suite (written against a LOCAL Supabase
+  instance, not the live hosted project) was not re-run against that
+  suite's own assumptions here. The statement below (every spec
+  unexecuted) is now stale for "Playwright can run at all" but still
+  accurate for "this exact suite, against local Supabase, has been run" —
+  that still hasn't happened in any build agent's environment.
 - Full Playwright execution has never happened in any build agent's
   environment (`cdn.playwright.dev` is network-blocked in every sandbox
   used across this entire build) — every spec in `apps/web/tests/e2e/` is
