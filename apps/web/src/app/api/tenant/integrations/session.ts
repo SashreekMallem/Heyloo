@@ -1,4 +1,4 @@
-import { claimsFromUser } from "@/lib/auth/claims";
+import { claimsFromSupabaseClient } from "@/lib/auth/claims";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
 /**
@@ -24,7 +24,11 @@ export async function requireIntegrationsSession(): Promise<IntegrationsSession 
     data: { session },
   } = await supabase.auth.getSession();
   if (!session) return null;
-  const claims = claimsFromUser(session.user);
+  // AUTH-1 fix (docs/BUILD_NOTES.md, SIGNUP-1 root cause #3): claims live
+  // only in the JWT itself, never in the User/session object's
+  // app_metadata; claimsFromUser(user) always evaluated to {} for a real
+  // tenant/admin/partner here.
+  const claims = await claimsFromSupabaseClient(supabase);
   if (!claims.tenant_id) return null;
   return {
     tenantId: claims.tenant_id,

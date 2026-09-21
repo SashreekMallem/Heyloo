@@ -2,10 +2,19 @@ import { describe, expect, it, vi } from "vitest";
 
 let mockSession: { user: { app_metadata: Record<string, unknown> }; access_token: string } | null =
   null;
+// AUTH-1 (docs/BUILD_NOTES.md): claims come from `auth.getClaims()` — the
+// JWT's own hook-injected claims — not `session.user.app_metadata`. Kept
+// separate from `mockSession` to prove the JWT-only claim is what's
+// actually honored.
+let mockClaimsAppMetadata: Record<string, unknown> = {};
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({
-    auth: { getSession: () => Promise.resolve({ data: { session: mockSession } }) },
+    auth: {
+      getSession: () => Promise.resolve({ data: { session: mockSession } }),
+      getClaims: () =>
+        Promise.resolve({ data: { claims: { app_metadata: mockClaimsAppMetadata } }, error: null }),
+    },
   }),
 }));
 
@@ -24,8 +33,10 @@ function req(body: unknown) {
 }
 
 function ownerSession(overrides: Record<string, unknown> = {}) {
+  const appMetadata = { tenant_id: "t1", role: "owner", ...overrides };
+  mockClaimsAppMetadata = appMetadata;
   return {
-    user: { app_metadata: { tenant_id: "t1", role: "owner", ...overrides } },
+    user: { app_metadata: {} },
     access_token: "at1",
   };
 }
