@@ -222,6 +222,20 @@ async function fetchScenarioIntakeArgs(
   // CALL-8) specifically so this is queryable at all regardless of whether
   // `agent_configs.transfer_number` is configured (every test tenant has
   // none — CALL-4).
+  //
+  // Deliberately NO `started_at >= startedAt` filter here (unlike the
+  // bookings/orders queries above): `call_logs` has no column that's
+  // touched by `take_message.ts`'s own UPDATE (`started_at`/`created_at`
+  // are set once, at the placeholder row's first-ever creation — CALL-6's
+  // per-tenant, first-writer-wins upsert never bumps either on a later
+  // conflict, confirmed live: a tenant's placeholder row can be days old
+  // while `message_text`/`structured_booking_payload` were updated
+  // moments ago). A `phone`-only match is therefore the reliable signal —
+  // `phone` is this scenario's own unique-within-vertical `expectedPhone`,
+  // and this is the CURRENT value of a column `take_message.ts`
+  // unconditionally overwrites (not merges past values under) on every
+  // call, so a match is always this row's latest state, never stale
+  // leftover content from an unrelated field.
   const rows = await sql<{
     message_text: string | null;
     structured_booking_payload: Record<string, unknown> | null;
@@ -230,8 +244,6 @@ async function fetchScenarioIntakeArgs(
     from public.call_logs
     where tenant_id = ${tenantId}
       and structured_booking_payload ->> 'caller_phone' = ${phone}
-      and started_at >= ${startedAt}
-    order by started_at desc
     limit 1
   `;
   const row = rows[0];
