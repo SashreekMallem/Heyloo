@@ -15,9 +15,13 @@ vi.mock("@/lib/supabase/server", () => ({
       // off the SAME mocked session so every existing `mockSession`
       // scenario above still drives the route's authorization outcome.
       getClaims: async () => ({
-        data: { claims: { app_metadata: mockSession?.user
-          ? (mockSession.user as { app_metadata?: unknown }).app_metadata ?? {}
-          : {} } },
+        data: {
+          claims: {
+            app_metadata: mockSession?.user
+              ? ((mockSession.user as { app_metadata?: unknown }).app_metadata ?? {})
+              : {},
+          },
+        },
         error: null,
       }),
     },
