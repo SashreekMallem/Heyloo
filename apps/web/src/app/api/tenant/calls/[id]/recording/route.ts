@@ -8,6 +8,26 @@ export const runtime = "nodejs";
 const SIGNED_URL_TTL_SECONDS = 300; // 5 minutes (DASH-1 brief: 5-10 minutes)
 
 /**
+ * DASH-2 (docs/BUILD_NOTES.md): `.storage.from("recordings")` already
+ * scopes every call to the `recordings` bucket, so the path passed to
+ * `createSignedUrl`/`upload` must be BUCKET-RELATIVE. `worker-recording-
+ * fetch` wrote `call_logs.recording_url`/`stereo_recording_url` WITH a
+ * `recordings/` prefix baked in until DASH-2 fixed it at the write side
+ * (`worker-recording-fetch/handler.ts`) to store bucket-relative keys
+ * going forward — but existing rows written before that fix still carry
+ * the old, prefixed form, and this task's brief explicitly does not
+ * migrate them. Stripping a single leading `recordings/` here makes this
+ * route correct for BOTH forms: old prefixed rows (LOGIN-1 found these
+ * 502 `sign_failed` every time — the effective lookup became
+ * `recordings/recordings/<tenant>/<call>.wav`, which never exists) and
+ * new bucket-relative rows (a no-op strip, since there's nothing to
+ * remove).
+ */
+function normalizeRecordingObjectPath(path: string): string {
+  return path.replace(/^recordings\//, "");
+}
+
+/**
  * DASH-1 (docs/BUILD_NOTES.md): the call-detail page/client
  * (`dashboard/calls/[id]/page.tsx` / `call-detail-client.tsx`) used to pass
  * `call_logs.recording_url`/`stereo_recording_url` — raw object paths in
@@ -69,7 +89,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   const service = createSupabaseServiceRoleServerClient();
   const { data: signed, error: signError } = await service.storage
     .from("recordings")
-    .createSignedUrl(objectPath, SIGNED_URL_TTL_SECONDS);
+    .createSignedUrl(normalizeRecordingObjectPath(objectPath), SIGNED_URL_TTL_SECONDS);
   if (signError || !signed?.signedUrl) {
     return NextResponse.json({ error: "sign_failed" }, { status: 502 });
   }

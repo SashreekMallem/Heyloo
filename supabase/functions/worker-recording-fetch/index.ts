@@ -19,6 +19,13 @@ async function uploadToStorage(
   bytes: ArrayBuffer,
   contentType: string,
 ): Promise<UploadResult> {
+  // DASH-2 (docs/BUILD_NOTES.md): `handler.ts` now always passes a
+  // bucket-relative `path` (no `recordings/` prefix baked in — that was
+  // LOGIN-1's found bug, since the value it also persists to `call_logs.
+  // recording_url` must match the real Storage object key exactly). The
+  // `.replace` below is kept as defensive tolerance, not load-bearing for
+  // new writes: it's what makes this same endpoint correct regardless of
+  // which form a future caller passes.
   const res = await fetch(
     `${SUPABASE_URL}/storage/v1/object/recordings/${encodeURI(path.replace(/^recordings\//, ""))}`,
     {

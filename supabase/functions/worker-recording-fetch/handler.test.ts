@@ -74,10 +74,47 @@ describe("fetchAndStoreRecording", () => {
     };
     const outcome = await fetchAndStoreRecording(sql, params, deps);
     expect(outcome.outcome).toBe("stored");
-    expect(uploaded).toContain("recordings/t1/cl_1.wav");
-    expect(uploaded).toContain("recordings/t1/cl_1_stereo.wav");
+    // DASH-2 (docs/BUILD_NOTES.md): bucket-relative, no `recordings/`
+    // prefix baked in — LOGIN-1 found the old prefixed form caused a
+    // double-prefixed, non-existent Storage lookup at read time.
+    expect(uploaded).toContain("t1/cl_1.wav");
+    expect(uploaded).toContain("t1/cl_1_stereo.wav");
     const update = calls.find((c) => c.text.includes("update public.call_logs"));
-    expect(update?.values).toContain("recordings/t1/cl_1.wav");
+    expect(update?.values).toContain("t1/cl_1.wav");
+  });
+
+  // DASH-2 (docs/BUILD_NOTES.md): the write side only ever produces the
+  // new bucket-relative form going forward (no migration of existing
+  // rows — see this task's BUILD_NOTES entry); the READ side's tolerance
+  // of the old, `recordings/`-prefixed form left behind by pre-DASH-2
+  // rows is covered by `apps/web/.../calls/[id]/recording/route.test.ts`'s
+  // "strips a legacy recordings/ prefix" case.
+  it("never bakes a recordings/ bucket prefix into either stored path, even for a mono-only call", async () => {
+    const { sql, calls } = makeSql();
+    const uploaded: string[] = [];
+    const deps: RecordingFetchDeps = {
+      retellFetch: (() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ recording_url: "https://retell/mono.wav" }), {
+            status: 200,
+          }),
+        )) as never,
+      retellApiKey: "key",
+      uploadToStorage: async (path) => {
+        uploaded.push(path);
+        return { ok: true };
+      },
+      fetchRecordingBytes: async () => new ArrayBuffer(8),
+    };
+    const outcome = await fetchAndStoreRecording(sql, params, deps);
+    expect(outcome.outcome).toBe("stored");
+    expect(uploaded).toEqual(["t1/cl_1.wav"]);
+    for (const path of uploaded) {
+      expect(path.startsWith("recordings/")).toBe(false);
+    }
+    const update = calls.find((c) => c.text.includes("update public.call_logs"));
+    expect(update?.values).toContain("t1/cl_1.wav");
+    expect(update?.values).toContain(null); // no stereo path for this call
   });
 
   it("returns upload_failed when the mono upload fails", async () => {

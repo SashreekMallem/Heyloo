@@ -54,7 +54,21 @@ export async function fetchAndStoreRecording(
   const monoBytes = await deps.fetchRecordingBytes(body.recording_url);
   if (!monoBytes) return { outcome: "not_ready" };
 
-  const monoPath = `recordings/${params.tenantId}/${params.callId}.wav`;
+  // DASH-2 (docs/BUILD_NOTES.md): these paths are stored in `call_logs.
+  // recording_url`/`stereo_recording_url` AND used as the Storage object
+  // key. They must be BUCKET-RELATIVE (no `recordings/` prefix) — the
+  // `recordings` bucket is already selected by whatever reads them back
+  // (`uploadToStorage` below, and the web app's `.storage.from("recordings")
+  // .createSignedUrl(...)`). LOGIN-1 found DASH-1's original code baked
+  // the bucket name into the stored path itself, which `uploadToStorage`'s
+  // own upload call silently stripped before hitting Storage — so the
+  // object it wrote and the path recorded in the DB didn't match, and
+  // every later `createSignedUrl` on that stored value 404'd
+  // (`recordings/recordings/<tenant>/<call>.wav`). Fixed at the source:
+  // no prefix baked in here. `uploadToStorage`'s own `.replace(/^recordings\//, "")`
+  // stays in place so it's still tolerant of any already-prefixed value
+  // (pre-DASH-2 rows are never migrated — see BUILD_NOTES).
+  const monoPath = `${params.tenantId}/${params.callId}.wav`;
   const monoUpload = await deps.uploadToStorage(monoPath, monoBytes, "audio/wav");
   if (!monoUpload.ok) {
     return monoUpload.detail
@@ -66,7 +80,7 @@ export async function fetchAndStoreRecording(
   if (body.recording_multi_channel_url) {
     const stereoBytes = await deps.fetchRecordingBytes(body.recording_multi_channel_url);
     if (stereoBytes) {
-      stereoPath = `recordings/${params.tenantId}/${params.callId}_stereo.wav`;
+      stereoPath = `${params.tenantId}/${params.callId}_stereo.wav`;
       await deps.uploadToStorage(stereoPath, stereoBytes, "audio/wav");
     }
   }

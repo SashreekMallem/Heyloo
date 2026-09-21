@@ -130,6 +130,38 @@ describe("GET /api/tenant/calls/[id]/recording", () => {
     );
   });
 
+  // DASH-2 (docs/BUILD_NOTES.md): LOGIN-1 found rows written before this
+  // fix carry a `recordings/`-prefixed `recording_url` (the bucket name
+  // baked into the stored path), which 502'd every signing attempt since
+  // `.storage.from("recordings")` already scopes to that bucket. This
+  // task's brief explicitly does not migrate existing rows, so the route
+  // must tolerate both the legacy prefixed form (this test) and the new
+  // bucket-relative form (the test above) without one breaking the other.
+  it("strips a legacy recordings/ prefix before signing (pre-DASH-2 rows)", async () => {
+    serverQueue = {
+      call_logs: [
+        {
+          data: {
+            id: "c1",
+            recording_url: "recordings/b2efae9d-8309-46d6-a950-31d683616cdc/call_abc.wav",
+            stereo_recording_url:
+              "recordings/b2efae9d-8309-46d6-a950-31d683616cdc/call_abc_stereo.wav",
+          },
+          error: null,
+        },
+      ],
+    };
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    const res = await GET(req("c1"), { params: Promise.resolve({ id: "c1" }) });
+    expect(res.status).toBe(200);
+    // The prefix is stripped before hitting createSignedUrl — never
+    // double-prefixed (`recordings/recordings/...`, which 404s).
+    expect(createSignedUrlMock).toHaveBeenCalledWith(
+      "b2efae9d-8309-46d6-a950-31d683616cdc/call_abc.wav",
+      300,
+    );
+  });
+
   it("signs the stereo object when ?channel=stereo is requested", async () => {
     serverQueue = {
       call_logs: [
