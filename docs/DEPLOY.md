@@ -459,6 +459,46 @@ functions deploy` itself doesn't strictly matter for correctness, but
 doing it first means nothing serves a stale template even for the brief
 window between the two commands.
 
+**If a fix landed in `_shared/compiler/*`, `_shared/agent-template-seeds.ts`,
+or `agent_templates` content, and a real (non-test) tenant was already
+provisioned before the fix — that tenant's Retell agent is permanently
+stale until re-provisioned** (Retell has no in-place edit path once an
+agent has ANY version history; see `_shared/provisioning/compile-and-
+publish.ts`'s own header). PARITY-1 (docs/BUILD_NOTES.md):
+`scripts/republish-fleet.ts` republishes one or more `is_test = true`
+tenants through the exact same shared compile -> create-agent -> publish
+module both `api-provision` (the real saga) and
+`api-admin-provision-test-tenant` call, via `api-provision`'s
+`action: "republish"`:
+
+```bash
+SUPABASE_PROJECT_REF=<project-ref> \
+SUPABASE_ACCESS_TOKEN=<management-api-token> \
+node --experimental-strip-types scripts/republish-fleet.ts --tenant <slug>   # dry-run — lists candidates, calls nothing
+
+SUPABASE_PROJECT_REF=<project-ref> \
+SUPABASE_ACCESS_TOKEN=<management-api-token> \
+PROVISION_INTERNAL_SECRET=<the same secret set on the project> \
+SB_SECRET_KEY=<the project's own secret API key> \
+node --experimental-strip-types scripts/republish-fleet.ts --tenant <slug> --apply
+```
+
+Dry-run by default; `--apply` is required to actually call
+`api-provision`. `--tenant <slug>` narrows to one tenant — omitting it
+targets every `status = 'active'` tenant the query returns, so always
+scope with `--tenant` unless a genuine fleet-wide republish is intended.
+The republish action is server-side gated to `tenants.is_test = true`
+ONLY (`api-provision/handler.ts#republishTenantAgent`) — it can never
+touch a real, billable tenant even if the candidate list or `--tenant`
+value is wrong; a non-test tenant is always skipped and reported, never
+sent. It re-points the tenant's EXISTING phone number's `inbound_agents`
+ONLY (never `outbound_agents`, a partial PATCH — safe to run against a
+number a concurrent process is using as an outbound caller).
+`SB_SECRET_KEY` is required only with `--apply`, to satisfy
+`api-provision`'s `verify_jwt = true` platform gateway (same key
+`webhooks-stripe/invoke-provisioning.ts` already uses for this exact call
+shape).
+
 `supabase/config.toml`'s `[functions.*]` blocks already declare the correct
 `verify_jwt` per function (CLAUDE.md: "triple-check — the old repo died on
 this inverted"). Deploy them all in one pass:

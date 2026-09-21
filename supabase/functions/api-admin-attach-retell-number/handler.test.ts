@@ -158,6 +158,16 @@ describe("inspectRetellConfig", () => {
           webhook_timeout_ms: 10000,
           is_published: true,
           version: 3,
+          response_engine: { type: "conversation-flow", conversation_flow_id: "flow_1" },
+        });
+      }
+      if (url.includes("/get-conversation-flow/flow_1")) {
+        return jsonResponse({
+          conversation_flow_id: "flow_1",
+          start_node_id: "greeting",
+          nodes: [{ id: "greeting" }],
+          tools: [],
+          global_prompt: null,
         });
       }
       if (url.includes("/get-phone-number/")) {
@@ -176,6 +186,9 @@ describe("inspectRetellConfig", () => {
       { retellFetch, retellApiKey: "key", logger },
     );
 
+    expect(result.status).toBe(200);
+    const body = result.body as { agent: { flow_hash: string | null } };
+    expect(typeof body.agent.flow_hash).toBe("string");
     expect(result).toEqual({
       status: 200,
       body: {
@@ -185,6 +198,9 @@ describe("inspectRetellConfig", () => {
           webhook_timeout_ms: 10000,
           is_published: true,
           version: 3,
+          response_engine_type: "conversation-flow",
+          flow_hash: body.agent.flow_hash,
+          general_tools: null,
         },
         phone_number: {
           phone_number: "+14155551234",
@@ -193,6 +209,65 @@ describe("inspectRetellConfig", () => {
         },
       },
     });
+  });
+
+  it("hashes the SAME flow content to the SAME flow_hash across two tenants (PARITY-1 artifact-diff use case)", async () => {
+    const { sql } = makeSql({
+      "from public.agent_configs": [{ retell_agent_id: "agent_a" }],
+      "from public.phone_numbers": [],
+    });
+    const flowBody = {
+      conversation_flow_id: "flow_a",
+      start_node_id: "greeting",
+      nodes: [{ id: "greeting", instruction: { text: "Hi, this call is recorded." } }],
+      tools: [],
+      global_prompt: null,
+    };
+    const retellFetchA = async (url: string) => {
+      if (url.includes("/get-agent/agent_a")) {
+        return jsonResponse({
+          agent_id: "agent_a",
+          is_published: true,
+          version: 1,
+          response_engine: { type: "conversation-flow", conversation_flow_id: "flow_a" },
+        });
+      }
+      if (url.includes("/get-conversation-flow/flow_a")) return jsonResponse(flowBody);
+      throw new Error(`unexpected call: ${url}`);
+    };
+    const retellFetchB = async (url: string) => {
+      if (url.includes("/get-agent/agent_a")) {
+        return jsonResponse({
+          agent_id: "agent_a",
+          is_published: true,
+          version: 1,
+          response_engine: { type: "conversation-flow", conversation_flow_id: "flow_b" },
+        });
+      }
+      // A different flow_id, byte-identical CONTENT — same tenant fixture
+      // reused; only the `id` differs, which the hash deliberately ignores
+      // (it hashes start_node_id/nodes/tools/global_prompt, never the
+      // Retell-assigned resource id itself).
+      if (url.includes("/get-conversation-flow/flow_b")) {
+        return jsonResponse({ ...flowBody, conversation_flow_id: "flow_b" });
+      }
+      throw new Error(`unexpected call: ${url}`);
+    };
+
+    const resultA = await inspectRetellConfig(
+      sql,
+      { tenant_id: "t1" },
+      { retellFetch: retellFetchA, retellApiKey: "key", logger },
+    );
+    const resultB = await inspectRetellConfig(
+      sql,
+      { tenant_id: "t1" },
+      { retellFetch: retellFetchB, retellApiKey: "key", logger },
+    );
+    const hashA = (resultA.body as { agent: { flow_hash: string } }).agent.flow_hash;
+    const hashB = (resultB.body as { agent: { flow_hash: string } }).agent.flow_hash;
+    expect(hashA).toBe(hashB);
+    expect(hashA).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("surfaces a null webhook_url plainly (CALL-5's own real live bug shape) rather than masking it", async () => {
@@ -221,6 +296,9 @@ describe("inspectRetellConfig", () => {
         webhook_timeout_ms: null,
         is_published: true,
         version: 1,
+        response_engine_type: null,
+        flow_hash: null,
+        general_tools: null,
       },
       phone_number: null,
     });

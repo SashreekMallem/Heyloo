@@ -128,6 +128,39 @@ export async function createRetellLLM(
   });
 }
 
+/** GET /get-conversation-flow/{conversation_flow_id} (PARITY-1,
+ * RETELL-VERIFIED live against docs.retellai.com/api-references/
+ * get-conversation-flow 2026-09-21): response carries `conversation_flow_id`,
+ * `version`, `start_node_id`, `nodes`, `tools`, `global_prompt`,
+ * `model_choice`, among others — the full compiled flow content, used by
+ * `api-admin-attach-retell-number`'s `inspect` action to diff two tenants'
+ * compiled artifacts without either tenant's own `agent_configs.
+ * compiled_config` (which can itself be stale relative to what Retell
+ * actually has on file). */
+export async function getConversationFlow(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  conversationFlowId: string,
+) {
+  return retellRequest(
+    fetchImpl,
+    apiKey,
+    `/get-conversation-flow/${encodeURIComponent(conversationFlowId)}`,
+    { method: "GET" },
+  );
+}
+
+/** GET /get-retell-llm/{llm_id} (PARITY-1, RETELL-VERIFIED live against
+ * docs.retellai.com/api-references/get-retell-llm 2026-09-21): the
+ * `multi_prompt`/`single_prompt` counterpart to `getConversationFlow`
+ * above — response carries `llm_id`, `general_prompt`, `general_tools`,
+ * `states`, `starting_state`, among others. */
+export async function getRetellLLM(fetchImpl: RetellFetch, apiKey: string, llmId: string) {
+  return retellRequest(fetchImpl, apiKey, `/get-retell-llm/${encodeURIComponent(llmId)}`, {
+    method: "GET",
+  });
+}
+
 /** POST /create-agent-version/{agent_id} — RETELL-VERIFIED live 2026-09-20
  * (docs.retellai.com/api-references/create-agent-version, corroborated by
  * community.retellai.com/t/api-workflow-for-updating-a-published-

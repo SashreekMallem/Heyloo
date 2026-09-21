@@ -1,7 +1,9 @@
 import type { RetellFetch } from "../_shared/providers/retell.ts";
 import {
   getAgent,
+  getConversationFlow,
   getPhoneNumber,
+  getRetellLLM,
   listPhoneNumbers,
   updatePhoneNumber,
 } from "../_shared/providers/retell.ts";
@@ -166,6 +168,38 @@ export interface InspectedAgent {
   webhook_timeout_ms: number | null;
   is_published: boolean | null;
   version: number | null;
+  /** PARITY-1: `response_engine.type` as returned by Retell
+   * (`"conversation-flow"` or `"retell-llm"`), so a caller comparing two
+   * tenants' agents can tell whether they're even the same compile
+   * target before comparing `flow_hash`. */
+  response_engine_type: string | null;
+  /** PARITY-1: the SHA-256 hex digest of the compiled flow/LLM's own
+   * canonical content (`nodes`+`start_node_id`+`tools`+`global_prompt` for
+   * a conversation flow, or `general_prompt`+`general_tools`+`states`+
+   * `starting_state` for a retell-llm) as Retell currently has it on
+   * file — fetched fresh via `getConversationFlow`/`getRetellLLM`, never
+   * read from this platform's own `agent_configs.compiled_config` (which
+   * can itself be stale). Two tenants with an identical `flow_hash` have
+   * byte-identical compiled prompts/tools/nodes; a different hash is the
+   * actual, provable artifact difference. `null` when the flow/LLM
+   * couldn't be fetched. */
+  flow_hash: string | null;
+  /** PARITY-1: the `general_tools` array's tool names, when the agent's
+   * compile target is `multi_prompt`/`single_prompt` (a `retell-llm`
+   * resource) — `null` for a `conversation_flow` agent (Retell's
+   * `general_tools` field doesn't apply there; see `_shared/compiler/
+   * template-compiler.ts`'s own `MultiPromptBody#general_tools` doc
+   * comment). Requested by this task explicitly ("if needed") — included
+   * whenever the fetched resource actually has one. */
+  general_tools: string[] | null;
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 export interface InspectedPhoneNumber {
@@ -224,13 +258,85 @@ export async function inspectRetellConfig(
         webhook_timeout_ms?: number | null;
         is_published?: boolean | null;
         version?: number | null;
+        response_engine?: {
+          type?: string;
+          conversation_flow_id?: string;
+          llm_id?: string;
+        } | null;
       };
+      const responseEngine = b.response_engine ?? null;
+      let flowHash: string | null = null;
+      let generalTools: string[] | null = null;
+      if (responseEngine?.type === "conversation-flow" && responseEngine.conversation_flow_id) {
+        const flowResult = await getConversationFlow(
+          deps.retellFetch,
+          deps.retellApiKey,
+          responseEngine.conversation_flow_id,
+        );
+        if (flowResult.ok) {
+          const flowBody = flowResult.body as {
+            start_node_id?: unknown;
+            nodes?: unknown;
+            tools?: unknown;
+            global_prompt?: unknown;
+          };
+          flowHash = await sha256Hex(
+            JSON.stringify({
+              start_node_id: flowBody.start_node_id ?? null,
+              nodes: flowBody.nodes ?? null,
+              tools: flowBody.tools ?? null,
+              global_prompt: flowBody.global_prompt ?? null,
+            }),
+          );
+        } else {
+          deps.logger.error("inspect_retell_config_get_conversation_flow_failed", {
+            tenant_id: req.tenant_id,
+            status: flowResult.status,
+          });
+        }
+      } else if (responseEngine?.type === "retell-llm" && responseEngine.llm_id) {
+        const llmResult = await getRetellLLM(
+          deps.retellFetch,
+          deps.retellApiKey,
+          responseEngine.llm_id,
+        );
+        if (llmResult.ok) {
+          const llmBody = llmResult.body as {
+            general_prompt?: unknown;
+            general_tools?: unknown;
+            states?: unknown;
+            starting_state?: unknown;
+          };
+          flowHash = await sha256Hex(
+            JSON.stringify({
+              general_prompt: llmBody.general_prompt ?? null,
+              general_tools: llmBody.general_tools ?? null,
+              states: llmBody.states ?? null,
+              starting_state: llmBody.starting_state ?? null,
+            }),
+          );
+          if (Array.isArray(llmBody.general_tools)) {
+            generalTools = (llmBody.general_tools as Array<Record<string, unknown>>).map(
+              (t) =>
+                (t["name"] as string | undefined) ?? (t["type"] as string | undefined) ?? "unknown",
+            );
+          }
+        } else {
+          deps.logger.error("inspect_retell_config_get_retell_llm_failed", {
+            tenant_id: req.tenant_id,
+            status: llmResult.status,
+          });
+        }
+      }
       agent = {
         agent_id: b.agent_id ?? agentId,
         webhook_url: b.webhook_url ?? null,
         webhook_timeout_ms: b.webhook_timeout_ms ?? null,
         is_published: b.is_published ?? null,
         version: b.version ?? null,
+        response_engine_type: responseEngine?.type ?? null,
+        flow_hash: flowHash,
+        general_tools: generalTools,
       };
     } else {
       deps.logger.error("inspect_retell_config_get_agent_failed", {
