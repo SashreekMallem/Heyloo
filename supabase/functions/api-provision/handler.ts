@@ -1,15 +1,14 @@
-import type { CompiledFlowRequest } from "../_shared/compiler/template-compiler.ts";
 import type { RetellFetch } from "../_shared/providers/retell.ts";
+import { createPhoneNumber, updatePhoneNumber } from "../_shared/providers/retell.ts";
 import {
-  createAgent,
-  createConversationFlow,
-  createPhoneNumber,
-  createRetellLLM,
-  getAgent,
-  publishAgentVersion,
-} from "../_shared/providers/retell.ts";
+  type CompileAndPublishDeps,
+  compileAndCreateAgent,
+  compileCreateAndPublish,
+  publishTenantAgent,
+} from "../_shared/provisioning/compile-and-publish.ts";
 import { enqueue, QUEUE_NAMES } from "../_shared/queue.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
+import type { Vertical } from "../_shared/vertical-defaults.ts";
 
 /**
  * `/api-provision` saga (BACKEND_SPEC §7.9): tenant row -> compiled agent ->
@@ -21,28 +20,14 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
  * attempts, updated_at`) tracks progress so a re-entrant call resumes
  * rather than re-running completed steps.
  *
- * Step 2 (agent compile, EDGE_AUDIT B2) runs the tenant's active vertical
- * template through the REAL compiler — `_shared/compiler/template-compiler.ts`,
- * the same lean, deliberately-duplicated port of
- * `packages/adapters/retell/src/compiler/*` that `admin/handler.ts`'s
- * template-publish route already uses in production for the identical
- * Deno/Node workspace-package-boundary reason documented on that module
- * (Deno can't import a Node-only pnpm workspace package without a bundling
- * step neither task adds) — never a stub. `deps.compileTemplate` resolves
- * the row from `agent_templates` and returns the compiled Retell flow; this
- * saga HARD-FAILS the whole step (never calls Retell) when
- * `disclosureVerified` is false, per CLAUDE.md Rule 2 (G1/G2).
+ * PARITY-1 (docs/BUILD_NOTES.md): the compile -> create-agent -> publish
+ * mechanics (step 2 + step 5 below) now delegate to
+ * `_shared/provisioning/compile-and-publish.ts` — the SAME module
+ * `api-admin-provision-test-tenant/handler.ts` calls — instead of an
+ * independently duplicated copy. A fix there reaches both callers by
+ * construction; this file only owns the parts genuinely specific to the
+ * real saga (tenant-row lifecycle, number purchase, billing, notify).
  */
-
-export interface CompiledTemplateResult {
-  templateId: string;
-  templateVersion: number;
-  voiceId: string;
-  model: string;
-  agentName: string;
-  disclosureVerified: boolean;
-  flow: CompiledFlowRequest;
-}
 
 export const STEPS = [
   "tenant_finalize",
@@ -54,30 +39,13 @@ export const STEPS = [
 ] as const;
 export type ProvisioningStep = (typeof STEPS)[number];
 
-export interface ProvisionDeps {
+export interface ProvisionDeps extends CompileAndPublishDeps {
   retellFetch: RetellFetch;
   retellApiKey: string;
   /** `/voice-inbound` — wired onto the purchased PHONE NUMBER, not the
    * agent (RETELL-VERIFY, VERIFY-6 resolved: `inbound_webhook_url` doesn't
    * exist on the Agent resource at all). */
   retellInboundWebhookUrl: string;
-  /** CALL-5: the deployed `/voice-events` function URL — set as the
-   * AGENT resource's own `webhook_url` (call_started/call_ended/
-   * call_analyzed event delivery). Distinct from `retellInboundWebhookUrl`
-   * above. Previously missing entirely from this saga's `createAgent` call
-   * — every tenant provisioned through here got an agent with no events
-   * webhook at all, so `webhook_events`/`call_logs` post-call fields never
-   * populated for a single one of them (docs/BUILD_NOTES.md CALL-5 entry,
-   * found via the test-tenant path that shares this exact bug). */
-  retellEventsWebhookUrl: string;
-  /**
-   * Resolves + compiles the tenant's active vertical template. `null` means
-   * no active `agent_templates` row exists for the tenant's vertical (a
-   * real, distinct failure from a disclosure-gate refusal). Real callers
-   * (index.ts) run this through `_shared/compiler/template-compiler.ts`;
-   * never a hand-built stand-in payload.
-   */
-  compileTemplate: (tenantId: string) => Promise<CompiledTemplateResult | null>;
   logger: Logger;
 }
 
@@ -113,107 +81,36 @@ export async function runProvisioningSaga(
     await sql`update public.tenants set status = case when status = 'trialing' then 'active' else status end where id = ${tenantId}`;
     await recordStep(sql, tenantId, "tenant_finalize", "succeeded");
 
-    // 2. Agent compile.
+    // 2. Agent compile — shared module (PARITY-1).
     await recordStep(sql, tenantId, "agent_compile", "in_progress");
-    const existingConfig = await sql<{
-      retell_agent_id: string | null;
-      template_id: string;
-      template_version: number;
-    }>`
-      select retell_agent_id, template_id, template_version from public.agent_configs where tenant_id = ${tenantId}
+    const existingConfig = await sql<{ retell_agent_id: string | null }>`
+      select retell_agent_id from public.agent_configs where tenant_id = ${tenantId}
     `;
     let retellAgentId = existingConfig[0]?.retell_agent_id ?? null;
     if (!retellAgentId) {
-      const compiled = await deps.compileTemplate(tenantId);
-      if (!compiled) {
-        await recordStep(sql, tenantId, "agent_compile", "failed", "no_active_template");
-        return { status: "failed", failedStep: "agent_compile", error: "no_active_template" };
-      }
-      // HARD-FAIL (CLAUDE.md Rule 2, G1/G2): never call Retell with a
-      // compiled flow whose first turn doesn't contain the tenant's
-      // `disclosure_line` verbatim — this is the actual publish refusal,
-      // not just a passthrough of the compiler's own boolean.
-      if (!compiled.disclosureVerified) {
-        await recordStep(sql, tenantId, "agent_compile", "failed", "disclosure_gate_failed");
-        return { status: "failed", failedStep: "agent_compile", error: "disclosure_gate_failed" };
-      }
-
-      // Two-step protocol (RETELL-VERIFY, matches admin/handler.ts's
-      // template-publish route exactly): create the conversation-flow/LLM
-      // resource first, then create the agent referencing it.
-      const flowPayload =
-        compiled.flow.kind === "conversation_flow"
-          ? { ...compiled.flow.body, model_choice: { model: compiled.model, type: "cascading" } }
-          : { ...compiled.flow.body, model: compiled.model };
-      const flowResult =
-        compiled.flow.kind === "conversation_flow"
-          ? await createConversationFlow(deps.retellFetch, deps.retellApiKey, flowPayload)
-          : await createRetellLLM(deps.retellFetch, deps.retellApiKey, flowPayload);
-      const flowBody = flowResult.body as { conversation_flow_id?: string; llm_id?: string };
-      const flowId = flowBody.conversation_flow_id ?? flowBody.llm_id;
-      if (!flowResult.ok || !flowId) {
-        await recordStep(
-          sql,
-          tenantId,
-          "agent_compile",
-          "failed",
-          `retell_flow_create_status_${flowResult.status}`,
-        );
-        return {
-          status: "failed",
-          failedStep: "agent_compile",
-          error: "retell_flow_create_failed",
-        };
-      }
-
-      const responseEngine =
-        compiled.flow.kind === "conversation_flow"
-          ? { type: "conversation-flow", conversation_flow_id: flowId }
-          : { type: "retell-llm", llm_id: flowId };
-      const created = await createAgent(deps.retellFetch, deps.retellApiKey, {
-        agent_name: compiled.agentName,
-        voice_id: compiled.voiceId,
-        response_engine: responseEngine,
-        // CALL-5 fix — see ProvisionDeps#retellEventsWebhookUrl.
-        webhook_url: deps.retellEventsWebhookUrl,
-        webhook_timeout_ms: 10000,
-      });
-      const createdBody = created.body as { agent_id?: string };
-      if (!created.ok || !createdBody.agent_id) {
-        await recordStep(
-          sql,
-          tenantId,
-          "agent_compile",
-          "failed",
-          `retell_create_agent_status_${created.status}`,
-        );
-        return {
-          status: "failed",
-          failedStep: "agent_compile",
-          error: "retell_create_agent_failed",
-        };
-      }
-      retellAgentId = createdBody.agent_id;
-      const retellLlmId =
-        compiled.flow.kind === "conversation_flow" ? null : (flowBody.llm_id ?? null);
-      await sql`
-        insert into public.agent_configs (tenant_id, template_id, template_version, retell_agent_id, retell_llm_id, compiled_config)
-        values (${tenantId}, ${compiled.templateId}, ${compiled.templateVersion}, ${retellAgentId}, ${retellLlmId}, ${{ compileTarget: compiled.flow.kind, flow: compiled.flow.body, response_engine: responseEngine }}::jsonb)
-        on conflict (tenant_id) do update set
-          retell_agent_id = excluded.retell_agent_id, retell_llm_id = excluded.retell_llm_id, compiled_config = excluded.compiled_config
+      const tenantRows = await sql<{ vertical: Vertical }>`
+        select vertical from public.tenants where id = ${tenantId}
       `;
+      const vertical = tenantRows[0]?.vertical;
+      if (!vertical) {
+        await recordStep(sql, tenantId, "agent_compile", "failed", "tenant_not_found");
+        return { status: "failed", failedStep: "agent_compile", error: "tenant_not_found" };
+      }
+      // Real tenants never auto-reseed their template content — only the
+      // test-tenant path's explicit `force_recompile` does that.
+      const created = await compileCreateAndPublishAgentOnly(sql, tenantId, vertical, deps);
+      if (!created.ok) {
+        await recordStep(sql, tenantId, "agent_compile", "failed", created.error);
+        return { status: "failed", failedStep: "agent_compile", error: created.error };
+      }
+      retellAgentId = created.agentId;
     }
     await recordStep(sql, tenantId, "agent_compile", "succeeded");
 
     // 3. Retell number provision (SIGNUP-1: buys the number directly through
     // Retell's own `POST /create-phone-number` — no Twilio account of our
     // own required, `inbound_agents`/`inbound_webhook_url` set in the SAME
-    // call, so there is no separate "import" step. Replaces the prior
-    // Twilio-purchase-then-`importPhoneNumber` two-step, which could never
-    // succeed on this platform: `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` are
-    // not configured (docs/BUILD_NOTES.md SIGNUP-1 entry), and the old
-    // `resolvePhoneNumberToProvision` dependency was an unimplemented stub
-    // that always returned `""`.)
+    // call, so there is no separate "import" step).
     await recordStep(sql, tenantId, "retell_number_provision", "in_progress");
     const existingNumber = await sql<{ id: string; e164: string; retell_number_id: string | null }>`
       select id, e164, retell_number_id from public.phone_numbers where tenant_id = ${tenantId} and released_at is null limit 1
@@ -270,42 +167,13 @@ export async function runProvisioningSaga(
     await recordStep(sql, tenantId, "billing_wiring", "in_progress");
     await recordStep(sql, tenantId, "billing_wiring", "succeeded");
 
-    // 5. Publish agent. RETELL-VERIFY (VERIFY-6, resolved): publish REQUIRES
-    // a `{version}` body — fetch the agent's current version first (this
-    // saga may be resuming with an already-existing `retellAgentId` from an
-    // earlier run, so a version captured at create time isn't always
-    // available; a fresh `getAgent` is correct either way).
+    // 5. Publish agent — shared module (PARITY-1).
     await recordStep(sql, tenantId, "publish_agent", "in_progress");
-    const agentForPublish = await getAgent(deps.retellFetch, deps.retellApiKey, retellAgentId);
-    const agentForPublishBody = agentForPublish.body as { version?: number };
-    if (!agentForPublish.ok || agentForPublishBody.version === undefined) {
-      await recordStep(
-        sql,
-        tenantId,
-        "publish_agent",
-        "failed",
-        `retell_get_agent_status_${agentForPublish.status}`,
-      );
-      return { status: "failed", failedStep: "publish_agent", error: "get_agent_failed" };
-    }
-    const published = await publishAgentVersion(
-      deps.retellFetch,
-      deps.retellApiKey,
-      retellAgentId,
-      agentForPublishBody.version,
-    );
+    const published = await publishTenantAgent(sql, tenantId, retellAgentId, deps);
     if (!published.ok) {
-      await recordStep(
-        sql,
-        tenantId,
-        "publish_agent",
-        "failed",
-        `retell_status_${published.status}`,
-      );
-      return { status: "failed", failedStep: "publish_agent", error: "publish_failed" };
+      await recordStep(sql, tenantId, "publish_agent", "failed", published.error);
+      return { status: "failed", failedStep: "publish_agent", error: published.error };
     }
-    await sql`update public.agent_configs set published_at = now() where tenant_id = ${tenantId}`;
-    await sql`update public.tenants set status = 'active' where id = ${tenantId}`;
     await recordStep(sql, tenantId, "publish_agent", "succeeded");
 
     // 6. Notify — enqueued, never sent inline.
@@ -327,4 +195,85 @@ export async function runProvisioningSaga(
     });
     return { status: "failed", error: String(err) };
   }
+}
+
+/** Thin wrapper: only the compile+create half of `compileCreateAndPublish`
+ * (the saga publishes separately as its own tracked step 5, so it never
+ * calls the combined helper directly — this keeps `agent_compile` and
+ * `publish_agent` as two independently-retryable `provisioning_runs` rows,
+ * matching this saga's existing step contract). */
+async function compileCreateAndPublishAgentOnly(
+  sql: SqlClient,
+  tenantId: string,
+  vertical: Vertical,
+  deps: ProvisionDeps,
+): Promise<{ ok: true; agentId: string } | { ok: false; error: string }> {
+  const created = await compileAndCreateAgent(sql, tenantId, vertical, deps, false);
+  if (!created.ok) return { ok: false, error: created.error };
+  return { ok: true, agentId: created.agentId };
+}
+
+export type RepublishResult =
+  | { status: 200; body: { tenant_id: string; agent_id: string } }
+  | { status: number; body: { error: string } };
+
+/**
+ * PARITY-1 deliverable 3: re-provisioning path for an EXISTING real tenant
+ * — guarded (index.ts) by `x-internal-secret` AND `tenants.is_test = true`,
+ * so this can never be pointed at a paying customer's tenant. Compiles the
+ * tenant's CURRENT template (whatever compiler/template fixes have landed
+ * since the tenant was first provisioned) into a brand-new Retell agent
+ * (Retell has no in-place edit path once an agent has version history —
+ * see this module's own header and `compile-and-publish.ts`'s), publishes
+ * it, then re-points the tenant's EXISTING phone number's `inbound_agents`
+ * ONLY at the new agent — `outbound_agents` is never included in the PATCH
+ * body, so a concurrent SELFCALL-1 run using this same number as an
+ * outbound caller is untouched (`updatePhoneNumber` is a partial PATCH,
+ * confirmed by `_shared/providers/retell.ts`'s own signature/doc comment).
+ */
+export async function republishTenantAgent(
+  sql: SqlClient,
+  tenantId: string,
+  deps: ProvisionDeps,
+): Promise<RepublishResult> {
+  const tenantRows = await sql<{ vertical: Vertical; is_test: boolean }>`
+    select vertical, is_test from public.tenants where id = ${tenantId} and deleted_at is null
+  `;
+  const tenant = tenantRows[0];
+  if (!tenant) return { status: 404, body: { error: "tenant_not_found" } };
+  if (!tenant.is_test) return { status: 403, body: { error: "not_a_test_tenant" } };
+
+  const configRows = await sql<{ retell_agent_id: string | null }>`
+    select retell_agent_id from public.agent_configs where tenant_id = ${tenantId}
+  `;
+  if (!configRows[0]?.retell_agent_id) {
+    return { status: 422, body: { error: "tenant_not_provisioned_yet" } };
+  }
+
+  const published = await compileCreateAndPublish(sql, tenantId, tenant.vertical, deps, false);
+  if (!published.ok) {
+    return { status: published.status, body: { error: published.error } };
+  }
+
+  const numberRows = await sql<{ e164: string }>`
+    select e164 from public.phone_numbers
+    where tenant_id = ${tenantId} and released_at is null
+    order by is_primary desc, created_at asc limit 1
+  `;
+  const number = numberRows[0];
+  if (number) {
+    const updated = await updatePhoneNumber(deps.retellFetch, deps.retellApiKey, number.e164, {
+      inbound_agents: [{ agent_id: published.agentId, weight: 1 }],
+      inbound_webhook_url: deps.retellInboundWebhookUrl,
+    });
+    if (!updated.ok) {
+      deps.logger.error("republish_tenant_agent_number_repoint_failed", {
+        tenant_id: tenantId,
+        status: updated.status,
+      });
+      return { status: 502, body: { error: "retell_update_phone_number_failed" } };
+    }
+  }
+
+  return { status: 200, body: { tenant_id: tenantId, agent_id: published.agentId } };
 }

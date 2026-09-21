@@ -7,14 +7,12 @@
 // tenant + role, per CLAUDE.md Rule 2 ("every secret-key edge function
 // still explicitly filters by a verified tenant_id" — service_role callers
 // bypass RLS but not this check).
-import type { CompilerAgentTemplate } from "../_shared/compiler/template-compiler.ts";
-import { compileTemplate as compileRetellTemplate } from "../_shared/compiler/template-compiler.ts";
 import { getSql } from "../_shared/deno/db.ts";
 import { requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
-import type { CompiledTemplateResult } from "./handler.ts";
-import { runProvisioningSaga } from "./handler.ts";
+import type { ProvisionDeps } from "./handler.ts";
+import { republishTenantAgent, runProvisioningSaga } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-provision" });
 const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
@@ -25,8 +23,9 @@ const VOICE_TOOLS_WEBHOOK_URL = requireEnv("VOICE_TOOLS_WEBHOOK_URL");
 // The `/voice-inbound` webhook is phone-number-scoped, not agent-scoped
 // (RETELL-VERIFY, VERIFY-6 resolved) — wired onto the purchased number here.
 const RETELL_INBOUND_WEBHOOK_URL = requireEnv("RETELL_INBOUND_WEBHOOK_URL");
-// CALL-5: the deployed `/voice-events` function URL — see handler.ts's
-// ProvisionDeps#retellEventsWebhookUrl doc comment.
+// CALL-5: the deployed `/voice-events` function URL — see
+// `_shared/provisioning/compile-and-publish.ts`'s
+// CompileAndPublishDeps#eventsWebhookUrl doc comment.
 const VOICE_EVENTS_WEBHOOK_URL = requireEnv("VOICE_EVENTS_WEBHOOK_URL");
 // SIGNUP-1: TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/RETELL_SIP_TRUNK_TERMINATION_URI
 // are deliberately NOT required here any more — this platform has no Twilio
@@ -59,7 +58,7 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "method_not_allowed" }, { status: 405 });
   }
 
-  let body: { tenant_id?: string };
+  let body: { tenant_id?: string; action?: string };
   try {
     body = await req.json();
   } catch {
@@ -70,6 +69,28 @@ Deno.serve(async (req: Request) => {
 
   const internalSecret = req.headers.get("x-internal-secret");
   const isInternalCall = !!internalSecret && internalSecret === SERVICE_ROLE_INTERNAL_SECRET;
+
+  const deps: ProvisionDeps = {
+    retellFetch: fetch,
+    retellApiKey: RETELL_API_KEY,
+    retellInboundWebhookUrl: RETELL_INBOUND_WEBHOOK_URL,
+    voiceToolsWebhookUrl: VOICE_TOOLS_WEBHOOK_URL,
+    eventsWebhookUrl: VOICE_EVENTS_WEBHOOK_URL,
+    logger,
+  };
+
+  // PARITY-1: `action: "republish"` — internal-secret-only, and further
+  // gated inside `republishTenantAgent` on `tenants.is_test = true` (never
+  // reaches a real, billable tenant). Re-provisions an EXISTING test
+  // tenant through the real saga's own compile/publish path so it picks up
+  // whatever compiler/template fixes have landed since it was first
+  // provisioned, without going through Stripe/checkout again.
+  if (body.action === "republish") {
+    if (!isInternalCall) return jsonResponse({ error: "forbidden" }, { status: 403 });
+    const sql = getSql();
+    const result = await republishTenantAgent(sql, tenantId, deps);
+    return jsonResponse(result.body, { status: result.status });
+  }
 
   if (!isInternalCall) {
     const claims = decodeJwtClaims(req.headers.get("authorization"));
@@ -88,57 +109,6 @@ Deno.serve(async (req: Request) => {
   if (existingRuns[0]?.status === "succeeded") {
     return jsonResponse({ error: "already_provisioned" }, { status: 409 });
   }
-
-  const deps = {
-    retellFetch: fetch,
-    retellApiKey: RETELL_API_KEY,
-    retellInboundWebhookUrl: RETELL_INBOUND_WEBHOOK_URL,
-    retellEventsWebhookUrl: VOICE_EVENTS_WEBHOOK_URL,
-    async compileTemplate(tenantIdForCompile: string): Promise<CompiledTemplateResult | null> {
-      const rows = await sql<Record<string, unknown>>`
-        select at.* from public.agent_templates at
-        join public.tenants t on t.vertical = at.vertical
-        where t.id = ${tenantIdForCompile} and at.is_active
-        order by at.version desc limit 1
-      `;
-      const row = rows[0];
-      if (!row) return null;
-
-      const template: CompilerAgentTemplate = {
-        compile_target: row["compile_target"] as CompilerAgentTemplate["compile_target"],
-        system_prompt: (row["system_prompt"] as string | null) ?? null,
-        states: (row["states"] as CompilerAgentTemplate["states"]) ?? [],
-        transitions: (row["transitions"] as CompilerAgentTemplate["transitions"]) ?? [],
-        global_intents: (row["global_intents"] as CompilerAgentTemplate["global_intents"]) ?? [],
-        tools: (row["tools"] as CompilerAgentTemplate["tools"]) ?? [],
-        disclosure_line: row["disclosure_line"] as string,
-      };
-      // CALL-4 (docs/BUILD_NOTES.md): `agent_configs.transfer_number` is
-      // tenant-config-only (G6) — this step only ever runs when no
-      // `agent_configs` row exists yet (the caller above gates on
-      // `!retellAgentId`), so this is null for every real onboarding today
-      // (a tenant has no path to set it before first provisioning); read
-      // it anyway rather than assume, so a future settings-before-checkout
-      // flow (or a re-run of this same step) picks it up automatically.
-      const existingTransfer = await sql<{ transfer_number: string | null }>`
-        select transfer_number from public.agent_configs where tenant_id = ${tenantIdForCompile}
-      `;
-      const compiled = compileRetellTemplate(template, VOICE_TOOLS_WEBHOOK_URL, {
-        transferNumber: existingTransfer[0]?.transfer_number ?? null,
-      });
-
-      return {
-        templateId: row["id"] as string,
-        templateVersion: row["version"] as number,
-        voiceId: row["voice_id"] as string,
-        model: row["model"] as string,
-        agentName: `heyloo-tenant-${tenantIdForCompile}`,
-        disclosureVerified: compiled.disclosureVerified,
-        flow: compiled.flow,
-      };
-    },
-    logger,
-  };
 
   const result = await runProvisioningSaga(sql, tenantId, deps);
   return jsonResponse(
