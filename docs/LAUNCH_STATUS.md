@@ -67,16 +67,25 @@ transfer number, one manual test call from a different phone, counsel
 sign-off (BIPA/HIPAA/TCPA/CAN-SPAM/PCI/FTC/DPA), Vercel/Retell-agent
 cleanup, credential rotation, optional custom domain.
 
-**Known, non-blocking gap flagged for a follow-up session** (found
-FINAL-1, not fixed — outside this task's own scope, and not one of the
-fields the platform's core pipeline depends on): the tenant dashboard's
-call-detail page (`apps/web/.../dashboard/calls/[id]/page.tsx` →
-`call-detail-client.tsx`) passes `call_logs.recording_url` (the raw
-private-bucket storage path) directly as an `<audio src>` — since the
-`recordings` bucket is private (correctly — CLAUDE.md Rule 2), this will
-404 in the browser rather than sign the URL server-side first. Not
-exercised by any of this platform's automated proof (all of which reads
-the path via direct SQL/Storage-API access, not the dashboard UI).
+**Fixed, DASH-1 (2026-09-21)** — the gap FINAL-1 flagged just below is
+resolved: the tenant dashboard's call-detail page
+(`apps/web/.../dashboard/calls/[id]/page.tsx` → `call-detail-client.tsx`)
+no longer puts `call_logs.recording_url`/`stereo_recording_url` (raw
+private-bucket paths) into `<audio src>`, and the Client Component no
+longer even receives those paths as props. A new route,
+`apps/web/src/app/api/tenant/calls/[id]/recording/route.ts`, re-verifies
+the caller's own `tenant_id` (AUTH-1's `claimsFromSupabaseClient`
+pattern) against the requested call id before minting a 5-minute signed
+URL server-side (`?channel=stereo` for the second file); the client
+fetches it on mount once a recording exists and shows a graceful "not
+available" state otherwise. Proven by tests (12 new, all green —
+`docs/BUILD_NOTES.md`'s DASH-1 entry); **not** proven by a literal live
+`curl -I` → `200` — this environment has no real `SUPABASE_SECRET_KEY`
+at rest (placeholder only, the same wall AUTH-1/PARITY-1/FINAL-1/OPS-8
+already hit and documented), so the signing step's actual live success
+path is unverified end-to-end. `docs/VERIFY.md`'s DASH-1 entry has the
+`createSignedUrl` doc confirmation and names this as the follow-up for a
+session with a real key.
 
 ---
 

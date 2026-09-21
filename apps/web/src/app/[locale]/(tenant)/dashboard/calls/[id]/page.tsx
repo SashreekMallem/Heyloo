@@ -36,8 +36,16 @@ export default async function CallDetailPage({ params }: { params: Promise<{ id:
       ts: t.ts,
     })),
     stateTrace: (call.state_trace ?? []).map((s) => ({ state: s.state, enteredAt: s.enteredAt })),
-    recordingUrl: call.recording_url,
-    stereoRecordingUrl: call.stereo_recording_url,
+    // DASH-1 (docs/BUILD_NOTES.md): the raw `recording_url`/
+    // `stereo_recording_url` columns are object paths in the PRIVATE
+    // `recordings` Storage bucket — they must never reach the client
+    // (this object becomes the Client Component's serialized props, i.e.
+    // part of the page payload the browser receives). The client fetches
+    // a short-lived signed URL on demand from
+    // `/api/tenant/calls/[id]/recording` instead; only whether a stereo
+    // file exists (a boolean, not the path) is needed to know whether to
+    // offer the stereo toggle.
+    hasStereoRecording: Boolean(call.stereo_recording_url),
     recordingStatus,
     durationSeconds: call.duration_seconds,
     linkedBookingId:

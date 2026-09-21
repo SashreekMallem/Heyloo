@@ -4437,3 +4437,131 @@ re-run per the brief's own "if you changed code" conditional.
 **Code**: none. Live actions only: one `pgmq.send`, one
 `worker-recording-fetch` invocation, one `scripts/e2e/self-call.ts` run.
 Docs: `docs/LAUNCH_STATUS.md` (top section rewritten), this entry.
+
+## DASH-1 (2026-09-21) — call-detail recording playback: short-lived signed URL instead of a raw private-bucket path in `<audio src>`
+
+**Bug** (flagged by FINAL-1, `docs/LAUNCH_STATUS.md`): the tenant
+dashboard's call-detail page (`dashboard/calls/[id]/page.tsx` →
+`call-detail-client.tsx`) put `call_logs.recording_url`/
+`stereo_recording_url` — raw object paths in the PRIVATE `recordings`
+Storage bucket — straight into `<audio src>`. Every real tenant's
+playback 404'd, since a private bucket's raw path isn't a fetchable URL.
+
+**Fix — a new signing route**, `apps/web/src/app/api/tenant/calls/[id]/
+recording/route.ts` (`GET`, `?channel=stereo` for the second file):
+1. `claimsFromSupabaseClient` (AUTH-1's verified pattern) reads
+   `tenant_id` from the caller's own verified JWT `app_metadata` — never
+   `user.app_metadata` (that never carries the Custom Access Token
+   Hook's claims, per `claims.ts`'s own doc comment/SIGNUP-1's root
+   cause). No claim → 401/403.
+2. The `call_logs` row is read via the caller's own RLS-enforced session
+   client, filtered by BOTH `tenant_id = claims.tenant_id` AND `id`
+   (CLAUDE.md Rule 2 — every secret-key call site still explicitly
+   filters by a verified tenant_id) — a call belonging to another
+   tenant, or a nonexistent id, both read back as no row → 404
+   `not_found`. This is the actual cross-tenant guard: a caller can't
+   probe another tenant's call ids to see which exist vs. don't (both
+   404 the same way), and can never reach the signing step for a
+   recording that isn't theirs.
+3. `recording_url`/`stereo_recording_url` null → 404
+   `recording_not_available` (never attempts to sign nothing).
+4. Signing itself uses `createSupabaseServiceRoleServerClient()` (Storage
+   `sign` has no per-caller RLS-equivalent policy) →
+   `.storage.from("recordings").createSignedUrl(objectPath, 300)` — 5
+   minutes, inside the brief's 5-10 minute window. Per OPS-8's
+   already-confirmed finding (`docs/VERIFY.md`), the new-format
+   `sb_secret_...` key needs BOTH `apikey` and `authorization: Bearer`
+   headers set to the same value against this project's Storage gateway;
+   `@supabase/supabase-js`'s `createClient` (which
+   `createSupabaseServiceRoleClient` wraps) already sends both by
+   construction, so no raw `fetch`/custom headers were needed here — see
+   this task's own `docs/VERIFY.md` DASH-1 entry for the `createSignedUrl`
+   doc confirmation and what's NOT independently re-verified live (no
+   real secret key at rest — below).
+5. Only `{ url, expires_in }` is returned — the bucket object path never
+   reaches the response body or, per point 6, the initial page payload.
+
+**Client fix**: `call-detail-client.tsx`'s `CallDetailData` no longer
+carries `recordingUrl`/`stereoRecordingUrl` at all (a Client Component's
+props ARE the page payload the browser receives — passing the raw path
+through, even unused, would still have leaked it). It carries
+`hasStereoRecording: boolean` only. A new `useSignedRecording` hook fetches
+the signing route (mono, plus stereo in parallel when
+`hasStereoRecording`) via a `useEffect` gated on `recordingStatus ===
+"ready"` — i.e. on mount once the row says a recording exists, not
+deferred to a first play click, since `<AudioPlayer>`'s own play button
+has no hook into an async src-loading step. Renders one of: "Loading
+recording…", "Recording not available yet — try refreshing in a
+moment." (fetch/sign failure — the brief's graceful fallback, distinct
+from the pre-existing "processing"/"none" copy for those
+`recordingStatus` values), or the real `<AudioPlayer>` once the signed
+URL(s) land. `page.tsx` now only computes `hasStereoRecording` from the
+private column server-side, same as before for the
+`recordingStatus`/"processing" 10-minute-window derivation.
+
+**Preview fixtures** (`lib/preview/fixtures.ts`): unaffected — every
+fixture `call_logs` row has `recording_url: null`, so `recordingStatus`
+there is always `"processing"`/`"none"` (never `"ready"`), and the new
+`useSignedRecording` effect never fires; the preview mirror
+(`(preview)/preview/dashboard/calls/[id]/page.tsx`) re-exports the real
+page unmodified, so nothing there needed a separate change.
+
+**Tests** (`apps/web/src/app/api/tenant/calls/[id]/recording/
+route.test.ts`, 7 cases; `call-detail-client.test.tsx`, 5 cases — new
+files, mocking `@/lib/supabase/server`/`@/lib/supabase/service-role`
+same shape as `orders/[id]/route.test.ts`/`waitlist/[id]/route.test.ts`):
+401 no claims, 403 no `tenant_id`, 404 another tenant's call id (mocked
+as "no row returned" — the actual RLS-filtered-query behavior), 404 no
+recording, 200 signed-URL shape (+ `?channel=stereo` signs the stereo
+object), 502 on a signing failure; component: renders nothing/no
+`<audio>` and the right copy for `"none"`/`"processing"`/a failed sign,
+fetches on mount and renders `<audio src>` with the signed URL for
+`"ready"`, and requests both mono+stereo when `hasStereoRecording`.
+Radix `<Slider>` (inside `<AudioPlayer>`) needs `ResizeObserver`, which
+jsdom doesn't implement and this repo's shared `vitest.setup.ts` has no
+global polyfill for — stubbed locally in this one test file only (not
+added to the shared setup, since no other test needed it before this).
+`pnpm lint`/`pnpm typecheck`/`pnpm test --filter=@heyloo/web`: all green
+(594/594 tests, includes this task's 12 new ones; lint: 0 errors, same
+33 pre-existing warnings as before this task's changes, all in files
+this task didn't touch; typecheck: clean).
+
+**Live proof — NOT completed, environment-blocked (same wall FINAL-1/
+PARITY-1/AUTH-1/OPS-8 already hit and documented)**: attempted the
+brief's own local-run approach (env from the scratchpad `heyloo.env`,
+sign in as `signup-1-auto`'s owner). `NEXT_PUBLIC_SUPABASE_URL`/
+`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in that file are real (so a local
+dev server's auth against the live project would work), but
+`SUPABASE_SECRET_KEY` — every copy of it in this session's scratchpad
+(`heyloo.env`, `sb-secret-key.txt`, `supabase-secrets*.env`) — is still
+an unfilled `<PASTE sb_secret...`/`PASTE_YOUR_s...` placeholder,
+confirmed by inspecting length/prefix without printing the value. This
+route's signing step needs that real key; with only the placeholder, a
+real request would 502 at the `createSignedUrl` call, not prove the
+success path. Per this task's own brief ("do not work around permission
+denials") and the documented precedent (AUTH-1's session: fetching the
+real key via the Management API's `GET /v1/projects/{ref}/
+api-keys?reveal=true` was refused by this environment's own auto-mode
+"Credential Materialization" guardrail) this was not re-attempted.
+Read-only DB access (`sbq.sh`, the Management API SQL proxy already at
+rest from a prior session) DOES still work and was used to confirm real
+recorded calls exist to sign against — `call_logs` for tenant
+`b2efae9d-8309-46d6-a950-31d683616cdc` (the `test-riverside-auto`
+tenant FINAL-1's own self-call populated) has 3+ rows with both
+`recording_url` and `stereo_recording_url` set — but `signup-1-auto`
+itself (the owner this task's brief names) has exactly one call and it
+has no recording, so even a successful login there could only have
+exercised this route's 404 `recording_not_available` path, not the
+signed-URL success path either way. Relying on the test suite above,
+per the brief's own explicit fallback instruction.
+
+**Docs**: this entry; `docs/VERIFY.md` DASH-1 entry (`createSignedUrl`
+doc confirmation, what's not independently re-verified live);
+`docs/LAUNCH_STATUS.md`'s FINAL-1-flagged gap line updated to point here
+as resolved (code+tests) with the same live-proof caveat.
+
+**Code**: `apps/web/src/app/api/tenant/calls/[id]/recording/route.ts`
+(new), `apps/web/src/app/api/tenant/calls/[id]/recording/route.test.ts`
+(new), `apps/web/src/components/tenant/call-detail-client.tsx`,
+`apps/web/src/components/tenant/call-detail-client.test.tsx` (new),
+`apps/web/src/app/[locale]/(tenant)/dashboard/calls/[id]/page.tsx`.

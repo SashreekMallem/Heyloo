@@ -15,7 +15,7 @@ import {
   TranscriptViewer,
 } from "@heyloo/ui";
 import { AudioPlayer } from "@heyloo/ui/audio-player";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "@/i18n/navigation";
 
 export interface CallDetailData {
@@ -23,8 +23,8 @@ export interface CallDetailData {
   classification: string | null;
   transcript: TranscriptTurn[];
   stateTrace: StateTraceEntry[];
-  recordingUrl: string | null;
-  stereoRecordingUrl: string | null;
+  /** Whether `stereo_recording_url` is set — never the path itself (DASH-1, docs/BUILD_NOTES.md). */
+  hasStereoRecording: boolean;
   recordingStatus: "processing" | "none" | "ready";
   durationSeconds: number | null;
   linkedBookingId: string | null;
@@ -54,8 +54,65 @@ function keyValueEntries(payload: Record<string, unknown>): [string, string][] {
     ]);
 }
 
+interface RecordingSignedState {
+  status: "idle" | "loading" | "ready" | "error";
+  url?: string;
+  stereoUrl?: string;
+}
+
+async function fetchSignedRecordingUrl(callId: string, channel?: "stereo"): Promise<string | null> {
+  const query = channel ? `?channel=${channel}` : "";
+  const res = await fetch(`/api/tenant/calls/${callId}/recording${query}`);
+  if (!res.ok) return null;
+  const body = (await res.json().catch(() => null)) as { url?: string } | null;
+  return body?.url ?? null;
+}
+
+/**
+ * DASH-1 (docs/BUILD_NOTES.md): mints a short-lived signed URL for the
+ * recording on demand instead of the dashboard ever holding the private
+ * bucket path — the route (`/api/tenant/calls/[id]/recording`) re-checks
+ * the caller's own tenant_id server-side (AUTH-1 pattern) before signing.
+ */
+function useSignedRecording(callId: string, ready: boolean, hasStereo: boolean) {
+  const [state, setState] = useState<RecordingSignedState>({ status: "idle" });
+
+  useEffect(() => {
+    if (!ready) return;
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate: resets to "loading" synchronously at the start of every fetch run so a stale "ready"/"error" state from a PRIOR call id is never shown while this one's signed URL is still in flight.
+    setState({ status: "loading" });
+    (async () => {
+      try {
+        const [url, stereoUrl] = await Promise.all([
+          fetchSignedRecordingUrl(callId),
+          hasStereo ? fetchSignedRecordingUrl(callId, "stereo") : Promise.resolve(undefined),
+        ]);
+        if (cancelled) return;
+        if (!url) {
+          setState({ status: "error" });
+          return;
+        }
+        setState({ status: "ready", url, stereoUrl: stereoUrl ?? undefined });
+      } catch {
+        if (!cancelled) setState({ status: "error" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [callId, ready, hasStereo]);
+
+  return state;
+}
+
 export function CallDetailClient({ call }: { call: CallDetailData }) {
   const [activeTs, setActiveTs] = useState<number | undefined>(undefined);
+  const recording = useSignedRecording(
+    call.id,
+    call.recordingStatus === "ready",
+    call.hasStereoRecording,
+  );
 
   return (
     <div className="space-y-6">
@@ -167,10 +224,18 @@ export function CallDetailClient({ call }: { call: CallDetailData }) {
               No recording for this call (by design — very short/spam calls aren&apos;t archived).
             </p>
           )}
-          {call.recordingStatus === "ready" && call.recordingUrl && (
+          {call.recordingStatus === "ready" && recording.status === "loading" && (
+            <p className="text-sm text-muted-foreground">Loading recording…</p>
+          )}
+          {call.recordingStatus === "ready" && recording.status === "error" && (
+            <p className="text-sm text-muted-foreground">
+              Recording not available yet — try refreshing in a moment.
+            </p>
+          )}
+          {call.recordingStatus === "ready" && recording.status === "ready" && recording.url && (
             <AudioPlayer
-              src={call.recordingUrl}
-              stereoSrc={call.stereoRecordingUrl ?? undefined}
+              src={recording.url}
+              stereoSrc={recording.stereoUrl}
               duration={call.durationSeconds ?? undefined}
             />
           )}

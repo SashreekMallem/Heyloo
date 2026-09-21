@@ -2557,3 +2557,38 @@ secret-key system end to end; it does not fall back to a legacy
 **Code:** `supabase/functions/worker-recording-fetch/index.ts` and
 `supabase/functions/worker-tick/index.ts` (`uploadToStorage`, each
 file's own copy — see `docs/BUILD_NOTES.md`'s OPS-8 entry for why two).
+
+## DASH-1 — Supabase Storage `createSignedUrl` for the tenant call-detail recording route
+
+**`WebFetch` of `https://supabase.com/docs/guides/storage/serving/downloads`
+(2026-09-21)** — the current docs' own example confirms the shape this
+route uses: `await supabase.storage.from('bucket').createSignedUrl(path,
+expiresIn)` returns `{ data, error }`; `expiresIn` is in **seconds** (the
+docs' own example uses `3600`). This route passes `300` (5 minutes, the
+brief's 5-10 minute window). The docs also note a signed URL is minted
+with "a dedicated internal key separate from your project's Auth JWT
+signing key" — i.e. it stays valid independent of session/JWT rotation,
+consistent with treating it as a short opaque bearer token, never logged.
+`https://supabase.com/docs/reference/javascript/storage-from-createsignedurl`
+(the dedicated reference page) 404'd for `WebFetch` both directly and via
+a cached mirror at fetch time — the guide page above was used instead and
+matches the parameter/return shape this route already assumed.
+
+**Auth headers for the call itself**: already resolved and confirmed live
+by OPS-8 (`docs/VERIFY.md`'s own OPS-8 entry above) — the new-format
+`sb_secret_...` key must ride on BOTH `apikey` and `authorization: Bearer`
+(same value on each), never `authorization` alone. This route does NOT
+call Storage's REST endpoint directly; it goes through
+`createSupabaseServiceRoleClient` (`packages/supabase-client/src/
+service-role-client.ts`, `@supabase/supabase-js`'s `createClient`), which
+sets both headers to the same key by construction — the exact combination
+OPS-8 found necessary. Not independently re-verified live this task (no
+real `SUPABASE_SECRET_KEY` at rest in this environment — see this task's
+own `docs/BUILD_NOTES.md` entry); flagged here so a future session with a
+real key can `curl -I` a route-minted signed URL and confirm `200`
+end-to-end through this exact code path (OPS-8 already proved the
+underlying Storage auth combination works against this project's
+`recordings` bucket via a raw `fetch`, just not through this specific
+route/client wrapper).
+
+**Code:** `apps/web/src/app/api/tenant/calls/[id]/recording/route.ts`.
