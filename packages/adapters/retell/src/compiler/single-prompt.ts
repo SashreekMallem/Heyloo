@@ -83,7 +83,19 @@ export function compileSinglePrompt(
       "nothing further to discuss (they say goodbye, thank you, that's all, or similar, or " +
       "you have already clearly wrapped up the call), say a warm goodbye and then call the " +
       "end_call tool to hang up. Never just stop responding or repeat the same goodbye more " +
-      "than once — always end the call with this tool once you've said goodbye.",
+      "than once — always end the call with this tool once you've said goodbye.\n\n" +
+      // CALL-8 (docs/BUILD_PLAN.md): mirrors the Deno compiler's identical
+      // fix (`supabase/functions/_shared/compiler/template-compiler.ts`) —
+      // see that file's own comment for the live-observed bug this closes.
+      "Before you say goodbye or call end_call: if this call was ABOUT booking an appointment, " +
+      "placing an order, or leaving a message/intake for the business to follow up on, you " +
+      "must have ALREADY called the tool that actually records that (create_booking, " +
+      "create_order, or take_message) earlier in this same call — never promise to record " +
+      "something, or act as if you have, without having actually called that tool. If you " +
+      "realize you have not yet called it, call it now (even with an incomplete set of fields " +
+      "— something recorded is always better than nothing) before ending the call. This never " +
+      "applies to a call that was ONLY an FAQ question, a transfer, or a cancellation with " +
+      "nothing new to record.",
   );
 
   return {

@@ -628,7 +628,25 @@ const END_CALL_INSTRUCTION =
   "discuss (they say goodbye, thank you, that's all, or similar, or you have already clearly " +
   "wrapped up the call), say a warm goodbye and then call the end_call tool to hang up. Never " +
   "just stop responding or repeat the same goodbye more than once — always end the call with " +
-  "this tool once you've said goodbye.";
+  "this tool once you've said goodbye.\n\n" +
+  // CALL-8 (docs/BUILD_PLAN.md): live-observed real bug — a multi_prompt
+  // template's own open, model-mediated conversation (by design, e.g.
+  // legal's "open empathetic discovery a rigid graph would flatten") can
+  // rush through several remaining questions in one turn, thank the caller,
+  // and call end_call WITHOUT ever having called the tool that actually
+  // records the call — the tool call Retell's own transcript-relevance
+  // judge never checks for, so the call still grades "pass" even though
+  // nothing was ever saved. This is a general risk for any multi_prompt/
+  // single_prompt vertical, not specific to one, so it belongs here at the
+  // compiler level rather than authored once per vertical.
+  "Before you say goodbye or call end_call: if this call was ABOUT booking an appointment, " +
+  "placing an order, or leaving a message/intake for the business to follow up on, you must " +
+  "have ALREADY called the tool that actually records that (create_booking, create_order, or " +
+  "take_message) earlier in this same call — never promise to record something, or act as if " +
+  "you have, without having actually called that tool. If you realize you have not yet called " +
+  "it, call it now (even with an incomplete set of fields — something recorded is always better " +
+  "than nothing) before ending the call. This never applies to a call that was ONLY an FAQ " +
+  "question, a transfer, or a cancellation with nothing new to record.";
 
 function compileMultiPrompt(
   template: CompilerAgentTemplate,
