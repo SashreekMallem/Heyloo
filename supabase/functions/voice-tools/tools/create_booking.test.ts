@@ -92,6 +92,20 @@ describe("createBooking", () => {
     expect(result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
   });
 
+  it("CALL-8: resolves via the first-available fallback when resource_id is OMITTED ENTIRELY (not just wrong) — live-observed batch-test behavior, no exact-match query even attempted", async () => {
+    const { sql, callCount } = makeStepSql([
+      { rows: [{ id: "res_open" }] }, // first-available fallback (no exact-match/name tier ran)
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+      { rows: [{ id: "booking_1", start_at: args.start, end_at: args.end }] }, // booking insert
+      NO_ADAPTER_CONNECTIONS,
+    ]);
+    const { resource_id: _omit, ...argsWithoutResourceId } = args;
+    const result = await createBooking(sql, ctx, argsWithoutResourceId as typeof args);
+    expect(result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
+    expect(callCount()).toBe(5); // one fewer call than the wrong-id case: no exact-match query at all
+  });
+
   it("EDGE_AUDIT B1: rejects an offering_id that doesn't belong to the caller's tenant", async () => {
     const { sql } = makeStepSql([
       RESOURCE_FOUND,

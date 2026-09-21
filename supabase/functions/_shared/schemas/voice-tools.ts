@@ -103,7 +103,20 @@ export const CustomerInputSchema = z
 
 export const CreateBookingArgsSchema = z
   .object({
-    resource_id: z.string().min(1),
+    // CALL-8 (docs/BUILD_PLAN.md): now optional — RETELL-observed live
+    // (auto batch-test transcript, 2026-09-21): the model occasionally
+    // omits `resource_id` from the tool call ENTIRELY (not a wrong/
+    // hallucinated value, which `resolveBookingResourceId`'s existing
+    // name/first-available fallback tiers already tolerate — a value
+    // that's simply ABSENT), which previously failed Zod SHAPE validation
+    // before the request ever reached that fallback logic, returning the
+    // opaque generic `fallbackEnvelope()` ("I'll take your details...")
+    // instead of completing the booking via the same fallback tiers that
+    // already handle a wrong id. `create_booking.ts#resolveBookingResourceId`
+    // treats a missing id exactly like a non-matching one — it still never
+    // resolves onto a resource that ISN'T genuinely open for the requested
+    // window.
+    resource_id: z.string().min(1).optional(),
     // OPS-5 (docs/BUILD_NOTES.md): optional fallback hint — the resource's
     // human-readable name, used by `create_booking`'s server-side
     // resolution when `resource_id` doesn't match a real resource for this

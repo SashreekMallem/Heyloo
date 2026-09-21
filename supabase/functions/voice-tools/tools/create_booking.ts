@@ -124,12 +124,18 @@ async function resolveBookingResourceId(
   ctx: CallContext,
   args: Args,
 ): Promise<string | null> {
-  const exact = await sql<{ id: string }>`
-    select id from public.resources
-    where id = ${args.resource_id} and tenant_id = ${ctx.tenantId} and active
-    limit 1
-  `;
-  if (exact[0]) return exact[0].id;
+  // CALL-8: `args.resource_id` is now optional (`_shared/schemas/
+  // voice-tools.ts`'s own comment) — skip this tier entirely rather than
+  // binding `undefined` as a query parameter when the model omitted it,
+  // falling straight through to the name/first-available tiers below.
+  if (args.resource_id) {
+    const exact = await sql<{ id: string }>`
+      select id from public.resources
+      where id = ${args.resource_id} and tenant_id = ${ctx.tenantId} and active
+      limit 1
+    `;
+    if (exact[0]) return exact[0].id;
+  }
 
   if (args.resource_name) {
     const byName = await sql<{ id: string }>`

@@ -81,7 +81,11 @@ const zIdentityVerifyInput = z.object({
 });
 
 export const zCreateBookingRequest = z.object({
-  resource_id: z.string().min(1),
+  // CALL-8 (docs/BUILD_PLAN.md): optional, mirroring `_shared/schemas/
+  // voice-tools.ts`'s identical change — the model occasionally omits this
+  // entirely; `create_booking.ts`'s resolution falls through to the name/
+  // first-available tiers rather than hard-failing shape validation.
+  resource_id: z.string().min(1).optional(),
   /** OPS-5 (docs/BUILD_NOTES.md): optional fallback hint mirrored from
    * `_shared/schemas/voice-tools.ts`'s `CreateBookingArgsSchema` —
    * `voice-tools/tools/create_booking.ts` resolves the real resource
