@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { decryptSecret, encryptSecret } from "../_shared/crypto.ts";
 import { createLogger } from "../_shared/logger.ts";
+import type { AdapterPushQueueMsg } from "../_shared/queue.ts";
 import type { SqlClient } from "../_shared/types.ts";
 import type { AdapterPushDeps } from "./handler.ts";
-import { ADAPTER_PUSHERS, pollAdapterChanges, pushToAdapter } from "./handler.ts";
+import {
+  ADAPTER_PUSHERS,
+  pollAdapterChanges,
+  pushToAdapter,
+  runAdapterPushWorker,
+} from "./handler.ts";
 
 const TEST_TOKEN_ENCRYPTION_KEY = btoa("abcdefghijklmnopqrstuvwxyz012345");
 
@@ -1047,5 +1053,85 @@ describe("pollAdapterChanges (two-way sync conflict path, G11)", () => {
     };
     const result = await pollAdapterChanges(sql, "t1", "ezyvet", createLogger(), deps);
     expect(result).toEqual({ pulled: 1, conflictsFlagged: 0 });
+  });
+});
+
+// OPS-8 (docs/BUILD_NOTES.md): `runAdapterPushWorker`'s per-row loop used to
+// call `pushToAdapter` with no try/catch at all — the same failure class
+// found live in `worker-recording-fetch` (one row's exception propagating
+// out of the whole `for` loop and stranding every other message that
+// tick's `pgmq.read` already bumped read_ct for). These tests pin the
+// fixed per-row isolation and the recorded DLQ reason directly.
+describe("runAdapterPushWorker", () => {
+  const row = (over: { msgId: number; attempt: number; adapter?: string }) => ({
+    msg_id: over.msgId,
+    read_ct: over.attempt + 1,
+    enqueued_at: "now",
+    vt: "now",
+    message: {
+      tenant_id: "t1",
+      adapter: over.adapter ?? "square",
+      entity_type: "booking",
+      entity_id: `e${over.msgId}`,
+      idempotency_key: `k${over.msgId}`,
+      attempt: over.attempt,
+    } satisfies AdapterPushQueueMsg,
+  });
+
+  it("keeps processing the rest of the batch when one row's push throws", async () => {
+    const batch = [row({ msgId: 1, attempt: 0 }), row({ msgId: 2, attempt: 0 })];
+    const calls: string[] = [];
+    let connectionLookups = 0;
+    const sql = (async (strings: TemplateStringsArray) => {
+      const text = strings.join(" ");
+      calls.push(text);
+      if (text.includes("pgmq.read")) return batch;
+      if (text.includes("from public.adapter_connections")) {
+        connectionLookups += 1;
+        // Row 1's connection lookup throws outright; row 2's finds no
+        // connection and just returns false (a normal "not connected yet"
+        // outcome, not an exception) — either way, both rows must still
+        // get a real, non-stuck outcome this tick.
+        if (connectionLookups === 1) throw new Error("connection lookup blew up");
+        return [];
+      }
+      return [];
+    }) as unknown as SqlClient;
+
+    const result = await runAdapterPushWorker(sql, createLogger(), DEPS);
+
+    // Pre-fix, row 1's throw would have aborted the loop before row 2 was
+    // ever attempted; both are now always attempted.
+    expect(result.batch_size).toBe(2);
+    expect(result.pushed).toBe(0);
+    expect(result.dead_lettered).toBe(0);
+    // Both rows went through the retry path (delete + re-enqueue) — never
+    // silently dropped, and neither one's failure stopped the other.
+    expect(calls.filter((t) => t.includes("pgmq.send")).length).toBe(2);
+    expect(calls.filter((t) => t.includes("pgmq.delete")).length).toBe(2);
+  });
+
+  it("dead-letters with a recorded reason once max attempts is reached, for an adapter with no pusher registered", async () => {
+    const batch = [row({ msgId: 9, attempt: 5, adapter: "totally_unknown_adapter" })];
+    const calls: { text: string; values: unknown[] }[] = [];
+    const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      calls.push({ text, values });
+      if (text.includes("pgmq.read")) return batch;
+      return [];
+    }) as unknown as SqlClient;
+
+    const result = await runAdapterPushWorker(sql, createLogger(), DEPS);
+
+    expect(result.pushed).toBe(0);
+    expect(result.dead_lettered).toBe(1);
+    const dlqCall = calls.find(
+      (c) => c.text.includes("pgmq.send") && String(c.values[0]).includes("adapter_push_queue_dlq"),
+    );
+    expect(dlqCall).toBeDefined();
+    const payload = dlqCall?.values.find(
+      (v) => typeof v === "object" && v !== null && "reason" in (v as object),
+    ) as { reason: string } | undefined;
+    expect(payload?.reason).toContain("max_attempts_exceeded");
   });
 });

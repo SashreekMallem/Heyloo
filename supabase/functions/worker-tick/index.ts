@@ -30,7 +30,7 @@ import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import type { AdapterPushDeps } from "../worker-adapter-push/handler.ts";
 import type { OutboundDeps } from "../worker-messages-outbound/handler.ts";
-import type { RecordingFetchDeps } from "../worker-recording-fetch/handler.ts";
+import type { RecordingFetchDeps, UploadResult } from "../worker-recording-fetch/handler.ts";
 import type { NotConfiguredLeg } from "./handler.ts";
 import { notConfigured, runWorkerTick } from "./handler.ts";
 
@@ -57,20 +57,28 @@ async function uploadToStorage(
   path: string,
   bytes: ArrayBuffer,
   contentType: string,
-): Promise<boolean> {
+): Promise<UploadResult> {
+  // OPS-8 — same fix, same reason, as worker-recording-fetch/index.ts's
+  // own `uploadToStorage` (see that file's comment for the full story):
+  // Storage rejects a bare new-format `sb_secret_...` key on `authorization:
+  // Bearer` with `Invalid Compact JWS`; `apikey` carries the same key
+  // alongside it per Supabase's current migrating-to-new-api-keys guidance.
   const res = await fetch(
     `${SUPABASE_URL}/storage/v1/object/recordings/${encodeURI(path.replace(/^recordings\//, ""))}`,
     {
       method: "POST",
       headers: {
         authorization: `Bearer ${SB_SECRET_KEY}`,
+        apikey: SB_SECRET_KEY,
         "content-type": contentType,
         "x-upsert": "true",
       },
       body: bytes,
     },
   );
-  return res.ok;
+  if (res.ok) return { ok: true };
+  const bodyText = await res.text().catch(() => "");
+  return { ok: false, detail: `${res.status}:${bodyText.slice(0, 200)}` };
 }
 
 async function fetchRecordingBytes(url: string): Promise<ArrayBuffer | null> {

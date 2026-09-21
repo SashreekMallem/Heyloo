@@ -9,7 +9,7 @@ import { getSql } from "../_shared/deno/db.ts";
 import { missingEnv, requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
-import { runOutboundWorker } from "./handler.ts";
+import { runOutboundWorker, sweepNotConfiguredOutbound } from "./handler.ts";
 
 const logger = createLogger({ fn: "worker-messages-outbound" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
@@ -34,7 +34,14 @@ Deno.serve(async (req: Request) => {
 
   if (OUTBOUND_MISSING.length > 0) {
     logger.warn("job_skipped_not_configured", { missing: OUTBOUND_MISSING });
-    return jsonResponse({ skipped: "not_configured", missing: OUTBOUND_MISSING }, { status: 200 });
+    // OPS-8: still runs the bounded, read_ct-free stale sweep (handler.ts's
+    // `sweepNotConfiguredOutbound`) so a manual invoke of this endpoint
+    // behaves identically to worker-tick's own not-configured leg.
+    const parked = await sweepNotConfiguredOutbound(getSql());
+    return jsonResponse(
+      { skipped: "not_configured", missing: OUTBOUND_MISSING, parked },
+      { status: 200 },
+    );
   }
 
   const TWILIO_ACCOUNT_SID = requireEnv("TWILIO_ACCOUNT_SID");

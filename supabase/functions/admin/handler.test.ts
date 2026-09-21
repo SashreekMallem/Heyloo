@@ -492,6 +492,34 @@ describe("routeAdminRequest — cockpit group", () => {
     );
     expect(result.status).toBe(404);
   });
+
+  // OPS-8 deliverable 3: an admin read of pgmq.metrics_all() so backlog/DLQ
+  // depth is visible without a direct DB query.
+  it("returns every queue's pgmq.metrics_all() row on GET /admin-cockpit/queues", async () => {
+    const { sql } = makeSql({
+      "pgmq.metrics_all": [
+        {
+          queue_name: "recording_fetch_queue",
+          queue_length: 5,
+          newest_msg_age_sec: 10,
+          oldest_msg_age_sec: 45000,
+          total_messages: 5,
+          queue_visible_length: 5,
+        },
+        {
+          queue_name: "recording_fetch_queue_dlq",
+          queue_length: 0,
+          newest_msg_age_sec: null,
+          oldest_msg_age_sec: null,
+          total_messages: 0,
+          queue_visible_length: 0,
+        },
+      ],
+    });
+    const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-cockpit/queues" }), logger);
+    expect(result.status).toBe(200);
+    expect((result.body as { queues: unknown[] }).queues).toHaveLength(2);
+  });
 });
 
 describe("routeAdminRequest — config-lab group", () => {

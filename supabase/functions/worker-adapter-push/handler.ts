@@ -1092,6 +1092,18 @@ export interface RunAdapterPushWorkerResult {
   batch_size: number;
 }
 
+/**
+ * OPS-8 (docs/BUILD_NOTES.md): `pushToAdapter` was previously called with
+ * no try/catch around it at all — the exact same failure class the live
+ * root cause in `worker-recording-fetch` turned out to be (an exception
+ * anywhere in one row's processing propagating out of the whole `for`
+ * loop, stranding every OTHER message this tick's `pgmq.read` already
+ * bumped `read_ct` for). `adapter_push_queue` happened to be empty in
+ * production when this was found, so it hadn't yet manifested the same
+ * way live, but the same defensive shape (per-row try/catch, plus an
+ * inner try/catch guarding the retry/dead-letter write itself) is applied
+ * here too so it never does.
+ */
 export async function runAdapterPushWorker(
   sql: SqlClient,
   logger: Logger,
@@ -1109,29 +1121,50 @@ export async function runAdapterPushWorker(
 
   for (const row of batch) {
     const msg = row.message;
-    const ok = await pushToAdapter(sql, msg, logger, deps);
-    if (ok) {
-      await deleteMessage(sql, QUEUE_NAMES.adapterPush, row.msg_id);
-      pushed += 1;
-      continue;
-    }
-
-    if (msg.attempt + 1 >= ADAPTER_PUSH_MAX_ATTEMPTS) {
-      await moveToDeadLetter(sql, QUEUE_NAMES.adapterPush, row.msg_id, msg);
-      logger.error("worker_adapter_push_exhausted", {
-        tenant_id: msg.tenant_id,
-        adapter: msg.adapter,
-        entity_id: msg.entity_id,
-      });
-      deadLettered += 1;
-      // T7 TODO: once a dashboard "sync failed" banner surface exists, flip
-      // a per-entity sync-status flag here so it renders (BACKEND_SPEC §9).
-    } else {
-      await deleteMessage(sql, QUEUE_NAMES.adapterPush, row.msg_id);
-      await enqueue(sql, QUEUE_NAMES.adapterPush, {
-        ...msg,
-        attempt: msg.attempt + 1,
-      } satisfies AdapterPushQueueMsg);
+    try {
+      const ok = await pushToAdapter(sql, msg, logger, deps);
+      if (ok) {
+        await deleteMessage(sql, QUEUE_NAMES.adapterPush, row.msg_id);
+        pushed += 1;
+        continue;
+      }
+      throw new Error("adapter_push_failed");
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      try {
+        if (msg.attempt + 1 >= ADAPTER_PUSH_MAX_ATTEMPTS) {
+          await moveToDeadLetter(
+            sql,
+            QUEUE_NAMES.adapterPush,
+            row.msg_id,
+            msg,
+            `max_attempts_exceeded:${reason}`,
+          );
+          logger.error("worker_adapter_push_exhausted", {
+            tenant_id: msg.tenant_id,
+            adapter: msg.adapter,
+            entity_id: msg.entity_id,
+            reason,
+          });
+          deadLettered += 1;
+          // T7 TODO: once a dashboard "sync failed" banner surface exists, flip
+          // a per-entity sync-status flag here so it renders (BACKEND_SPEC §9).
+        } else {
+          await deleteMessage(sql, QUEUE_NAMES.adapterPush, row.msg_id);
+          await enqueue(sql, QUEUE_NAMES.adapterPush, {
+            ...msg,
+            attempt: msg.attempt + 1,
+          } satisfies AdapterPushQueueMsg);
+        }
+      } catch (retryErr) {
+        logger.error("worker_adapter_push_row_fatal", {
+          tenant_id: msg.tenant_id,
+          adapter: msg.adapter,
+          entity_id: msg.entity_id,
+          msg_id: row.msg_id,
+          error: retryErr instanceof Error ? retryErr.message : String(retryErr),
+        });
+      }
     }
   }
 

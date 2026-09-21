@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import type { SqlClient } from "../_shared/types.ts";
 import type { OutboundDeps } from "./handler.ts";
-import { processOutboundMessage } from "./handler.ts";
+import {
+  OUTBOUND_NOT_CONFIGURED_PARK_SECONDS,
+  processOutboundMessage,
+  runOutboundWorker,
+  sweepNotConfiguredOutbound,
+} from "./handler.ts";
 
 const logger = createLogger();
 
@@ -184,5 +189,124 @@ describe("processOutboundMessage", () => {
     });
     const outcome = await processOutboundMessage(sql, "msg_1", makeDeps());
     expect(outcome).toBe("failed");
+  });
+});
+
+// OPS-8 (docs/BUILD_NOTES.md): the retry/dead-letter write in
+// `runOutboundWorker`'s catch block is now itself wrapped in a try/catch,
+// the same defensive shape applied to worker-recording-fetch/
+// worker-adapter-push after that class of bug was found live there — a
+// failure writing the DLQ move must never strand the rest of the batch.
+describe("runOutboundWorker", () => {
+  const row = (over: { msgId: number; readCt: number; messageId: string }) => ({
+    msg_id: over.msgId,
+    read_ct: over.readCt,
+    enqueued_at: "now",
+    vt: "now",
+    message: { message_id: over.messageId },
+  });
+
+  it("dead-letters with a recorded reason once max attempts is reached", async () => {
+    const batch = [row({ msgId: 1, readCt: 5, messageId: "msg_1" })];
+    const calls: { text: string; values: unknown[] }[] = [];
+    const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      calls.push({ text, values });
+      if (text.includes("pgmq.read")) return batch;
+      if (text.includes("from public.messages_outbound")) {
+        throw new Error("twilio_send_transient_failure:503");
+      }
+      return [];
+    }) as SqlClient;
+
+    const result = await runOutboundWorker(sql, makeDeps());
+
+    expect(result.processed).toBe(0);
+    expect(result.dead_lettered).toBe(1);
+    const dlqCall = calls.find(
+      (c) =>
+        c.text.includes("pgmq.send") && String(c.values[0]).includes("messages_outbound_queue_dlq"),
+    );
+    const payload = dlqCall?.values.find(
+      (v) => typeof v === "object" && v !== null && "reason" in (v as object),
+    ) as { reason: string } | undefined;
+    expect(payload?.reason).toContain("max_attempts_exceeded");
+    expect(payload?.reason).toContain("twilio_send_transient_failure");
+  });
+
+  it("never crashes the batch even when the dead-letter write itself throws", async () => {
+    const batch = [
+      row({ msgId: 1, readCt: 5, messageId: "msg_1" }),
+      row({ msgId: 2, readCt: 5, messageId: "msg_2" }),
+    ];
+    const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("pgmq.read")) return batch;
+      if (text.includes("from public.messages_outbound")) {
+        throw new Error("transient");
+      }
+      // Row 1's dead-letter move (archive) blows up; row 2 must still run.
+      if (text.includes("pgmq.archive") && values[1] === 1) {
+        throw new Error("db_blip");
+      }
+      return [];
+    }) as SqlClient;
+
+    const result = await runOutboundWorker(sql, makeDeps());
+
+    // Row 2 still got dead-lettered normally despite row 1's failure.
+    expect(result.dead_lettered).toBe(1);
+  });
+});
+
+// OPS-8 deliverable 2: honest "provider not configured" park+DLQ behavior.
+describe("sweepNotConfiguredOutbound", () => {
+  it("dead-letters, with reason provider_not_configured, only messages older than the park window", async () => {
+    const staleMessage = { msg_id: 1, message: { message_id: "m1" } };
+    const calls: { text: string; values: unknown[] }[] = [];
+    const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      calls.push({ text, values });
+      if (text.includes("pgmq.q_messages_outbound_queue")) return [staleMessage];
+      return [];
+    }) as SqlClient;
+
+    const result = await sweepNotConfiguredOutbound(sql);
+
+    expect(result.dead_lettered).toBe(1);
+    const staleQuery = calls.find((c) => c.text.includes("pgmq.q_messages_outbound_queue"));
+    expect(staleQuery?.values).toContain(OUTBOUND_NOT_CONFIGURED_PARK_SECONDS);
+    const dlqCall = calls.find(
+      (c) =>
+        c.text.includes("pgmq.send") && String(c.values[0]).includes("messages_outbound_queue_dlq"),
+    );
+    const payload = dlqCall?.values.find(
+      (v) => typeof v === "object" && v !== null && "reason" in (v as object),
+    ) as { reason: string } | undefined;
+    expect(payload?.reason).toBe("provider_not_configured");
+    const statusUpdate = calls.find(
+      (c) => c.text.includes("update public.messages_outbound") && c.values.includes("m1"),
+    );
+    expect(statusUpdate).toBeDefined();
+    expect(statusUpdate?.text).toContain("status = 'failed'");
+    expect(statusUpdate?.text).toContain("provider_not_configured");
+  });
+
+  it("never calls pgmq.read — a peek only, so a not-configured tick never bumps read_ct", async () => {
+    const calls: string[] = [];
+    const sql = (async (strings: TemplateStringsArray) => {
+      calls.push(strings.join(" "));
+      return [];
+    }) as SqlClient;
+
+    await sweepNotConfiguredOutbound(sql);
+
+    expect(calls.some((t) => t.includes("pgmq.read"))).toBe(false);
+  });
+
+  it("leaves nothing to dead-letter when the queue has no stale messages", async () => {
+    const sql = (async () => []) as SqlClient;
+    const result = await sweepNotConfiguredOutbound(sql);
+    expect(result.dead_lettered).toBe(0);
   });
 });

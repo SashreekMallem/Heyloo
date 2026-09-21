@@ -22,6 +22,7 @@ import {
 } from "../_shared/providers/smartlead.ts";
 import type { SupabaseAdminFetch } from "../_shared/providers/supabase-admin.ts";
 import { generateMagicLink, getUserEmailById } from "../_shared/providers/supabase-admin.ts";
+import { metricsAll } from "../_shared/queue.ts";
 import { renderTemplate } from "../_shared/templates.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import {
@@ -926,6 +927,16 @@ async function handleCockpit(sql: SqlClient, ctx: AdminRequestContext): Promise<
       select * from public.alerts where status = 'open' order by created_at desc limit 100
     `;
     return { status: 200, body: { alerts: rows } };
+  }
+
+  // OPS-8 (docs/BUILD_NOTES.md deliverable 3) — every queue's
+  // `pgmq.metrics_all()` row (including each `_dlq` companion), so an
+  // admin can see backlog/DLQ depth without a direct DB query. Mirrors
+  // `worker-tick`'s own `queues` field (same `_shared/queue.ts#metricsAll`
+  // helper) so both surfaces stay in lockstep.
+  if (page === "queues") {
+    const queues = await metricsAll(sql);
+    return { status: 200, body: { queues } };
   }
 
   return { status: 404, body: { error: "not_found" } };

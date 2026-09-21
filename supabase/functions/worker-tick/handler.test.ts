@@ -173,9 +173,13 @@ describe("runWorkerTick", () => {
       runners,
     );
 
+    // messages_outbound's skip also carries `parked` (deliverable 2, OPS-8)
+    // — the not-configured stale-message sweep's own result, always run
+    // (never just "skip and do nothing") for THIS specific leg only.
     expect(result.messages_outbound).toEqual({
       status: "skipped",
       missing: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"],
+      parked: { dead_lettered: 0 },
     });
     expect(result.recording_fetch).toEqual({ status: "skipped", missing: ["RETELL_API_KEY"] });
     expect(result.adapter_push).toEqual({
@@ -185,5 +189,101 @@ describe("runWorkerTick", () => {
     expect(runners.outbound).not.toHaveBeenCalled();
     expect(runners.recordingFetch).not.toHaveBeenCalled();
     expect(runners.adapterPush).not.toHaveBeenCalled();
+  });
+
+  // OPS-8 deliverable 3: every tick's response reports per-queue backlog so
+  // the nightly regression and admin pages can see it without a separate
+  // DB read.
+  it("includes pgmq.metrics_all()'s rows as `queues` in its response", async () => {
+    const rows = [
+      {
+        queue_name: "recording_fetch_queue",
+        queue_length: 5,
+        newest_msg_age_sec: 10,
+        oldest_msg_age_sec: 45000,
+        total_messages: 5,
+        queue_visible_length: 5,
+      },
+    ];
+    const sql = (async (strings: TemplateStringsArray) => {
+      const text = strings.join(" ");
+      if (text.includes("pgmq.metrics_all")) return rows;
+      return [];
+    }) as unknown as SqlClient;
+    const runners: WorkerTickRunners = {
+      outbound: vi.fn().mockResolvedValue({ processed: 0, dead_lettered: 0, batch_size: 0 }),
+      recordingFetch: vi.fn().mockResolvedValue({
+        stored: 0,
+        retried: 0,
+        dead_lettered: 0,
+        batch_size: 0,
+        retry_delay_seconds: 60,
+      }),
+      adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
+    };
+
+    const result = await runWorkerTick(sql, makeDeps(), runners);
+
+    expect(result.queues).toEqual(rows);
+  });
+
+  it("never lets a metrics_all() failure fail the whole tick — queues comes back empty instead", async () => {
+    const sql = (async (strings: TemplateStringsArray) => {
+      const text = strings.join(" ");
+      if (text.includes("pgmq.metrics_all")) throw new Error("db_error");
+      return [];
+    }) as unknown as SqlClient;
+    const runners: WorkerTickRunners = {
+      outbound: vi.fn().mockResolvedValue({ processed: 0, dead_lettered: 0, batch_size: 0 }),
+      recordingFetch: vi.fn().mockResolvedValue({
+        stored: 0,
+        retried: 0,
+        dead_lettered: 0,
+        batch_size: 0,
+        retry_delay_seconds: 60,
+      }),
+      adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
+    };
+
+    const result = await runWorkerTick(sql, makeDeps(), runners);
+
+    expect(result.queues).toEqual([]);
+    expect(result.messages_outbound.status).toBe("ok");
+  });
+
+  it("dead-letters stale-enough parked messages via the sweep when the outbound leg is not configured", async () => {
+    const staleMessage = { msg_id: 1, message: { message_id: "m1" } };
+    const calls: string[] = [];
+    const sql = (async (strings: TemplateStringsArray) => {
+      const text = strings.join(" ");
+      calls.push(text);
+      if (text.includes("pgmq.q_messages_outbound_queue")) return [staleMessage];
+      return [];
+    }) as unknown as SqlClient;
+    const runners: WorkerTickRunners = {
+      outbound: vi.fn(),
+      recordingFetch: vi.fn().mockResolvedValue({
+        stored: 0,
+        retried: 0,
+        dead_lettered: 0,
+        batch_size: 0,
+        retry_delay_seconds: 60,
+      }),
+      adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
+    };
+
+    const result = await runWorkerTick(
+      sql,
+      makeDeps({ outbound: notConfigured(["TWILIO_ACCOUNT_SID"]) }),
+      runners,
+    );
+
+    expect(result.messages_outbound).toEqual({
+      status: "skipped",
+      missing: ["TWILIO_ACCOUNT_SID"],
+      parked: { dead_lettered: 1 },
+    });
+    expect(runners.outbound).not.toHaveBeenCalled();
+    expect(calls.some((t) => t.includes("pgmq.send"))).toBe(true); // the DLQ move itself ran
   });
 });

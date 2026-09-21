@@ -1,3 +1,4 @@
+import { metricsAll, type QueueMetricsRow } from "../_shared/queue.ts";
 import { withTimeout } from "../_shared/timeout.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import type {
@@ -5,8 +6,15 @@ import type {
   RunAdapterPushWorkerResult,
 } from "../worker-adapter-push/handler.ts";
 import { runAdapterPushWorker } from "../worker-adapter-push/handler.ts";
-import type { OutboundDeps, RunOutboundWorkerResult } from "../worker-messages-outbound/handler.ts";
-import { runOutboundWorker } from "../worker-messages-outbound/handler.ts";
+import type {
+  OutboundDeps,
+  RunOutboundWorkerResult,
+  SweepNotConfiguredOutboundResult,
+} from "../worker-messages-outbound/handler.ts";
+import {
+  runOutboundWorker,
+  sweepNotConfiguredOutbound,
+} from "../worker-messages-outbound/handler.ts";
 import type {
   RecordingFetchDeps,
   RunRecordingFetchWorkerResult,
@@ -139,12 +147,24 @@ export type WorkerOutcome<T> =
   | { status: "ok"; result: T }
   | { status: "timeout"; error: string }
   | { status: "error"; error: string }
-  | { status: "skipped"; missing: readonly string[] };
+  | {
+      status: "skipped";
+      missing: readonly string[];
+      /** Only ever set for the `messages_outbound` leg (OPS-8, deliverable
+       * 2) — the not-configured stale-message sweep's own result, present
+       * whenever the sweep itself ran without throwing. */
+      parked?: SweepNotConfiguredOutboundResult;
+    };
 
 export interface WorkerTickResult {
   messages_outbound: WorkerOutcome<RunOutboundWorkerResult>;
   recording_fetch: WorkerOutcome<RunRecordingFetchWorkerResult>;
   adapter_push: WorkerOutcome<RunAdapterPushWorkerResult>;
+  /** Every queue's `pgmq.metrics_all()` row (OPS-8, deliverable 3) — so the
+   * nightly regression and admin pages can see backlog/DLQ depth straight
+   * from this response, without a separate DB read. Empty (never throws
+   * out of the whole tick) if the metrics read itself fails. */
+  queues: QueueMetricsRow[];
   duration_ms: number;
 }
 
@@ -182,6 +202,29 @@ async function runLeg<D, T>(
   return settle(settled[0] as PromiseSettledResult<T>);
 }
 
+/** The `messages_outbound` leg's own NotConfigured handling (deliverable 2,
+ * OPS-8): unlike `runLeg`'s generic "just report skipped, touch nothing"
+ * behavior (still exactly what the OTHER two legs do when not configured —
+ * neither recording_fetch nor adapter_push has a "provider absent, park
+ * honestly" requirement in this task's brief), a not-configured outbound
+ * leg still runs the bounded, read_ct-free stale sweep so old-enough
+ * messages get a visible, honest dead-letter instead of waiting forever
+ * with zero signal. The sweep itself never throws out of this function —
+ * a failure there is logged as a normal `skipped` outcome with no `parked`
+ * field, never escalated into a tick-wide failure. */
+async function runOutboundLeg(
+  sql: SqlClient,
+  legDeps: OutboundDeps | NotConfiguredLeg,
+  run: (deps: OutboundDeps) => Promise<RunOutboundWorkerResult>,
+  timeoutMs: number,
+): Promise<WorkerOutcome<RunOutboundWorkerResult>> {
+  if (isNotConfigured(legDeps)) {
+    const parked = await sweepNotConfiguredOutbound(sql).catch(() => undefined);
+    return { status: "skipped", missing: legDeps.missing, ...(parked ? { parked } : {}) };
+  }
+  return runLeg(legDeps, run, timeoutMs, "messages_outbound");
+}
+
 export async function runWorkerTick(
   sql: SqlClient,
   deps: WorkerTickDeps,
@@ -190,8 +233,8 @@ export async function runWorkerTick(
   const timeoutMs = deps.perWorkerTimeoutMs ?? DEFAULT_PER_WORKER_TIMEOUT_MS;
   const startedAt = Date.now();
 
-  const [messagesOutbound, recordingFetchOutcome, adapterPushOutcome] = await Promise.all([
-    runLeg(deps.outbound, (d) => runners.outbound(sql, d), timeoutMs, "messages_outbound"),
+  const [messagesOutbound, recordingFetchOutcome, adapterPushOutcome, queues] = await Promise.all([
+    runOutboundLeg(sql, deps.outbound, (d) => runners.outbound(sql, d), timeoutMs),
     runLeg(
       deps.recordingFetch,
       (d) => runners.recordingFetch(sql, d.deps, d.logger),
@@ -204,12 +247,14 @@ export async function runWorkerTick(
       timeoutMs,
       "adapter_push",
     ),
+    metricsAll(sql).catch(() => []),
   ]);
 
   return {
     messages_outbound: messagesOutbound,
     recording_fetch: recordingFetchOutcome,
     adapter_push: adapterPushOutcome,
+    queues,
     duration_ms: Date.now() - startedAt,
   };
 }

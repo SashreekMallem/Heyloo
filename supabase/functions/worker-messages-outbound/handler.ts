@@ -248,28 +248,106 @@ export async function runOutboundWorker(
       await deleteMessage(sql, QUEUE_NAMES.messagesOutbound, row.msg_id);
       processed += 1;
     } catch (err) {
-      deps.logger.error("worker_messages_outbound_error", {
-        error: String(err),
-        msg_id: row.msg_id,
-      });
-      if (row.read_ct >= OUTBOUND_MAX_ATTEMPTS) {
-        await moveToDeadLetter(sql, QUEUE_NAMES.messagesOutbound, row.msg_id, row.message);
-        // BACKEND_SPEC §9: "after 5 attempts, row status -> failed, moved to
-        // messages_outbound_dlq for manual admin review" — the DLQ move
-        // above only removes the pgmq message; the domain row itself must
-        // also flip to `failed` here, or an exhausted-retry message stays
-        // `status='queued'` forever with no admin-visible signal at all.
-        await sql`
-          update public.messages_outbound
-          set status = 'failed', error = ${String(err)}
-          where id = ${row.message.message_id} and status not in ('sent', 'delivered')
-        `;
-        deadLettered += 1;
+      const reason = String(err);
+      deps.logger.error("worker_messages_outbound_error", { error: reason, msg_id: row.msg_id });
+      // OPS-8 (docs/BUILD_NOTES.md): the dead-letter write itself is
+      // wrapped in its own try/catch — the same failure class
+      // worker-recording-fetch was found to have live (a throw from a
+      // retry/dead-letter write escaping the loop and stranding every
+      // OTHER message pgmq.read already bumped read_ct for this tick).
+      try {
+        if (row.read_ct >= OUTBOUND_MAX_ATTEMPTS) {
+          await moveToDeadLetter(
+            sql,
+            QUEUE_NAMES.messagesOutbound,
+            row.msg_id,
+            row.message,
+            `max_attempts_exceeded:${reason}`,
+          );
+          // BACKEND_SPEC §9: "after 5 attempts, row status -> failed, moved to
+          // messages_outbound_dlq for manual admin review" — the DLQ move
+          // above only removes the pgmq message; the domain row itself must
+          // also flip to `failed` here, or an exhausted-retry message stays
+          // `status='queued'` forever with no admin-visible signal at all.
+          await sql`
+            update public.messages_outbound
+            set status = 'failed', error = ${reason}
+            where id = ${row.message.message_id} and status not in ('sent', 'delivered')
+          `;
+          deadLettered += 1;
+        }
+        // else: leave in queue — becomes visible again after the visibility
+        // timeout for the next poll to retry.
+      } catch (dlqErr) {
+        deps.logger.error("worker_messages_outbound_row_fatal", {
+          msg_id: row.msg_id,
+          error: dlqErr instanceof Error ? dlqErr.message : String(dlqErr),
+        });
       }
-      // else: leave in queue — becomes visible again after the visibility
-      // timeout for the next poll to retry.
     }
   }
 
   return { processed, dead_lettered: deadLettered, batch_size: batch.length };
+}
+
+// ---------------------------------------------------------------------------
+// Deliverable 2 (OPS-8, docs/BUILD_NOTES.md) — honest "provider not
+// configured" behavior. Before this: when Twilio/Resend secrets were
+// absent, this leg was skipped entirely (never called `pgmq.read`, so
+// `read_ct` correctly never climbed — confirmed live), but that also meant
+// a queued message could wait FOREVER with no visible signal at all if the
+// owner never configured a provider. The fix keeps the "quick skip,
+// don't touch fresh messages" behavior for the common case (this sweep
+// uses a plain SELECT against pgmq's own queue table, never `pgmq.read`,
+// so it never bumps read_ct or resets a message's visibility timeout —
+// "without consuming the messages" per this task's own brief) while still
+// giving old-enough messages a visible, honest outcome: dead-lettered with
+// reason `provider_not_configured` once they've waited past the park
+// window, so the owner sees a `messages_outbound.status='failed'` row
+// (and a DLQ entry with a recorded reason) instead of silence. Once the
+// owner sets the secrets, this leg starts running its normal read/
+// process/retry/dead-letter loop above and messages queued within the
+// park window still send normally — nothing here touches a fresh message.
+// ---------------------------------------------------------------------------
+
+export const OUTBOUND_NOT_CONFIGURED_PARK_SECONDS = 24 * 60 * 60; // 24h.
+
+export interface SweepNotConfiguredOutboundResult {
+  dead_lettered: number;
+}
+
+export async function sweepNotConfiguredOutbound(
+  sql: SqlClient,
+  staleAfterSeconds: number = OUTBOUND_NOT_CONFIGURED_PARK_SECONDS,
+): Promise<SweepNotConfiguredOutboundResult> {
+  const stale = await sql<{ msg_id: number; message: MessagesOutboundQueueMsg }>`
+    select msg_id, message
+    from pgmq.q_messages_outbound_queue
+    where enqueued_at < now() - interval '1 second' * ${staleAfterSeconds}
+  `;
+
+  let deadLettered = 0;
+  for (const row of stale) {
+    try {
+      await moveToDeadLetter(
+        sql,
+        QUEUE_NAMES.messagesOutbound,
+        row.msg_id,
+        row.message,
+        "provider_not_configured",
+      );
+      await sql`
+        update public.messages_outbound
+        set status = 'failed', error = 'provider_not_configured'
+        where id = ${row.message.message_id} and status not in ('sent', 'delivered')
+      `;
+      deadLettered += 1;
+    } catch {
+      // Leave it queued for the next sweep to try again — never let one
+      // row's failure here strand the rest, same discipline as the main
+      // loop above.
+    }
+  }
+
+  return { dead_lettered: deadLettered };
 }
