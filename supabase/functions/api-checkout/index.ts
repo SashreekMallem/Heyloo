@@ -3,15 +3,23 @@
 // user's id (`sub`) is what this function trusts, never a body-supplied
 // user id (BACKEND_SPEC §7.9-adjacent auth convention).
 import { getSql } from "../_shared/deno/db.ts";
-import { requireEnv } from "../_shared/deno/env.ts";
+import { optionalEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { handleCheckout } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-checkout" });
-const STRIPE_SECRET_KEY = requireEnv("STRIPE_SECRET_KEY");
-const CHECKOUT_SUCCESS_URL = requireEnv("CHECKOUT_SUCCESS_URL");
-const CHECKOUT_CANCEL_URL = requireEnv("CHECKOUT_CANCEL_URL");
+// SIGNUP-1 (docs/BUILD_NOTES.md): read optionally, not via `requireEnv` —
+// Stripe is not configured on this platform yet, and `requireEnv` throws at
+// module load (Deno cold-start), which crashed EVERY invocation of this
+// function with an opaque `WORKER_ERROR` before a single line of request
+// handling ran — including `handleCheckout`'s own graceful
+// `stripe_not_configured` check below `platform_settings.price_card_<vertical>`,
+// which could never be reached. Fails closed at request time instead (never
+// calls Stripe without a real key), with a clean, logged, user-facing error.
+const STRIPE_SECRET_KEY = optionalEnv("STRIPE_SECRET_KEY");
+const CHECKOUT_SUCCESS_URL = optionalEnv("CHECKOUT_SUCCESS_URL");
+const CHECKOUT_CANCEL_URL = optionalEnv("CHECKOUT_CANCEL_URL");
 
 function decodeSub(authHeader: string | null): string | null {
   if (!authHeader?.startsWith("Bearer ")) return null;
@@ -33,6 +41,11 @@ Deno.serve(async (req: Request) => {
 
   const userId = decodeSub(req.headers.get("authorization"));
   if (!userId) return jsonResponse({ error: "unauthorized" }, { status: 401 });
+
+  if (!STRIPE_SECRET_KEY || !CHECKOUT_SUCCESS_URL || !CHECKOUT_CANCEL_URL) {
+    logger.error("api_checkout_stripe_not_configured_at_request");
+    return jsonResponse({ error: "stripe_not_configured" }, { status: 500 });
+  }
 
   let body: unknown;
   try {
