@@ -205,6 +205,14 @@ verify_jwt = false
 [functions.api-tenant-test-call]
 verify_jwt = true
 
+# api-tenant-agent-publish (PUBLISH-1, docs/BUILD_NOTES.md): the SAME
+# posture as api-tenant-test-call directly above — tenant-owner/admin
+# JWT-authenticated, tenant_id from the JWT's own app_metadata only —
+# republishes the CALLING tenant's own agent through the shared
+# compile-and-publish module ("Publish changes").
+[functions.api-tenant-agent-publish]
+verify_jwt = true
+
 # api-team-invite (docs/audit/FIX_REQUESTS.md): tenant-owner JWT-
 # authenticated (verify_jwt = true, tenant_id + caller user id from the
 # JWT only) — additionally re-verifies the caller's own memberships.role
