@@ -2369,3 +2369,57 @@ the Custom Access Token Hook's actual, verified output — see
 
 **Code:** `apps/web/src/lib/auth/claims.ts`
 (`claimsFromSupabaseClient`, `impersonatedByFromSupabaseClient`).
+
+## PARITY-1 — `GET /get-conversation-flow/{id}` and `GET /get-retell-llm/{id}` — **RESOLVED, confirmed live against docs.retellai.com**
+
+**Confirmed 2026-09-21** via `WebFetch` of
+`https://docs.retellai.com/api-references/get-conversation-flow` and
+`https://docs.retellai.com/api-references/get-retell-llm`. Both are
+plain `GET` on the resource id (`/get-conversation-flow/{conversation_flow_id}`,
+`/get-retell-llm/{llm_id}`), matching every other `get-*` endpoint this
+codebase already calls (`getAgent`, `getPhoneNumber`). Response fields
+used: `start_node_id`/`nodes`/`tools`/`global_prompt` (conversation flow)
+and `general_prompt`/`general_tools`/`states`/`starting_state` (retell
+LLM) — hashed by `api-admin-attach-retell-number/handler.ts`'s extended
+`inspect` action to diff two tenants' compiled agents without relying on
+either tenant's own possibly-stale `agent_configs.compiled_config`.
+
+**Code:** `supabase/functions/_shared/providers/retell.ts`
+(`getConversationFlow`, `getRetellLLM`).
+
+## SELFCALL-1 — `POST /v2/create-phone-call`, `PATCH /update-phone-number/{e164}`, `GET /v2/get-call/{id}` — **RESOLVED, confirmed live against a real PSTN call**
+
+**Confirmed 2026-09-21** via `WebFetch` of
+`https://docs.retellai.com/api-references/create-phone-call`,
+`.../update-phone-number`, `.../get-call`, and
+`https://docs.retellai.com/accounts/kyc` — every field this task's
+`_shared/providers/retell.ts#createPhoneCall`/`updatePhoneNumber`/
+`getCall` (already implemented by earlier tasks, unchanged here) send or
+read matched the current docs exactly. Then proved LIVE, twice, with a
+REAL PSTN call placed end to end by `api-admin-self-call`: outbound
+calling required NO additional Retell-side identity/KYC verification on
+this account (`create-phone-call` accepted the request immediately, no
+403/422 of any kind — `docs/GO_LIVE.md` step 5 updated accordingly);
+`update-phone-number`'s `outbound_agents` weighted-array field correctly
+bound the caller number to a fresh single-prompt agent; `get-call`
+correctly reported `call_status: "ongoing"` while live and `"ended"` +
+`disconnection_reason`/`duration_ms`/`transcript`/`recording_url` once
+finished, for both calls.
+
+**One thing NOT confirmed as hoped, live-observed**: `call_analyzed`'s
+`call_analysis.custom_analysis_data` came back **empty** (`{}`) for both
+real calls even though `call_summary`/`user_sentiment` populated
+normally — CALL-9's own flagged "open item to confirm Retell actually
+returns `custom_analysis_data` keyed exactly by these field names in
+practice" is now answered: for these two real `test-riverside-auto`
+calls it did not return ANY custom analysis fields, so
+`call_logs.classification`/`outcome`/`follow_up_needed` stayed null.
+Root cause not chased further here — `_shared/compiler/*` and
+`agent-template-seeds.ts` (where `post_call_analysis_data` is declared
+per template) are PARITY-1-owned, not this task's files to edit; flagged
+as a real, live-confirmed gap for a follow-up task in
+`docs/BUILD_NOTES.md`'s SELFCALL-1 entry.
+
+**Code:** `supabase/functions/api-admin-self-call/handler.ts` (no
+changes needed to `_shared/providers/retell.ts` — every function this
+task uses already existed and matched current docs).

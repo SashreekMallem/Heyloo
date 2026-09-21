@@ -18,17 +18,26 @@ interface PhoneNumberLookupRow {
   tenant_id: string;
   phone_number_id: string;
   owner_test_phone: string | null;
+  is_test_tenant: boolean;
 }
 
 interface AgentConfigLookupRow {
   tenant_id: string;
   owner_test_phone: string | null;
+  is_test_tenant: boolean;
 }
 
 interface ResolvedCall {
   tenant_id: string;
   phone_number_id: string | null;
   owner_test_phone: string | null;
+  // SELFCALL-1: true when `tenants.is_test` — a tenant created by the
+  // internal test-checkout bypass (SIGNUP-1's own `tenants.is_test`
+  // column), never a real paying tenant. Folded into `is_test_call` below
+  // alongside `owner_test_phone` so a call INTO a test tenant is marked
+  // test even when the caller's own number was never configured as that
+  // tenant's `owner_test_phone`.
+  is_test_tenant: boolean;
   // 'phone' = resolved via to_number -> phone_numbers (Twilio-originated
   // PSTN call); 'web_voice' = resolved via agent_id -> agent_configs (the
   // embeddable widget's voice mode — Retell web calls carry no to_number
@@ -51,7 +60,8 @@ async function resolveTenantForCall(
   const toNumber = normalizeE164(call.to_number ?? null);
   if (toNumber) {
     const rows = await sql<PhoneNumberLookupRow>`
-      select pn.tenant_id, pn.id as phone_number_id, t.owner_test_phone
+      select pn.tenant_id, pn.id as phone_number_id, t.owner_test_phone,
+        t.is_test as is_test_tenant
       from public.phone_numbers pn
       join public.tenants t on t.id = pn.tenant_id
       where pn.e164 = ${toNumber}
@@ -63,6 +73,7 @@ async function resolveTenantForCall(
         tenant_id: row.tenant_id,
         phone_number_id: row.phone_number_id,
         owner_test_phone: row.owner_test_phone,
+        is_test_tenant: row.is_test_tenant,
         channel: "phone",
       };
     }
@@ -75,7 +86,7 @@ async function resolveTenantForCall(
   const agentId = call.agent_id ?? null;
   if (!agentId) return null;
   const agentRows = await sql<AgentConfigLookupRow>`
-    select ac.tenant_id, t.owner_test_phone
+    select ac.tenant_id, t.owner_test_phone, t.is_test as is_test_tenant
     from public.agent_configs ac
     join public.tenants t on t.id = ac.tenant_id
     where ac.retell_agent_id = ${agentId}
@@ -87,8 +98,44 @@ async function resolveTenantForCall(
     tenant_id: agentRow.tenant_id,
     phone_number_id: null,
     owner_test_phone: agentRow.owner_test_phone,
+    is_test_tenant: agentRow.is_test_tenant,
     channel: "web_voice",
   };
+}
+
+/**
+ * SELFCALL-1: true when `callerNumber` is itself one of the PLATFORM'S OWN
+ * already-provisioned numbers (e.g. `+16105383920`, `signup-1-auto`'s own
+ * number, used by `api-admin-self-call` as the scripted-caller leg). A real
+ * customer's phone number can only coincide with one of our own
+ * Retell-purchased numbers if it genuinely IS one of our own numbers, so
+ * this is a safe, generic "this is one of our own self-call loops, not a
+ * real caller" signal — never weakens detection for an actual customer
+ * call, which will essentially never match.
+ */
+async function isSelfOwnedCallerNumber(
+  sql: SqlClient,
+  callerNumber: string | null,
+): Promise<boolean> {
+  if (!callerNumber) return false;
+  const rows = await sql<{ exists: boolean }>`
+    select exists(
+      select 1 from public.phone_numbers where e164 = ${callerNumber} and released_at is null
+    ) as exists
+  `;
+  return rows[0]?.exists ?? false;
+}
+
+async function resolveIsTestCall(
+  sql: SqlClient,
+  tenantRow: ResolvedCall,
+  callerNumber: string | null,
+): Promise<boolean> {
+  if (callerNumber && tenantRow.owner_test_phone && callerNumber === tenantRow.owner_test_phone) {
+    return true;
+  }
+  if (tenantRow.is_test_tenant) return true;
+  return isSelfOwnedCallerNumber(sql, callerNumber);
 }
 
 export async function handleCallStarted(
@@ -103,8 +150,7 @@ export async function handleCallStarted(
   }
 
   const callerNumber = normalizeE164(call.from_number ?? null);
-  const isTestCall =
-    !!callerNumber && !!tenantRow.owner_test_phone && callerNumber === tenantRow.owner_test_phone;
+  const isTestCall = await resolveIsTestCall(sql, tenantRow, callerNumber);
 
   // CALL-2 (docs/BUILD_NOTES.md): a placeholder row
   // (voice-tools/context.ts#resolveCallContext) may already exist for this
@@ -165,8 +211,7 @@ export async function handleCallEnded(
       return;
     }
     const callerNumber = normalizeE164(call.from_number ?? null);
-    const isTestCall =
-      !!callerNumber && !!tenantRow.owner_test_phone && callerNumber === tenantRow.owner_test_phone;
+    const isTestCall = await resolveIsTestCall(sql, tenantRow, callerNumber);
     const inserted = await sql<{ id: string; tenant_id: string; is_test_call: boolean }>`
       insert into public.call_logs (
         tenant_id, phone_number_id, retell_call_id, caller_number, direction,

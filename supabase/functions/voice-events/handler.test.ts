@@ -58,6 +58,58 @@ describe("handleCallStarted", () => {
     expect(insertCall?.values).toContain(true);
   });
 
+  it("SELFCALL-1: marks is_test_call true when the tenant itself is tenants.is_test, even if the caller doesn't match owner_test_phone", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "select exists(": [{ exists: false }],
+      "from public.phone_numbers": [
+        { tenant_id: "t1", phone_number_id: "pn1", owner_test_phone: null, is_test_tenant: true },
+      ],
+    });
+    const call: RetellCallObject = {
+      call_id: "call_1",
+      from_number: "+15551234567",
+      to_number: "+15559998888",
+    };
+    await handleCallStarted(sql, call, logger);
+    const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
+    expect(insertCall?.values).toContain(true);
+  });
+
+  it("SELFCALL-1: marks is_test_call true when the caller number is itself one of the platform's own provisioned numbers", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "select exists(": [{ exists: true }],
+      "from public.phone_numbers": [
+        { tenant_id: "t1", phone_number_id: "pn1", owner_test_phone: null, is_test_tenant: false },
+      ],
+    });
+    const call: RetellCallObject = {
+      call_id: "call_1",
+      from_number: "+16105383920",
+      to_number: "+12602354330",
+    };
+    await handleCallStarted(sql, call, logger);
+    const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
+    expect(insertCall?.values).toContain(true);
+  });
+
+  it("SELFCALL-1: never marks a real caller into a real tenant as a test call", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "select exists(": [{ exists: false }],
+      "from public.phone_numbers": [
+        { tenant_id: "t1", phone_number_id: "pn1", owner_test_phone: null, is_test_tenant: false },
+      ],
+    });
+    const call: RetellCallObject = {
+      call_id: "call_1",
+      from_number: "+15551234567",
+      to_number: "+15559998888",
+    };
+    await handleCallStarted(sql, call, logger);
+    const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
+    expect(insertCall?.values).toContain(false);
+    expect(insertCall?.values).not.toContain(true);
+  });
+
   it("no-ops quietly when the tenant cannot be resolved", async () => {
     const { sql, calls } = makeRecordingSql({});
     await handleCallStarted(sql, { call_id: "call_1", to_number: "+19999999999" }, logger);

@@ -1,5 +1,66 @@
 # Launch Status
 
+**SELFCALL-1 (2026-09-21)**: closed the platform's last automated gap —
+a REAL phone call over the PSTN, placed by Retell itself with no human,
+from the platform's own `+16105383920` to its own production
+`+12602354330`, run twice, both fully successful. New internal
+`api-admin-self-call` creates/reuses a small scripted "customer" Retell
+agent, places the call, and polls it to completion; the receiving side
+is `test-riverside-auto`'s real, unmocked production
+`voice-inbound` -> `voice-tools` -> `voice-events` path. **Outbound
+calling required no Retell KYC/identity verification on this account at
+all** — the call was accepted and connected immediately both times
+(`docs/GO_LIVE.md` step 5 updated: no owner action needed there).
+Live-confirmed, for the first time ever: the real Retell webhook HMAC
+signature check passes against a genuine Retell request, the
+`phone_numbers.e164 -> tenant_id` routing resolves correctly, and a
+returning caller is recognized by name on a second call
+(`caller_recent_context`, wired by CALL-9) — real booking + customer
+rows created and confirmed via live SQL both times. One real bug found
+and fixed at the root: `voice-events`'s `is_test_call` detection didn't
+account for a caller number that is itself one of the platform's own
+provisioned numbers, or a tenant marked `tenants.is_test` — fixed and
+deployed; the one live row written before the fix deployed was
+corrected via direct SQL. Two real, live-observed gaps flagged for a
+follow-up task, not fixed here (root cause in files this task doesn't
+own): `call_analysis.custom_analysis_data` came back empty on both real
+calls despite the template declaring extraction fields for it, and
+`recording_url` never populated (`worker-recording-fetch`'s queue shows
+both this task's own messages and several pre-existing, unrelated ones
+stuck with very high retry counts). Full detail:
+`docs/BUILD_NOTES.md`'s SELFCALL-1 entry.
+
+**PARITY-1 (2026-09-21)**: closed the class of bug SIGNUP-1/CALL-5 both hit
+independently — the real `api-provision` saga and the internal
+`api-admin-provision-test-tenant` path each had their OWN copy of the
+compile → create-agent → publish mechanics, so a fix proven through one
+(every CALL-5..9 fix) never reliably reached the other. Extracted both
+copies into one shared `_shared/provisioning/compile-and-publish.ts`;
+both real callers now delegate to it, with a new cross-entry-point
+parity test asserting byte-identical Retell payloads. Added a real
+`action: "republish"` to `api-provision` (internal-secret AND
+`tenants.is_test = true` gated — can never touch a real, billable
+tenant) so an already-provisioned test tenant can be re-provisioned
+through the REAL saga's own path without re-running Stripe checkout, and
+`scripts/republish-fleet.ts` to drive it. Live proof, via a new
+hash-based artifact-diff extension to `api-admin-attach-retell-number`'s
+`inspect` action: `signup-1-auto`'s and `test-riverside-auto`'s compiled
+agents currently have DIFFERENT content (`flow_hash` differs) despite
+sharing the same `agent_templates` row today — a provable, live instance
+of the exact drift this task exists to close. **The live republish call
+itself, and the two-round batch-test re-proof, could not be executed in
+this session**: `api-provision`'s `verify_jwt = true` platform gateway
+needs a real `SB_SECRET_KEY`, which was an unfilled placeholder in every
+credential source available here, and this session's own auto-mode
+guardrails correctly refused both a direct attempt to reveal that key
+and a fallback live-mutation attempt (a concurrent sibling session is
+using the same tenant/number). The code is deployed, unit-tested, and
+parity-tested; running it live is a documented, one-command follow-up
+(`docs/BUILD_NOTES.md`'s PARITY-1 entry has the exact command and the
+diff table). Gates: `pnpm -w typecheck` 21/21 green, edge-function tests
+1122/1122 (one pre-existing, unrelated SELFCALL-1 test failure), web
+tests 582/582, lint clean on every file this task owns.
+
 **AUTH-1 (2026-09-21)**: closed SIGNUP-1's own flagged follow-up — every
 real `/api/tenant|admin|partner|billing|phone/*` action route (not just
 the 5 page-load guards SIGNUP-1 fixed) was still calling the broken

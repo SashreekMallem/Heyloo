@@ -259,3 +259,9 @@ verify_jwt = false
 # tenant (docs/BUILD_NOTES.md SIGNUP-1 entry).
 [functions.api-admin-complete-test-checkout]
 verify_jwt = false
+# api-admin-self-call (SELFCALL-1): same internal-only posture — drives a
+# real PSTN call from the platform's own signup-1-auto number to its own
+# test-riverside-auto number, no human involved (docs/BUILD_NOTES.md
+# SELFCALL-1 entry, scripts/e2e/self-call.ts).
+[functions.api-admin-self-call]
+verify_jwt = false

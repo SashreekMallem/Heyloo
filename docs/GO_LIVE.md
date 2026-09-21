@@ -74,12 +74,21 @@ What remains for the owner before accepting real tenant calls. Automation has al
 
 ### 5. Retell outbound identity verification
 
-**Why**: Retell requires verified identity for outbound calls.
+**Status: already done — confirmed live by SELFCALL-1 (2026-09-21), no owner action needed.**
 
-**Steps**:
-1. Retell dashboard → Account Settings → Verify business identity (follow Retell's process)
+**Why**: Retell requires verified identity/KYC before outbound calls are allowed
+(docs.retellai.com/accounts/kyc) — this gates the platform's own outbound
+lead-callback feature (`_shared/providers/retell.ts#createPhoneCall`,
+`job-lead-callback-retry`), not just manual dashboard use.
 
-**Verify**: Retell shows your business "verified" for outbound.
+**Verified**: `api-admin-self-call` placed a REAL outbound `POST
+/v2/create-phone-call` from the platform's own `+16105383920` to its own
+`+12602354330` — Retell accepted it immediately (no KYC/verification
+rejection of any kind) and the call connected, ran a full scripted
+conversation, and ended normally (`user_hangup`). Run twice, both times
+successful. This account's outbound calling is provably already unlocked
+— nothing further to do here. See `docs/BUILD_NOTES.md`'s SELFCALL-1
+entry for the call ids and full live evidence.
 
 ---
 
