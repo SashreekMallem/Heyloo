@@ -2423,3 +2423,90 @@ as a real, live-confirmed gap for a follow-up task in
 **Code:** `supabase/functions/api-admin-self-call/handler.ts` (no
 changes needed to `_shared/providers/retell.ts` — every function this
 task uses already existed and matched current docs).
+
+## ANALYSIS-1 — `post_call_analysis_data`/`post_call_analysis_model` (create-agent), `call_analysis.custom_analysis_data` (get-call) — **RESOLVED, confirmed live against docs.retellai.com and against a real PSTN call**
+
+**Confirmed 2026-09-21** via `WebFetch` of
+`https://docs.retellai.com/api-references/create-agent` and
+`https://docs.retellai.com/features/post-call-analysis`. Exact schema
+for `post_call_analysis_data[]` entries: `type` (one of `"string"` |
+`"enum"` | `"boolean"` | `"number"` for a custom field, or
+`"system-presets"` for `call_summary`/`call_successful`/`user_sentiment`
+— this codebase only ever emits the four custom types, since the three
+system presets are already returned unconditionally on every call and
+already consumed by `voice-events/handler.ts`), `name` (NOT `field`),
+`description` (REQUIRED on every type), `choices` (enum only, NOT
+`enum_values`), `examples` (string only, optional), `required`/
+`conditional_prompt` (optional on every type). `post_call_analysis_model`
+accepts a documented `NullableLLMModel` enum member (`gpt-4.1-mini`
+included) or `null`; default `gpt-5.6-terra` when omitted. Also
+re-confirmed via `WebFetch` of
+`https://docs.retellai.com/api-references/get-call`: `call_analysis.
+custom_analysis_data` is `"Custom analysis data that was extracted based
+on the schema defined in agent post call analysis data. Can be empty if
+nothing is specified."` — i.e. Retell's own docs already implied the
+root cause SELFCALL-1 hit: an agent with no `post_call_analysis_data` on
+file returns an empty object, which is exactly what `create-agent` was
+sending (nothing) before this task.
+
+**Root cause and fix**: `agent-template-seeds.ts` has declared per-state
+`extraction[]` data (`field`/`type`/`enum_values`/`description`) for
+several prior tasks, but every template's `content` was assigned via
+`as unknown as CompilerAgentTemplate` (bypasses TypeScript's excess-
+property check), and `_shared/compiler/template-compiler.ts`'s
+`CompilerAgentState` interface never declared an `extraction` field at
+all — so this data was compiled, published, and silently dropped on
+every agent this platform ever created; `post_call_analysis_data` was
+never part of any `create-agent` payload. Fixed: `CompilerAgentState.
+extraction` is now a real, typed field; a new
+`buildPostCallAnalysisData()` translates it into Retell's exact schema
+above (`field`→`name`, `enum_values`→`choices`, `"text"`→`"string"`,
+deduped by field name across `template.states`, first declaration wins,
+a generic fallback `description` filled when a state omits one) and
+`_shared/provisioning/compile-and-publish.ts`'s `compileAndCreateAgent`
+now sends it on `create-agent` whenever non-empty, reaching both
+`api-provision` and `api-admin-provision-test-tenant` by construction.
+
+**Proved live, twice.** (1) After republishing `signup-1-auto` (new
+agent `agent_598e07abf4079ee1a5a0be5c9e`) and `test-riverside-auto` (new
+agent `agent_2792eaaef8de3409f590f6ed85`, re-attached to `+12602354330`)
+through this code, a fresh `inspect` call on both now reports the
+IDENTICAL `flow_hash`
+(`472409434bb6818d8cffb5a334a885db868aac073cf780ed121765c2a5590116`) —
+the cross-tenant parity proof PARITY-1 could not run (its own two
+tenants previously had different hashes: `3af5f7ba...5808` vs.
+`db55ec44...3113`). (2) A real self-driven PSTN call
+(`scripts/e2e/self-call.ts`, +16105383920 → +12602354330) produced a
+`call_logs` row (`id 923d0a3d-c9b9-4a78-955a-230a9f968086`) with
+`classification: "new_booking"`, a full-sentence `outcome`, `sentiment:
+"positive"`, `follow_up_needed: false`, `urgency_flag: false`,
+`call_successful: true`, and a full `call_summary` — every field that
+was `NULL`/`{}` on SELFCALL-1's two real calls is now populated, for the
+first time, on a real (non-batch-test) call.
+
+**Also live-diagnosed and fixed in the same task**:
+`api-admin-attach-retell-number/handler.ts`'s `inspect` `flow_hash`
+previously hashed `JSON.stringify({start_node_id, nodes, tools,
+global_prompt})` directly. Live-diagnosed (via a temporary debug field,
+since removed) that Retell's own `GET /get-conversation-flow` does NOT
+guarantee stable intra-object key ORDER across two separately-created
+flows, even when their `agent_configs.compiled_config` (this platform's
+own locally-serialized payload, confirmed via direct SQL) is
+byte-identical — e.g. one node's `edges[].transition_condition` key
+serialized before `id`, the other after. This made the hash sensitive to
+an ordering Retell's API never promises to preserve, producing a false
+negative between `signup-1-auto` and `test-riverside-auto` even once
+their compiled content was genuinely identical. Fixed by switching to
+the existing `stableStringify` (deep, recursive key-sort) helper from
+`_shared/idempotency.ts` instead of plain `JSON.stringify` — confirmed
+live: after the fix, the two tenants' `flow_hash` values are identical
+(above).
+
+**Code:** `supabase/functions/_shared/compiler/template-compiler.ts`
+(`CompilerExtractionField`, `buildPostCallAnalysisData`),
+`supabase/functions/_shared/provisioning/compile-and-publish.ts`
+(`createAgent` payload), `supabase/functions/_shared/schemas/
+voice-events.ts` (`parseCustomAnalysisData`, per-field validation),
+`supabase/functions/voice-events/handler.ts` (`handleCallAnalyzed`),
+`supabase/functions/api-admin-attach-retell-number/handler.ts`
+(`stableStringify` fix).

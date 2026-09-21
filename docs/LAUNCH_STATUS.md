@@ -1,5 +1,46 @@
 # Launch Status
 
+**ANALYSIS-1 (2026-09-21)**: closed SELFCALL-1's own flagged gap — post-call
+analysis (`classification`/`outcome`/`follow_up_needed`/`urgency_flag`/
+`sentiment`) now actually reaches Retell and comes back populated on a real
+call, for the first time. Root cause: every template's per-state
+`extraction[]` data (declared for several prior tasks) was dead weight —
+the compiler never read it, so `post_call_analysis_data` was never part of
+any `create-agent` payload on ANY agent this platform has ever created.
+Fixed: `_shared/compiler/template-compiler.ts`'s new
+`buildPostCallAnalysisData()` compiles it into Retell's real schema
+(RETELL-VERIFIED live), wired into the shared `compile-and-publish.ts`
+module so every agent, real or test, gets it by construction; `voice-events`
+now validates each `custom_analysis_data` field independently (unknown/
+malformed value on one field never drops the rest or rejects the webhook).
+Republished both `signup-1-auto` (new agent `agent_598e07abf4079ee1a5a0be5c9e`
+on `+16105383920`) and `test-riverside-auto` (new agent
+`agent_2792eaaef8de3409f590f6ed85` on `+12602354330`) through the internal
+test-tenant path (`api-provision`'s `verify_jwt=true` republish route is
+confirmed, via Supabase's own docs, structurally unable to accept the new
+secret-key format as a Bearer token — a real platform limitation, not a
+missing credential). A fresh `inspect` on both now reports the IDENTICAL
+`flow_hash` (`472409434bb6818d8cffb5a334a885db868aac073cf780ed121765c2a5590116`)
+— the parity proof PARITY-1 could not run — after also fixing a second,
+live-diagnosed bug: `inspect`'s hash used plain `JSON.stringify`, which is
+sensitive to intra-object key ordering Retell's own API never promises to
+preserve across two separately-created flows, producing a false-negative
+mismatch even between byte-identical compiled payloads; switched to the
+existing `stableStringify` (deep key-sort) helper. Proved on a real
+self-driven PSTN call (`scripts/e2e/self-call.ts`): the resulting
+`call_logs` row has `classification: "new_booking"`, a full `outcome`
+sentence, `sentiment: "positive"`, `follow_up_needed: false`,
+`urgency_flag: false`, and a full `call_summary` — every field that was
+`NULL`/`{}` on SELFCALL-1's two real calls. Auto-vertical batch-test suite
+run 3 times (2x `signup-1-auto`, 1x `test-riverside-auto`): 7-8/9 pass each
+run, zero real semantic failures (every non-pass is Retell's own `error`
+status, a known-flaky batch-test judge outcome — which scenario lands
+there varies run to run, unrelated to this task's changes);
+`wrong_date_caller` passed on 2 of 3 runs. Gates: edge-function tests
+1132/1132 green (+10 new), typecheck clean (one pre-existing, unrelated
+OPS-8 error in `worker-adapter-push`, not touched), lint clean on every
+file this task owns. Full detail: `docs/BUILD_NOTES.md`'s ANALYSIS-1 entry.
+
 **SELFCALL-1 (2026-09-21)**: closed the platform's last automated gap —
 a REAL phone call over the PSTN, placed by Retell itself with no human,
 from the platform's own `+16105383920` to its own production

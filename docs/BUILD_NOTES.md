@@ -16102,3 +16102,230 @@ needed already existed), no changes under PARITY-1's (`api-provision/*`,
 live: `api-admin-self-call`, `voice-events` (via `npx supabase functions
 deploy <fn> --project-ref qulcubtwqsqgqpfgvorn --use-api --yes
 --import-map supabase/functions/deno.json`).
+
+## ANALYSIS-1 (2026-09-21) — post-call analysis actually reaches Retell; the last SELFCALL-1 gap closed, live
+
+**Goal**: close SELFCALL-1's own flagged gap — `call_analysis.
+custom_analysis_data` came back `{}` on both of that task's real calls,
+so `call_logs.classification`/`outcome`/`follow_up_needed`/
+`urgency_flag` stayed `NULL` despite every template declaring extraction
+fields for them.
+
+### Root cause: `post_call_analysis_data` was never sent to Retell, ever
+
+`agent-template-seeds.ts` has carried per-state `extraction[]` data
+(`field`/`type`/`enum_values`/`description` — `classification`/
+`outcome`/`follow_up_needed`/`emergency_detected`/`legal_advice_given`,
+plus a few vertical-specific fields like legal's `urgency`/`matter_type`/
+`referral_source`) for several prior tasks. But every template's
+`content` is assigned via `as unknown as CompilerAgentTemplate`
+(bypasses TypeScript's excess-property check on the object literal), and
+`_shared/compiler/template-compiler.ts`'s `CompilerAgentState` interface
+never declared an `extraction` field at all, and nothing in the compiler
+ever read one. So this data was pure dead weight: compiled, published,
+and silently dropped on **every single agent this platform has ever
+created** — `post_call_analysis_data` was simply never part of any
+`create-agent` payload, full stop. SELFCALL-1's empty
+`custom_analysis_data` was the correct, expected result of that, not a
+Retell-side mystery — confirmed against current docs (`docs/VERIFY.md`'s
+new ANALYSIS-1 entry): Retell's own `get-call` docs already say
+`custom_analysis_data` "can be empty if nothing is specified."
+
+### The fix
+
+- `_shared/compiler/template-compiler.ts`: `CompilerAgentState.
+  extraction?: CompilerExtractionField[]` is now real and typed. New
+  `buildPostCallAnalysisData(template)` walks every state's
+  `extraction[]`, dedupes by `field` name (first declaration across
+  `states[]` wins — the exact rule `voice-events/handler.ts` had already
+  anticipated in a doc comment, unimplemented, before this task), and
+  translates each entry into Retell's real `PostCallAnalysisData` shape
+  RETELL-VERIFIED live 2026-09-21 (`field`→`name`, `"text"`→`"string"`,
+  `enum_values`→`choices`, a generic fallback `description` when a state
+  omits one — every `legal_advice_given` declaration today does). Drops
+  a malformed enum (no usable `enum_values`) rather than sending Retell
+  a broken field. `CompiledTemplate` now carries `postCallAnalysisData`.
+- `_shared/provisioning/compile-and-publish.ts`: `compileAndCreateAgent`'s
+  `create-agent` payload now includes `post_call_analysis_data` +
+  `post_call_analysis_model` (reuses the template's own compiled `model`)
+  whenever the template declares at least one field — reaches
+  `api-provision` and `api-admin-provision-test-tenant` by construction
+  (single shared module, PARITY-1's whole point).
+- `_shared/schemas/voice-events.ts`: new `parseCustomAnalysisData()` —
+  validates each `custom_analysis_data` field independently (not the
+  whole object at once) against the platform's own 12-value
+  `CALL_LOGS_CLASSIFICATION_VALUES` (mirrors
+  `call_logs_classification_check` exactly) / boolean / non-empty-string
+  schemas. An unknown/hallucinated/malformed value on any ONE field
+  degrades to `null`/`false` for that field alone — every sibling field
+  stays intact, and the webhook is never rejected (a bad `classification`
+  string outside the enum previously risked a raw SQL `CHECK` constraint
+  violation reaching the webhook handler unguarded; now it can't).
+- `voice-events/handler.ts`: `handleCallAnalyzed` uses
+  `parseCustomAnalysisData` instead of the previous ad-hoc `typeof`
+  guards. `urgency_flag`'s sole post-call source stays
+  `emergency_detected` (not a redesign — see that function's own doc
+  comment for why a per-vertical `urgency` enum is deliberately not also
+  merged in; `emergency_detected` has no cross-vertical vocabulary
+  inconsistency, `urgency` does).
+
+### Deploy + republish, live
+
+Deployed: `api-provision`, `api-admin-provision-test-tenant`,
+`voice-events`, `api-admin-attach-retell-number` (all via `npx supabase
+functions deploy <fn> --project-ref qulcubtwqsqgqpfgvorn --use-api
+--yes --import-map supabase/functions/deno.json`).
+
+`api-provision`'s `action: "republish"` is `verify_jwt = true` at the
+Supabase platform gateway. Attempted directly with `Authorization:
+Bearer <SB_SECRET_KEY>` (the new-format secret key, now available in
+this session, unlike PARITY-1's) — refused with a live
+`401 UNAUTHORIZED_INVALID_JWT_FORMAT`. Confirmed via `WebFetch` of
+`supabase.com/docs/guides/functions/auth`: `verify_jwt=true` validates
+JWT STRUCTURE specifically and structurally cannot accept a secret key
+(`sb_secret_...`, not JWT-shaped) as a Bearer token — that requires
+`auth: 'secret'` + `verify_jwt=false` in `config.toml`, a deployment
+setting change out of this task's scope (and a real regression for a
+function real customers must call with a real user JWT). This is a
+genuine, structural limitation, not a session guardrail or a missing
+credential this time. **Documented decision**: used the internal
+fallback (`api-admin-provision-test-tenant` with `force_recompile: true,
+cleanup_superseded_agent: true`, matched by slug) for **both** tenants,
+then an explicit `api-admin-attach-retell-number` call per tenant to
+re-point each number (that path doesn't auto-repoint the number the way
+`republishTenantAgent` does — by design, per its own request shape).
+
+Flow hashes, via `inspect`:
+
+| tenant | before | after | new agent_id |
+|---|---|---|---|
+| `signup-1-auto` | `3af5f7baafe12145b2f87b155c10dcda2b09a3890264d0cdbbc0b1a7c5bf5808` | `472409434bb6818d8cffb5a334a885db868aac073cf780ed121765c2a5590116` | `agent_598e07abf4079ee1a5a0be5c9e` (on `+16105383920`) |
+| `test-riverside-auto` | `db55ec44606c4181bb7fce4b95b613ebdb514179fbd19139e6c89917ba463113` | `472409434bb6818d8cffb5a334a885db868aac073cf780ed121765c2a5590116` | `agent_2792eaaef8de3409f590f6ed85` (on `+12602354330`) |
+
+**AFTER hashes are byte-identical** — the parity proof PARITY-1 could
+not run (`agent_configs.transfer_number` confirmed `null` on both
+tenants via direct SQL, so this isn't masking a transfer-number
+difference). Both agents: `is_published: true`,
+`response_engine_type: "conversation-flow"`, identical `webhook_url`/
+`webhook_timeout_ms`, `general_tools: null`.
+
+**A second, real bug found and fixed while proving this**: the two
+hashes were NOT identical on the first `inspect` after republish, even
+though `agent_configs.compiled_config` (this platform's own locally-
+serialized `create-conversation-flow` payload) was confirmed
+byte-identical between the two tenants via direct SQL. Diagnosed live
+via a temporary debug field on `inspect` (added, used once, removed):
+Retell's own `GET /get-conversation-flow` does not guarantee stable
+intra-object key ORDER across two separately-created flows, even given
+byte-identical input — e.g. one node's `edges[].transition_condition`
+key serialized before `id` in the JSON, the other after. Plain
+`JSON.stringify` made that incidental ordering part of the hash, so two
+genuinely-identical templates could still show a different `flow_hash`.
+Fixed: `inspect`'s hash now uses the existing `stableStringify` (deep,
+recursive key-sort) helper from `_shared/idempotency.ts` — confirmed
+live, the fix is what produced the identical hash above. New regression
+test in `api-admin-attach-retell-number/handler.test.ts` reproduces the
+exact reordering pattern observed live.
+
+### Real call proof
+
+Ran `scripts/e2e/self-call.ts` once (+16105383920 → +12602354330,
+`test-riverside-auto`'s new agent answering). Settled after ~3m20s,
+`disconnection_reason: user_hangup`. The agent recognized the SAME
+returning caller SELFCALL-1's own calls created (`customer_id
+1fc04ee3-1894-410c-8056-a776c4cf4a92`, "I see we've worked with Devon
+before") and booked a new appointment (`booking_id
+e01da82f-9aa7-462e-abfc-39c781feb3b4`).
+
+`call_logs` row `923d0a3d-c9b9-4a78-955a-230a9f968086`
+(`retell_call_id call_6892ba141f7416a0d5652180ca3`), confirmed via
+direct SQL:
+
+```
+classification:     new_booking
+outcome:             Booked a drop-off oil change appointment for 8:30 AM
+                      on September 22, 2026, for a 2019 Honda Civic.
+sentiment:            positive
+follow_up_needed:     false
+urgency_flag:         false
+call_successful:      true
+call_summary:         (full paragraph, populated)
+is_test_call:         true
+transcript:            present
+recording_url:        still null
+```
+
+Every one of `classification`/`outcome`/`sentiment`/`follow_up_needed`/
+`urgency_flag`/`call_summary` was `NULL` on both of SELFCALL-1's real
+calls; all are populated on this one. `recording_url` staying null is
+the SAME pre-existing `worker-recording-fetch` gap SELFCALL-1 already
+flagged (that queue had 450+-retry stuck messages from before this
+task even started) — not this task's file, not re-investigated here.
+
+### Suites — auto vertical, `api-admin-run-agent-tests`
+
+Two runs against `signup-1-auto`, one against `test-riverside-auto`
+(all in the foreground, polled to settlement, not detached):
+
+| run | tenant | pass | fail | error | `wrong_date_caller` | `ai_disclosure_check` |
+|---|---|---|---|---|---|---|
+| 1 | `signup-1-auto` | 8/9 | 0 | 1 | **pass** | error |
+| 2 | `signup-1-auto` | 7/9 | 0 | 2 | error | error |
+| 1 | `test-riverside-auto` | 8/9 | 0 | 1 | **pass** | pass |
+
+All three runs cleared 0 real semantic `fail`s — every non-`pass` result
+is Retell's own `error` status (a batch-test infra/judge error, not a
+scored failure), and which scenario lands in `error` varies run to run
+(`ai_disclosure_check` twice, `wrong_date_caller` once,
+`book_new_caller` once) — consistent with this suite's own
+already-documented batch-test flakiness (see the `loop-detector-flaky`
+notes on `ai_disclosure_check` elsewhere in `_shared/test-scenarios.ts`).
+`wrong_date_caller` passed 2 of 3 runs (both times it wasn't the one
+that errored), matching the CALL-9 profile on the runs where it settled
+cleanly; it is not a newly-introduced regression from this task's
+changes — none of this task's files touch scenario simulation,
+call-context resolution, or date handling. `tool_health` every run shows
+100% tool success rate on every tool that fired (`check_availability`,
+`create_booking`, `cancel_booking`, `update_booking`, `lookup_customer`,
+`join_waitlist`, `take_message`, `send_sms_confirmation` — the one
+`create_booking`/`cancel_booking`/`send_sms_confirmation` partial
+success count on the `test-riverside-auto` run corresponds to the
+`book_new_caller` scenario that itself landed in Retell's own `error`
+state). `call_logs_count: 0` on every run — Retell's batch-test
+simulator does not appear to deliver `call_started`/`call_ended`/
+`call_analyzed` webhooks the way a real or self-call phone call does
+(only `/voice-tools` fires, hence `tool_health` populating while
+`call_logs` doesn't) — a pre-existing characteristic of the batch-test
+harness, not something this task's changes affect, and consistent with
+`docs/research/RETELL_TESTABILITY_2026-09-20.md` row 4c's already-flagged
+"batch-test vs. real-call payload shape differs" class of gap.
+
+### Gates
+
+`cd supabase/functions && npx vitest run`: **1132/1132 green** (115
+files; +10 vs. the 1122 baseline this task started from — 6 in
+`template-compiler.test.ts`, 3 in `voice-events/handler.test.ts`, 1 in
+`api-admin-attach-retell-number/handler.test.ts`). `npx tsc -p
+tsconfig.json --noEmit --pretty`: clean except one PRE-EXISTING error in
+`worker-adapter-push/handler.ts:1120` (`moveToDeadLetter` missing a
+`reason` argument) — OPS-8's own concurrently-in-progress file
+(`worker-*`/`_shared/queues*`/`admin/*` ownership), confirmed via `git
+status` (staged, not committed, by that session) at the time this was
+observed; not touched by this task, not this task's file to fix.
+`npx biome check` on every file this task touched: clean.
+
+### Code
+
+Changed only (no new files):
+`supabase/functions/_shared/compiler/template-compiler.ts` (+test),
+`supabase/functions/_shared/provisioning/compile-and-publish.ts`,
+`supabase/functions/_shared/schemas/voice-events.ts`,
+`supabase/functions/voice-events/handler.ts` (+test),
+`supabase/functions/api-admin-attach-retell-number/handler.ts` (+test).
+Nothing touched under OPS-8's ownership (`worker-*/*`,
+`_shared/queues*`, `admin/*`) — confirmed via `git status` before every
+commit; those files' already-staged, in-progress changes were left
+staged and untouched throughout (committed by explicit pathspec, never
+`git add -A`/`git commit -a`). Deployed live: `api-provision`,
+`api-admin-provision-test-tenant`, `voice-events`,
+`api-admin-attach-retell-number`.
