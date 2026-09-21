@@ -35,7 +35,18 @@ let serviceQueue: Record<string, unknown[]> = {};
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({
-    auth: { getSession: async () => ({ data: { session: mockSession } }) },
+    auth: {
+      getSession: async () => ({ data: { session: mockSession } }),
+      // AUTH-1 (docs/BUILD_NOTES.md): `requireAdminApiSession` now reads
+      // claims via `auth.getClaims()`, not `session.user.app_metadata` —
+      // bridge it off the SAME mocked session so every existing
+      // `mockSession` scenario above still drives the route's
+      // authorization outcome unchanged.
+      getClaims: async () => {
+        const s = mockSession?.user as { app_metadata?: unknown } | undefined;
+        return { data: { claims: { app_metadata: s?.app_metadata ?? {} } }, error: null };
+      },
+    },
   }),
 }));
 
