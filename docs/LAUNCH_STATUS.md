@@ -41,7 +41,20 @@ the database or via a signed provider request, not just unit-tested):
 - Real customer signup → payment-gated provisioning → dashboard →
   agent-answering path run live once end to end (`SIGNUP-1`); the
   ~30 remaining dashboard *action* routes' JWT-claims bug found there is
-  fixed platform-wide (`AUTH-1`).
+  fixed platform-wide and separately live-proven against the deployed
+  site with a real owner session (`AUTH-1`, live-tested `LOGIN-1`
+  2026-09-21: dashboard load, `setup-progress`, a second tenant page, and
+  a real resource create+delete all returned 200/200/200/200 with the
+  hook-minted JWT, and 401 with no session).
+
+**Known live bug**: the tenant call-detail recording player's signing
+route (`GET /api/tenant/calls/[id]/recording`, added by `DASH-1`) 502s
+`{"error":"sign_failed"}` for every real recording — confirmed live
+(`LOGIN-1`, 2026-09-21) against tenant `test-riverside-auto`'s real
+calls, both audio channels, two different call ids. Root cause diagnosed
+(a `recordings/` bucket-prefix double-applied before `createSignedUrl`)
+but not fixed — see the DASH-1 callout below and `docs/BUILD_NOTES.md`'s
+LOGIN-1 entry for the exact code-level fix needed.
 
 **Proven by tests, not yet by a live call/credential** (code is
 deployed and unit/integration-tested; the live proof needs an owner
@@ -67,25 +80,37 @@ transfer number, one manual test call from a different phone, counsel
 sign-off (BIPA/HIPAA/TCPA/CAN-SPAM/PCI/FTC/DPA), Vercel/Retell-agent
 cleanup, credential rotation, optional custom domain.
 
-**Fixed, DASH-1 (2026-09-21)** — the gap FINAL-1 flagged just below is
-resolved: the tenant dashboard's call-detail page
+**Partially fixed, DASH-1 (2026-09-21); live-tested and found still
+broken, LOGIN-1 (2026-09-21)** — the gap FINAL-1 flagged just below is
+half-resolved: the tenant dashboard's call-detail page
 (`apps/web/.../dashboard/calls/[id]/page.tsx` → `call-detail-client.tsx`)
 no longer puts `call_logs.recording_url`/`stereo_recording_url` (raw
 private-bucket paths) into `<audio src>`, and the Client Component no
-longer even receives those paths as props. A new route,
-`apps/web/src/app/api/tenant/calls/[id]/recording/route.ts`, re-verifies
-the caller's own `tenant_id` (AUTH-1's `claimsFromSupabaseClient`
-pattern) against the requested call id before minting a 5-minute signed
-URL server-side (`?channel=stereo` for the second file); the client
-fetches it on mount once a recording exists and shows a graceful "not
-available" state otherwise. Proven by tests (12 new, all green —
-`docs/BUILD_NOTES.md`'s DASH-1 entry); **not** proven by a literal live
-`curl -I` → `200` — this environment has no real `SUPABASE_SECRET_KEY`
-at rest (placeholder only, the same wall AUTH-1/PARITY-1/FINAL-1/OPS-8
-already hit and documented), so the signing step's actual live success
-path is unverified end-to-end. `docs/VERIFY.md`'s DASH-1 entry has the
-`createSignedUrl` doc confirmation and names this as the follow-up for a
-session with a real key.
+longer even receives those paths as props — that part is proven live.
+But the new signing route itself,
+`apps/web/src/app/api/tenant/calls/[id]/recording/route.ts` (re-verifies
+the caller's own `tenant_id` via `claimsFromSupabaseClient` before
+minting a 5-minute signed URL server-side, `?channel=stereo` for the
+second file), was live-tested against a real tenant owner session and a
+real recorded call (`LOGIN-1`, `docs/BUILD_NOTES.md`) and **fails every
+time with a 502 `{"error":"sign_failed"}`**. Root cause (diagnosed, not
+fixed — out of LOGIN-1's scope): `worker-recording-fetch` stores
+`call_logs.recording_url` WITH a `recordings/` bucket-name prefix baked
+in (`recordings/<tenant>/<call>.wav`), but the real Storage object key
+is bucket-relative (no prefix — `worker-recording-fetch`'s own upload
+call strips it before writing). This route passes the raw, prefixed DB
+value straight into `.storage.from("recordings").createSignedUrl(...)`,
+which already scopes to the `recordings` bucket, so the effective
+lookup becomes `recordings/recordings/<tenant>/<call>.wav` and never
+matches a real object. Proven by unit tests (12 new, all green —
+`docs/BUILD_NOTES.md`'s DASH-1 entry) but those tests mock the signing
+call, so they didn't (and couldn't) catch this path mismatch. Fix
+needed: strip a leading `recordings/` from the stored path before
+signing (or stop double-prefixing at write time and update both
+readers) — not yet queued as a task (`docs/BUILD_NOTES.md`'s LOGIN-1
+entry has the full diagnosis for whoever picks this up).
+`docs/VERIFY.md`'s DASH-1 entry has the `createSignedUrl` doc
+confirmation.
 
 ---
 
@@ -248,17 +273,15 @@ request body). Added 6 new regression tests (2 each for the tenant_id,
 platform_admin, and referral_partner_id guard types) proving a
 JWT-only claim is honored and a missing one still 401/403s; 582/582
 web tests green (576 + 6 new), lint/typecheck clean. **Live curl
-before/after proof not completed**: this session's sandbox blocked
-materializing the real Supabase publishable/secret keys needed to mint
-a live session (Bash auto-mode classifier denied both a direct
-Management-API `curl` and an equivalent Node script as "Credential
-Materialization"/"Credential Exploration") — SIGNUP-1's own live run
-already establishes the identical bug pattern via a real browser
-network trace (`docs/BUILD_NOTES.md`), and the unit regression tests
-above exercise the exact same code path the live routes run; a human
-(or a session with that Bash permission granted) should still run the
-5-route curl proof this task's brief asked for. Full detail:
-`docs/BUILD_NOTES.md`'s AUTH-1 entry.
+before/after proof: completed 2026-09-21 (`LOGIN-1`)** — against the
+live site `https://heyloo-voice.vercel.app`, a real logged-in tenant
+owner (JWT minted by the Custom Access Token Hook, read via
+`claimsFromSupabaseClient`) got 200 from `GET /dashboard` (body contains
+the tenant's real business name, not a login redirect), `GET /api/
+tenant/setup-progress`, and `GET /dashboard/calls`, plus 200 from a real
+write (`POST` then `DELETE /api/tenant/resources/<id>`, soft-delete
+verified via direct SQL), and a correct 401 with no session cookie.
+Full results table and method: `docs/BUILD_NOTES.md`'s LOGIN-1 entry.
 
 **SIGNUP-1 (2026-09-21)**: ran the real customer signup path — sign up →
 payment → provisioning → dashboard → agent answering — live, end to end,

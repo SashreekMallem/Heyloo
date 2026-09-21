@@ -4565,3 +4565,129 @@ as resolved (code+tests) with the same live-proof caveat.
 (new), `apps/web/src/components/tenant/call-detail-client.tsx`,
 `apps/web/src/components/tenant/call-detail-client.test.tsx` (new),
 `apps/web/src/app/[locale]/(tenant)/dashboard/calls/[id]/page.tsx`.
+
+**LOGIN-1 (2026-09-21)**: closed AUTH-1's and DASH-1's own flagged live-
+proof gaps — proved, against the LIVE site `https://heyloo-voice.vercel.app`,
+that a real logged-in tenant owner gets a working dashboard and 200s from
+tenant action routes, and separately live-tested DASH-1's new recording-
+signing route (found it broken; root cause diagnosed, not fixed — see
+below, per explicit scope instruction).
+
+**Setup**: reused the real owner account SIGNUP-1 created
+(`signup-test-1789974718826-891@gmail.com`, `signup-1-auto` tenant) rather
+than creating a new one — per this task's brief, no `auth.*` write and no
+new user. Needed the account logged into a tenant with real recorded
+calls (`test-riverside-auto`, `b2efae9d-8309-46d6-a950-31d683616cdc`,
+`is_test = true`), so inserted one more `public.memberships` row for that
+user via `sbq.sh` (public schema only, no `auth.*` touched). The Custom
+Access Token Hook's membership lookup
+(`select tenant_id, role from public.memberships where user_id = $1
+limit 1`, `supabase/migrations/20260907131400_functions_triggers.sql`)
+has **no `ORDER BY`**, so with two membership rows for one user it
+returned an arbitrary-but-consistent row — observed picking the older
+`signup-1-auto` row even after the new insert, not the one this task
+needed. Worked around it (not a code bug — deterministic-but-unordered
+`LIMIT 1` behaves as designed for a data shape the hook was never meant
+to see): deleted the old `signup-1-auto` membership row, updated the
+remaining row's `tenant_id` to `b2efae9d-...`, refreshed the session, and
+confirmed the minted JWT's `app_metadata.tenant_id` was now correct via
+`supabase.auth.getClaims()`. Restored to the original `signup-1-auto`
+single-row state afterward (confirmed via `sbq.sh` — see Results table).
+
+**Session mechanics**: signed in via GoTrue REST (Node, publishable key
+only — never printed), refreshed to pick up the hook-minted claims, then
+built the real `@supabase/ssr` session cookie by hand (same format
+established live in SIGNUP-1: cookie name
+`sb-<project-ref>-auth-token`, value `"base64-" + base64url(JSON.stringify(
+session))`, chunked into `.0`/`.1` suffixes past 3180 bytes) and sent it
+as a `Cookie` header on plain Node/curl requests against the live Vercel
+deployment — no browser needed, so this session's TLS-interception
+sandbox limitation (Chromium here rejects direct external HTTPS) never
+came into play. Confirms this cookie-injection technique works
+identically against a real production deployment, not just localhost.
+
+**Results** (live, `https://heyloo-voice.vercel.app`, owner JWT
+`tenant_id = b2efae9d-8309-46d6-a950-31d683616cdc`):
+
+| # | Check | Result |
+|---|-------|--------|
+| 1 | `GET /en/dashboard` (with session cookie) | 307 → `/dashboard` (locale redirect, not a login redirect) |
+| 2 | `GET /dashboard` (with session cookie) | **200**, body contains `Riverside Auto Repair` (tenant's real business name) — not a login page |
+| 3 | `GET /api/tenant/setup-progress` | **200**, real per-tenant checklist JSON (`requiredTotal: 9, requiredDone: 5`, `complete: false`) |
+| 4 | `GET /dashboard/calls` (second tenant page, uses a different claims-reading code path than #2) | **200** |
+| 5 | `POST /api/tenant/resources` (harmless write: create) | **200** `{"ok":true,"id":"ab028b74-..."}` |
+| 6 | `DELETE /api/tenant/resources/<id>` (same resource, soft-delete) | **200** `{"ok":true}`; verified via `sbq.sh`: row exists with `active = false` |
+| 7 | `GET /api/tenant/calls/<id>/recording` for a real `call_logs` row of this tenant with `recording_url` set | **FAIL — 502** `{"error":"sign_failed"}` (both `?channel` unset and `?channel=stereo`, 2 different call ids tried) |
+| 8 | `HEAD` the signed URL from #7 | **not applicable** — #7 never returns a URL to HEAD |
+| 9 | `GET /api/tenant/calls/<id>/recording` with **no** session cookie | **200→401** correctly: `{"error":"unauthenticated"}` |
+
+Checks 1-6 and 9 all PASS and, taken together, are the live proof AUTH-1's
+own entry above flagged as not completed (`claimsFromSupabaseClient`
+correctly reads hook-injected `app_metadata.tenant_id` from the verified
+JWT on a real production request, for both page-load guards and action
+routes, and correctly 401s with no session). Check 7 is a genuine,
+reproducible live failure in DASH-1's new route — see root cause below.
+
+**Root cause of the check-7 failure (`apps/web/src/app/api/tenant/calls/
+[id]/recording/route.ts`, read-only diagnosis — not fixed, per this
+task's explicit "do not change app code" scope)**: a bucket-path double-
+prefix mismatch between the writer and this new reader of the same
+column.
+- `supabase/functions/worker-recording-fetch/handler.ts` builds
+  `call_logs.recording_url`/`stereo_recording_url` as
+  `` `recordings/${tenantId}/${callId}.wav` `` — i.e. it stores the value
+  **with** a `recordings/` prefix baked in. Confirmed live via `sbq.sh`:
+  `recording_url = "recordings/b2efae9d-8309-46d6-a950-31d683616cdc/
+  03097a3c-2206-4699-a6b7-f42573f6fc39.wav"`.
+- `supabase/functions/worker-recording-fetch/index.ts`'s own
+  `uploadToStorage` — the function that actually wrote that object — hits
+  the Storage REST endpoint at `.../object/recordings/${path.replace(/^recordings\//,
+  "")}`, i.e. it **strips** that same prefix before using it as the
+  object key. So the real Storage object key, bucket-relative, is
+  `b2efae9d-.../03097a3c-....wav` — no `recordings/` prefix — while the
+  DB column stores the value **with** the prefix, for that one raw-REST
+  caller's own convenience.
+- DASH-1's new route passes `call.recording_url` straight into
+  `service.storage.from("recordings").createSignedUrl(objectPath, ...)`.
+  `.storage.from("recordings")` already scopes to the `recordings`
+  bucket, so `objectPath` must be bucket-relative — but it's the raw DB
+  value, which still carries the `recordings/` prefix. The effective
+  lookup becomes `recordings/recordings/<tenant>/<call>.wav`, which
+  doesn't exist, so Supabase Storage's `createSignedUrl` returns an
+  error and the route 502s every time, for every tenant with a real
+  recording. Fix (not applied here): either strip a leading `recordings/`
+  from `objectPath` before calling `createSignedUrl` in this route (same
+  normalization `uploadToStorage` already does), or stop baking the
+  bucket name into the stored path at write time in
+  `worker-recording-fetch/handler.ts` and update both readers
+  consistently. A follow-up task should apply one of these plus a
+  regression test asserting the exact object key passed to
+  `createSignedUrl` excludes the bucket prefix (`spawn_task` to queue
+  this timed out twice in this session — see Unexpected below — so it's
+  documented here instead for a human or the next task to pick up).
+
+**Membership restore, verified**: `sbq.sh` query after cleanup —
+`select tenant_id, role, tenants.slug from memberships join tenants ...
+where user_id = <signup-1-auto owner>` → single row,
+`tenant_id = 5a446e12-1fc3-4b2a-a4c9-7f9a1ab09737` (`signup-1-auto`),
+`role = owner`. No leftover `b2efae9d` membership row for this user. No
+`auth.*` table touched at any point (only `public.memberships`
+insert/delete/update, all explicitly scoped to this one known user id).
+
+**Unexpected**: (1) the check-7 finding above — DASH-1's own entry
+already flagged its live signing path as unverified end-to-end; this
+task found it live-tested and genuinely broken, not merely unverified.
+(2) `mcp__ccd_session__spawn_task` timed out after 60s twice while
+trying to queue a follow-up task for the fix above (same failure mode
+seen twice already in SIGNUP-1) — no fix was queued through that tool;
+relying on this entry for hand-off instead. (3) the Custom Access Token
+Hook's unordered `limit 1` membership lookup (documented above) is a
+correctness footgun for any user with >1 membership row — worth a
+follow-up `ORDER BY created_at`/explicit "active tenant" column if
+multi-tenant-per-user membership is ever a real product feature (out of
+scope here; flagged for awareness only, no code changed).
+
+**Docs**: this entry; `docs/LAUNCH_STATUS.md`'s AUTH-1 caveat flipped to
+proven live with today's date; DASH-1's "Fixed" callout updated to record
+that live testing was performed and found the signing step broken, with
+the root cause above, rather than left as "unverified."
