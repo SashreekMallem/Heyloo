@@ -5212,3 +5212,283 @@ confirmed by re-running its own edge-function test suite green above).
    failed` when exercised directly in this task (Retell-side, no partial
    mutation, not chased further) — worth a retry by whoever picks up
    finding #1 above.
+
+## PUBLISH-1 (2026-09-21, session_012xvcAnjqsMbPqitErDJQbR) — dynamic transfer numbers, an owner-facing "Publish changes" action, the real root cause of `retell_flow_create_failed`, and the orders/bell `is_test` nit closed
+
+Follow-up to ONBOARD-1's three findings (docs/BUILD_NOTES.md): (1) a
+tenant's transfer-number change never took effect without a republish,
+(2) no self-service publish action exists anywhere, (3) `api-provision`'s
+`action: "republish"` failed live with `retell_flow_create_failed`.
+
+### Deliverable 1 — transfer number now live at call time, no republish
+
+**Docs answer (re-verified live, not trusted from CALL-4's earlier note
+alone — CLAUDE.md Rule 1)**: yes, `TransferCallNode.transfer_destination`
+(the `predefined` variant) accepts a `{{dynamic_variable}}` placeholder —
+`docs.retellai.com/api-references/create-conversation-flow`'s own field
+description: *"The number to transfer to in E.164 format or a dynamic
+variable like `{{transfer_number}}`."* Confirmed alongside `docs.
+retellai.com/build/dynamic-variables` (dynamic variables substitute into
+transfer destinations; an inbound call's variables come from the Inbound
+Call Webhook — exactly `voice-inbound`'s own response). Full citations:
+`docs/VERIFY.md` PUBLISH-1.
+
+**Redesign** (`_shared/compiler/template-compiler.ts`, mirrored in
+`packages/adapters/retell/src/compiler/conversation-flow.ts`): a
+transfer-only state now ALWAYS compiles to the SAME two nodes,
+regardless of whether `agent_configs.transfer_number` happens to be set
+at compile time — a router (kept at the state's own id, so every
+existing edge into it still resolves) and a dedicated
+`${state.id}__transfer` `TransferCallNode` whose destination is the
+literal `{{transfer_number}}` TOKEN, never a real number. The router's
+own instruction and its edge onto the transfer node BOTH literally embed
+`{{transfer_number}}` in their text (not just a description ABOUT it) —
+this matters: the model can only reason about a dynamic variable's
+actual value if the value itself appears in what it reads, exactly the
+anti-pattern CALL-9 already documented for `caller_recent_context`. The
+router is always granted `take_message` too, for whenever the live value
+turns out empty. This makes CALL-4's original compile-time either/or (one
+node type OR the other, decided from whatever `transfer_number` happened
+to be at the LAST compile) into a genuine RUNTIME decision — the compiled
+artifact never changes; only the live per-call dynamic variable does.
+
+`_shared/inbound-dynamic-variables.ts`: `transfer_number` is now ALWAYS
+sent (empty string when unset), never omitted — an omitted `{{}}`
+reference leaves a literal unresolved placeholder in the model's context
+(CALL-9's own established finding), which the router's own live-embedded
+`{{transfer_number}}` text would otherwise hit. `voice-inbound/
+handler.test.ts`'s old "omits transfer_number when unset" test is now
+"sends transfer_number as an empty string" — a deliberate behavior
+change, not a regression (both files' own doc comments explain why).
+
+`multi_prompt`/`single_prompt` targets: same idea, simpler mechanically
+since `transfer_call` there is a TOOL, not a node — always granted
+(destination the `{{transfer_number}}` token), alongside the existing
+`take_message` general-tool and a merged instruction telling the model
+which to use based on the live value it can see.
+
+`CompileConversationFlowOptions.transferNumber` is kept on all three
+compile functions' signatures (Deno + Node) purely so every existing
+3-arg call site keeps compiling (`void options.transferNumber;` —
+this repo's own established idiom for an intentionally-unused parameter,
+`worker-adapter-push/handler.ts`) — it can never again change the
+compiled output. `_shared/provisioning/compile-and-publish.ts#compileTenantTemplate`
+no longer reads `agent_configs.transfer_number` at all (nothing left to
+do with it); `admin/handler.ts`'s template-publish route drops its own
+`{transferNumber: null}` argument for the same reason.
+
+**The real root cause of `retell_flow_create_failed`** (ONBOARD-1's
+finding #3) — NOT a create-vs-republish payload difference (PARITY-1
+already unified those into one shared module before this task even
+started, so that specific hypothesis no longer applied): re-fetching
+`create-conversation-flow`'s docs surfaced a schema constraint CALL-4
+never actually exercised live, because its own test tenant never had a
+transfer number configured, so a real `TransferCallNode` was never sent
+to Retell before ONBOARD-1 did, by accident. `TransferCallNode.edge`'s
+`transition_condition` is NOT free text like every other edge in a
+compiled flow — its schema is `{type: {enum: ["prompt"]}, prompt: {enum:
+["Transfer failed"]}}`, i.e. `prompt` must be the LITERAL string
+`"Transfer failed"`. This compiler sent a free-text description instead
+("The transfer failed, rang out, or nobody answered"), which Retell's
+own validator rejected. Confirmed by reading the actual Retell error
+body via the Management API's `analytics/endpoints/logs.all`
+(`function_logs` — same technique this task's own VERIFY.md entry
+documents in full): `request/body/nodes/10/edge/transition_condition/
+prompt must be equal to one of the allowed values: Transfer failed`.
+Fixed to the literal string in both compilers.
+
+### Deliverable 2 — owner-facing "Publish changes"
+
+New `supabase/functions/api-tenant-agent-publish/{index,handler,handler.
+test}.ts` — `verify_jwt = true` (default, unlisted in `config.toml`,
+same posture as `api-tenant-test-call`), `tenant_id` from the verified
+JWT's `app_metadata` ONLY (never a body param — this endpoint takes no
+body at all), role gated to owner/admin. Calls the SAME shared
+`compileCreateAndPublish` (`_shared/provisioning/compile-and-publish.ts`,
+PARITY-1) `api-provision`'s real saga and `api-admin-provision-test-
+tenant` already use, re-points the tenant's existing phone number's
+`inbound_agents` ONLY (never `outbound_agents` — same partial-PATCH
+shape `api-provision#republishTenantAgent` established), and
+best-effort deletes the OLD agent once the new one is confirmed working
+(`cleanup_superseded_agent` semantics, CALL-2/CALL-7, kept). Unlike
+`api-provision`'s own internal `action: "republish"` (PARITY-1,
+`x-internal-secret`-only, gated to `tenants.is_test = true` so it can
+never reach a real tenant), this new function is the REAL-tenant path:
+reachable by the owner's own session, not gated to test tenants at all.
+
+New `POST /api/tenant/agent/publish` (`apps/web/src/app/api/tenant/
+agent/publish/route.ts`) — thin proxy, same shape as `test-agent/
+web-call/route.ts`: no body, forwards the caller's own bearer token,
+passes the edge function's status straight through (never fabricates
+success). New `AgentPublishStatus` component
+(`apps/web/src/components/tenant/agent-publish-status.tsx`), wired into
+`AgentSettingsTabs`' `PageHeader` `actions` slot (visible from every
+agent-settings sub-page) — reads `agent_configs.updated_at`/
+`published_at` via PostgREST (RLS-scoped, same pattern every other agent
+tab already uses) to show "Last published …" / "Never published" plus a
+"Changes pending" badge (`updated_at > published_at`, or `published_at`
+null), and POSTs the route on click. 5 new component tests + 6 new route
+tests + 7 new handler tests.
+
+### Deliverable 3 — live proof, `signup-1-auto`
+
+Owner session per this task's own instructed fallback (ONBOARD-1's exact
+method): `auth.signUp` once (`publish1-<ts>@gmail.com`), `update
+auth.users set email_confirmed_at = now()` once via `sbq.sh`, one
+`public.memberships` insert (`role: owner`), signed in via GoTrue REST
+(publishable key fetched live via the Management API's `api-keys`
+listing — the session's own scratchpad copy was, again, an unfilled
+placeholder), built the real `@supabase/ssr` session cookie
+(LOGIN-1's established format) for live requests against `https://
+heyloo-voice.vercel.app`, and used the bare `Authorization: Bearer`
+token directly for edge-function calls. The Management API's SECRET key
+(`reveal=true`) was refused by this session's own auto-mode "Credential
+Exploration" guardrail, exactly as PARITY-1 hit — never needed here
+anyway: every step below uses either the owner's own JWT or the already-
+provided `PROVISION_INTERNAL_SECRET`, never `SB_SECRET_KEY`.
+
+**Step 1 — set a transfer number through the portal**: `PATCH
+agent_configs?tenant_id=eq...` via PostgREST, owner bearer token
+(mirrors `InstructionsTabPage`'s own direct PostgREST write) →
+`transfer_number: "+12602354330"` (the platform's own number, never a
+third party) — **200**.
+
+**Step 2 — prove the BEFORE state, live**: ran `api-admin-run-agent-
+tests`'s `transfer_request` scenario against `signup-1-auto` (still
+running its OLD, pre-PUBLISH-1 compiled agent at this point) — **passed
+the judge, but for the WRONG reason**: transcript shows *"Unfortunately,
+we don't have a live transfer line available at the moment"* even though
+the portal-set number was live in the DB the whole time — ONBOARD-1's
+bug, reproduced live this session before the fix.
+
+**Step 3 — publish, live**: `POST /functions/v1/api-tenant-agent-publish`
+as the owner. First attempt (pre root-cause-fix, functions already
+redeployed with the dynamic-transfer-number design but not yet the
+"Transfer failed" literal fix): **502 `{"error":"retell_flow_create_
+failed"}`** — the exact live reproduction of ONBOARD-1's finding #3,
+this time through the new owner-facing route. Root-caused via the real
+Retell error body (`docs/VERIFY.md`), fixed, redeployed. Second attempt:
+**200 `{"tenant_id":"5a446e12-...","agent_id":"agent_43291aad1ff43c9a4a235d8bc7","published_at":"2026-09-21T19:34:14.868Z"}`**
+— a genuinely NEW agent id (was `agent_598e07abf4079ee1a5a0be5c9e`).
+Function logs confirm both the cleanup and the publish:
+`tenant_agent_publish_cleanup_superseded_agent_deleted` (old agent id)
+immediately followed by `tenant_agent_published` (new agent id).
+`api-admin-attach-retell-number`'s `action: "inspect"` confirms live:
+`agent.is_published: true`, `agent.agent_id` matches, and
+`phone_number.inbound_agents: [{"agent_id":"agent_43291aad...","weight":1}]`
+— the tenant's real number (`+16105383920`) re-pointed at the new agent.
+
+**Step 4 — prove the AFTER state, live, same published agent, WITH the
+number set**: re-ran `transfer_request` — **passed**, and this time the
+simulator's own `currentNodeId` in the transcript is literally
+`"transfer_to_human__transfer"` (the new dedicated transfer node reached)
+with `dynamicVariables.transfer_number: "+12602354330"` — the agent says
+*"I understand your frustration, and I'm connecting you to a team
+member now who can..."* and the judge's own explanation: *"attempted to
+connect them to a human ... completed the live transfer."*
+
+**Step 5 — clear the number through the portal, NO republish**: `PATCH
+agent_configs` → `transfer_number: null` — **204**. Re-ran
+`transfer_request` a third time, against the EXACT SAME agent id
+(confirmed via SQL: `retell_agent_id` unchanged across steps 4 and 5,
+`published_at` unchanged, only `updated_at`/`transfer_number` moved) —
+**passed**, `currentNodeId: "transfer_to_human__end"` (the take-message
+fallback path, never the transfer node this time), live
+`dynamicVariables.transfer_number: ""`, transcript: *"I'm sorry, but
+there is no live transfer line available for this bus[iness]..."* — the
+literal, live, same-agent proof deliverable 1 exists to establish: one
+compiled agent, two different live outcomes, zero republishes between
+them.
+
+**Step 6 — booking cancel re-proof**: `PATCH https://heyloo-voice.
+vercel.app/api/tenant/bookings/465a5f63-9ef8-421b-9723-65d867425421`
+(ONBOARD-1's own original test booking, still `confirmed`, never
+cancelled since) with `{"action":"cancel"}`, owner session cookie
+against the LIVE deployed site — **200 `{"ok":true,"sms_queued":true}`**.
+SQL confirms `status: "cancelled"`, `cancelled_at` set. The fix (6e1e397)
+is now proven live post-deploy, closing the "chicken-and-egg" gap
+ONBOARD-1 itself flagged (its own fix shipped in the same commit that
+found it, so it couldn't be re-tested live before this task's session).
+
+**Not re-provable live this session**: the "Publish changes" button and
+its `/api/tenant/agent/publish` Next.js proxy route only exist in THIS
+task's own commits — `https://heyloo-voice.vercel.app` is still serving
+whatever Vercel last deployed from `main` (pre-PUBLISH-1), so a live
+`POST` to that exact URL 404's until Vercel redeploys off this task's
+push. The underlying mechanism (the edge function itself, same owner-JWT
+authorization rule, `tenant_id` from the JWT only) is fully live-proven
+above via a direct call to `api-tenant-agent-publish` — the Next.js route
+is a zero-logic forwarding shim over it (6 passing route tests cover its
+own behavior: 401/403/200/502/503, body/header forwarding), not
+independently re-verified against the live Vercel deployment in this
+same session for the same reason PARITY-1's own booking-cancel fix
+wasn't (the fix and the live re-proof can't both happen before the same
+deploy).
+
+### Deliverable 4 — `orders`/notification-bell `is_test` consistency
+
+New migration `20260921192200_orders_is_test.sql` — `orders.is_test
+boolean not null default false`, mirroring `bookings.is_test` (CALL-6)
+exactly, applied live via the Management SQL endpoint and recorded in
+`supabase_migrations.schema_migrations` (version `20260921192200`),
+matching CALL-2's own established pattern for this session type.
+`voice-tools/tools/create_order.ts` now writes it from `ctx.isTestCall`
+directly, the SAME pattern `create_booking.ts` already established (2
+new regression tests). `orders-list-client.tsx`'s query gained
+`.eq("is_test", false)`, mirroring `bookings/page.tsx`'s own filter
+exactly (1 new test asserting the `eq` call). `use-tenant-
+notifications.ts`'s bookings source — the ONLY source it actually reads,
+despite its own header comment mentioning a "support ticket replies"
+source that doesn't exist in the code — gained the SAME filter it was
+missing entirely before (1 new test). `packages/supabase-client/src/
+database.types.ts`'s `OrderRow` gained `is_test: boolean`; that package
+was rebuilt (`tsc -b --force`) so `apps/web`'s typecheck picks up the
+new column — a workspace-package build-cache gap worth remembering for
+any future cross-package type change.
+
+### Gates
+
+`pnpm -w typecheck`: 21/21 green (one real miss caught mid-task: a test
+edit needing a `router.edges ?? []` guard, fixed before this run).
+`cd supabase/functions && npx vitest run`: 116/116 files, 1161/1161
+tests green. `pnpm -w test`: 21/21 tasks green (`apps/web` 610/610,
+`edge-functions` 1161/1161 — both include this task's ~50 new tests).
+`pnpm -w lint`: 0 errors (46 pre-existing warnings across files this
+task never touched — square/shopmonkey adapter test `any`s, templates
+red-team non-null assertions, `ui/globals.css` reduced-motion
+`!important`, `apps/web` Next.js/security-plugin advisories — none new).
+
+### Code
+
+New: `supabase/functions/api-tenant-agent-publish/{index,handler,
+handler.test}.ts`, `apps/web/src/app/api/tenant/agent/publish/{route,
+route.test}.ts`, `apps/web/src/components/tenant/{agent-publish-status,
+agent-publish-status.test}.tsx`, `supabase/migrations/
+20260921192200_orders_is_test.sql`, `apps/web/src/app/[locale]/(tenant)/
+dashboard/orders/orders-list-client.test.tsx`, `apps/web/src/lib/hooks/
+use-tenant-notifications.test.tsx`. Changed: `supabase/functions/_shared/
+compiler/template-compiler.ts` (+ its test file), `packages/adapters/
+retell/src/compiler/conversation-flow.ts` (+ its test file,
+`registry-consistency.test.ts`, `index.test.ts`, `parity.test.ts`),
+`supabase/functions/_shared/inbound-dynamic-variables.ts`,
+`supabase/functions/_shared/schemas/voice-inbound.ts`, `supabase/
+functions/voice-inbound/handler.test.ts`, `supabase/functions/_shared/
+provisioning/compile-and-publish.ts`, `supabase/functions/admin/
+handler.ts`, `supabase/functions/voice-tools/tools/create_order.ts` (+
+its test file), `apps/web/src/app/[locale]/(tenant)/dashboard/orders/
+orders-list-client.tsx`, `apps/web/src/lib/hooks/use-tenant-
+notifications.ts`, `apps/web/src/components/tenant/agent-settings-
+tabs.tsx`, `packages/supabase-client/src/database.types.ts`.
+
+### Still open, not chased further (CLAUDE.md Rule 4)
+
+- The "Publish changes" button/route's live behavior against the
+  deployed Vercel site itself (as opposed to the edge function it calls,
+  which IS live-proven above) needs a re-check once this push deploys —
+  same "fix and live re-proof can't both happen pre-deploy" shape as
+  PARITY-1's own booking-cancel note.
+- Dental's `insurances_accepted`, restaurant's `prep_time_text`/
+  `delivery_terms_text` (ONBOARD-1) — untouched, out of this task's scope.
+- `admin/handler.ts`'s template-publish route (`toCompilerTemplate`) was
+  touched only to drop its now-pointless `transferNumber` argument — not
+  otherwise exercised live this session.

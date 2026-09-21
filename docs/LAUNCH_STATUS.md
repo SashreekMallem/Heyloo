@@ -12,6 +12,30 @@ build environment cannot create — the full, ordered checklist is
 for "is X done" — the entries stay as history/detail, not as the current
 source of truth.
 
+**PUBLISH-1 (2026-09-21)**: closes ONBOARD-1's own two remaining gaps
+below — a tenant's transfer number is now LIVE at call time (compiled
+flows always reference the `{{transfer_number}}` dynamic variable
+instead of a literal baked in at compile time; RETELL-VERIFIED,
+`docs/VERIFY.md`), and a real "Publish changes" action now exists
+(`POST /api/tenant/agent/publish`, owner/admin-only, `tenant_id` from
+the JWT only) for whatever a tenant changes that genuinely still needs
+one (compiled template content, assistant name, etc.). Also root-caused
+and fixed the live `retell_flow_create_failed` ONBOARD-1 hit: Retell's
+`TransferCallNode.edge.transition_condition.prompt` must be the LITERAL
+string `"Transfer failed"`, not free text — a schema constraint CALL-4
+never actually exercised live (its own test tenant never had a transfer
+number set, so this node type had never really been sent to Retell
+before). Live-proven end to end against `signup-1-auto`: before the fix,
+the agent said "we don't have a live transfer line" despite a live
+portal-set number; after publishing (through the new route, live agent
+id change + phone-number re-point + old-agent cleanup, all confirmed),
+the SAME agent correctly attempts a transfer when a number is set and
+falls back to take-message when it's cleared — zero republishes between
+those two outcomes. Also closed the `orders`/notification-bell `is_test`
+inconsistency ONBOARD-1 flagged (deliverable 3, below) — `orders` now
+has the same `is_test` column and filter `bookings` already had (CALL-6).
+Full detail: `docs/BUILD_NOTES.md` PUBLISH-1.
+
 **ONBOARD-1 (2026-09-21)**: closes the owner's own "can a customer
 onboard, set up, and start working instantly?" question, live, through
 the real portal routes/pages (`docs/BUILD_NOTES.md` has the full
