@@ -156,7 +156,13 @@ export type CancelBookingResult = z.infer<typeof zCancelBookingResult>;
 // 7.2.5 lookup_customer (G6: server-side cross-checked against caller number)
 // ---------------------------------------------------------------------------
 
-export const zLookupCustomerRequest = z.object({ phone: z.string().min(1) });
+// CALL-9 (docs/BUILD_NOTES.md): `phone` is optional — mirrors the runtime
+// `supabase/functions/_shared/schemas/voice-tools.ts#LookupCustomerArgsSchema`
+// fix (that file's own doc comment has the live-observed bug this closes:
+// the model has no way to know the true live caller-ID number itself, so
+// requiring it forced a fabricated value). Kept in lockstep here because
+// this package's own `voice-tools.test.ts` parity check enforces it.
+export const zLookupCustomerRequest = z.object({ phone: z.string().min(1).optional() });
 export type LookupCustomerRequest = z.infer<typeof zLookupCustomerRequest>;
 
 export const zLookupCustomerResult = z.union([

@@ -34,6 +34,31 @@ describe("lookupCustomer (G6 caller-scope authorization)", () => {
     expect((warnings[0] as { msg: string }).msg).toBe("lookup_customer_unauthorized_attempt");
   });
 
+  it("CALL-9: omitting phone entirely uses the live caller number directly — the normal way this tool is called now", async () => {
+    let queriedPhone: unknown;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (strings.join(" ").includes("from public.customers")) {
+        queriedPhone = values[1]; // tenant_id, phone_e164
+        return Promise.resolve([
+          { id: "cust_1", name: "Jordan Lee", segment: "returning", metadata: {} },
+        ]);
+      }
+      return Promise.resolve([]);
+    }) as SqlClient;
+    const result = await lookupCustomer(sql, ctx, {}, logger);
+    expect(queriedPhone).toBe(CALLER_NUMBER);
+    expect(result).toMatchObject({ found: true, name: "Jordan Lee" });
+    // Never flagged unverified — a live caller number is authoritative on
+    // its own, no read-back-and-confirm needed.
+    expect((result as { unverified?: boolean }).unverified).toBeUndefined();
+  });
+
+  it("CALL-9: still rejects an EXPLICIT phone that disagrees with the live caller number — G6 unweakened", async () => {
+    const sql = (() => Promise.resolve([])) as SqlClient;
+    const result = await lookupCustomer(sql, ctx, { phone: "+15559998888" }, logger);
+    expect(result).toEqual({ error: "unauthorized_lookup" });
+  });
+
   it("allows the lookup when the requested phone matches the live caller (different formatting, same number)", async () => {
     let queried = false;
     const sql = ((strings: TemplateStringsArray) => {

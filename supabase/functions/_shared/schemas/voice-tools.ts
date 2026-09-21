@@ -160,8 +160,26 @@ export const CancelBookingArgsSchema = z.object({
   verify: IdentityVerifySchema.optional(),
 });
 
+/**
+ * CALL-9 (docs/BUILD_NOTES.md): `phone` is now optional — live-observed
+ * real bug: the model has no way to actually know the true caller-ID
+ * number itself (no `{{caller_phone}}`-shaped dynamic variable exists),
+ * yet the tool schema REQUIRED it, so a model asked to look up "the
+ * caller's own account" for a caller who (correctly, per BACKEND_SPEC
+ * §7.2.5/G6) never states their own number out loud had no honest way to
+ * satisfy the schema — observed live fabricating a plausible-looking
+ * placeholder phone number, which then failed `lookup_customer`'s own
+ * strict caller-match check on every attempt. `voice-tools/tools/
+ * lookup_customer.ts` now defaults straight to `ctx.callerNumber` when
+ * `phone` is omitted (the server already knows the live caller's number —
+ * this is what "always the number they're calling FROM" was always
+ * supposed to mean) and still enforces the exact same G6 strict-match
+ * reject when the model DOES supply an explicit phone that disagrees with
+ * it — no widening of that guard, only removing a requirement the model
+ * could never honestly satisfy in the first place.
+ */
 export const LookupCustomerArgsSchema = z.object({
-  phone: z.string().min(3),
+  phone: z.string().min(3).optional(),
 });
 
 /**

@@ -98,6 +98,16 @@ export type LookupCustomerResult =
  * `from_number` on every live/PSTN call (context.ts), so a genuine
  * malicious caller with a real number still hits the strict-match branch
  * below exactly as before.
+ *
+ * CALL-9 (docs/BUILD_NOTES.md): `args.phone` is optional now (schema-level
+ * fix, `_shared/schemas/voice-tools.ts#LookupCustomerArgsSchema`'s own doc
+ * comment has the live-observed bug this closes). When the model omits it
+ * entirely — the normal, expected way to call this tool now — and a live
+ * caller number exists, that live number IS the lookup target, no match
+ * check needed (there is nothing to compare it against). G6 is completely
+ * unweakened for the case it actually protects: the model explicitly
+ * supplying an args.phone that disagrees with the live caller's own number
+ * (a real cross-account attempt) still hits the exact same reject below.
  */
 export async function lookupCustomer(
   sql: SqlClient,
@@ -107,7 +117,7 @@ export async function lookupCustomer(
 ): Promise<LookupCustomerResult> {
   const hasLiveCallerNumber = !!ctx.callerNumber;
 
-  if (hasLiveCallerNumber && !samePhone(args.phone, ctx.callerNumber)) {
+  if (hasLiveCallerNumber && args.phone !== undefined && !samePhone(args.phone, ctx.callerNumber)) {
     logger.warn("lookup_customer_unauthorized_attempt", {
       call_id: ctx.retellCallId,
       tenant_id: ctx.tenantId,

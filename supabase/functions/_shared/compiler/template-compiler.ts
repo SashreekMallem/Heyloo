@@ -84,6 +84,32 @@ const TRANSFER_CALL_TOOL_NAME = "transfer_call";
 /** The shared take-message tool every vertical declares (`packages/templates/src/shared/tools.ts#takeMessageTool`) — granted, compiler-side only, to a transfer-only state when no `transferNumber` is configured (CALL-4's spoken-fallback design, this file's header). */
 const TAKE_MESSAGE_TOOL_NAME = "take_message";
 
+/**
+ * CALL-9 (docs/BUILD_NOTES.md): prepended to the START state/node of every
+ * compile target, right after `disclosure_line` — the exact same "known-
+ * safe compile-time-constant text ahead of the state's own authored
+ * prompt" pattern `disclosure_line` itself already uses. `voice-inbound`
+ * (a real call) and `api-admin-run-agent-tests`'s batch-test harness (a
+ * simulated one, via its own `heyloo_test_caller_number` dynamic variable —
+ * `voice-tools/context.ts`) both ALWAYS set the `{{caller_recent_context}}`
+ * dynamic variable Retell substitutes here to a real sentence, never omit
+ * it (`_shared/inbound-dynamic-variables.ts#resolveCallerRecentContext`'s
+ * own doc comment) — RETELL-VERIFIED live (docs.retellai.com/build/
+ * dynamic-variables, docs/VERIFY.md CALL-9) that Retell only does literal
+ * `{{name}}` substitution, so an always-set variable is required here to
+ * avoid ever leaving a raw unresolved placeholder in the model's prompt.
+ *
+ * Before this task, `caller_recent_context` was assembled and sent on
+ * every `/voice-inbound` response but never referenced by `{{}}` anywhere
+ * in any compiled template — completely inert, for a real returning caller
+ * too. This is the actual fix, not just the data-plumbing half.
+ */
+const CALLER_RECENT_CONTEXT_INSTRUCTION =
+  "Caller history: {{caller_recent_context}} If this indicates a known returning caller, " +
+  "acknowledge that naturally early in the call (e.g. greet them by the first name given, if " +
+  "any) and don't ask them to restate information already on file — otherwise proceed as a " +
+  "normal first-time caller.";
+
 function toolsFor(template: CompilerAgentTemplate, toolWebhookUrl: string): FunctionTool[] {
   return template.tools.map((tool) => ({
     type: "custom" as const,
@@ -442,7 +468,7 @@ function compileConversationFlow(
     // packages/adapters/retell's identical documented assumption) — guard
     // defensively rather than assume.
     if (startNode && startNode.type !== "transfer_call") {
-      startNode.instruction.text = `${template.disclosure_line}\n\n${startNode.instruction.text}`;
+      startNode.instruction.text = `${template.disclosure_line}\n\n${CALLER_RECENT_CONTEXT_INSTRUCTION}\n\n${startNode.instruction.text}`;
     }
   }
 
@@ -786,7 +812,7 @@ function compileMultiPrompt(
   if (startState) {
     const compiledStart = statesByName.get(startState.id);
     if (compiledStart) {
-      compiledStart.state_prompt = `${template.disclosure_line}\n\n${compiledStart.state_prompt}`;
+      compiledStart.state_prompt = `${template.disclosure_line}\n\n${CALLER_RECENT_CONTEXT_INSTRUCTION}\n\n${compiledStart.state_prompt}`;
     }
   }
 
@@ -857,7 +883,7 @@ function compileSinglePrompt(
   );
   const hasTransferCallTool = template.tools.some((t) => t.name === TRANSFER_CALL_TOOL_NAME);
 
-  const sections: string[] = [template.disclosure_line];
+  const sections: string[] = [template.disclosure_line, CALLER_RECENT_CONTEXT_INSTRUCTION];
   if (template.system_prompt) sections.push(template.system_prompt);
   for (const state of template.states) {
     sections.push(`## ${state.name}\n${state.prompt_fragment}`);

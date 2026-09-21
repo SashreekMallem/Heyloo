@@ -194,8 +194,13 @@ describe("lookup_customer (G6 authorization)", () => {
     expect(zLookupCustomerResult.parse({ error: "unauthorized_lookup" })).toBeTruthy();
   });
 
-  it("rejects a request with no phone", () => {
-    expect(() => zLookupCustomerRequest.parse({})).toThrow();
+  // CALL-9 (docs/BUILD_NOTES.md): `phone` is now optional — the model has
+  // no way to know the true live caller-ID number itself, so the server
+  // defaults to it automatically (`voice-tools/tools/lookup_customer.ts`)
+  // when the model omits this field, which is now the NORMAL way this tool
+  // is called, not an error case.
+  it("accepts a request with no phone (the server defaults to the live caller number)", () => {
+    expect(zLookupCustomerRequest.parse({})).toEqual({});
   });
 });
 

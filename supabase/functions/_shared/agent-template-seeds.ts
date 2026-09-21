@@ -381,7 +381,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "manage_booking",
           name: "Reschedule or cancel an existing booking",
           prompt_fragment:
-            "The caller wants to reschedule or cancel an existing appointment. Look them up with lookup_customer using the number they're calling from. If the caller wants to reschedule or cancel a booking but the number they're calling from doesn't match the number on the booking, verify them first: ask for BOTH their full name AND the exact date/time of the appointment they believe they have, and pass both as `verify` on the tool call. Never proceed on a name alone or a time alone. If verification fails twice, stop trying to change the booking and take a message for staff to call back instead. Never read back any other personal details while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to cancel, and state the cancellation policy again if they're cancelling.",
+            "The caller wants to reschedule or cancel an existing appointment. Call lookup_customer FIRST, immediately, with NO arguments at all — never ask the caller for their phone number before this first attempt, the server already knows the live caller ID and uses it automatically. If it returns a match (found: true), you already have their booking — proceed straight to update_booking/cancel_booking, do not re-ask for their name or phone, they're already confirmed. Only if that lookup comes back not found (or unverified) do you need to verify them: ask for BOTH their full name AND the exact date/time of the appointment they believe they have, and pass both as `verify` on the update_booking/cancel_booking tool call. Never proceed on a name alone or a time alone. If verification fails twice, stop trying to change the booking and take a message for staff to call back instead. Never read back any other personal details while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to cancel, and state the cancellation policy again if they're cancelling.",
           allowed_tools: ["lookup_customer", "update_booking", "cancel_booking"],
           extraction: [
             {
@@ -817,6 +817,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
             properties: {
               booking_id: {
                 type: "string",
+                description:
+                  "The real id of the booking to reschedule, from lookup_customer's own recent_bookings list — never invented or guessed.",
               },
               new_start: {
                 type: "string",
@@ -852,6 +854,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
             properties: {
               booking_id: {
                 type: "string",
+                description:
+                  "The real id of the booking to cancel, from lookup_customer's own recent_bookings list — never invented or guessed.",
               },
               reason: {
                 type: "string",
@@ -920,7 +924,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
         {
           name: "lookup_customer",
           description:
-            "Look up the caller's own account by their phone number (always the number they are calling FROM — never a different number the caller provides).",
+            "Look up the caller's own account. Call this with NO arguments at all to check the number this call is actually coming in on — the server already knows it and will use it automatically, so never ask the caller for their phone number just to make this call. Only pass `phone` (a number the caller explicitly STATES out loud) when there is no live caller-ID number to use at all — the tool result will say so if that's the case.",
           parameters: {
             type: "object",
             properties: {
@@ -928,7 +932,6 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
                 type: "string",
               },
             },
-            required: ["phone"],
           },
           authorization: {
             scope: "caller_number",
@@ -1363,7 +1366,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "manage_booking",
           name: "Reschedule or cancel an existing booking",
           prompt_fragment:
-            "The caller wants to reschedule or cancel an existing appointment. Look them up with lookup_customer using the number they're calling from. If the caller wants to reschedule or cancel a booking but the number they're calling from doesn't match the number on the booking, verify them first: ask for BOTH their full name AND the exact date/time of the appointment they believe they have, and pass both as `verify` on the tool call. Never proceed on a name alone or a time alone. If verification fails twice, stop trying to change the booking and take a message for staff to call back instead. Never read back any other personal details while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to cancel, and state the cancellation policy again if they're cancelling.",
+            "The caller wants to reschedule or cancel an existing appointment. Call lookup_customer FIRST, immediately, with NO arguments at all — never ask the caller for their phone number before this first attempt, the server already knows the live caller ID and uses it automatically. If it returns a match (found: true), you already have their booking — proceed straight to update_booking/cancel_booking, do not re-ask for their name or phone, they're already confirmed. Only if that lookup comes back not found (or unverified) do you need to verify them: ask for BOTH their full name AND the exact date/time of the appointment they believe they have, and pass both as `verify` on the update_booking/cancel_booking tool call. Never proceed on a name alone or a time alone. If verification fails twice, stop trying to change the booking and take a message for staff to call back instead. Never read back any other personal details while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to cancel, and state the cancellation policy again if they're cancelling.",
           allowed_tools: ["lookup_customer", "update_booking", "cancel_booking"],
           extraction: [
             {
@@ -1923,6 +1926,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
             properties: {
               booking_id: {
                 type: "string",
+                description:
+                  "The real id of the booking to reschedule, from lookup_customer's own recent_bookings list — never invented or guessed.",
               },
               new_start: {
                 type: "string",
@@ -1958,6 +1963,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
             properties: {
               booking_id: {
                 type: "string",
+                description:
+                  "The real id of the booking to cancel, from lookup_customer's own recent_bookings list — never invented or guessed.",
               },
               reason: {
                 type: "string",
@@ -2026,7 +2033,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
         {
           name: "lookup_customer",
           description:
-            "Look up the caller's own account by their phone number (always the number they are calling FROM — never a different number the caller provides).",
+            "Look up the caller's own account. Call this with NO arguments at all to check the number this call is actually coming in on — the server already knows it and will use it automatically, so never ask the caller for their phone number just to make this call. Only pass `phone` (a number the caller explicitly STATES out loud) when there is no live caller-ID number to use at all — the tool result will say so if that's the case.",
           parameters: {
             type: "object",
             properties: {
@@ -2034,7 +2041,6 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
                 type: "string",
               },
             },
-            required: ["phone"],
           },
           authorization: {
             scope: "caller_number",
@@ -2854,7 +2860,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
         {
           name: "lookup_customer",
           description:
-            "Look up the caller's own account by their phone number (always the number they are calling FROM — never a different number the caller provides).",
+            "Look up the caller's own account. Call this with NO arguments at all to check the number this call is actually coming in on — the server already knows it and will use it automatically, so never ask the caller for their phone number just to make this call. Only pass `phone` (a number the caller explicitly STATES out loud) when there is no live caller-ID number to use at all — the tool result will say so if that's the case.",
           parameters: {
             type: "object",
             properties: {
@@ -2862,7 +2868,6 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
                 type: "string",
               },
             },
-            required: ["phone"],
           },
           authorization: {
             scope: "caller_number",
@@ -3197,7 +3202,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "manage_booking",
           name: "Reschedule or cancel an existing booking",
           prompt_fragment:
-            "The caller wants to reschedule or cancel an existing appointment. Look them up with lookup_customer using the number they're calling from. If the caller wants to reschedule or cancel a booking but the number they're calling from doesn't match the number on the booking, verify them first: ask for BOTH their full name AND the exact date/time of the appointment they believe they have, and pass both as `verify` on the tool call. Never proceed on a name alone or a time alone. If verification fails twice, stop trying to change the booking and take a message for staff to call back instead. Never read back any other personal details while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to cancel, and state the cancellation policy again if they're cancelling.",
+            "The caller wants to reschedule or cancel an existing appointment. Call lookup_customer FIRST, immediately, with NO arguments at all — never ask the caller for their phone number before this first attempt, the server already knows the live caller ID and uses it automatically. If it returns a match (found: true), you already have their booking — proceed straight to update_booking/cancel_booking, do not re-ask for their name or phone, they're already confirmed. Only if that lookup comes back not found (or unverified) do you need to verify them: ask for BOTH their full name AND the exact date/time of the appointment they believe they have, and pass both as `verify` on the update_booking/cancel_booking tool call. Never proceed on a name alone or a time alone. If verification fails twice, stop trying to change the booking and take a message for staff to call back instead. Never read back any other personal details while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to cancel, and state the cancellation policy again if they're cancelling.",
           allowed_tools: ["lookup_customer", "update_booking", "cancel_booking"],
           extraction: [
             {
@@ -3634,6 +3639,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
             properties: {
               booking_id: {
                 type: "string",
+                description:
+                  "The real id of the booking to reschedule, from lookup_customer's own recent_bookings list — never invented or guessed.",
               },
               new_start: {
                 type: "string",
@@ -3669,6 +3676,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
             properties: {
               booking_id: {
                 type: "string",
+                description:
+                  "The real id of the booking to cancel, from lookup_customer's own recent_bookings list — never invented or guessed.",
               },
               reason: {
                 type: "string",
@@ -3737,7 +3746,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
         {
           name: "lookup_customer",
           description:
-            "Look up the caller's own account by their phone number (always the number they are calling FROM — never a different number the caller provides).",
+            "Look up the caller's own account. Call this with NO arguments at all to check the number this call is actually coming in on — the server already knows it and will use it automatically, so never ask the caller for their phone number just to make this call. Only pass `phone` (a number the caller explicitly STATES out loud) when there is no live caller-ID number to use at all — the tool result will say so if that's the case.",
           parameters: {
             type: "object",
             properties: {
@@ -3745,7 +3754,6 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
                 type: "string",
               },
             },
-            required: ["phone"],
           },
           authorization: {
             scope: "caller_number",
@@ -4021,7 +4029,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "manage_booking",
           name: "Reschedule or cancel an existing booking",
           prompt_fragment:
-            "The caller wants to reschedule or cancel an existing appointment. Look them up with lookup_customer using the number they're calling from. If the caller wants to reschedule or cancel a booking but the number they're calling from doesn't match the number on the booking, verify them first: ask for BOTH their full name AND the exact date/time of the appointment they believe they have, and pass both as `verify` on the tool call. Never proceed on a name alone or a time alone. If verification fails twice, stop trying to change the booking and take a message for staff to call back instead. Never read back any other personal details while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to cancel, and state the cancellation policy again if they're cancelling.",
+            "The caller wants to reschedule or cancel an existing appointment. Call lookup_customer FIRST, immediately, with NO arguments at all — never ask the caller for their phone number before this first attempt, the server already knows the live caller ID and uses it automatically. If it returns a match (found: true), you already have their booking — proceed straight to update_booking/cancel_booking, do not re-ask for their name or phone, they're already confirmed. Only if that lookup comes back not found (or unverified) do you need to verify them: ask for BOTH their full name AND the exact date/time of the appointment they believe they have, and pass both as `verify` on the update_booking/cancel_booking tool call. Never proceed on a name alone or a time alone. If verification fails twice, stop trying to change the booking and take a message for staff to call back instead. Never read back any other personal details while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to cancel, and state the cancellation policy again if they're cancelling.",
           allowed_tools: ["lookup_customer", "update_booking", "cancel_booking"],
           extraction: [
             {
@@ -4432,6 +4440,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
             properties: {
               booking_id: {
                 type: "string",
+                description:
+                  "The real id of the booking to reschedule, from lookup_customer's own recent_bookings list — never invented or guessed.",
               },
               new_start: {
                 type: "string",
@@ -4467,6 +4477,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
             properties: {
               booking_id: {
                 type: "string",
+                description:
+                  "The real id of the booking to cancel, from lookup_customer's own recent_bookings list — never invented or guessed.",
               },
               reason: {
                 type: "string",
@@ -4535,7 +4547,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
         {
           name: "lookup_customer",
           description:
-            "Look up the caller's own account by their phone number (always the number they are calling FROM — never a different number the caller provides).",
+            "Look up the caller's own account. Call this with NO arguments at all to check the number this call is actually coming in on — the server already knows it and will use it automatically, so never ask the caller for their phone number just to make this call. Only pass `phone` (a number the caller explicitly STATES out loud) when there is no live caller-ID number to use at all — the tool result will say so if that's the case.",
           parameters: {
             type: "object",
             properties: {
@@ -4543,7 +4555,6 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
                 type: "string",
               },
             },
-            required: ["phone"],
           },
           authorization: {
             scope: "caller_number",
@@ -4940,7 +4951,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "manage_booking",
           name: "Reschedule or cancel an existing booking",
           prompt_fragment:
-            "The caller wants to reschedule or cancel an existing appointment. Look them up with lookup_customer using the number they're calling from. If the caller wants to reschedule or cancel a booking but the number they're calling from doesn't match the number on the booking, verify them first: ask for BOTH their full name AND the exact date/time of the appointment they believe they have, and pass both as `verify` on the tool call. Never proceed on a name alone or a time alone. If verification fails twice, stop trying to change the booking and take a message for staff to call back instead. Never read back any other personal details while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to cancel, and state the cancellation policy again if they're cancelling.",
+            "The caller wants to reschedule or cancel an existing appointment. Call lookup_customer FIRST, immediately, with NO arguments at all — never ask the caller for their phone number before this first attempt, the server already knows the live caller ID and uses it automatically. If it returns a match (found: true), you already have their booking — proceed straight to update_booking/cancel_booking, do not re-ask for their name or phone, they're already confirmed. Only if that lookup comes back not found (or unverified) do you need to verify them: ask for BOTH their full name AND the exact date/time of the appointment they believe they have, and pass both as `verify` on the update_booking/cancel_booking tool call. Never proceed on a name alone or a time alone. If verification fails twice, stop trying to change the booking and take a message for staff to call back instead. Never read back any other personal details while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to cancel, and state the cancellation policy again if they're cancelling.",
           allowed_tools: ["lookup_customer", "update_booking", "cancel_booking"],
           extraction: [
             {
@@ -5364,6 +5375,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
             properties: {
               booking_id: {
                 type: "string",
+                description:
+                  "The real id of the booking to reschedule, from lookup_customer's own recent_bookings list — never invented or guessed.",
               },
               new_start: {
                 type: "string",
@@ -5399,6 +5412,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
             properties: {
               booking_id: {
                 type: "string",
+                description:
+                  "The real id of the booking to cancel, from lookup_customer's own recent_bookings list — never invented or guessed.",
               },
               reason: {
                 type: "string",
@@ -5426,7 +5441,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
         {
           name: "lookup_customer",
           description:
-            "Look up the caller's own account by their phone number (always the number they are calling FROM — never a different number the caller provides).",
+            "Look up the caller's own account. Call this with NO arguments at all to check the number this call is actually coming in on — the server already knows it and will use it automatically, so never ask the caller for their phone number just to make this call. Only pass `phone` (a number the caller explicitly STATES out loud) when there is no live caller-ID number to use at all — the tool result will say so if that's the case.",
           parameters: {
             type: "object",
             properties: {
@@ -5434,7 +5449,6 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
                 type: "string",
               },
             },
-            required: ["phone"],
           },
           authorization: {
             scope: "caller_number",
@@ -5975,7 +5989,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "manage_booking",
           name: "Reschedule or cancel an existing booking",
           prompt_fragment:
-            "The caller wants to reschedule or cancel an existing appointment. Look them up with lookup_customer using the number they're calling from. If the caller wants to reschedule or cancel a booking but the number they're calling from doesn't match the number on the booking, verify them first: ask for BOTH their full name AND the exact date/time of the appointment they believe they have, and pass both as `verify` on the tool call. Never proceed on a name alone or a time alone. If verification fails twice, stop trying to change the booking and take a message for staff to call back instead. Never read back any other personal details while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to cancel, and state the cancellation policy again if they're cancelling.",
+            "The caller wants to reschedule or cancel an existing appointment. Call lookup_customer FIRST, immediately, with NO arguments at all — never ask the caller for their phone number before this first attempt, the server already knows the live caller ID and uses it automatically. If it returns a match (found: true), you already have their booking — proceed straight to update_booking/cancel_booking, do not re-ask for their name or phone, they're already confirmed. Only if that lookup comes back not found (or unverified) do you need to verify them: ask for BOTH their full name AND the exact date/time of the appointment they believe they have, and pass both as `verify` on the update_booking/cancel_booking tool call. Never proceed on a name alone or a time alone. If verification fails twice, stop trying to change the booking and take a message for staff to call back instead. Never read back any other personal details while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to cancel, and state the cancellation policy again if they're cancelling.",
           allowed_tools: ["lookup_customer", "update_booking", "cancel_booking"],
           extraction: [
             {
@@ -6428,6 +6442,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
             properties: {
               booking_id: {
                 type: "string",
+                description:
+                  "The real id of the booking to reschedule, from lookup_customer's own recent_bookings list — never invented or guessed.",
               },
               new_start: {
                 type: "string",
@@ -6463,6 +6479,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
             properties: {
               booking_id: {
                 type: "string",
+                description:
+                  "The real id of the booking to cancel, from lookup_customer's own recent_bookings list — never invented or guessed.",
               },
               reason: {
                 type: "string",
@@ -6635,7 +6653,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
         {
           name: "lookup_customer",
           description:
-            "Look up the caller's own account by their phone number (always the number they are calling FROM — never a different number the caller provides).",
+            "Look up the caller's own account. Call this with NO arguments at all to check the number this call is actually coming in on — the server already knows it and will use it automatically, so never ask the caller for their phone number just to make this call. Only pass `phone` (a number the caller explicitly STATES out loud) when there is no live caller-ID number to use at all — the tool result will say so if that's the case.",
           parameters: {
             type: "object",
             properties: {
@@ -6643,7 +6661,6 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
                 type: "string",
               },
             },
-            required: ["phone"],
           },
           authorization: {
             scope: "caller_number",
@@ -6825,7 +6842,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "manage_booking",
           name: "Reschedule or cancel an existing booking",
           prompt_fragment:
-            "The caller wants to reschedule or cancel an existing appointment. Look them up with lookup_customer using the number they're calling from. If the caller wants to reschedule or cancel a booking but the number they're calling from doesn't match the number on the booking, verify them first: ask for BOTH their full name AND the exact date/time of the appointment they believe they have, and pass both as `verify` on the tool call. Never proceed on a name alone or a time alone. If verification fails twice, stop trying to change the booking and take a message for staff to call back instead. Never read back any other personal details while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to cancel, and state the cancellation policy again if they're cancelling.",
+            "The caller wants to reschedule or cancel an existing appointment. Call lookup_customer FIRST, immediately, with NO arguments at all — never ask the caller for their phone number before this first attempt, the server already knows the live caller ID and uses it automatically. If it returns a match (found: true), you already have their booking — proceed straight to update_booking/cancel_booking, do not re-ask for their name or phone, they're already confirmed. Only if that lookup comes back not found (or unverified) do you need to verify them: ask for BOTH their full name AND the exact date/time of the appointment they believe they have, and pass both as `verify` on the update_booking/cancel_booking tool call. Never proceed on a name alone or a time alone. If verification fails twice, stop trying to change the booking and take a message for staff to call back instead. Never read back any other personal details while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to cancel, and state the cancellation policy again if they're cancelling.",
           allowed_tools: ["lookup_customer", "update_booking", "cancel_booking"],
           extraction: [
             {
@@ -7142,6 +7159,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
             properties: {
               booking_id: {
                 type: "string",
+                description:
+                  "The real id of the booking to reschedule, from lookup_customer's own recent_bookings list — never invented or guessed.",
               },
               new_start: {
                 type: "string",
@@ -7177,6 +7196,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
             properties: {
               booking_id: {
                 type: "string",
+                description:
+                  "The real id of the booking to cancel, from lookup_customer's own recent_bookings list — never invented or guessed.",
               },
               reason: {
                 type: "string",
@@ -7245,7 +7266,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
         {
           name: "lookup_customer",
           description:
-            "Look up the caller's own account by their phone number (always the number they are calling FROM — never a different number the caller provides).",
+            "Look up the caller's own account. Call this with NO arguments at all to check the number this call is actually coming in on — the server already knows it and will use it automatically, so never ask the caller for their phone number just to make this call. Only pass `phone` (a number the caller explicitly STATES out loud) when there is no live caller-ID number to use at all — the tool result will say so if that's the case.",
           parameters: {
             type: "object",
             properties: {
@@ -7253,7 +7274,6 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
                 type: "string",
               },
             },
-            required: ["phone"],
           },
           authorization: {
             scope: "caller_number",
