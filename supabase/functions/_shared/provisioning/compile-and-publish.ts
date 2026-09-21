@@ -30,7 +30,11 @@ import {
   DEFAULT_TEMPLATE_MODEL,
   DEFAULT_TEMPLATE_VOICE_ID,
 } from "../agent-template-seeds.ts";
-import type { CompiledFlowRequest, CompilerAgentTemplate } from "../compiler/template-compiler.ts";
+import type {
+  CompiledFlowRequest,
+  CompilerAgentTemplate,
+  PostCallAnalysisDataField,
+} from "../compiler/template-compiler.ts";
 import { compileTemplate as compileRetellTemplate } from "../compiler/template-compiler.ts";
 import type { RetellFetch } from "../providers/retell.ts";
 import {
@@ -66,6 +70,11 @@ export interface CompiledTemplateResult {
   agentName: string;
   disclosureVerified: boolean;
   flow: CompiledFlowRequest;
+  /** ANALYSIS-1 (docs/BUILD_NOTES.md): the template's dead per-state
+   * `extraction[]` declarations, actually compiled into Retell's real
+   * `post_call_analysis_data` shape now — see
+   * `_shared/compiler/template-compiler.ts#buildPostCallAnalysisData`. */
+  postCallAnalysisData: PostCallAnalysisDataField[];
 }
 
 /**
@@ -173,6 +182,7 @@ export async function compileTenantTemplate(
     agentName: `heyloo-tenant-${tenantId}`,
     disclosureVerified: compiled.disclosureVerified,
     flow: compiled.flow,
+    postCallAnalysisData: compiled.postCallAnalysisData,
   };
 }
 
@@ -232,6 +242,23 @@ export async function compileAndCreateAgent(
     response_engine: responseEngine,
     webhook_url: deps.eventsWebhookUrl,
     webhook_timeout_ms: 10000,
+    // ANALYSIS-1 (docs/BUILD_NOTES.md): every agent, real or test, gets its
+    // template's post-call extraction schema by construction — previously
+    // never sent to Retell at all (SELFCALL-1's own live-observed gap:
+    // `call_analysis.custom_analysis_data` came back `{}` on two real
+    // calls). Omitted entirely (not `[]`) when a template declares none,
+    // matching `post_call_analysis_data`'s own nullable/optional field
+    // (RETELL-VERIFIED, docs.retellai.com/api-references/create-agent).
+    ...(compiled.postCallAnalysisData.length > 0
+      ? {
+          post_call_analysis_data: compiled.postCallAnalysisData,
+          // RETELL-VERIFIED: a documented member of the `NullableLLMModel`
+          // enum on this same field — reuses the template's own compiled
+          // model rather than Retell's platform default so a tenant's
+          // template `model` override also governs analysis quality/cost.
+          post_call_analysis_model: compiled.model,
+        }
+      : {}),
   });
   const createdBody = created.body as { agent_id?: string };
   if (!created.ok || !createdBody.agent_id) {

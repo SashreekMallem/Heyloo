@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildPostCallAnalysisData,
   type CompilerAgentTemplate,
   compileTemplate,
   verifyDisclosureGate,
@@ -508,5 +509,138 @@ describe("compileTemplate — single_prompt", () => {
     if (compiled.flow.kind !== "single_prompt") throw new Error("wrong kind");
     expect(compiled.flow.body.general_tools.some((t) => t.type === "transfer_call")).toBe(false);
     expect(compiled.flow.body.general_prompt).toMatch(/take_message/);
+  });
+});
+
+describe("buildPostCallAnalysisData (ANALYSIS-1)", () => {
+  it("translates a state's extraction[] into Retell's post_call_analysis_data shape (text->string, enum->choices)", () => {
+    const template = baseTemplate({
+      states: [
+        {
+          id: "greeting",
+          name: "Greeting",
+          prompt_fragment: "Greet the caller.",
+          allowed_tools: [],
+          extraction: [
+            {
+              field: "classification",
+              type: "enum",
+              enum_values: ["new_booking", "reschedule"],
+              description: "The call's classification.",
+            },
+            {
+              field: "outcome",
+              type: "text",
+              description: "What happened on the call.",
+            },
+            {
+              field: "follow_up_needed",
+              type: "boolean",
+              description: "Whether staff must follow up.",
+            },
+          ],
+        },
+      ],
+    });
+    expect(buildPostCallAnalysisData(template)).toEqual([
+      {
+        type: "enum",
+        name: "classification",
+        description: "The call's classification.",
+        choices: ["new_booking", "reschedule"],
+      },
+      { type: "string", name: "outcome", description: "What happened on the call." },
+      {
+        type: "boolean",
+        name: "follow_up_needed",
+        description: "Whether staff must follow up.",
+      },
+    ]);
+  });
+
+  it("dedupes by field name across states — first declaration wins, later same-name declarations are dropped", () => {
+    const template = baseTemplate({
+      states: [
+        {
+          id: "s1",
+          name: "S1",
+          prompt_fragment: "x",
+          allowed_tools: [],
+          extraction: [
+            { field: "classification", type: "enum", enum_values: ["a"], description: "first" },
+          ],
+        },
+        {
+          id: "s2",
+          name: "S2",
+          prompt_fragment: "x",
+          allowed_tools: [],
+          extraction: [
+            { field: "classification", type: "enum", enum_values: ["b"], description: "second" },
+          ],
+        },
+      ],
+    });
+    expect(buildPostCallAnalysisData(template)).toEqual([
+      { type: "enum", name: "classification", description: "first", choices: ["a"] },
+    ]);
+  });
+
+  it("fills a generic fallback description when a state omits one (e.g. legal_advice_given today)", () => {
+    const template = baseTemplate({
+      states: [
+        {
+          id: "s1",
+          name: "S1",
+          prompt_fragment: "x",
+          allowed_tools: [],
+          extraction: [{ field: "legal_advice_given", type: "boolean" }],
+        },
+      ],
+    });
+    expect(buildPostCallAnalysisData(template)).toEqual([
+      {
+        type: "boolean",
+        name: "legal_advice_given",
+        description: 'Extracted value for the "legal_advice_given" field.',
+      },
+    ]);
+  });
+
+  it("drops an enum field with no usable enum_values rather than sending Retell a malformed entry", () => {
+    const template = baseTemplate({
+      states: [
+        {
+          id: "s1",
+          name: "S1",
+          prompt_fragment: "x",
+          allowed_tools: [],
+          extraction: [{ field: "bad_enum", type: "enum", description: "no choices" }],
+        },
+      ],
+    });
+    expect(buildPostCallAnalysisData(template)).toEqual([]);
+  });
+
+  it("returns [] for a template with no extraction declared anywhere (compileTemplate omits the field downstream)", () => {
+    expect(buildPostCallAnalysisData(baseTemplate())).toEqual([]);
+  });
+
+  it("compileTemplate exposes postCallAnalysisData on its result", () => {
+    const template = baseTemplate({
+      states: [
+        {
+          id: "greeting",
+          name: "Greeting",
+          prompt_fragment: "Greet.",
+          allowed_tools: [],
+          extraction: [{ field: "outcome", type: "text", description: "summary" }],
+        },
+      ],
+    });
+    const compiled = compileTemplate(template, "https://example.com/voice-tools");
+    expect(compiled.postCallAnalysisData).toEqual([
+      { type: "string", name: "outcome", description: "summary" },
+    ]);
   });
 });

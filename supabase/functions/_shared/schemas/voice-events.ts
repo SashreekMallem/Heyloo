@@ -78,3 +78,82 @@ export const VoiceEventRequestSchema = z.object({
 });
 
 export type VoiceEventRequest = z.infer<typeof VoiceEventRequestSchema>;
+
+/**
+ * ANALYSIS-1 (docs/BUILD_NOTES.md): the platform's own post-call analysis
+ * schema — the exact field names
+ * `_shared/compiler/template-compiler.ts#buildPostCallAnalysisData`
+ * compiles into every agent's `post_call_analysis_data` (RETELL-VERIFIED,
+ * docs.retellai.com/api-references/create-agent, 2026-09-21) and this file
+ * validates back out of the `call_analyzed` webhook's
+ * `call_analysis.custom_analysis_data`. `classification` mirrors
+ * `call_logs_classification_check` exactly (migration
+ * `20260907130500_call_logs.sql`) — the 12-value enum every shipped
+ * template's states declare identically (`agent-template-seeds.ts`).
+ */
+export const CALL_LOGS_CLASSIFICATION_VALUES = [
+  "new_booking",
+  "reschedule",
+  "cancel",
+  "question_faq",
+  "status_check",
+  "sales_lead",
+  "solicitor",
+  "wrong_number",
+  "spam_robocall",
+  "emergency",
+  "after_hours_message",
+  "transfer_request",
+] as const;
+
+export type CallLogsClassification = (typeof CALL_LOGS_CLASSIFICATION_VALUES)[number];
+
+const ClassificationFieldSchema = z.enum(CALL_LOGS_CLASSIFICATION_VALUES);
+const NonEmptyStringFieldSchema = z.string().trim().min(1);
+const BooleanFieldSchema = z.boolean();
+
+/**
+ * Validates ONE `custom_analysis_data` value against `schema`, per field —
+ * never the whole object at once, so an LLM-hallucinated/malformed value on
+ * ONE field (e.g. a `classification` string outside the 12-value enum,
+ * which `call_logs`'s own `CHECK` constraint would otherwise reject at the
+ * database) parses to `null` for that field alone, leaving every other
+ * field's value intact. Always succeeds — `.safeParse` never throws, so the
+ * `call_analyzed` webhook is never rejected over an analysis field, per
+ * CLAUDE.md Rule 2's "fail closed" (which governs signature verification,
+ * not a single AI-extracted value downstream of it).
+ */
+function safeAnalysisField<T>(schema: z.ZodType<T>, value: unknown): T | null {
+  const parsed = schema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+export interface ParsedCustomAnalysisData {
+  classification: CallLogsClassification | null;
+  outcome: string | null;
+  /** `false` for both "explicitly false" and "absent/invalid" — matches
+   * `call_logs.follow_up_needed`'s own `not null default false` column. */
+  followUpNeeded: boolean;
+  /** `call_logs.urgency_flag`'s sole post-call source — see
+   * `handleCallAnalyzed`'s own doc comment for why a per-vertical
+   * `urgency` enum is deliberately NOT also read here. */
+  emergencyDetected: boolean;
+  legalAdviceGiven: boolean;
+}
+
+/** Never throws, never returns `undefined` — `data` itself may be absent
+ * (a call with no post-call analysis data declared, or a webhook that
+ * arrives before analysis has run) and every field degrades to its safe
+ * default rather than propagating `undefined` into a SQL `coalesce`. */
+export function parseCustomAnalysisData(
+  data: Record<string, unknown> | undefined | null,
+): ParsedCustomAnalysisData {
+  const d = data ?? {};
+  return {
+    classification: safeAnalysisField(ClassificationFieldSchema, d["classification"]),
+    outcome: safeAnalysisField(NonEmptyStringFieldSchema, d["outcome"]),
+    followUpNeeded: safeAnalysisField(BooleanFieldSchema, d["follow_up_needed"]) === true,
+    emergencyDetected: safeAnalysisField(BooleanFieldSchema, d["emergency_detected"]) === true,
+    legalAdviceGiven: safeAnalysisField(BooleanFieldSchema, d["legal_advice_given"]) === true,
+  };
+}

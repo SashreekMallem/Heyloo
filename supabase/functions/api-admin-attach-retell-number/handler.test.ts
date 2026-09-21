@@ -270,6 +270,95 @@ describe("inspectRetellConfig", () => {
     expect(hashA).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("ANALYSIS-1: flow_hash is insensitive to intra-object KEY ORDER — live-diagnosed against signup-1-auto/test-riverside-auto, whose byte-identical compiled flows came back from Retell's own GET with the same values but different key order per node/edge", async () => {
+    const { sql } = makeSql({
+      "from public.agent_configs": [{ retell_agent_id: "agent_a" }],
+      "from public.phone_numbers": [],
+    });
+    const nodeReordered = {
+      edges: [
+        {
+          transition_condition: { prompt: "wants_to_book", type: "prompt" },
+          id: "edge_1",
+          destination_node_id: "booking",
+        },
+      ],
+      id: "greeting",
+      type: "conversation",
+      instruction: { type: "prompt", text: "Hi, this call is recorded." },
+    };
+    const nodeOriginalOrder = {
+      id: "greeting",
+      instruction: { text: "Hi, this call is recorded.", type: "prompt" },
+      edges: [
+        {
+          id: "edge_1",
+          destination_node_id: "booking",
+          transition_condition: { type: "prompt", prompt: "wants_to_book" },
+        },
+      ],
+      type: "conversation",
+    };
+    const retellFetchA = async (url: string) => {
+      if (url.includes("/get-agent/agent_a")) {
+        return jsonResponse({
+          agent_id: "agent_a",
+          is_published: true,
+          version: 1,
+          response_engine: { type: "conversation-flow", conversation_flow_id: "flow_a" },
+        });
+      }
+      if (url.includes("/get-conversation-flow/flow_a")) {
+        return jsonResponse({
+          conversation_flow_id: "flow_a",
+          start_node_id: "greeting",
+          nodes: [nodeOriginalOrder],
+          tools: [],
+          global_prompt: null,
+        });
+      }
+      throw new Error(`unexpected call: ${url}`);
+    };
+    const retellFetchB = async (url: string) => {
+      if (url.includes("/get-agent/agent_a")) {
+        return jsonResponse({
+          agent_id: "agent_a",
+          is_published: true,
+          version: 1,
+          response_engine: { type: "conversation-flow", conversation_flow_id: "flow_b" },
+        });
+      }
+      if (url.includes("/get-conversation-flow/flow_b")) {
+        return jsonResponse({
+          conversation_flow_id: "flow_b",
+          start_node_id: "greeting",
+          // last_modification_timestamp differs too — a real field Retell
+          // adds that this hash already correctly excludes.
+          last_modification_timestamp: 1_700_000_999_000,
+          nodes: [nodeReordered],
+          tools: [],
+          global_prompt: null,
+        });
+      }
+      throw new Error(`unexpected call: ${url}`);
+    };
+
+    const resultA = await inspectRetellConfig(
+      sql,
+      { tenant_id: "t1" },
+      { retellFetch: retellFetchA, retellApiKey: "key", logger },
+    );
+    const resultB = await inspectRetellConfig(
+      sql,
+      { tenant_id: "t1" },
+      { retellFetch: retellFetchB, retellApiKey: "key", logger },
+    );
+    const hashA = (resultA.body as { agent: { flow_hash: string } }).agent.flow_hash;
+    const hashB = (resultB.body as { agent: { flow_hash: string } }).agent.flow_hash;
+    expect(hashA).toBe(hashB);
+    expect(hashA).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it("surfaces a null webhook_url plainly (CALL-5's own real live bug shape) rather than masking it", async () => {
     const { sql } = makeSql({
       "from public.agent_configs": [{ retell_agent_id: "agent_1" }],

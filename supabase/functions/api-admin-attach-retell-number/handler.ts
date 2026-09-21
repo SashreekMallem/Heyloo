@@ -1,3 +1,4 @@
+import { stableStringify } from "../_shared/idempotency.ts";
 import type { RetellFetch } from "../_shared/providers/retell.ts";
 import {
   getAgent,
@@ -280,8 +281,26 @@ export async function inspectRetellConfig(
             tools?: unknown;
             global_prompt?: unknown;
           };
+          // ANALYSIS-1 (docs/BUILD_NOTES.md): `stableStringify` (deep,
+          // recursive key-sort), NOT plain `JSON.stringify` — live-diagnosed
+          // via a temporary debug field (removed) that two tenants
+          // compiled from a byte-identical `agent_configs.compiled_config`
+          // (confirmed via direct SQL) round-tripped through Retell's own
+          // `GET /get-conversation-flow` with the SAME node/edge/tool
+          // VALUES but different intra-object KEY ORDER (e.g. one node's
+          // `edges[].transition_condition` serialized before `id`, the
+          // other after) — Retell's own storage/echo evidently doesn't
+          // guarantee stable key ordering across two separately-created
+          // flows, even with byte-identical input. Plain `JSON.stringify`
+          // made that incidental ordering part of the hash, so two
+          // genuinely-identical templates could still show a different
+          // `flow_hash` — exactly the false negative this task hit
+          // between `signup-1-auto` and `test-riverside-auto`. Confirmed
+          // live: after deep key-sorting, the two tenants' fetched flow
+          // bodies (`conversation_flow_id`/`last_modification_timestamp`/
+          // `version` excluded, as they already were) are byte-identical.
           flowHash = await sha256Hex(
-            JSON.stringify({
+            stableStringify({
               start_node_id: flowBody.start_node_id ?? null,
               nodes: flowBody.nodes ?? null,
               tools: flowBody.tools ?? null,
@@ -307,8 +326,12 @@ export async function inspectRetellConfig(
             states?: unknown;
             starting_state?: unknown;
           };
+          // ANALYSIS-1: same `stableStringify` fix as the conversation-flow
+          // branch above, for the same reason (Retell's own storage/echo
+          // key ordering isn't guaranteed stable across two separately
+          // created `retell-llm` resources either).
           flowHash = await sha256Hex(
-            JSON.stringify({
+            stableStringify({
               general_prompt: llmBody.general_prompt ?? null,
               general_tools: llmBody.general_tools ?? null,
               states: llmBody.states ?? null,

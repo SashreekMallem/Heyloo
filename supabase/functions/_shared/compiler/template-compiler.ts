@@ -30,6 +30,42 @@
  * given T4's scope.
  */
 
+/**
+ * ANALYSIS-1 (docs/BUILD_NOTES.md): a state's own declared post-call
+ * extraction fields — `agent-template-seeds.ts` has carried these on every
+ * shipped template's states for several tasks now (CALL-9 and earlier), but
+ * until this task nothing ever read them: `CompilerAgentState` itself never
+ * declared this property (every seed's `states` array only reached this
+ * compiler via `as unknown as CompilerAgentTemplate`, which bypasses excess-
+ * property checking — see that file's own header), so the data was
+ * compiled, published, and silently dropped on every agent this platform
+ * ever created. `buildPostCallAnalysisData` below is the fix: it actually
+ * reads this field and turns it into Retell's real `post_call_analysis_data`
+ * shape.
+ *
+ * Field-name choices below intentionally mirror `agent-template-seeds.ts`'s
+ * existing (previously-dead) shape exactly, rather than Retell's own
+ * `PostCallAnalysisData` field names (`name`/`choices`/`string`) — so no
+ * template content has to change, only this compiler. `buildPostCallAnalysisData`
+ * does the translation.
+ */
+export interface CompilerExtractionField {
+  /** Becomes Retell's `name` (RETELL-VERIFIED, docs.retellai.com/api-references/create-agent 2026-09-21). */
+  field: string;
+  /** `"text"` becomes Retell's `"string"`; the other three are already
+   * Retell's own literal type names, confirmed via the same fetch. */
+  type: "text" | "enum" | "boolean" | "number";
+  /** Only meaningful (and only required by Retell) for `type: "enum"` —
+   * becomes Retell's `choices`. */
+  enum_values?: string[];
+  /** Becomes Retell's `description` (REQUIRED on every type per the docs);
+   * `buildPostCallAnalysisData` fills a generic fallback when a state
+   * omits it (e.g. every `legal_advice_given` declaration in
+   * `agent-template-seeds.ts` today) rather than sending Retell an empty
+   * string. */
+  description?: string;
+}
+
 export interface CompilerAgentState {
   id: string;
   name: string;
@@ -39,6 +75,8 @@ export interface CompilerAgentState {
    * `AgentState` type but never read by this compiler at all — see
    * `EndNode`'s own doc comment for the live bug that left unfixed. */
   is_terminal?: boolean;
+  /** ANALYSIS-1: see `CompilerExtractionField`'s own doc comment above. */
+  extraction?: CompilerExtractionField[];
 }
 
 export interface CompilerTransition {
@@ -965,10 +1003,70 @@ export function verifyDisclosureGate(flow: CompiledFlowRequest, disclosureLine: 
   return firstTurnText(flow).includes(disclosureLine);
 }
 
+/**
+ * ANALYSIS-1: Retell's own `PostCallAnalysisData` shape (RETELL-VERIFIED,
+ * docs.retellai.com/api-references/create-agent, 2026-09-21 — see
+ * `docs/VERIFY.md`). Deliberately only the four `AnalysisData` custom-type
+ * variants (`string`/`enum`/`boolean`/`number`) this platform's templates
+ * actually declare — never the `"system-presets"` variant (`call_summary`/
+ * `call_successful`/`user_sentiment`): those are ALREADY returned by every
+ * Retell call unconditionally (`call_analysis.call_summary`/
+ * `.call_successful`/`.user_sentiment`, confirmed via the same fetch and
+ * already consumed as such by `voice-events/handler.ts#handleCallAnalyzed`
+ * below), so redeclaring them here would be redundant, not additive.
+ */
+export interface PostCallAnalysisDataField {
+  type: "string" | "enum" | "boolean" | "number";
+  name: string;
+  description: string;
+  choices?: string[];
+}
+
+/**
+ * ANALYSIS-1: turns every state's `extraction[]` (previously-dead data,
+ * see `CompilerExtractionField`'s doc comment) into the flat, agent-level
+ * `post_call_analysis_data` array Retell's `/create-agent` actually wants.
+ * Dedupes by `field` name, first declaration across `template.states`
+ * wins — `voice-events/handler.ts` already anticipated this exact rule in
+ * its own doc comment (a same-named field declared differently by a later
+ * state, e.g. a vertical-specific `urgency` enum, is intentionally
+ * shadowed by the first, universally-consistent declaration, e.g.
+ * `classification`/`outcome`/`follow_up_needed`, which every shipped
+ * template declares identically on every state — see
+ * `agent-template-seeds.ts`). Never throws: a state with no `extraction`
+ * is skipped, and an entry missing `enum_values` for `type: "enum"` is
+ * dropped rather than sent to Retell as a malformed field (mirrors this
+ * compiler's established "silently skip a malformed reference" posture,
+ * this file's own header comment).
+ */
+export function buildPostCallAnalysisData(
+  template: CompilerAgentTemplate,
+): PostCallAnalysisDataField[] {
+  const byField = new Map<string, PostCallAnalysisDataField>();
+  for (const state of template.states) {
+    for (const entry of state.extraction ?? []) {
+      if (!entry.field || byField.has(entry.field)) continue;
+      const description =
+        entry.description?.trim() || `Extracted value for the "${entry.field}" field.`;
+      if (entry.type === "enum") {
+        const choices = (entry.enum_values ?? []).filter((v) => typeof v === "string" && v);
+        if (choices.length === 0) continue;
+        byField.set(entry.field, { type: "enum", name: entry.field, description, choices });
+        continue;
+      }
+      const type = entry.type === "text" ? "string" : entry.type;
+      byField.set(entry.field, { type, name: entry.field, description });
+    }
+  }
+  return [...byField.values()];
+}
+
 export interface CompiledTemplate {
   compileTarget: CompilerAgentTemplate["compile_target"];
   disclosureVerified: boolean;
   flow: CompiledFlowRequest;
+  /** ANALYSIS-1: see `buildPostCallAnalysisData` above. */
+  postCallAnalysisData: PostCallAnalysisDataField[];
 }
 
 export function compileTemplate(
@@ -990,5 +1088,6 @@ export function compileTemplate(
     compileTarget: template.compile_target,
     disclosureVerified: verifyDisclosureGate(flow, template.disclosure_line),
     flow,
+    postCallAnalysisData: buildPostCallAnalysisData(template),
   };
 }

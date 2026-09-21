@@ -1,6 +1,7 @@
 import { normalizeE164 } from "../_shared/phone.ts";
 import { enqueue, QUEUE_NAMES } from "../_shared/queue.ts";
 import type { RetellCallObject, VoiceEventRequest } from "../_shared/schemas/voice-events.ts";
+import { parseCustomAnalysisData } from "../_shared/schemas/voice-events.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
@@ -266,32 +267,32 @@ export async function handleCallAnalyzed(
     Negative: "negative",
   };
 
-  // `classification`/`outcome`/`follow_up_needed`/`extracted_entities` are
-  // sourced from Retell's `custom_analysis_data` — the structured-extraction
-  // output driven by the compiled template's per-state `extraction[]`
-  // fields (BACKEND_SPEC §1.3 canonical template schema). Every shipped
-  // template now declares `classification` (one of the 12-enum values),
-  // `outcome`, and `follow_up_needed` on every state via
-  // `packages/templates/src/shared/extraction.ts`'s
-  // `withCallOutcomeExtraction` (asserted for every template in
-  // `packages/templates/src/red-team/structural.test.ts`), so these keys
-  // are always requested from Retell, not just assumed. VERIFY.md: a live
-  // sandbox call is still the open item to confirm Retell actually returns
-  // `custom_analysis_data` keyed exactly by these field names in practice.
+  // ANALYSIS-1 (docs/BUILD_NOTES.md): `classification`/`outcome`/
+  // `follow_up_needed`/`extracted_entities` are sourced from Retell's
+  // `custom_analysis_data` — the structured-extraction output driven by
+  // the compiled template's per-state `extraction[]` fields, now ACTUALLY
+  // compiled into the agent's `post_call_analysis_data` at create-agent
+  // time (`_shared/compiler/template-compiler.ts#buildPostCallAnalysisData`,
+  // `_shared/provisioning/compile-and-publish.ts`) — previously declared in
+  // `agent-template-seeds.ts` but never sent to Retell at all, which is why
+  // SELFCALL-1's two real calls both came back with `custom_analysis_data:
+  // {}`. `parseCustomAnalysisData` validates each field independently
+  // (`_shared/schemas/voice-events.ts`): an unknown/malformed value for any
+  // ONE field (e.g. a hallucinated `classification` outside the 12-value
+  // enum `call_logs`'s own `CHECK` constraint would otherwise reject)
+  // degrades to that field's safe default alone, never throws, and never
+  // drops any other field or rejects the webhook.
   const customData = analysis?.custom_analysis_data ?? {};
-  const classification =
-    typeof customData["classification"] === "string" ? customData["classification"] : null;
-  const outcome = typeof customData["outcome"] === "string" ? customData["outcome"] : null;
-  const followUpNeeded = customData["follow_up_needed"] === true;
+  const parsed = parseCustomAnalysisData(customData);
 
   const rows = await sql<{ id: string; tenant_id: string; urgency_flag: boolean }>`
     update public.call_logs
     set call_summary = coalesce(${analysis?.call_summary ?? null}, call_summary),
         sentiment = coalesce(${analysis?.user_sentiment ? (sentimentMap[analysis.user_sentiment] ?? null) : null}, sentiment),
         call_successful = coalesce(${analysis?.call_successful ?? null}, call_successful),
-        classification = coalesce(${classification}, classification),
-        outcome = coalesce(${outcome}, outcome),
-        follow_up_needed = follow_up_needed or ${followUpNeeded},
+        classification = coalesce(${parsed.classification}, classification),
+        outcome = coalesce(${parsed.outcome}, outcome),
+        follow_up_needed = follow_up_needed or ${parsed.followUpNeeded},
         extracted_entities = coalesce(${customData}::jsonb, extracted_entities),
         transcript = coalesce(${call.transcript_object ?? null}::jsonb, transcript)
     where retell_call_id = ${call.call_id}
@@ -304,22 +305,21 @@ export async function handleCallAnalyzed(
     return;
   }
 
-  const legalAdviceGiven = customData["legal_advice_given"] === true;
+  const legalAdviceGiven = parsed.legalAdviceGiven;
   // `call_logs.urgency_flag` is derived solely from the `emergency_detected`
   // boolean, never a separate `urgency_flag` extraction field. Templates
-  // that declare a vertical-specific urgency tier (vet's
-  // "emergency"/"routine", dental's "same_day"/"routine") used to also
-  // compile a same-named `urgency_flag` enum field, but its enum vocabulary
-  // isn't consistent across verticals and the compiler's post-call-analysis
-  // pass dedupes `post_call_analysis_data` by field name (first declaration
-  // across `states[]` wins) — so a second, differently-voculated
-  // `urgency_flag` field from the shared `safetyEmergencyState()` would be
-  // silently dropped for any template declaring its own. `emergency_detected`
-  // has no such collision (same boolean semantics everywhere it's declared:
-  // `veterinary.ts`, `dental.ts`, `auto-repair.ts`, and the shared
-  // `safetyEmergencyState()` used by every other vertical), so it's the one
-  // authoritative signal this column is set from.
-  const emergencyRetroactive = customData["emergency_detected"] === true;
+  // that declare a vertical-specific urgency tier (legal's own
+  // "standard"/"urgent" `urgency` enum) don't collide with this — the
+  // compiler's post-call-analysis pass dedupes `post_call_analysis_data`
+  // by field name (first declaration across `states[]` wins,
+  // `buildPostCallAnalysisData`), and no shipped template ever declares an
+  // `urgency_flag`-named field at all. `emergency_detected` has no
+  // cross-vertical vocabulary inconsistency (same boolean semantics
+  // everywhere it's declared: auto, veterinary, and the shared
+  // safety-emergency state used by most other verticals — see
+  // `agent-template-seeds.ts`), so it's the one authoritative signal this
+  // column is set from.
+  const emergencyRetroactive = parsed.emergencyDetected;
 
   if (legalAdviceGiven || (emergencyRetroactive && !row.urgency_flag)) {
     await sql`

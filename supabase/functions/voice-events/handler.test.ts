@@ -313,4 +313,56 @@ describe("handleCallAnalyzed", () => {
       handleCallAnalyzed(sql, { call_id: "call_missing" }, logger),
     ).resolves.toBeUndefined();
   });
+
+  // ANALYSIS-1 (docs/BUILD_NOTES.md): parseCustomAnalysisData validates each
+  // custom_analysis_data field independently — an unknown/malformed value on
+  // ANY one field must never crash this handler or reject the webhook, and
+  // must never reach call_logs.classification's own CHECK constraint with a
+  // value outside the 12-value enum.
+  it("ANALYSIS-1: a classification value outside the 12-value enum degrades to null, never crashes, and never reaches the SQL update as the hallucinated string", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "update public.call_logs": [{ id: "cl1", tenant_id: "t1", urgency_flag: false }],
+    });
+    const call: RetellCallObject = {
+      call_id: "call_1",
+      call_analysis: {
+        custom_analysis_data: { classification: "not_a_real_classification", outcome: "booked" },
+      },
+    };
+    await expect(handleCallAnalyzed(sql, call, logger)).resolves.toBeUndefined();
+    const update = calls.find((c) => c.text.includes("update public.call_logs"));
+    expect(update?.values).not.toContain("not_a_real_classification");
+    // outcome, a sibling field, is untouched by classification's invalidity.
+    expect(update?.values).toContain("booked");
+  });
+
+  it("ANALYSIS-1: a wrong-typed follow_up_needed/emergency_detected/legal_advice_given (e.g. a string instead of boolean) is treated as false, never thrown", async () => {
+    const { sql } = makeRecordingSql({
+      "update public.call_logs": [{ id: "cl1", tenant_id: "t1", urgency_flag: false }],
+    });
+    const call: RetellCallObject = {
+      call_id: "call_1",
+      call_analysis: {
+        custom_analysis_data: {
+          follow_up_needed: "yes",
+          emergency_detected: "true",
+          legal_advice_given: 1,
+        },
+      },
+    };
+    await expect(handleCallAnalyzed(sql, call, logger)).resolves.toBeUndefined();
+  });
+
+  it("ANALYSIS-1: an empty-string outcome degrades to null rather than overwriting a prior real value with blank text", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "update public.call_logs": [{ id: "cl1", tenant_id: "t1", urgency_flag: false }],
+    });
+    const call: RetellCallObject = {
+      call_id: "call_1",
+      call_analysis: { custom_analysis_data: { outcome: "   " } },
+    };
+    await handleCallAnalyzed(sql, call, logger);
+    const update = calls.find((c) => c.text.includes("update public.call_logs"));
+    expect(update?.values).not.toContain("   ");
+  });
 });
