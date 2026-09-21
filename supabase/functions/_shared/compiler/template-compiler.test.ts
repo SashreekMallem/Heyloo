@@ -232,8 +232,8 @@ function transferTemplate(overrides: Partial<CompilerAgentTemplate> = {}): Compi
   });
 }
 
-describe("compileTemplate — conversation_flow — transfer_call (CALL-4)", () => {
-  it("with a transferNumber configured: compiles a native transfer_call node, destination baked from tenant config, never a webhook tool", () => {
+describe("compileTemplate — conversation_flow — transfer_call (CALL-4, PUBLISH-1)", () => {
+  it("ALWAYS compiles a native transfer_call node whose destination is the literal {{transfer_number}} token, regardless of the transferNumber option — the live value is resolved by Retell per call, not baked in at compile time", () => {
     const compiled = compileTemplate(transferTemplate(), "https://example.com/voice-tools", {
       transferNumber: "+15551234567",
     });
@@ -243,7 +243,7 @@ describe("compileTemplate — conversation_flow — transfer_call (CALL-4)", () 
     // Never a bogus custom-function tool named transfer_call.
     expect(tools.some((t) => t.name === "transfer_call")).toBe(false);
 
-    const transferNode = nodes.find((n) => n.id === "transfer_to_human") as
+    const transferNode = nodes.find((n) => n.id === "transfer_to_human__transfer") as
       | {
           type: string;
           transfer_destination?: { type: string; number: string };
@@ -252,40 +252,43 @@ describe("compileTemplate — conversation_flow — transfer_call (CALL-4)", () 
         }
       | undefined;
     expect(transferNode?.type).toBe("transfer_call");
+    // Never the literal number this option carried — PUBLISH-1: the option
+    // no longer affects the compiled output at all.
     expect(transferNode?.transfer_destination).toEqual({
       type: "predefined",
-      number: "+15551234567",
+      number: "{{transfer_number}}",
     });
     expect(transferNode?.transfer_option).toEqual({ type: "warm_transfer" });
     // The required "transfer failed" edge lands on this state's own end
     // node — the same one the is_terminal pass creates.
     expect(transferNode?.edge?.destination_node_id).toBe("transfer_to_human__end");
     expect(nodes.some((n) => n.id === "transfer_to_human__end" && n.type === "end")).toBe(true);
-  });
 
-  it("with NO transferNumber configured: compiles an honest spoken fallback (take_message granted), never a transfer node", () => {
-    const compiled = compileTemplate(transferTemplate(), "https://example.com/voice-tools", {
-      transferNumber: null,
-    });
-    if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
-    const { nodes } = compiled.flow.body;
-
-    expect(nodes.some((n) => n.type === "transfer_call")).toBe(false);
-
-    const fallbackNode = nodes.find((n) => n.id === "transfer_to_human") as
-      | { type: string; tool_ids?: string[]; instruction?: { text: string } }
+    // The router (kept at the original state id, so every existing edge
+    // into it still resolves) is ALWAYS also present: take_message
+    // granted, and a runtime edge onto the transfer node above.
+    const router = nodes.find((n) => n.id === "transfer_to_human") as
+      | { type: string; tool_ids?: string[]; edges?: { destination_node_id: string }[] }
       | undefined;
-    expect(fallbackNode?.type).toBe("subagent");
-    expect(fallbackNode?.tool_ids).toEqual(["take_message"]);
-    expect(fallbackNode?.instruction?.text).toMatch(/take_message/);
-    // Still is_terminal — still gets its own end node/edge.
-    expect(nodes.some((n) => n.id === "transfer_to_human__end")).toBe(true);
+    expect(router?.type).toBe("subagent");
+    expect(router?.tool_ids).toEqual(["take_message"]);
+    expect(
+      router?.edges?.some((e) => e.destination_node_id === "transfer_to_human__transfer"),
+    ).toBe(true);
   });
 
-  it("omitting the options argument entirely behaves the same as no transferNumber (back-compat default)", () => {
+  it("omitting the options argument entirely compiles the exact same router + transfer_call node pair (back-compat default, PUBLISH-1)", () => {
     const compiled = compileTemplate(transferTemplate(), "https://example.com/voice-tools");
     if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
-    expect(compiled.flow.body.nodes.some((n) => n.type === "transfer_call")).toBe(false);
+    const { nodes } = compiled.flow.body;
+    expect(
+      nodes.some((n) => n.id === "transfer_to_human__transfer" && n.type === "transfer_call"),
+    ).toBe(true);
+    const router = nodes.find((n) => n.id === "transfer_to_human") as
+      | { type: string; tool_ids?: string[] }
+      | undefined;
+    expect(router?.type).toBe("subagent");
+    expect(router?.tool_ids).toEqual(["take_message"]);
   });
 });
 
@@ -391,7 +394,7 @@ describe("compileTemplate — multi_prompt", () => {
     expect(compiled.flow.body.general_prompt).toMatch(/end_call/);
   });
 
-  it("CALL-7 (live-confirmed: a real batch-test transcript showed the model calling the old custom-webhook 'transfer_call' 4 times in a row, each time getting the generic voice-tools fallbackEnvelope since nothing dispatches a tool by that name, settling 'Ending the conversation early as there might be a loop') with a transferNumber configured: compiles a native transfer_call state tool, destination baked from tenant config, never a webhook tool", () => {
+  it("PUBLISH-1 (was CALL-7): ALWAYS compiles a native transfer_call state tool whose destination is the literal {{transfer_number}} token, regardless of the transferNumber option, plus the honest take_message-based fallback instruction (both are available every call — the model picks per call from the live dynamic variable)", () => {
     const compiled = compileTemplate(
       transferTemplate({ compile_target: "multi_prompt" }),
       "https://example.com/voice-tools",
@@ -404,38 +407,42 @@ describe("compileTemplate — multi_prompt", () => {
         type: "transfer_call",
         name: "transfer_call",
         description: "warm-transfers the caller",
-        transfer_destination: { type: "predefined", number: "+15551234567" },
+        // Never the literal number this option carried — PUBLISH-1: the
+        // option no longer affects the compiled output at all.
+        transfer_destination: { type: "predefined", number: "{{transfer_number}}" },
         transfer_option: { type: "warm_transfer" },
       },
     ]);
+    expect(transferState?.state_prompt).toMatch(/take_message/);
     for (const state of compiled.flow.body.states) {
       expect(state.tools.some((t) => t.type === "custom" && t.name === "transfer_call")).toBe(
         false,
       );
     }
-  });
-
-  it("CALL-7 with NO transferNumber configured: compiles an honest spoken fallback (take_message reachable via general_tools, no transfer_call tool anywhere)", () => {
-    const compiled = compileTemplate(
-      transferTemplate({ compile_target: "multi_prompt" }),
-      "https://example.com/voice-tools",
-      { transferNumber: null },
-    );
-    if (compiled.flow.kind !== "multi_prompt") throw new Error("wrong kind");
-    const transferState = compiled.flow.body.states.find((s) => s.name === "transfer_to_human");
-    // CALL-8 (docs/BUILD_PLAN.md): take_message moved from a per-state tool
-    // grant to `general_tools` (RETELL-VERIFIED: general_tools accepts a
-    // `type: "custom"` entry) so it's callable from EVERY state, not just
-    // whichever ones list it — see template-compiler.ts's own comment for
-    // the live-observed bug this closes.
+    // CALL-8: take_message still structurally callable from EVERY state via
+    // general_tools, not just the transfer-only one.
     expect(
       compiled.flow.body.general_tools.some(
         (t) => t.type === "custom" && t.name === "take_message",
       ),
     ).toBe(true);
-    expect(transferState?.state_prompt).toMatch(/take_message/);
+  });
+
+  it("omitting the options argument entirely compiles the exact same transfer_call tool + fallback instruction (back-compat default, PUBLISH-1)", () => {
+    const compiled = compileTemplate(
+      transferTemplate({ compile_target: "multi_prompt" }),
+      "https://example.com/voice-tools",
+    );
+    if (compiled.flow.kind !== "multi_prompt") throw new Error("wrong kind");
+    const transferState = compiled.flow.body.states.find((s) => s.name === "transfer_to_human");
+    expect(transferState?.tools).toEqual([
+      expect.objectContaining({
+        type: "transfer_call",
+        transfer_destination: { type: "predefined", number: "{{transfer_number}}" },
+      }),
+    ]);
     for (const state of compiled.flow.body.states) {
-      expect(state.tools.some((t) => t.type === "transfer_call")).toBe(false);
+      expect(state.tools.some((t) => t.type === "transfer_call")).toBe(state === transferState);
       expect(state.tools.some((t) => t.type === "custom" && t.name === "take_message")).toBe(false);
     }
   });
@@ -478,7 +485,7 @@ describe("compileTemplate — single_prompt", () => {
     expect(compiled.flow.body.general_prompt).toMatch(/end_call/);
   });
 
-  it("CALL-7: with a transferNumber configured, compiles a native transfer_call general_tools entry, never a custom-webhook tool named transfer_call", () => {
+  it("PUBLISH-1 (was CALL-7): ALWAYS compiles a native transfer_call general_tools entry whose destination is the literal {{transfer_number}} token, regardless of the transferNumber option, plus an honest spoken-fallback instruction (the model picks per call from the live dynamic variable)", () => {
     const compiled = compileTemplate(
       transferTemplate({ compile_target: "single_prompt" }),
       "https://example.com/voice-tools",
@@ -490,7 +497,9 @@ describe("compileTemplate — single_prompt", () => {
       type: "transfer_call",
       name: "transfer_call",
       description: "warm-transfers the caller",
-      transfer_destination: { type: "predefined", number: "+15551234567" },
+      // Never the literal number this option carried — PUBLISH-1: the
+      // option no longer affects the compiled output at all.
+      transfer_destination: { type: "predefined", number: "{{transfer_number}}" },
       transfer_option: { type: "warm_transfer" },
     });
     expect(
@@ -498,17 +507,19 @@ describe("compileTemplate — single_prompt", () => {
         (t) => t.type === "custom" && t.name === "transfer_call",
       ),
     ).toBe(false);
+    expect(compiled.flow.body.general_prompt).toMatch(/take_message/);
   });
 
-  it("CALL-7: with NO transferNumber configured, never grants a transfer_call tool at all and adds an honest spoken-fallback instruction instead", () => {
+  it("omitting the options argument entirely compiles the exact same transfer_call tool (back-compat default, PUBLISH-1)", () => {
     const compiled = compileTemplate(
       transferTemplate({ compile_target: "single_prompt" }),
       "https://example.com/voice-tools",
-      { transferNumber: null },
     );
     if (compiled.flow.kind !== "single_prompt") throw new Error("wrong kind");
-    expect(compiled.flow.body.general_tools.some((t) => t.type === "transfer_call")).toBe(false);
-    expect(compiled.flow.body.general_prompt).toMatch(/take_message/);
+    const transferTool = compiled.flow.body.general_tools.find((t) => t.type === "transfer_call");
+    expect(transferTool).toMatchObject({
+      transfer_destination: { type: "predefined", number: "{{transfer_number}}" },
+    });
   });
 });
 

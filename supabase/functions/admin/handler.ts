@@ -1407,18 +1407,12 @@ async function handleTemplates(
     if (!deps.retell) return { status: 501, body: { error: "retell_publish_not_configured" } };
 
     const template = toCompilerTemplate(row);
-    // OPS-5 (docs/BUILD_NOTES.md): explicit compile options, matching the
-    // same `{ transferNumber }` shape `api-admin-provision-test-tenant/
-    // handler.ts` and `api-provision/index.ts` pass — this route compiles
-    // a vertical-wide REFERENCE/preview agent (`agent_templates`), never a
-    // specific tenant's, so there is no `agent_configs.transfer_number` to
-    // look up here; `null` is the same explicit, honest "no transfer
-    // configured" input those two call sites pass for a tenant that
-    // genuinely hasn't set one, not a silently-omitted argument that
-    // happens to default to the same thing.
-    const compiled = compileTemplate(template, deps.retell.toolWebhookUrl, {
-      transferNumber: null,
-    });
+    // PUBLISH-1 (docs/BUILD_NOTES.md): no compile options needed any more
+    // (was OPS-5's explicit `{ transferNumber: null }`) — the compiler no
+    // longer takes a transfer number at compile time at all; every
+    // compiled flow always references the live `{{transfer_number}}`
+    // dynamic variable instead, resolved by Retell per call.
+    const compiled = compileTemplate(template, deps.retell.toolWebhookUrl);
     if (!compiled.disclosureVerified) {
       return { status: 422, body: { error: "disclosure_gate_failed" } };
     }

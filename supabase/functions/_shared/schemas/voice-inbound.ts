@@ -56,6 +56,12 @@ export const VoiceInboundDynamicVariablesSchema = z.object({
   // argument, BACKEND_SPEC §7.2.8/G6), so the compiler's native
   // `transfer_call` destination (`{{transfer_number}}`) resolves at call
   // time instead of speaking/dialing a literal unresolved placeholder.
+  // PUBLISH-1 (docs/BUILD_NOTES.md): ALWAYS present now (an empty string
+  // when unset, never omitted) — `_shared/inbound-dynamic-variables.ts`'s
+  // own doc comment has the full rationale (every compiled flow now
+  // unconditionally references `{{transfer_number}}`, so it needs a real,
+  // always-a-string value to substitute, never a literal unresolved
+  // placeholder left behind by an omitted key).
   transfer_number: z.string().optional(),
   parking_info: z.string().optional(),
   accessibility_notes: z.string().optional(),

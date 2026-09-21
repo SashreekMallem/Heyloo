@@ -158,7 +158,18 @@ export async function buildInboundDynamicVariables(params: {
     is_manual_mode: config.manualMode,
     language: config.languagePrimary,
     disclosure_line: config.disclosureLine,
-    ...(config.transferNumber ? { transfer_number: config.transferNumber } : {}),
+    // PUBLISH-1 (docs/BUILD_NOTES.md): ALWAYS sent now, even as an empty
+    // string when `agent_configs.transfer_number` is unset — never
+    // omitted. Every compiled flow now literally embeds `{{transfer_number}}`
+    // (`_shared/compiler/template-compiler.ts`'s transfer-only router
+    // instruction/edge AND its `TransferCallNode.transfer_destination.
+    // number`), so the model needs a real, consistently-typed (always a
+    // string, possibly empty) substitution to reason about — omitting the
+    // key would leave a literal unresolved `{{transfer_number}}` token
+    // instead (the exact anti-pattern `resolveCallerRecentContext`'s own
+    // doc comment above already documents and avoids for
+    // `caller_recent_context`).
+    transfer_number: config.transferNumber ?? "",
     ...verticalTokens,
     ...(typeof overrides["manager_name"] === "string"
       ? { manager_name: overrides["manager_name"] as string }

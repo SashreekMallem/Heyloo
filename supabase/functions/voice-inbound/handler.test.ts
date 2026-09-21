@@ -100,7 +100,7 @@ describe("handleVoiceInbound", () => {
     );
   });
 
-  it("omits transfer_number when agent_configs.transfer_number is unset (FIX_REQUESTS.md)", async () => {
+  it("PUBLISH-1 (was FIX_REQUESTS.md): sends transfer_number as an empty string (never omitted) when agent_configs.transfer_number is unset — every compiled flow now literally embeds {{transfer_number}}, so an omitted key would leave a literal unresolved placeholder instead of a real empty value", async () => {
     const sql = makeSql([[{ ...BASE_ROW, transfer_number: null }], []]);
     const result = await handleVoiceInbound({
       sql,
@@ -110,7 +110,7 @@ describe("handleVoiceInbound", () => {
     });
     expect(result.status).toBe(200);
     if (result.status !== 200) throw new Error("unreachable");
-    expect(result.body.call_inbound.dynamic_variables.transfer_number).toBeUndefined();
+    expect(result.body.call_inbound.dynamic_variables.transfer_number).toBe("");
   });
 
   it("includes caller_recent_context for a known returning caller (G28)", async () => {

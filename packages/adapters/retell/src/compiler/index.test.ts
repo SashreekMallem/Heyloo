@@ -75,7 +75,7 @@ describe("compileTemplateArtifact — canonical VoiceProvider.compileTemplate co
     ],
   };
 
-  it("threads a caller-supplied transferNumber through to the compiled transfer_call node's destination", () => {
+  it("PUBLISH-1 (was: threads a caller-supplied transferNumber through): the compiled transfer_call node's destination is ALWAYS the literal {{transfer_number}} token, regardless of the transferNumber option — a caller-supplied value is never used any more", () => {
     const artifact = compileTemplateArtifact(
       templateWithTransferState,
       "conversation_flow",
@@ -85,15 +85,17 @@ describe("compileTemplateArtifact — canonical VoiceProvider.compileTemplate co
     const payload = artifact.providerPayload as {
       flowRequest: { kind: string; body: { nodes: { id: string; type: string }[] } };
     };
-    const transferNode = payload.flowRequest.body.nodes.find((n) => n.id === "transfer_to_human");
+    const transferNode = payload.flowRequest.body.nodes.find(
+      (n) => n.id === "transfer_to_human__transfer",
+    );
     expect(transferNode?.type).toBe("transfer_call");
     expect(
       (transferNode as unknown as { transfer_destination: { number: string } }).transfer_destination
         .number,
-    ).toBe("+15551234567");
+    ).toBe("{{transfer_number}}");
   });
 
-  it("omitting options keeps compiling the honest no-transfer-number fallback (back-compat, unchanged behavior)", () => {
+  it("omitting options compiles the exact same {{transfer_number}}-token transfer_call node (back-compat, unchanged output)", () => {
     const artifact = compileTemplateArtifact(
       templateWithTransferState,
       "conversation_flow",
@@ -102,7 +104,9 @@ describe("compileTemplateArtifact — canonical VoiceProvider.compileTemplate co
     const payload = artifact.providerPayload as {
       flowRequest: { kind: string; body: { nodes: { id: string; type: string }[] } };
     };
-    const transferNode = payload.flowRequest.body.nodes.find((n) => n.id === "transfer_to_human");
-    expect(transferNode?.type).not.toBe("transfer_call");
+    const transferNode = payload.flowRequest.body.nodes.find(
+      (n) => n.id === "transfer_to_human__transfer",
+    );
+    expect(transferNode?.type).toBe("transfer_call");
   });
 });

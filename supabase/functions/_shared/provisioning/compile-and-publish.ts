@@ -129,10 +129,14 @@ export async function ensureTemplateSeeded(
 }
 
 /**
- * Resolves the tenant's active vertical template + tenant-config-only
- * `transfer_number` (G6 — survives across recompiles by construction: this
- * is a read, never a write) and runs it through the shared compiler. `null`
- * means no active `agent_templates` row exists for `vertical` even after
+ * Resolves the tenant's active vertical template and runs it through the
+ * shared compiler. PUBLISH-1 (docs/BUILD_NOTES.md): no longer reads
+ * `agent_configs.transfer_number` here — the compiled flow always
+ * references the live `{{transfer_number}}` dynamic variable now (see
+ * `template-compiler.ts`'s own doc comments), resolved by Retell per call,
+ * so a tenant's transfer number (G6 — tenant-config-only, still) never
+ * needs to be baked in at compile time. `null` means no active
+ * `agent_templates` row exists for `vertical` even after
  * `ensureTemplateSeeded` ran (should not happen in practice, defensive).
  */
 export async function compileTenantTemplate(
@@ -162,12 +166,14 @@ export async function compileTenantTemplate(
     disclosure_line: row["disclosure_line"] as string,
   };
 
-  const existingTransfer = await sql<{ transfer_number: string | null }>`
-    select transfer_number from public.agent_configs where tenant_id = ${tenantId}
-  `;
-  const compiled = compileRetellTemplate(template, deps.voiceToolsWebhookUrl, {
-    transferNumber: existingTransfer[0]?.transfer_number ?? null,
-  });
+  // PUBLISH-1 (docs/BUILD_NOTES.md): no `agent_configs.transfer_number`
+  // lookup needed here any more — the compiled flow now ALWAYS references
+  // the live `{{transfer_number}}` dynamic variable (resolved by Retell
+  // per call, from `_shared/inbound-dynamic-variables.ts`), never a
+  // literal baked in at compile time. This is exactly what makes a
+  // tenant's transfer-number change take effect on the next call without
+  // a republish (ONBOARD-1's live-observed gap).
+  const compiled = compileRetellTemplate(template, deps.voiceToolsWebhookUrl);
 
   return {
     templateId: row["id"] as string,

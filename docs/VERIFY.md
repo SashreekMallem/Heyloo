@@ -2592,3 +2592,73 @@ underlying Storage auth combination works against this project's
 route/client wrapper).
 
 **Code:** `apps/web/src/app/api/tenant/calls/[id]/recording/route.ts`.
+
+## PUBLISH-1 — transfer_destination dynamic variable, and the TransferCallNode edge's hidden enum
+
+**Deliverable 1 question**: can `TransferCallNode.transfer_destination`
+(the `predefined` variant's `number` field) be a dynamic-variable
+placeholder instead of a literal E.164 string? **Yes, RE-VERIFIED live
+2026-09-21** (CALL-4 had already found this once; re-fetched fresh per
+CLAUDE.md Rule 1 rather than trusting that earlier note alone):
+
+- `WebFetch` of `https://docs.retellai.com/api-references/create-conversation-flow`
+  — the `number` field's own description: *"The number to transfer to in
+  E.164 format or a dynamic variable like `{{transfer_number}}`."*
+- `WebFetch` of `https://docs.retellai.com/build/dynamic-variables` —
+  confirms dynamic variables substitute into transfer destinations, and
+  that an INBOUND call's variables are supplied by the Inbound Call
+  Webhook — exactly `voice-inbound`'s own response
+  (`_shared/inbound-dynamic-variables.ts`), already sending
+  `transfer_number` (now unconditionally, even as `""`, PUBLISH-1) from
+  `agent_configs.transfer_number` on every call.
+
+Used to redesign `TransferCallNode.transfer_destination.number` to
+ALWAYS be the literal token `"{{transfer_number}}"` (never a real
+number baked in at compile time) — the live value is resolved by Retell
+per call, so a tenant's transfer-number change (or removal) now takes
+effect on the very next call, no republish needed. See
+`docs/BUILD_NOTES.md` PUBLISH-1 for the full design (a compile-time
+router node replacing CALL-4's compile-time either/or).
+
+**The actual root cause of the live `retell_flow_create_failed`**
+ONBOARD-1 found (ProJect problem #2): re-fetched
+`https://docs.retellai.com/api-references/create-conversation-flow` and
+found a schema constraint CALL-4 never actually exercised live (its own
+test tenant never had a transfer number configured, so a real
+`TransferCallNode` was never sent to Retell before ONBOARD-1 did, by
+accident, this session). The `TransferCallNode.edge`'s own
+`TransferFailedEdge.transition_condition` schema:
+
+```
+"required": ["type", "prompt"]
+"properties":
+  "type": { "enum": ["prompt"] }
+  "prompt": { "enum": ["Transfer failed"] }
+```
+
+i.e. `prompt` is NOT free text on this one specific edge (unlike every
+other edge in a compiled flow) — it MUST be the literal string
+`"Transfer failed"`. This compiler previously sent a free-text
+description ("The transfer failed, rang out, or nobody answered"),
+which Retell's own JSON-schema validator rejected outright, live,
+confirmed by fetching the real error body via the Management API's
+`analytics/endpoints/logs.all` (`function_logs` table — the same
+technique CALL-2's own VERIFY.md entry used): `request/body/nodes/10/
+edge/transition_condition/prompt must be equal to one of the allowed
+values: Transfer failed` (among several other discriminated-union
+branch complaints in the same JSON-schema error, all pointing at the
+same node — standard behavior for a schema validator checking a value
+against every member of a union and reporting each one's specific
+failure). Fixed in both compilers
+(`_shared/compiler/template-compiler.ts`, `packages/adapters/retell/
+src/compiler/conversation-flow.ts`) to the literal string. Live-proven
+fixed: `POST /functions/v1/api-tenant-agent-publish` for
+`signup-1-auto` went from `502 {"error":"retell_flow_create_failed"}`
+(pre-fix, this session) to `200` with a real new `agent_id` (post-fix,
+same session, redeployed in between) — see `docs/BUILD_NOTES.md`
+PUBLISH-1 for the full live transcript.
+
+**Code:** `supabase/functions/_shared/compiler/template-compiler.ts`,
+`packages/adapters/retell/src/compiler/conversation-flow.ts`,
+`supabase/functions/_shared/inbound-dynamic-variables.ts`,
+`supabase/functions/api-tenant-agent-publish/{handler,index}.ts`.

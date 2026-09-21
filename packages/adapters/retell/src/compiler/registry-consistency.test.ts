@@ -225,12 +225,11 @@ describe("transfer_call native wiring across the template registry", () => {
     it(`${key}: transfer_call never appears as a custom-function webhook tool, either way`, () => {
       switch (template.compile_target) {
         case "conversation_flow": {
-          // Neither branch (transferNumber configured or not, CALL-4) ever
-          // emits transfer_call as a webhook tool.
-          for (const transferNumber of [null, "+15559876543"]) {
-            const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL, { transferNumber });
-            expect(flow.tools.find((t) => t.name === "transfer_call")).toBeUndefined();
-          }
+          // PUBLISH-1: the transferNumber option no longer affects the
+          // compiled output at all — a single compile (option omitted)
+          // covers every case now.
+          const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL);
+          expect(flow.tools.find((t) => t.name === "transfer_call")).toBeUndefined();
           break;
         }
         case "multi_prompt": {
@@ -251,7 +250,7 @@ describe("transfer_call native wiring across the template registry", () => {
 
     if (template.compile_target !== "conversation_flow") continue;
 
-    it(`${key}: with a transferNumber configured, compiles a native TransferCallNode whose destination is that literal number (CALL-4, G6 tenant-config-only)`, () => {
+    it(`${key}: ALWAYS compiles a native TransferCallNode whose destination is the literal {{transfer_number}} token, regardless of the transferNumber option (PUBLISH-1, was CALL-4/G6 tenant-config-only)`, () => {
       const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL, {
         transferNumber: "+15559876543",
       });
@@ -261,16 +260,19 @@ describe("transfer_call native wiring across the template registry", () => {
       );
       expect(transferNodes.length).toBeGreaterThan(0);
       for (const node of transferNodes) {
+        // Never the literal number this option carried — PUBLISH-1: the
+        // option no longer affects the compiled output at all; the live
+        // value is resolved by Retell per call from the dynamic variable.
         expect(node.transfer_destination).toEqual({
           type: "predefined",
-          number: "+15559876543",
+          number: "{{transfer_number}}",
         });
       }
     });
 
-    it(`${key}: with NO transferNumber configured, never emits a transfer_call node — an honest spoken fallback instead (CALL-4)`, () => {
-      const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL, { transferNumber: null });
-      expect(flow.nodes.some((n) => n.type === "transfer_call")).toBe(false);
+    it(`${key}: omitting the transferNumber option compiles the exact same transfer_call node(s) (back-compat default, PUBLISH-1)`, () => {
+      const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL);
+      expect(flow.nodes.some((n) => n.type === "transfer_call")).toBe(true);
     });
   }
 });
@@ -293,7 +295,7 @@ describe("tool-bearing states lock to a Retell SubagentNode / TransferCallNode (
   for (const { key, template } of [...LOCAL_REGISTRY, ...REAL_REGISTRY]) {
     if (template.compile_target !== "conversation_flow") continue;
 
-    it(`${key}: every non-start transfer_call-only state compiles to a TransferCallNode when a transferNumber is configured`, () => {
+    it(`${key}: every non-start transfer_call-only state ALWAYS compiles a dedicated \${state.id}__transfer TransferCallNode now (PUBLISH-1, was: when a transferNumber is configured)`, () => {
       const flow = compileConversationFlow(template, TOOL_WEBHOOK_URL, {
         transferNumber: "+15559876543",
       });
@@ -305,9 +307,14 @@ describe("tool-bearing states lock to a Retell SubagentNode / TransferCallNode (
         if (state.allowed_tools.length !== 1 || state.allowed_tools[0] !== "transfer_call") {
           continue;
         }
-        const node = nodesById.get(state.id);
-        expect(node, `state '${state.id}' has no compiled node`).toBeDefined();
-        expect(node?.type).toBe("transfer_call");
+        // The router stays at the original state id (subagent/conversation)
+        // — the dedicated transfer node is a separate `${state.id}__transfer`.
+        const routerNode = nodesById.get(state.id);
+        expect(routerNode, `state '${state.id}' has no compiled router node`).toBeDefined();
+        expect(routerNode?.type).not.toBe("transfer_call");
+        const transferNode = nodesById.get(`${state.id}__transfer`);
+        expect(transferNode, `state '${state.id}' has no compiled transfer node`).toBeDefined();
+        expect(transferNode?.type).toBe("transfer_call");
       }
     });
 

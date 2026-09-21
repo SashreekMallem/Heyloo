@@ -148,18 +148,22 @@ function shapeOf(nodes: DenoNode[]): Record<string, { type: string; edgesTo: str
   return out;
 }
 
-describe("Deno (live) vs. Node (packages/adapters/retell) conversation_flow compiler parity — CALL-4", () => {
-  it("with a transferNumber configured: same node ids, same node types, same edge-destination sets per node", async () => {
+describe("Deno (live) vs. Node (packages/adapters/retell) conversation_flow compiler parity — CALL-4/PUBLISH-1", () => {
+  // PUBLISH-1 (docs/BUILD_NOTES.md): `options.transferNumber` no longer
+  // affects the compiled output AT ALL in either compiler — a transfer-
+  // only state now ALWAYS compiles to the same router + `{{transfer_number}}`
+  // token TransferCallNode pair (the live value is resolved by Retell per
+  // call, never at compile time) — so this test no longer needs two
+  // variants ("with"/"without" a configured number) to prove parity; one
+  // compile (with the option omitted, the common real-world case) proves
+  // both compilers agree on the one shape that now always exists.
+  it("same node ids, same node types, same edge-destination sets per node — including the always-present transfer router + transfer_call pair", async () => {
     const denoCompiler = await loadDenoCompiler();
-    const denoCompiled = denoCompiler.compileTemplate(PARITY_TEMPLATE, TOOL_WEBHOOK_URL, {
-      transferNumber: "+15551234567",
-    });
+    const denoCompiled = denoCompiler.compileTemplate(PARITY_TEMPLATE, TOOL_WEBHOOK_URL);
     if (denoCompiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
     const denoShape = shapeOf(denoCompiled.flow.body.nodes);
 
-    const nodeFlow = compileNodeConversationFlow(PARITY_TEMPLATE, TOOL_WEBHOOK_URL, {
-      transferNumber: "+15551234567",
-    });
+    const nodeFlow = compileNodeConversationFlow(PARITY_TEMPLATE, TOOL_WEBHOOK_URL);
     const nodeShape = shapeOf(nodeFlow.nodes as unknown as DenoNode[]);
 
     expect(Object.keys(nodeShape).sort()).toEqual(Object.keys(denoShape).sort());
@@ -170,27 +174,35 @@ describe("Deno (live) vs. Node (packages/adapters/retell) conversation_flow comp
       );
     }
     expect(denoCompiled.flow.body.start_node_id).toBe(nodeFlow.start_node_id);
+
+    // Both compilers ALWAYS emit the dedicated transfer node now, and its
+    // router (the original state id) has an edge onto it.
+    expect(denoShape["transfer_to_human__transfer"]?.type).toBe("transfer_call");
+    expect(nodeShape["transfer_to_human__transfer"]?.type).toBe("transfer_call");
+    expect(denoShape["transfer_to_human"]?.edgesTo).toContain("transfer_to_human__transfer");
+    expect(nodeShape["transfer_to_human"]?.edgesTo).toContain("transfer_to_human__transfer");
   });
 
-  it("with NO transferNumber configured: same honest-fallback shape from both compilers", async () => {
+  it("a passed transferNumber option is ignored identically by both compilers (dead back-compat input, PUBLISH-1)", async () => {
     const denoCompiler = await loadDenoCompiler();
-    const denoCompiled = denoCompiler.compileTemplate(PARITY_TEMPLATE, TOOL_WEBHOOK_URL, {
-      transferNumber: null,
+    const withOption = denoCompiler.compileTemplate(PARITY_TEMPLATE, TOOL_WEBHOOK_URL, {
+      transferNumber: "+15551234567",
     });
-    if (denoCompiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
-    const denoShape = shapeOf(denoCompiled.flow.body.nodes);
-
-    const nodeFlow = compileNodeConversationFlow(PARITY_TEMPLATE, TOOL_WEBHOOK_URL, {
-      transferNumber: null,
-    });
-    const nodeShape = shapeOf(nodeFlow.nodes as unknown as DenoNode[]);
-
-    expect(Object.keys(nodeShape).sort()).toEqual(Object.keys(denoShape).sort());
-    for (const id of Object.keys(denoShape)) {
-      expect(nodeShape[id]?.type, `node '${id}' type`).toBe(denoShape[id]?.type);
+    const withoutOption = denoCompiler.compileTemplate(PARITY_TEMPLATE, TOOL_WEBHOOK_URL);
+    if (
+      withOption.flow.kind !== "conversation_flow" ||
+      withoutOption.flow.kind !== "conversation_flow"
+    ) {
+      throw new Error("wrong kind");
     }
-    // Neither compiler ever emits a transfer_call node without a number.
-    expect(Object.values(nodeShape).some((n) => n.type === "transfer_call")).toBe(false);
-    expect(Object.values(denoShape).some((n) => n.type === "transfer_call")).toBe(false);
+    expect(shapeOf(withOption.flow.body.nodes)).toEqual(shapeOf(withoutOption.flow.body.nodes));
+
+    const nodeWithOption = compileNodeConversationFlow(PARITY_TEMPLATE, TOOL_WEBHOOK_URL, {
+      transferNumber: "+15551234567",
+    });
+    const nodeWithoutOption = compileNodeConversationFlow(PARITY_TEMPLATE, TOOL_WEBHOOK_URL);
+    expect(shapeOf(nodeWithOption.nodes as unknown as DenoNode[])).toEqual(
+      shapeOf(nodeWithoutOption.nodes as unknown as DenoNode[]),
+    );
   });
 });

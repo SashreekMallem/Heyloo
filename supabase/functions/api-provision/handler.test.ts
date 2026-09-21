@@ -298,9 +298,10 @@ describe("republishTenantAgent", () => {
         "select vertical, is_test from public.tenants": [{ vertical: "auto", is_test: true }],
         // Overrides the generic base fixtures directly (rather than adding
         // more-specific keys) so ordering in the fixture lookup loop can't
-        // shadow the intended row — both `select retell_agent_id from
-        // public.agent_configs` and `select transfer_number from public.
-        // agent_configs` match this same generic substring.
+        // shadow the intended row — every `agent_configs` read in this
+        // path (just `retell_agent_id` now, PUBLISH-1: `compileTenantTemplate`
+        // no longer reads `transfer_number` at all) matches this same
+        // generic substring.
         "from public.agent_configs": [{ retell_agent_id: "agent_old" }],
         // Both `select e164 from public.phone_numbers` and the saga's own
         // number-lookup query match this same generic substring.

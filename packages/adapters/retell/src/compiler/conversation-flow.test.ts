@@ -122,17 +122,30 @@ function withTransferState(extraTools: CanonicalTool[] = []) {
   };
 }
 
-describe("compileConversationFlow — transfer_call (CALL-4, mirrors template-compiler.ts)", () => {
-  it("with a transferNumber configured: compiles a native TransferCallNode, destination baked from tenant config", () => {
-    const flow = compileConversationFlow(withTransferState(), TOOL_WEBHOOK_URL, {
+describe("compileConversationFlow — transfer_call (PUBLISH-1, was CALL-4, mirrors template-compiler.ts)", () => {
+  function withTakeMessage() {
+    return withTransferState([
+      {
+        name: "take_message",
+        description: "Takes a message.",
+        parameters: { type: "object" as const, properties: {}, required: [] },
+        authorization: { scope: "none" as const },
+      },
+    ]);
+  }
+
+  it("ALWAYS compiles a native TransferCallNode whose destination is the literal {{transfer_number}} token, regardless of the transferNumber option — the live value is resolved by Retell per call, not baked in at compile time", () => {
+    const flow = compileConversationFlow(withTakeMessage(), TOOL_WEBHOOK_URL, {
       transferNumber: "+15551234567",
     });
-    const transferNode = flow.nodes.find((n) => n.id === "transfer_to_human");
+    const transferNode = flow.nodes.find((n) => n.id === "transfer_to_human__transfer");
     expect(transferNode?.type).toBe("transfer_call");
     if (transferNode?.type === "transfer_call") {
+      // Never the literal number this option carried — PUBLISH-1: the
+      // option no longer affects the compiled output at all.
       expect(transferNode.transfer_destination).toEqual({
         type: "predefined",
-        number: "+15551234567",
+        number: "{{transfer_number}}",
       });
       expect(transferNode.transfer_option).toEqual({ type: "warm_transfer" });
       expect(transferNode.edge.destination_node_id).toBe("transfer_to_human__end");
@@ -142,34 +155,28 @@ describe("compileConversationFlow — transfer_call (CALL-4, mirrors template-co
     expect(flow.nodes.some((n) => n.id === "transfer_to_human__end" && n.type === "end")).toBe(
       true,
     );
-  });
 
-  it("with NO transferNumber configured: compiles an honest spoken fallback (take_message granted), never a transfer node", () => {
-    const flow = compileConversationFlow(
-      withTransferState([
-        {
-          name: "take_message",
-          description: "Takes a message.",
-          parameters: { type: "object" as const, properties: {}, required: [] },
-          authorization: { scope: "none" as const },
-        },
-      ]),
-      TOOL_WEBHOOK_URL,
-      { transferNumber: null },
-    );
-    expect(flow.nodes.some((n) => n.type === "transfer_call")).toBe(false);
-    const fallbackNode = flow.nodes.find((n) => n.id === "transfer_to_human");
-    expect(fallbackNode?.type).toBe("subagent");
-    if (fallbackNode?.type === "subagent") {
-      expect(fallbackNode.tool_ids).toEqual(["take_message"]);
-      expect(fallbackNode.instruction.text).toMatch(/take_message/);
+    // The router (kept at the original state id) is ALWAYS also present.
+    const router = flow.nodes.find((n) => n.id === "transfer_to_human");
+    expect(router?.type).toBe("subagent");
+    if (router?.type === "subagent") {
+      expect(router.tool_ids).toEqual(["take_message"]);
+      expect(
+        (router.edges ?? []).some((e) => e.destination_node_id === "transfer_to_human__transfer"),
+      ).toBe(true);
     }
-    expect(flow.nodes.some((n) => n.id === "transfer_to_human__end")).toBe(true);
   });
 
-  it("omitting options entirely behaves the same as no transferNumber (back-compat default for every existing public caller)", () => {
-    const flow = compileConversationFlow(withTransferState(), TOOL_WEBHOOK_URL);
-    expect(flow.nodes.some((n) => n.type === "transfer_call")).toBe(false);
+  it("omitting options entirely compiles the exact same router + transfer_call node pair (back-compat default, PUBLISH-1)", () => {
+    const flow = compileConversationFlow(withTakeMessage(), TOOL_WEBHOOK_URL);
+    expect(
+      flow.nodes.some((n) => n.id === "transfer_to_human__transfer" && n.type === "transfer_call"),
+    ).toBe(true);
+    const router = flow.nodes.find((n) => n.id === "transfer_to_human");
+    expect(router?.type).toBe("subagent");
+    if (router?.type === "subagent") {
+      expect(router.tool_ids).toEqual(["take_message"]);
+    }
   });
 });
 
