@@ -2338,3 +2338,34 @@ in the same call — confirmed via `api-admin-attach-retell-number`'s
 
 **Code:** `supabase/functions/_shared/providers/retell.ts`
 (`createPhoneNumber`), `supabase/functions/api-provision/handler.ts`.
+
+## AUTH-1 — `supabase.auth.getClaims()` — **RESOLVED, confirmed live against supabase.com/docs**
+
+**Confirmed 2026-09-21** via `WebFetch` of
+`https://supabase.com/docs/reference/javascript/auth-getclaims` — the
+official JS client reference for `getClaims()`. Two facts load-bearing
+for this task's fix (`claimsFromSupabaseClient`, `apps/web/src/lib/auth/
+claims.ts`, originally added by SIGNUP-1):
+
+1. **Signature verification**: the method "first verif[ies] the JWT
+   against the server's JSON Web Key Set endpoint `/.well-known/
+   jwks.json`" — i.e. it does NOT trust the token's claims blindly; it
+   cryptographically verifies the signature before returning
+   `data.claims`.
+2. **Symmetric-key fallback**: "If the project is not using an
+   asymmetric JWT signing key (like ECC or RSA) it always sends a
+   request to the Auth server (similar to `GoTrueClient.getUser`) to
+   verify the JWT" — so on a project still using the legacy HS256
+   shared-secret signing key, `getClaims()` transparently falls back to
+   an Auth-server round-trip (equivalent security to `getUser()`) rather
+   than silently trusting an unverifiable local decode.
+
+Together these confirm `getClaims()` is safe to use as the single source
+of authorization claims for every guard/action route in `apps/web`
+(`claimsFromSupabaseClient` returns `data.claims.app_metadata`, which is
+the Custom Access Token Hook's actual, verified output — see
+`docs/BUILD_NOTES.md`'s SIGNUP-1 and AUTH-1 entries for the
+`user.app_metadata` vs. JWT `claims.app_metadata` bug this closes).
+
+**Code:** `apps/web/src/lib/auth/claims.ts`
+(`claimsFromSupabaseClient`, `impersonatedByFromSupabaseClient`).
