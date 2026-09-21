@@ -8,7 +8,19 @@ let mockSession: { user: unknown; access_token: string } | null = {
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({
-    auth: { getSession: async () => ({ data: { session: mockSession } }) },
+    auth: {
+      getSession: async () => ({ data: { session: mockSession } }),
+      // AUTH-1 (docs/BUILD_NOTES.md): the route now reads claims via
+      // `auth.getClaims()`, not `session.user.app_metadata` — bridge it
+      // off the SAME mocked session so every existing `mockSession`
+      // scenario above still drives the route's authorization outcome.
+      getClaims: async () => ({
+        data: { claims: { app_metadata: mockSession?.user
+          ? (mockSession.user as { app_metadata?: unknown }).app_metadata ?? {}
+          : {} } },
+        error: null,
+      }),
+    },
   }),
 }));
 

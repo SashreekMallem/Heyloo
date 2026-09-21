@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { claimsFromUser } from "@/lib/auth/claims";
+import { claimsFromSupabaseClient } from "@/lib/auth/claims";
 import { env } from "@/lib/env";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
@@ -28,7 +28,11 @@ export async function POST() {
   } = await supabase.auth.getSession();
   if (!session) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
 
-  const claims = claimsFromUser(session.user);
+  // AUTH-1 fix (docs/BUILD_NOTES.md, SIGNUP-1 root cause #3): claims live
+  // only in the JWT itself, never in the User/session object's
+  // app_metadata; claimsFromUser(user) always evaluated to {} for a real
+  // tenant/admin/partner here.
+  const claims = await claimsFromSupabaseClient(supabase);
   if (!claims.tenant_id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   const target = `${env.supabaseFunctionsUrl}/api-tenant-test-call`;
