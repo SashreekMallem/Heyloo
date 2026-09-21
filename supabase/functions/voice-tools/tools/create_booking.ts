@@ -363,10 +363,23 @@ export async function createBooking(
     // card column that was asked for but never written by anything).
     // Skipped when the model captured nothing this call — never clobbers a
     // populated column with an empty object.
+    //
+    // CALL-8 (docs/BUILD_PLAN.md): now a jsonb MERGE (`coalesce(...) ||
+    // ...`), matching `take_message.ts`'s own merge pattern — this used to
+    // be a straight overwrite, which meant a `take_message` call earlier in
+    // the SAME call (e.g. an emergency-referral message-taking step before
+    // a routine booking path, or — on a Retell BATCH-TEST run specifically
+    // — a different scenario's `take_message` call landing on the SAME
+    // shared per-tenant placeholder row, CALL-6) had its
+    // `caller_name`/`caller_phone` silently erased the instant
+    // `create_booking` next wrote here. Live-confirmed: this WAS
+    // corrupting field-capture verification for take_message-intent
+    // scenarios that happened to share a batch run with a create_booking-
+    // intent scenario.
     if (Object.keys(structuredPayload).length > 0) {
       await sql`
         update public.call_logs
-        set structured_booking_payload = ${structuredPayload}::jsonb
+        set structured_booking_payload = coalesce(structured_booking_payload, '{}'::jsonb) || ${structuredPayload}::jsonb
         where id = ${ctx.callLogId} and tenant_id = ${ctx.tenantId}
       `;
     }

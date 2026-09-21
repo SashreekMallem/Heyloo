@@ -350,10 +350,16 @@ export async function createOrder(
   // booking" card column `create_booking.ts` writes), sourced from
   // whatever the model actually captured this call — skipped when there's
   // nothing beyond the priced items to add.
+  //
+  // CALL-8 (docs/BUILD_PLAN.md): merge (`coalesce(...) || ...`), matching
+  // `create_booking.ts`'s identical fix and `take_message.ts`'s own
+  // pre-existing merge pattern — a straight overwrite here would silently
+  // erase whatever an earlier tool call in the same call_logs row already
+  // recorded (e.g. a `take_message` call's `caller_name`/`caller_phone`).
   if ((args.allergies && args.allergies.length > 0) || args.special_instructions) {
     await sql`
       update public.call_logs
-      set structured_booking_payload = ${{
+      set structured_booking_payload = coalesce(structured_booking_payload, '{}'::jsonb) || ${{
         allergies: args.allergies ?? [],
         special_instructions: args.special_instructions ?? null,
       }}::jsonb
