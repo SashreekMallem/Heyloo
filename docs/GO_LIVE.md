@@ -186,7 +186,7 @@ This table summarizes what the existing BUILD_NOTES.md and LAUNCH_STATUS.md entr
 | **OPS-6** | ✓ Complete | CI "Cron jobs check" fixed: worker-tick now scheduled on fresh stack | N/A |
 | **OPS-7** | ✓ Complete | Flaky site-perf CLS gate fixed (robust sampling) | N/A |
 | **SIGNUP-1** | Pending | Signup flow end-to-end (vertical selection, price card, Stripe Checkout, provisioning saga) | Owner will test via step 1-12 above |
-| **NIGHTLY-1** | Pending | Nightly call reconciliation (post-call-analysis, cost reconciliation, transcript ingestion) | Owner must wait 24h after first call, check call_logs.call_analysis populated |
+| **NIGHTLY-1** | ✓ Complete | Nightly Retell batch-test regression sweep of every `test-*` tenant (`job-agent-regression`, `0 9 * * *` UTC), `agent_regression_runs` history table, alerts on any pass-ratio/field-capture regression, `GET /admin-agent-regression` | N/A — proved live: all 8 tenants ran and settled, 5 correctly flagged, `cron.job` entry confirmed |
 | **Counsel sign-off** | Pending | BIPA, HIPAA BAA, TCPA, CAN-SPAM, PCI, FTC, DPA, W-9 / 1099-NEC | Owner completes step 8 above |
 
 **Summary**: Every platform-level voice call, booking, and billing pipeline component is verified live (CALL-1..8, OPS-1..7). What remains for the owner to test (steps 1-12 above):

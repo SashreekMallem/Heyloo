@@ -14456,3 +14456,188 @@ their usage in code. `GO_LIVE.md` sections A1-A18 cover every account setup,
 every env var, every command, and every verification step the owner needs
 to follow. Section B's automation table accurately reflects the live-tested
 state as of 2026-09-21.
+
+## NIGHTLY-1 (2026-09-21) — nightly Retell batch-test regression sweep for every `test-*` tenant
+
+**Task**: BUILD_PLAN's nightly regression build — agent-behavior
+regressions must surface automatically instead of only being caught the
+next time someone runs a batch-test suite by hand. Build a nightly run of
+the Retell batch-test suites (`api-admin-run-agent-tests`, owned by
+CALL-1/CALL-8/CALL-9) for every `test-*` tenant, persist results, and
+alert on regression.
+
+### What shipped
+
+1. **Migrations** (`supabase/migrations/20260921120000_agent_regression_
+   runs.sql`, `20260921120100_agent_regression_cron_schedule.sql`) — split
+   into two files deliberately: the table/RLS migration is *not* idempotent
+   (`create table`, `create policy` both error on a second run), while the
+   cron-scheduling migration is (`fn_cron_upsert` upserts by job name) and
+   is the one `scripts/ci/cron-queues-check.ts`'s `CRON_MIGRATIONS` list
+   re-applies after inserting CI-only dummy Vault secrets. Combining both
+   into one file (the way the OLDEST cron migrations in this repo did, e.g.
+   `20260910100500_new_job_cron_schedules.sql`, which is pure cron with no
+   table) would have made CI's re-apply step fail with "relation already
+   exists" the moment this file's `create table` line got re-run a second
+   time in the same CI job — caught by re-reading `cron-queues-check.ts`'s
+   own header comment before writing this, not discovered the hard way.
+   - `agent_regression_runs`: `id, tenant_id, vertical, started_at,
+     finished_at, scenarios_total, scenarios_passed, field_capture_ok,
+     failures jsonb, retell_batch_test_id, status ('running'|'complete'|
+     'timeout'|'error'), resume_state jsonb, created_at`. RLS:
+     platform-admin read only (`fn_jwt_is_platform_admin()`), no tenant
+     policy at all — deliberately, per the task brief ("no tenant
+     access") — these are internal QA runs against seeded test tenants,
+     never something a real tenant's own JWT should see. No client
+     insert/update/delete policy either (service_role writes, RLS
+     bypass).
+   - Cron: `fn_cron_upsert('job-agent-regression', '0 9 * * *', ...)`,
+     vault-gated exactly like every other HTTP-calling job, `timeout_
+     milliseconds := 20000` (only needs to clear the function's own
+     fast-ack, never the full sweep — see below).
+   - Added `job-agent-regression` to `EXPECTED_CRON_JOBS` and
+     `20260921120100_agent_regression_cron_schedule.sql` to
+     `CRON_MIGRATIONS` in `scripts/ci/cron-queues-check.ts`.
+
+2. **Function `job-agent-regression`** (`supabase/functions/
+   job-agent-regression/{index,handler}.ts`) — cron-authenticated
+   (`x-cron-secret` against `CRON_INVOKE_SECRET`, same pattern as every
+   other `job-*`). `index.ts` fast-acks the `net.http_post` caller
+   immediately (`{"status":"started"}`) and does the real work inside
+   `runInBackground`/`EdgeRuntime.waitUntil` (`_shared/deno/
+   background.ts`) — the same "verify → fast-ack → background work"
+   posture CLAUDE.md Rule 2 requires for webhooks, reused here because a
+   full 8-tenant Retell batch-test sweep can run well past the cron
+   caller's own `net.http_post` timeout budget but comfortably fits
+   inside `EdgeRuntime.waitUntil`'s documented cap (paid-plan 400s /
+   free-plan 150s, per that file's own VERIFY note).
+
+   Deliberately calls `api-admin-run-agent-tests` over **HTTP** with its
+   own `x-internal-secret` (`PROVISION_INTERNAL_SECRET`), the same
+   pattern `webhooks-stripe/invoke-provisioning.ts` already uses to call
+   `api-provision` — never importing that function's `handler.ts`. That
+   folder is owned by the concurrently-running CALL-9 build task (this
+   task's own instructions: "DO NOT edit their files"), and the task
+   brief itself names this as the alternative to importing shared handler
+   code. This keeps the two build tasks' files fully decoupled: a change
+   CALL-9 makes to that function's internals can never break this file at
+   import/typecheck time, only (if ever) at its documented HTTP response
+   contract — mirrored (not imported) as a local `RunAgentTestsResponseBody`
+   type in `job-agent-regression/handler.ts`.
+
+   For each `test-*` tenant (8 live — one per vertical), concurrently
+   (`Promise.all`, never sequential — 8 sequential multi-minute suites
+   would blow well past any background-task budget; 8 concurrent ones
+   share the wall clock of the single slowest suite):
+   - Inserts an `agent_regression_runs` row (`status: 'running'`).
+   - Calls `api-admin-run-agent-tests` with `{tenant_id, mode: "batch"}`,
+     then chains its own documented `resume`/`settled` response shape
+     (that function's own doc comment: "resumable rather than blocking
+     until every case settles") — looping resumed calls until `settled:
+     true` or a per-tenant wall-clock budget (default 110s) elapses.
+   - On settlement: `scenarios_total`/`scenarios_passed` from Retell's
+     own per-scenario `status`; `field_capture_ok` true only if every
+     scenario's `field_capture` (CALL-8's own required-field verification,
+     already computed by `api-admin-run-agent-tests`) has an empty
+     `fields_missing`; `failures` is the trimmed list of every non-pass
+     or field-capture-incomplete scenario.
+   - On budget exhaustion: `status: 'timeout'`, `resume_state` preserved
+     (the exact `{batch_job_id, case_definitions, started_at}` shape a
+     follow-up call could resume with — never auto-resumed by a second
+     cron tick today, since the task brief's own cron line names a single
+     daily `0 9 * * *` schedule; documented as a known limitation below).
+   - On a hard failure (tenant not found, tenant has no compiled agent,
+     the internal HTTP call itself fails): `status: 'error'`.
+   - Any suite with a pass ratio below 5/6 (the task brief's own
+     threshold, expressed as a ratio so it applies regardless of a
+     vertical's actual scenario count — verticals here range 5-9
+     scenarios), any `field_capture_ok: false`, or a `timeout`/`error`
+     status writes an `alerts` row (existing table, existing admin
+     cockpit feed) — `agent_regression_failure` / `agent_regression_
+     timeout` / `agent_regression_error`, severity `critical`, deduped
+     per tenant+rule within a 20h window (same not-exists-open-alert
+     guard shape `job-alert-evaluation#upsertAlert` already uses, kept as
+     a local inline function here rather than imported/shared — a
+     different rule namespace, no coupling needed).
+
+3. **Admin visibility**: `GET /admin-agent-regression` added to the
+   existing `admin` function's single-router (`routeAdminRequest`,
+   `supabase/functions/admin/handler.ts`) — same `admin-<resource>`
+   first-path-segment dispatch every other group uses. Lists the last 14
+   days of runs (tenant slug, vertical, status, scenario counts,
+   field_capture_ok, failures, retell_batch_test_id), platform-admin gated
+   by the router's existing auth check (no separate gate needed). Kept
+   deliberately small (one GET, no sub-routes) per the task's own "keep it
+   small" scope — no dedicated frontend page ships with this task.
+
+### Proved live (2026-09-21, project `qulcubtwqsqgqpfgvorn`)
+
+Both migrations applied live via the SQL helper (table + RLS policy
+confirmed present; `agent_regression_runs_select` policy `qual:
+fn_jwt_is_platform_admin()`). Function deployed
+(`npx supabase functions deploy job-agent-regression --use-api`). Invoked
+once via curl with `CRON_INVOKE_SECRET` — returned `{"status":"started"}`
+immediately; within seconds all 8 `test-*` tenants had a `status:
+'running'` row. All 8 settled within ~1.5 minutes (background task, no
+further curl needed):
+
+| Tenant | Vertical | Passed | Total | field_capture_ok | Regression? |
+|---|---|---|---|---|---|
+| test-bright-dental | dental | 4 | 5 | true | yes (4/5 < 5/6) |
+| test-restaurant-trattoria | restaurant | 7 | 7 | true | no |
+| test-riverside-auto | auto | 6 | 9 | true | yes (6/9 < 5/6) |
+| test-vet-lakeside | vet | 7 | 7 | false | yes (field capture) |
+| test-generic-anyservice | generic | 6 | 7 | false | yes (field capture) |
+| test-realestate-cornerstone | real_estate | 7 | 7 | true | no |
+| test-motel-wayfarer | motel | 7 | 7 | true | no |
+| test-legal-firstlight | legal | 7 | 7 | false | yes (field capture) |
+
+Exactly 5 `alerts` rows were written (rule `agent_regression_failure`,
+severity `critical`, one per regressing tenant above); the 3 fully-passing
+tenants got none — confirmed by querying `public.alerts` directly. Live
+`cron.job` entry confirmed: `jobname: 'job-agent-regression'`, `schedule:
+'0 9 * * *'`, `active: true`.
+
+(These are real, live batch-test outcomes against the test tenants' own
+already-provisioned agents as of 2026-09-21 — not synthetic. They are not
+this task's own bugs to fix — CLAUDE.md Rule 4 scope discipline, this
+task builds the regression *harness*, not agent fixes — but they are a
+genuine, actionable finding for a follow-up task: `test-bright-dental`,
+`test-riverside-auto`, `test-vet-lakeside`, `test-generic-anyservice`, and
+`test-legal-firstlight` each have at least one real batch-test scenario
+failing or under-capturing required fields as of this run's timestamp.)
+
+### Known limitation (documented, not a blocker)
+
+The task brief names a single daily cron entry (`0 9 * * *`), and this
+build honors that literally rather than adding a second, more-frequent
+polling cron job. If a tenant's suite genuinely doesn't settle within its
+per-tenant background budget (observed live run: none did — all 8 settled
+in under 90s, well under the 110s default budget), that tenant's row is
+left `status: 'timeout'` with `resume_state` preserved, and nothing
+automatically resumes it until the next night's `0 9 * * *` run starts a
+fresh row for that tenant. A true cross-tick resumable design (the
+`worker-tick` pattern proper) would need a second, frequent cron entry
+dedicated to draining `status: 'running'`/`'timeout'` rows — not added
+here since the task brief's own deliverable text names one cron line and
+this task's live run showed the single-invocation background-budget
+approach is sufficient in practice for this suite's actual size (8
+tenants, 5-9 scenarios each).
+
+### Verification
+
+`pnpm lint` (0 errors repo-wide), `pnpm typecheck` (21/21 tasks),
+`pnpm test` (21/21 tasks, incl. `apps/web` 572 tests), `pnpm run test` in
+`supabase/functions` (113 files / 1097 tests, including this task's own 7
+`job-agent-regression` tests and 3 new `admin-agent-regression` route
+tests) all green. `scripts/ci/cron-queues-check.ts`'s logic reviewed
+(Docker/`supabase start` unavailable in this environment, same documented
+constraint as every prior pass) — reasoned through and confirmed
+equivalent against the live project: `job-agent-regression` added to
+`EXPECTED_CRON_JOBS`; its cron-only migration file added to
+`CRON_MIGRATIONS` (not the table-creation file — see the migration-split
+rationale above); the live apply of both migration files against the real
+project (table then cron) succeeded with no errors, which is the same SQL
+CI's re-apply step runs. No new env vars — reuses `CRON_INVOKE_SECRET`,
+`PROVISION_INTERNAL_SECRET`, `SUPABASE_URL`, all already documented in
+`.env.example`.

@@ -1,5 +1,44 @@
 # Launch Status
 
+**NIGHTLY-1 (2026-09-21)**: nightly regression of the Retell batch-test
+suites against every `test-*` tenant, so an agent-behavior regression
+surfaces automatically instead of only being noticed the next time a
+human runs a suite by hand. New table `agent_regression_runs` (RLS:
+platform-admin read only, no tenant access) records one row per tenant
+per night — pass/fail counts, `field_capture_ok`, failures, the Retell
+batch job id. New function `job-agent-regression`, cron-authenticated,
+scheduled `0 9 * * *` UTC (`fn_cron_upsert`, vault-gated, same pattern
+as every other HTTP-calling job); fast-acks the pg_cron `net.http_post`
+immediately and does the real multi-tenant sweep in the background
+(`EdgeRuntime.waitUntil`, `_shared/deno/background.ts`), calling
+`api-admin-run-agent-tests` over HTTP with its own `x-internal-secret`
+(never importing that function's `handler.ts` — it's owned by the
+concurrently-running CALL-9 task) and chaining its resumable
+`resume`/`settled` response until each tenant's suite settles or a
+per-tenant budget elapses (`status: 'timeout'`, with `resume_state`
+preserved for a manual follow-up). A run below a 5/6 pass ratio, with
+any field-capture failure, or that errors/times out writes an `alerts`
+row (`agent_regression_failure` / `agent_regression_timeout` /
+`agent_regression_error`, deduped 20h per tenant+rule) onto the existing
+admin alerts feed. New minimal read-only `GET /admin-agent-regression`
+lists the last 14 days of runs. **Proved live**: invoked once via curl
+with `CRON_INVOKE_SECRET`, all 8 `test-*` tenants (one per vertical)
+got a row and settled within ~1.5 minutes; 5 correctly flagged a
+regression (`test-bright-dental` 4/5, `test-generic-anyservice` and
+`test-legal-firstlight` and `test-vet-lakeside` field-capture failures,
+`test-riverside-auto` 6/9) and got exactly one `alerts` row each; the 3
+fully-passing tenants (motel, real_estate, restaurant) got none. Live
+`cron.job` entry confirmed (`jobid` present, `active: true`, schedule
+`0 9 * * *`). `EXPECTED_CRON_JOBS`/`CRON_MIGRATIONS` in
+`scripts/ci/cron-queues-check.ts` updated (the cron-scheduling `do $$`
+block lives in its own follow-up migration,
+`20260921120100_agent_regression_cron_schedule.sql`, split from the
+table-creation migration specifically so the CI script's re-apply step
+never re-runs a non-idempotent `create table`/`create policy`). No new
+env vars — reuses `CRON_INVOKE_SECRET`, `PROVISION_INTERNAL_SECRET`,
+`SUPABASE_URL`, already documented in `.env.example`. Full detail:
+`docs/BUILD_NOTES.md`'s NIGHTLY-1 entry.
+
 **CALL-8 (2026-09-21)**: answers "do the agents ask for and verify all
 the details needed for their vertical?" — previously the batch suites
 only asserted an outcome (booking created, message taken), never that

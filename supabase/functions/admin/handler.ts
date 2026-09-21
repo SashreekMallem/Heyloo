@@ -1873,6 +1873,46 @@ async function handleOutreach(
   return { status: 404, body: { error: "not_found" } };
 }
 
+/**
+ * `/admin-agent-regression` (NIGHTLY-1): minimal read-only listing of the
+ * last 14 days of `job-agent-regression` nightly runs, one row per
+ * test-* tenant per night, for the admin surface to page/filter by
+ * vertical itself (kept deliberately small — a single flat GET, no
+ * sub-routes, matching this task's own "keep it small" scope). No
+ * dedicated frontend page ships with this task; this is the API a future
+ * cockpit page reads.
+ */
+async function handleAgentRegression(
+  sql: SqlClient,
+  ctx: AdminRequestContext,
+): Promise<AdminResponse> {
+  if (ctx.method !== "GET") return { status: 404, body: { error: "not_found" } };
+  const rows = await sql<{
+    id: string;
+    tenant_id: string;
+    tenant_slug: string;
+    vertical: string;
+    started_at: string;
+    finished_at: string | null;
+    scenarios_total: number | null;
+    scenarios_passed: number | null;
+    field_capture_ok: boolean | null;
+    status: string;
+    retell_batch_test_id: string | null;
+    failures: unknown;
+  }>`
+    select r.id, r.tenant_id, t.slug as tenant_slug, r.vertical, r.started_at, r.finished_at,
+      r.scenarios_total, r.scenarios_passed, r.field_capture_ok, r.status,
+      r.retell_batch_test_id, r.failures
+    from public.agent_regression_runs r
+    join public.tenants t on t.id = r.tenant_id
+    where r.started_at > now() - interval '14 days'
+    order by r.started_at desc
+    limit 500
+  `;
+  return { status: 200, body: { runs: rows } };
+}
+
 const NOT_YET_IMPLEMENTED_PREFIXES = ["admin-flags"];
 
 export async function routeAdminRequest(
@@ -1904,6 +1944,7 @@ export async function routeAdminRequest(
   if (first === "admin-templates") return handleTemplates(sql, ctx, deps);
   if (first === "admin-outreach") return handleOutreach(sql, ctx, deps);
   if (first === "admin-support-requests") return handleSupportRequests(sql, ctx);
+  if (first === "admin-agent-regression") return handleAgentRegression(sql, ctx);
 
   if (first && NOT_YET_IMPLEMENTED_PREFIXES.includes(first)) {
     logger.info("admin_route_not_yet_implemented", { path: ctx.path });

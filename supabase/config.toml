@@ -144,6 +144,11 @@ verify_jwt = false
 # x-cron-secret auth boundary as every other job-* function below.
 [functions.job-lead-callback-retry]
 verify_jwt = false
+# job-agent-regression (NIGHTLY-1): nightly Retell batch-test regression
+# sweep over every test-* tenant — same x-cron-secret auth boundary as
+# every other job-* function above.
+[functions.job-agent-regression]
+verify_jwt = false
 [functions.admin]
 verify_jwt = true
 [functions.api-provision]

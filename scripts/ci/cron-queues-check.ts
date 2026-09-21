@@ -124,6 +124,7 @@ const EXPECTED_CRON_JOBS: readonly string[] = [
   "job-retention-sweep",
   "job-keep-warm",
   "job-pgnet-worker-restart",
+  "job-agent-regression",
 ];
 
 /** BACKEND_SPEC §9's 4 queues + their DLQ companions (DB-B3). */
@@ -167,6 +168,7 @@ const CRON_MIGRATIONS: readonly string[] = [
   "supabase/migrations/20260910100500_new_job_cron_schedules.sql",
   "supabase/migrations/20260910100600_job_keep_warm_cron_schedule.sql",
   "supabase/migrations/20260920163500_worker_tick_cron.sql",
+  "supabase/migrations/20260921120100_agent_regression_cron_schedule.sql",
 ];
 
 function main(): void {

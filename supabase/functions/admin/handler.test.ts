@@ -1682,3 +1682,57 @@ describe("routeAdminRequest — support requests (GAP_REGISTER Cluster G item 6)
     expect(result).toEqual({ status: 404, body: { error: "support_request_not_found" } });
   });
 });
+
+describe("routeAdminRequest — agent regression group (NIGHTLY-1)", () => {
+  it("lists the last 14 days of nightly regression runs on GET /admin-agent-regression", async () => {
+    const { sql, calls } = makeSql({
+      "from public.agent_regression_runs r": [
+        {
+          id: "run1",
+          tenant_id: "t1",
+          tenant_slug: "test-vet-lakeside",
+          vertical: "vet",
+          started_at: "2026-09-21T09:00:00Z",
+          finished_at: "2026-09-21T09:02:00Z",
+          scenarios_total: 7,
+          scenarios_passed: 7,
+          field_capture_ok: true,
+          status: "complete",
+          retell_batch_test_id: "batch_1",
+          failures: [],
+        },
+      ],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-agent-regression" }),
+      logger,
+    );
+    expect(result.status).toBe(200);
+    expect((result.body as { runs: unknown[] }).runs).toHaveLength(1);
+    expect(calls.some((c) => c.text.includes("interval '14 days'"))).toBe(true);
+  });
+
+  it("returns 404 for a non-GET method", async () => {
+    const { sql } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-agent-regression", method: "POST" }),
+      logger,
+    );
+    expect(result).toEqual({ status: 404, body: { error: "not_found" } });
+  });
+
+  it("still requires platform_admin", async () => {
+    const { sql } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        path: "/admin-agent-regression",
+        claims: { app_metadata: { platform_admin: false } },
+      }),
+      logger,
+    );
+    expect(result.status).toBe(403);
+  });
+});
