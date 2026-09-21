@@ -332,6 +332,11 @@ export type OrderRow = {
   idempotency_key: string;
   allergies: Nullable<string[]>;
   special_instructions: Nullable<string>;
+  /** PUBLISH-1 (docs/BUILD_NOTES.md) — true for an order created from a
+   * Retell batch-test/simulator call (`call_logs.is_test_call`), mirroring
+   * `BookingRow.is_test` (CALL-6). Excluded from the tenant dashboard
+   * orders list and the header notification bell by default. */
+  is_test: boolean;
   created_at: string;
   updated_at: string;
 };

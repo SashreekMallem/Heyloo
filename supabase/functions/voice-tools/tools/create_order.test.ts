@@ -223,8 +223,9 @@ describe("createOrder", () => {
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join(" ");
       if (text.includes("insert into public.orders")) {
-        insertedAllergies = values.at(-2);
-        insertedInstructions = values.at(-1);
+        // PUBLISH-1: `is_test` was appended as the new last bound value.
+        insertedAllergies = values.at(-3);
+        insertedInstructions = values.at(-2);
         return Promise.resolve([{ id: "order_1" }]);
       }
       const step = steps[i];
@@ -240,6 +241,54 @@ describe("createOrder", () => {
     );
     expect(insertedAllergies).toEqual(["peanuts"]);
     expect(insertedInstructions).toBe("no onions");
+  });
+
+  it("PUBLISH-1: writes orders.is_test from ctx.isTestCall — true for a resolved test/placeholder call, mirroring create_booking.ts (CALL-6)", async () => {
+    const steps: Step[] = [
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings lookup
+      { rows: [{ dynamic_variable_overrides: {} }] }, // agent_configs overrides
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+    ];
+    let i = 0;
+    let insertValues: unknown[] | undefined;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.orders")) {
+        insertValues = values;
+        return Promise.resolve([{ id: "order_1" }]);
+      }
+      const step = steps[i];
+      i += 1;
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+
+    await createOrder(sql, { ...ctx, isTestCall: true }, pickupArgs, logger);
+    expect(insertValues).toContain(true);
+  });
+
+  it("PUBLISH-1: writes orders.is_test=false for a real (non-test) call", async () => {
+    const steps: Step[] = [
+      { rows: [] },
+      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] },
+      { rows: [{ dynamic_variable_overrides: {} }] },
+      { rows: [{ id: "customer_1" }] },
+    ];
+    let i = 0;
+    let insertValues: unknown[] | undefined;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.orders")) {
+        insertValues = values;
+        return Promise.resolve([{ id: "order_1" }]);
+      }
+      const step = steps[i];
+      i += 1;
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+
+    await createOrder(sql, { ...ctx, isTestCall: false }, pickupArgs, logger);
+    expect(insertValues).toContain(false);
   });
 
   it("writes call_logs.structured_booking_payload when allergies/special_instructions were captured", async () => {

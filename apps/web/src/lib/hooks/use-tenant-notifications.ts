@@ -28,6 +28,13 @@ export function useTenantNotifications(tenantId: string) {
         .from("bookings")
         .select("id, created_at, status")
         .eq("tenant_id", tenantId)
+        // PUBLISH-1 (docs/BUILD_NOTES.md, ONBOARD-1's own flagged
+        // inconsistency): the bell previously had NO `is_test` filter at
+        // all — it would surface a Retell batch-test/simulator booking as
+        // "Booking confirmed" even though the bookings list itself
+        // (`bookings/page.tsx`) already hides it. Mirrors that page's own
+        // `.eq("is_test", false)` (CALL-6).
+        .eq("is_test", false)
         .order("created_at", { ascending: false })
         .limit(10);
 

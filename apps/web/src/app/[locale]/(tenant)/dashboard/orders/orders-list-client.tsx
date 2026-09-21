@@ -106,6 +106,11 @@ export function OrdersListClient({ tenantId }: { tenantId: string }) {
         count: "exact",
       })
       .eq("tenant_id", tenantId)
+      // PUBLISH-1 (docs/BUILD_NOTES.md, ONBOARD-1's own flagged
+      // inconsistency): never show a Retell batch-test/simulator order on
+      // the tenant's real orders list — mirrors bookings/page.tsx's own
+      // `.eq("is_test", false)` (CALL-6).
+      .eq("is_test", false)
       .order("created_at", { ascending: false })
       .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
 

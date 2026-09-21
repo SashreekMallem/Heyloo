@@ -63,6 +63,13 @@ function isPgError(err: unknown, code: string): boolean {
  * `GEOCODE_API_KEY`) or the geocode fails, the order still completes
  * exactly as before — this is a save-for-next-time enhancement, never a
  * condition of the current order succeeding.
+ *
+ * PUBLISH-1 (docs/BUILD_NOTES.md): `is_test` mirrors `ctx.isTestCall`
+ * directly, the SAME pattern `create_booking.ts` already established for
+ * `bookings.is_test` (CALL-6) — never re-derived here — so a Retell
+ * batch-test/simulator order is flagged from the moment it's written,
+ * before the dashboard orders list or the header notification bell ever
+ * reads it.
  */
 export async function createOrder(
   sql: SqlClient,
@@ -301,13 +308,13 @@ export async function createOrder(
       insert into public.orders (
         tenant_id, customer_id, items, fulfillment_type, delivery_address,
         subtotal_cents, tax_cents, delivery_fee_cents, total_cents, source_call_id, idempotency_key,
-        allergies, special_instructions
+        allergies, special_instructions, is_test
       ) values (
         ${ctx.tenantId}, ${customerId}, ${priced}::jsonb, ${args.fulfillment_type},
         ${resolvedDeliveryAddress ?? null}::jsonb,
         ${subtotalCents}, ${taxCents}, ${deliveryFeeCents}, ${totalCents}, ${ctx.callLogId}, ${idempotencyKey},
         ${args.allergies && args.allergies.length > 0 ? args.allergies : null},
-        ${args.special_instructions ?? null}
+        ${args.special_instructions ?? null}, ${ctx.isTestCall}
       )
       returning id
     `;
