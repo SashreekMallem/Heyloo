@@ -1,0 +1,12 @@
+-- SIGNUP-1: phone_numbers.twilio_sid was `not null` on the assumption every
+-- number is purchased via Twilio then imported into Retell
+-- (`purchasePhoneNumber` + `importPhoneNumber`). The real per-tenant
+-- provisioning saga (`api-provision`) now buys the number directly through
+-- Retell's own `POST /create-phone-number` (docs/BUILD_NOTES.md SIGNUP-1
+-- entry — TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN are not configured for this
+-- platform, and that endpoint needs no Twilio account on our side), which
+-- has no Twilio PhoneNumberSid to record at all — `phone_numbers.e164` and
+-- `retell_number_id` remain the row's real identifiers either way. Additive,
+-- non-destructive: existing rows keep their `twilio_sid` value; the unique
+-- index already tolerates multiple NULLs (Postgres unique semantics).
+alter table public.phone_numbers alter column twilio_sid drop not null;

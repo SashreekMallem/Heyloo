@@ -91,7 +91,10 @@ export type PhoneNumberRow = {
   id: string;
   tenant_id: string;
   e164: string;
-  twilio_sid: string;
+  // SIGNUP-1: nullable — a number purchased directly through Retell's
+  // `/create-phone-number` (no Twilio account of our own) has no Twilio
+  // PhoneNumberSid at all (migration 20260921065200).
+  twilio_sid: Nullable<string>;
   retell_number_id: Nullable<string>;
   forwarding_mode: "conditional" | "full";
   forwarding_verified_at: Nullable<string>;
@@ -609,8 +612,7 @@ export type ProvisioningRunRow = {
   step:
     | "tenant_finalize"
     | "agent_compile"
-    | "twilio_number_provision"
-    | "retell_number_import"
+    | "retell_number_provision"
     | "billing_wiring"
     | "publish_agent"
     | "notify";

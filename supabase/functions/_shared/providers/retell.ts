@@ -188,6 +188,43 @@ export async function publishAgentVersion(
 }
 
 /**
+ * POST /create-phone-number (SIGNUP-1, RETELL-VERIFY: confirmed live against
+ * docs.retellai.com/api-references/create-phone-number 2026-09-21 — every
+ * field is optional; Retell provisions the number directly through its own
+ * `number_provider` sub-account (default `"twilio"`, ~$2/mo) with NO
+ * separate Twilio account needed on our side. This is the path used for
+ * real per-tenant provisioning (`api-provision`) instead of
+ * Twilio-purchase-then-`importPhoneNumber`: `TWILIO_ACCOUNT_SID`/
+ * `TWILIO_AUTH_TOKEN` are not configured for this platform (docs/BUILD_NOTES.md
+ * SIGNUP-1 entry — that saga's own Twilio purchase step could never
+ * succeed), and this endpoint accepts `inbound_agents`/`inbound_webhook_url`
+ * directly in the SAME call, so no separate import step is needed either.
+ * Response (201): `phone_number` (E.164 — the resource's own identifier,
+ * same convention as `importPhoneNumber`/`listPhoneNumbers`), plus
+ * `phone_number_type`, `inbound_agents`, `inbound_webhook_url`, `area_code`,
+ * `nickname`.
+ */
+export async function createPhoneNumber(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  payload: {
+    inbound_agents?: Array<{ agent_id: string; weight: number; agent_version?: string | number }>;
+    outbound_agents?: Array<{ agent_id: string; weight: number; agent_version?: string | number }>;
+    area_code?: number;
+    nickname?: string;
+    inbound_webhook_url?: string;
+    number_provider?: "twilio" | "telnyx";
+    country_code?: "US" | "CA";
+    toll_free?: boolean;
+  },
+) {
+  return retellRequest(fetchImpl, apiKey, "/create-phone-number", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/**
  * RETELL-VERIFY (VERIFY-7, resolved): confirmed field-for-field against
  * retell-typescript-sdk's `PhoneNumberImportParams` —
  * `inbound_agents`/`outbound_agents` are both ARRAYS of

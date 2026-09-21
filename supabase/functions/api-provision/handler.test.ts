@@ -60,25 +60,24 @@ function makeDeps(overrides: Partial<ProvisionDeps> = {}): ProvisionDeps {
   return {
     // `version` included on every Retell response — `getAgent` (called
     // before publish, RETELL-VERIFY VERIFY-6 resolved) requires it just as
-    // much as `createAgent`'s own response does.
+    // much as `createAgent`'s own response does. `phone_number` covers
+    // `createPhoneNumber`'s response too (SIGNUP-1).
     retellFetch: (() =>
       Promise.resolve(
-        new Response(JSON.stringify({ agent_id: "agent_1", llm_id: "llm_1", version: 1 }), {
-          status: 200,
-        }),
+        new Response(
+          JSON.stringify({
+            agent_id: "agent_1",
+            llm_id: "llm_1",
+            version: 1,
+            phone_number: "+15551230000",
+          }),
+          { status: 200 },
+        ),
       )) as never,
     retellApiKey: "key",
-    retellSipTerminationUri: "heyloo-trunk.pstn.twilio.com",
     retellInboundWebhookUrl: "https://example.supabase.co/functions/v1/voice-inbound",
     retellEventsWebhookUrl: "https://example.supabase.co/functions/v1/voice-events",
-    twilioFetch: (() =>
-      Promise.resolve(
-        new Response(JSON.stringify({ sid: "PN1", phone_number: "+15551230000" }), { status: 201 }),
-      )) as never,
-    twilioAccountSid: "AC1",
-    twilioAuthToken: "token",
     compileTemplate: async () => makeCompiledTemplate(),
-    resolvePhoneNumberToProvision: async () => "+15551230000",
     logger,
     ...overrides,
   };
@@ -89,20 +88,22 @@ describe("runProvisioningSaga", () => {
     const { sql } = makeSql({
       "from public.agent_configs": [],
       "from public.phone_numbers": [],
-      "returning id, e164, twilio_sid": [{ id: "pn_1", e164: "+15551230000", twilio_sid: "PN1" }],
-      "select retell_number_id": [{ retell_number_id: null }],
+      "returning id, e164, retell_number_id": [
+        { id: "pn_1", e164: "+15551230000", retell_number_id: "+15551230000" },
+      ],
       "insert into public.messages_outbound": [{ id: "msg_1" }],
     });
     const result = await runProvisioningSaga(sql, "tenant_1", makeDeps());
     expect(result).toEqual({ status: "complete" });
   });
 
-  it("sends termination_uri + weighted inbound_agents on import, and {version} on publish (RETELL-VERIFY)", async () => {
+  it("sends weighted inbound_agents + inbound_webhook_url on the Retell number purchase, and {version} on publish (RETELL-VERIFY)", async () => {
     const { sql } = makeSql({
       "from public.agent_configs": [],
       "from public.phone_numbers": [],
-      "returning id, e164, twilio_sid": [{ id: "pn_1", e164: "+15551230000", twilio_sid: "PN1" }],
-      "select retell_number_id": [{ retell_number_id: null }],
+      "returning id, e164, retell_number_id": [
+        { id: "pn_1", e164: "+15551230000", retell_number_id: "+15551230000" },
+      ],
       "insert into public.messages_outbound": [{ id: "msg_1" }],
     });
     const requests: { url: string; body: unknown }[] = [];
@@ -110,21 +111,26 @@ describe("runProvisioningSaga", () => {
       retellFetch: ((url: string, init?: RequestInit) => {
         requests.push({ url, body: init?.body ? JSON.parse(init.body as string) : undefined });
         return Promise.resolve(
-          new Response(JSON.stringify({ agent_id: "agent_1", llm_id: "llm_1", version: 1 }), {
-            status: 200,
-          }),
+          new Response(
+            JSON.stringify({
+              agent_id: "agent_1",
+              llm_id: "llm_1",
+              version: 1,
+              phone_number: "+15551230000",
+            }),
+            { status: 200 },
+          ),
         );
       }) as never,
     });
     const result = await runProvisioningSaga(sql, "tenant_1", deps);
     expect(result).toEqual({ status: "complete" });
 
-    const importCall = requests.find((r) => r.url.includes("import-phone-number"));
-    expect(importCall?.body).toEqual({
-      phone_number: "+15551230000",
-      termination_uri: "heyloo-trunk.pstn.twilio.com",
+    const purchaseCall = requests.find((r) => r.url.includes("create-phone-number"));
+    expect(purchaseCall?.body).toEqual({
       inbound_agents: [{ agent_id: "agent_1", weight: 1 }],
       inbound_webhook_url: "https://example.supabase.co/functions/v1/voice-inbound",
+      nickname: "heyloo-tenant-tenant_1",
     });
 
     const publishCall = requests.find((r) => r.url.includes("publish-agent-version"));
@@ -136,8 +142,9 @@ describe("runProvisioningSaga", () => {
       "from public.agent_configs": [
         { retell_agent_id: "agent_existing", template_id: "tmpl_1", template_version: 1 },
       ],
-      "from public.phone_numbers": [{ id: "pn_1", e164: "+15551230000", twilio_sid: "PN1" }],
-      "select retell_number_id": [{ retell_number_id: "retell_num_1" }],
+      "from public.phone_numbers": [
+        { id: "pn_1", e164: "+15551230000", retell_number_id: "+15551230000" },
+      ],
       "insert into public.messages_outbound": [{ id: "msg_1" }],
     });
     const result = await runProvisioningSaga(sql, "tenant_1", makeDeps());
@@ -148,16 +155,28 @@ describe("runProvisioningSaga", () => {
     expect(calls.some((c) => c.text.includes("insert into public.agent_configs"))).toBe(false);
   });
 
-  it("stops at twilio_number_provision and reports the failed step when Twilio purchase fails", async () => {
+  it("stops at retell_number_provision and reports the failed step when the Retell number purchase fails", async () => {
     const { sql } = makeSql({ "from public.agent_configs": [], "from public.phone_numbers": [] });
     const deps = makeDeps({
-      twilioFetch: (() => Promise.resolve(new Response("{}", { status: 400 }))) as never,
+      retellFetch: ((url: string) => {
+        if (typeof url === "string" && url.includes("create-phone-number")) {
+          return Promise.resolve(new Response("{}", { status: 400 }));
+        }
+        if (typeof url === "string" && url.includes("create-conversation-flow")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ conversation_flow_id: "flow_1" }), { status: 200 }),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({ agent_id: "agent_1", version: 1 }), { status: 200 }),
+        );
+      }) as never,
     });
     const result = await runProvisioningSaga(sql, "tenant_1", deps);
     expect(result).toEqual({
       status: "failed",
-      failedStep: "twilio_number_provision",
-      error: "twilio_purchase_failed",
+      failedStep: "retell_number_provision",
+      error: "retell_number_purchase_failed",
     });
   });
 
@@ -206,8 +225,9 @@ describe("runProvisioningSaga", () => {
     const { sql } = makeSql({
       "from public.agent_configs": [],
       "from public.phone_numbers": [],
-      "returning id, e164, twilio_sid": [{ id: "pn_1", e164: "+15551230000", twilio_sid: "PN1" }],
-      "select retell_number_id": [{ retell_number_id: null }],
+      "returning id, e164, retell_number_id": [
+        { id: "pn_1", e164: "+15551230000", retell_number_id: "+15551230000" },
+      ],
       "insert into public.messages_outbound": [{ id: "msg_1" }],
     });
     const requests: { url: string; body: unknown }[] = [];
@@ -220,7 +240,10 @@ describe("runProvisioningSaga", () => {
           );
         }
         return Promise.resolve(
-          new Response(JSON.stringify({ agent_id: "agent_1", version: 1 }), { status: 200 }),
+          new Response(
+            JSON.stringify({ agent_id: "agent_1", version: 1, phone_number: "+15551230000" }),
+            { status: 200 },
+          ),
         );
       }) as never,
     });
@@ -241,35 +264,6 @@ describe("runProvisioningSaga", () => {
       // CALL-5 fix.
       webhook_url: "https://example.supabase.co/functions/v1/voice-events",
       webhook_timeout_ms: 10000,
-    });
-  });
-
-  it("flags for manual intervention (never releases the number) when Retell import fails", async () => {
-    const { sql } = makeSql({
-      "from public.agent_configs": [],
-      "from public.phone_numbers": [{ id: "pn_1", e164: "+15551230000", twilio_sid: "PN1" }],
-      "select retell_number_id": [{ retell_number_id: null }],
-    });
-    const deps = makeDeps({
-      retellFetch: ((url: string) => {
-        if (typeof url === "string" && url.includes("import-phone-number")) {
-          return Promise.resolve(new Response("{}", { status: 500 }));
-        }
-        if (typeof url === "string" && url.includes("create-conversation-flow")) {
-          return Promise.resolve(
-            new Response(JSON.stringify({ conversation_flow_id: "flow_1" }), { status: 200 }),
-          );
-        }
-        return Promise.resolve(
-          new Response(JSON.stringify({ agent_id: "agent_1" }), { status: 200 }),
-        );
-      }) as never,
-    });
-    const result = await runProvisioningSaga(sql, "tenant_1", deps);
-    expect(result).toEqual({
-      status: "failed",
-      failedStep: "retell_number_import",
-      error: "retell_import_failed",
     });
   });
 });

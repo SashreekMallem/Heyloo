@@ -7,11 +7,14 @@ import { useRouter } from "@/i18n/navigation";
 import { TenantRealtimeProvider } from "@/lib/realtime/tenant-realtime-provider";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
+// Matches `supabase/functions/api-provision/handler.ts`'s `STEPS` exactly
+// (SIGNUP-1: the number purchase is now a single Retell-native step, not a
+// separate Twilio-purchase + Retell-import pair — docs/BUILD_NOTES.md
+// SIGNUP-1 entry).
 const STEP_ORDER: { key: string; label: string }[] = [
   { key: "tenant_finalize", label: "Payment confirmed" },
   { key: "agent_compile", label: "AI agent compiled" },
-  { key: "twilio_number_provision", label: "Phone number provisioned" },
-  { key: "retell_number_import", label: "Voice provider import" },
+  { key: "retell_number_provision", label: "Phone number provisioned" },
   { key: "billing_wiring", label: "Billing meter created" },
   { key: "publish_agent", label: "Ready" },
 ];

@@ -22,19 +22,19 @@ const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
 // admin/index.ts's identical `deps.retell.toolWebhookUrl` wiring for the
 // template-publish route).
 const VOICE_TOOLS_WEBHOOK_URL = requireEnv("VOICE_TOOLS_WEBHOOK_URL");
-// RETELL-VERIFY (VERIFY-7, resolved): `termination_uri` is a REQUIRED field
-// on `/import-phone-number` (confirmed via retell-typescript-sdk) — this
-// saga previously omitted it entirely, which would 4xx against the real
-// API. One platform-level SIP trunk, same pattern as TWILIO_A2P_BRAND_SID.
-const RETELL_SIP_TRUNK_TERMINATION_URI = requireEnv("RETELL_SIP_TRUNK_TERMINATION_URI");
 // The `/voice-inbound` webhook is phone-number-scoped, not agent-scoped
-// (RETELL-VERIFY, VERIFY-6 resolved) — wired onto the imported number here.
+// (RETELL-VERIFY, VERIFY-6 resolved) — wired onto the purchased number here.
 const RETELL_INBOUND_WEBHOOK_URL = requireEnv("RETELL_INBOUND_WEBHOOK_URL");
 // CALL-5: the deployed `/voice-events` function URL — see handler.ts's
 // ProvisionDeps#retellEventsWebhookUrl doc comment.
 const VOICE_EVENTS_WEBHOOK_URL = requireEnv("VOICE_EVENTS_WEBHOOK_URL");
-const TWILIO_ACCOUNT_SID = requireEnv("TWILIO_ACCOUNT_SID");
-const TWILIO_AUTH_TOKEN = requireEnv("TWILIO_AUTH_TOKEN");
+// SIGNUP-1: TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/RETELL_SIP_TRUNK_TERMINATION_URI
+// are deliberately NOT required here any more — this platform has no Twilio
+// account configured (docs/BUILD_NOTES.md SIGNUP-1 entry), and the number
+// purchase now goes straight through Retell's own `/create-phone-number`
+// (handler.ts). Before this fix, EVERY invocation of this function failed
+// to boot at all (Deno throws on `requireEnv` at module load, before
+// `Deno.serve` ever runs) because those three secrets were never set.
 const SERVICE_ROLE_INTERNAL_SECRET = requireEnv("PROVISION_INTERNAL_SECRET");
 
 interface JwtClaims {
@@ -92,12 +92,8 @@ Deno.serve(async (req: Request) => {
   const deps = {
     retellFetch: fetch,
     retellApiKey: RETELL_API_KEY,
-    retellSipTerminationUri: RETELL_SIP_TRUNK_TERMINATION_URI,
     retellInboundWebhookUrl: RETELL_INBOUND_WEBHOOK_URL,
     retellEventsWebhookUrl: VOICE_EVENTS_WEBHOOK_URL,
-    twilioFetch: fetch,
-    twilioAccountSid: TWILIO_ACCOUNT_SID,
-    twilioAuthToken: TWILIO_AUTH_TOKEN,
     async compileTemplate(tenantIdForCompile: string): Promise<CompiledTemplateResult | null> {
       const rows = await sql<Record<string, unknown>>`
         select at.* from public.agent_templates at
@@ -140,14 +136,6 @@ Deno.serve(async (req: Request) => {
         disclosureVerified: compiled.disclosureVerified,
         flow: compiled.flow,
       };
-    },
-    async resolvePhoneNumberToProvision() {
-      // VERIFY.md: real implementation searches Twilio's
-      // AvailablePhoneNumbers API by the tenant's area-code preference —
-      // not yet wired (T4/T2 provider coordination); this is a placeholder
-      // that fails loudly (empty string -> Twilio purchase 4xx) rather
-      // than silently succeeding with a wrong number.
-      return "";
     },
     logger,
   };

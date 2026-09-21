@@ -3,20 +3,20 @@ import type { RetellFetch } from "../_shared/providers/retell.ts";
 import {
   createAgent,
   createConversationFlow,
+  createPhoneNumber,
   createRetellLLM,
   getAgent,
-  importPhoneNumber,
   publishAgentVersion,
 } from "../_shared/providers/retell.ts";
-import type { TwilioFetch } from "../_shared/providers/twilio.ts";
-import { purchasePhoneNumber } from "../_shared/providers/twilio.ts";
 import { enqueue, QUEUE_NAMES } from "../_shared/queue.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
  * `/api-provision` saga (BACKEND_SPEC §7.9): tenant row -> compiled agent ->
- * Twilio number -> Retell import -> billing wiring -> publish -> notify.
- * Each step is idempotent and independently retryable; `provisioning_runs`
+ * Retell number purchase (SIGNUP-1: direct via Retell, no Twilio account of
+ * our own required — docs/BUILD_NOTES.md SIGNUP-1 entry) -> billing wiring
+ * -> publish -> notify. Each step is idempotent and independently
+ * retryable; `provisioning_runs`
  * (`DECIDE:` table per BACKEND_SPEC — `id, tenant_id, step, status, error,
  * attempts, updated_at`) tracks progress so a re-entrant call resumes
  * rather than re-running completed steps.
@@ -47,8 +47,7 @@ export interface CompiledTemplateResult {
 export const STEPS = [
   "tenant_finalize",
   "agent_compile",
-  "twilio_number_provision",
-  "retell_number_import",
+  "retell_number_provision",
   "billing_wiring",
   "publish_agent",
   "notify",
@@ -58,16 +57,7 @@ export type ProvisioningStep = (typeof STEPS)[number];
 export interface ProvisionDeps {
   retellFetch: RetellFetch;
   retellApiKey: string;
-  /**
-   * Twilio Elastic SIP Trunk termination URI (e.g.
-   * `<trunk>.pstn.twilio.com`) — REQUIRED on every `/import-phone-number`
-   * call (RETELL-VERIFY, VERIFY-7 resolved: confirmed via
-   * retell-typescript-sdk's `PhoneNumberImportParams.termination_uri`, no
-   * `?`). This build's SIP trunk provisioning itself is out of this saga's
-   * scope (platform Week-0 setup); this is the resulting constant.
-   */
-  retellSipTerminationUri: string;
-  /** `/voice-inbound` — wired onto the imported PHONE NUMBER, not the
+  /** `/voice-inbound` — wired onto the purchased PHONE NUMBER, not the
    * agent (RETELL-VERIFY, VERIFY-6 resolved: `inbound_webhook_url` doesn't
    * exist on the Agent resource at all). */
   retellInboundWebhookUrl: string;
@@ -80,9 +70,6 @@ export interface ProvisionDeps {
    * populated for a single one of them (docs/BUILD_NOTES.md CALL-5 entry,
    * found via the test-tenant path that shares this exact bug). */
   retellEventsWebhookUrl: string;
-  twilioFetch: TwilioFetch;
-  twilioAccountSid: string;
-  twilioAuthToken: string;
   /**
    * Resolves + compiles the tenant's active vertical template. `null` means
    * no active `agent_templates` row exists for the tenant's vertical (a
@@ -91,14 +78,6 @@ export interface ProvisionDeps {
    * never a hand-built stand-in payload.
    */
   compileTemplate: (tenantId: string) => Promise<CompiledTemplateResult | null>;
-  /** Resolves the specific E.164 number to purchase for this tenant — the
-   * caller (index.ts) is responsible for the Twilio "search available
-   * numbers by area code" step (a separate Twilio API call this saga
-   * doesn't itself make) and hands back one concrete number, since
-   * `purchasePhoneNumber`'s `PhoneNumber` param requires an exact number,
-   * not an area code (VERIFY.md: confirm current Twilio available-numbers
-   * search endpoint before wiring the real implementation). */
-  resolvePhoneNumberToProvision: (tenantId: string) => Promise<string>;
   logger: Logger;
 }
 
@@ -226,98 +205,72 @@ export async function runProvisioningSaga(
     }
     await recordStep(sql, tenantId, "agent_compile", "succeeded");
 
-    // 3. Twilio number provision.
-    await recordStep(sql, tenantId, "twilio_number_provision", "in_progress");
-    const existingNumber = await sql<{ id: string; e164: string; twilio_sid: string }>`
-      select id, e164, twilio_sid from public.phone_numbers where tenant_id = ${tenantId} and released_at is null limit 1
+    // 3. Retell number provision (SIGNUP-1: buys the number directly through
+    // Retell's own `POST /create-phone-number` — no Twilio account of our
+    // own required, `inbound_agents`/`inbound_webhook_url` set in the SAME
+    // call, so there is no separate "import" step. Replaces the prior
+    // Twilio-purchase-then-`importPhoneNumber` two-step, which could never
+    // succeed on this platform: `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` are
+    // not configured (docs/BUILD_NOTES.md SIGNUP-1 entry), and the old
+    // `resolvePhoneNumberToProvision` dependency was an unimplemented stub
+    // that always returned `""`.)
+    await recordStep(sql, tenantId, "retell_number_provision", "in_progress");
+    const existingNumber = await sql<{ id: string; e164: string; retell_number_id: string | null }>`
+      select id, e164, retell_number_id from public.phone_numbers where tenant_id = ${tenantId} and released_at is null limit 1
     `;
     let phoneNumber = existingNumber[0] ?? null;
     if (!phoneNumber) {
-      const numberToProvision = await deps.resolvePhoneNumberToProvision(tenantId);
-      const purchased = await purchasePhoneNumber(
-        deps.twilioFetch,
-        deps.twilioAccountSid,
-        deps.twilioAuthToken,
-        {
-          phoneNumber: numberToProvision,
-        },
-      );
-      const purchasedBody = purchased.body as { phone_number?: string; sid?: string };
-      if (!purchased.ok || !purchasedBody.sid || !purchasedBody.phone_number) {
-        await recordStep(
-          sql,
-          tenantId,
-          "twilio_number_provision",
-          "failed",
-          `twilio_status_${purchased.status}`,
-        );
-        return {
-          status: "failed",
-          failedStep: "twilio_number_provision",
-          error: "twilio_purchase_failed",
-        };
-      }
-      const inserted = await sql<{ id: string; e164: string; twilio_sid: string }>`
-        insert into public.phone_numbers (tenant_id, e164, twilio_sid) values (${tenantId}, ${purchasedBody.phone_number}, ${purchasedBody.sid})
-        returning id, e164, twilio_sid
-      `;
-      phoneNumber = inserted[0] ?? null;
-    }
-    if (!phoneNumber) {
-      await recordStep(sql, tenantId, "twilio_number_provision", "failed", "no_number_row");
-      return { status: "failed", failedStep: "twilio_number_provision", error: "no_number_row" };
-    }
-    await recordStep(sql, tenantId, "twilio_number_provision", "succeeded");
-
-    // 4. Retell number import. RETELL-VERIFY (VERIFY-7, resolved): the
-    // request needs `termination_uri` (REQUIRED) and `inbound_agents` as an
-    // array of `{agent_id, weight}` (`weight` REQUIRED, not a bare
-    // `agent_id` string) — confirmed via retell-typescript-sdk. The
-    // response's unique identifier is the `phone_number` field itself
-    // (E.164) — there is no separate `phone_number_id`.
-    await recordStep(sql, tenantId, "retell_number_import", "in_progress");
-    const numberRow = await sql<{ retell_number_id: string | null }>`
-      select retell_number_id from public.phone_numbers where id = ${phoneNumber.id}
-    `;
-    if (!numberRow[0]?.retell_number_id) {
-      const imported = await importPhoneNumber(deps.retellFetch, deps.retellApiKey, {
-        phone_number: phoneNumber.e164,
-        termination_uri: deps.retellSipTerminationUri,
+      const purchased = await createPhoneNumber(deps.retellFetch, deps.retellApiKey, {
         inbound_agents: [{ agent_id: retellAgentId, weight: 1 }],
         inbound_webhook_url: deps.retellInboundWebhookUrl,
+        nickname: `heyloo-tenant-${tenantId}`,
       });
-      if (!imported.ok) {
+      const purchasedBody = purchased.body as { phone_number?: string };
+      if (!purchased.ok || !purchasedBody.phone_number) {
         // Per spec: retry with backoff, then flag for manual admin
-        // intervention rather than auto-releasing the number — a half-
-        // provisioned tenant alerts, it doesn't silently unwind.
+        // intervention rather than silently unwinding.
         await recordStep(
           sql,
           tenantId,
-          "retell_number_import",
+          "retell_number_provision",
           "failed",
-          `retell_status_${imported.status}`,
+          `retell_status_${purchased.status}`,
         );
-        deps.logger.error("provisioning_retell_import_failed", {
+        deps.logger.error("provisioning_retell_number_purchase_failed", {
           tenant_id: tenantId,
-          status: imported.status,
+          status: purchased.status,
         });
         return {
           status: "failed",
-          failedStep: "retell_number_import",
-          error: "retell_import_failed",
+          failedStep: "retell_number_provision",
+          error: "retell_number_purchase_failed",
         };
       }
-      const importedBody = imported.body as { phone_number?: string };
-      await sql`update public.phone_numbers set retell_number_id = ${importedBody.phone_number ?? null} where id = ${phoneNumber.id}`;
+      const inserted = await sql<{ id: string; e164: string; retell_number_id: string | null }>`
+        insert into public.phone_numbers (tenant_id, e164, retell_number_id)
+        values (${tenantId}, ${purchasedBody.phone_number}, ${purchasedBody.phone_number})
+        returning id, e164, retell_number_id
+      `;
+      phoneNumber = inserted[0] ?? null;
+    } else if (!phoneNumber.retell_number_id) {
+      // Resuming a run whose DB insert succeeded but crashed before
+      // recording this step (or a pre-existing row created another way) —
+      // the number already exists in Retell (created idempotently above is
+      // not re-attempted; this only backfills the local pointer).
+      await sql`update public.phone_numbers set retell_number_id = ${phoneNumber.e164} where id = ${phoneNumber.id}`;
     }
-    await recordStep(sql, tenantId, "retell_number_import", "succeeded");
+    if (!phoneNumber) {
+      await recordStep(sql, tenantId, "retell_number_provision", "failed", "no_number_row");
+      return { status: "failed", failedStep: "retell_number_provision", error: "no_number_row" };
+    }
+    await recordStep(sql, tenantId, "retell_number_provision", "succeeded");
 
-    // 5. Billing wiring — non-destructive; confirms only (already active if
+    // 4. Billing wiring — non-destructive; confirms only (already active if
     // this saga was triggered by the Stripe webhook).
     await recordStep(sql, tenantId, "billing_wiring", "in_progress");
     await recordStep(sql, tenantId, "billing_wiring", "succeeded");
 
-    // 6. Publish agent. RETELL-VERIFY (VERIFY-6, resolved): publish REQUIRES
+    // 5. Publish agent. RETELL-VERIFY (VERIFY-6, resolved): publish REQUIRES
     // a `{version}` body — fetch the agent's current version first (this
     // saga may be resuming with an already-existing `retellAgentId` from an
     // earlier run, so a version captured at create time isn't always
@@ -355,7 +308,7 @@ export async function runProvisioningSaga(
     await sql`update public.tenants set status = 'active' where id = ${tenantId}`;
     await recordStep(sql, tenantId, "publish_agent", "succeeded");
 
-    // 7. Notify — enqueued, never sent inline.
+    // 6. Notify — enqueued, never sent inline.
     await recordStep(sql, tenantId, "notify", "in_progress");
     const messageRows = await sql<{ id: string }>`
       insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload)
