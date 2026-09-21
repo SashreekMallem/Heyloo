@@ -70,7 +70,35 @@ export interface TestScenario {
    * (`scenarios: [id]`) is the reliable way to verify them precisely.
    */
   expectedPhone?: string;
+  /**
+   * CALL-9 (docs/BUILD_PLAN.md): the E.164 phone this scenario simulates as
+   * the LIVE caller number, via the new `heyloo_test_caller_number` dynamic
+   * variable — `voice-tools/context.ts` honors it ONLY for a placeholder/
+   * batch-test call id (`isPlaceholderCallId`), never a real one (see that
+   * module's own doc comment for the authorization reasoning). Setting this
+   * makes `ctx.callerNumber` non-null exactly the way a real caller's own
+   * `from_number` would, so `lookup_customer`'s STRICT G6 caller-match path
+   * (not just its no-caller-id `unverified` fallback) actually runs, and
+   * `api-admin-run-agent-tests` also passes it through as the SAME
+   * `fromNumber` the shared `buildInboundDynamicVariables`
+   * (`_shared/inbound-dynamic-variables.ts`) uses to look up
+   * `caller_recent_context` — so a scenario using this exercises the exact
+   * live pre-call DB pull a real returning caller's greeting depends on.
+   * Only ever set on a scenario whose persona is a RETURNING caller with a
+   * real seeded `customers` row for this phone (see docs/BUILD_NOTES.md
+   * CALL-9 for the seed data) — never on a new-caller scenario, where the
+   * absence of this field is itself what proves a fresh customer gets
+   * created rather than matched.
+   */
+  testCallerNumber?: string;
 }
+
+/** CALL-9: the one seeded returning customer every test tenant has —
+ * `docs/BUILD_NOTES.md` CALL-9 records the exact seed (name, phone, one
+ * upcoming confirmed booking where the vertical books). Shared here so
+ * every vertical's `returning_caller` scenario references the SAME literal
+ * phone rather than seven hand-typed copies that could silently drift. */
+const RETURNING_CALLER_PHONE = "+15552010288";
 
 const AUTO_SCENARIOS: TestScenario[] = [
   {
@@ -161,6 +189,19 @@ const AUTO_SCENARIOS: TestScenario[] = [
     // flaky axis fail this one's grading for the wrong reason.
     writeIntent: "none",
   },
+  {
+    id: "returning_caller",
+    label: "Returning caller recognized live by caller ID, reschedules their upcoming booking",
+    personaPrompt:
+      "You are Taylor Reyes, calling back about your car. You are calling from the SAME number " +
+      "the shop already has on file for you — do NOT volunteer your name or phone number unless " +
+      "the agent actually asks; the point of this call is to see whether you're recognized " +
+      "without restating everything. You have an appointment already booked and you'd like to " +
+      "move it a bit later — go along with whatever new time the agent offers and confirm once " +
+      "they read the change back to you.",
+    writeIntent: "none",
+    testCallerNumber: RETURNING_CALLER_PHONE,
+  },
 ];
 
 /**
@@ -247,6 +288,19 @@ const VET_SCENARIOS: TestScenario[] = [
       "book — do not start a full booking in this call.",
     writeIntent: "none",
   },
+  {
+    id: "returning_caller",
+    label: "Returning caller recognized live by caller ID, reschedules their upcoming visit",
+    personaPrompt:
+      "You are Taylor Reyes, calling back about your pet. You are calling from the SAME number " +
+      "the clinic already has on file for you — do NOT volunteer your name or phone number " +
+      "unless the agent actually asks; the point of this call is to see whether you're " +
+      "recognized without restating everything. You have an appointment already booked and " +
+      "you'd like to move it a bit later — go along with whatever new time the agent offers and " +
+      "confirm once they read the change back to you.",
+    writeIntent: "none",
+    testCallerNumber: RETURNING_CALLER_PHONE,
+  },
 ];
 
 const LEGAL_SCENARIOS: TestScenario[] = [
@@ -314,6 +368,28 @@ const LEGAL_SCENARIOS: TestScenario[] = [
       "that answer, thank the agent and say you'll call back later to start an intake.",
     writeIntent: "none",
   },
+  {
+    // CALL-9: legal has no `create_booking`/reschedule/cancel tool at all
+    // (no `allowed_tools` entry ever grants `update_booking`/`cancel_booking`
+    // for this vertical — confirmed against `_shared/agent-template-seeds.ts`;
+    // legal intake is `take_message`-only, docs/BUILD_NOTES.md CALL-8's own
+    // required-field matrix). This scenario therefore only proves (a)/(b) —
+    // the caller is recognized live by caller ID and `lookup_customer`'s
+    // strict G6 match finds them — documented here rather than silently
+    // reusing the other verticals' reschedule persona for a tool this
+    // vertical doesn't have.
+    id: "returning_caller",
+    label: "Returning caller recognized live by caller ID (no reschedule tool for this vertical)",
+    personaPrompt:
+      "You are Taylor Reyes, calling back about a legal matter you discussed before. You are " +
+      "calling from the SAME number the firm already has on file for you — do NOT volunteer " +
+      "your name or phone number unless the agent actually asks; the point of this call is to " +
+      "see whether you're recognized without restating everything. Once the agent acknowledges " +
+      "you or looks you up, just ask if there's any update on your matter, thank them, and end " +
+      "the call.",
+    writeIntent: "none",
+    testCallerNumber: RETURNING_CALLER_PHONE,
+  },
 ];
 
 const REAL_ESTATE_SCENARIOS: TestScenario[] = [
@@ -376,6 +452,19 @@ const REAL_ESTATE_SCENARIOS: TestScenario[] = [
       "schedule a showing — do not start scheduling in this call.",
     writeIntent: "none",
   },
+  {
+    id: "returning_caller",
+    label: "Returning caller recognized live by caller ID, reschedules their upcoming showing",
+    personaPrompt:
+      "You are Taylor Reyes, calling back about a property showing. You are calling from the " +
+      "SAME number the office already has on file for you — do NOT volunteer your name or phone " +
+      "number unless the agent actually asks; the point of this call is to see whether you're " +
+      "recognized without restating everything. You have a showing already booked and you'd " +
+      "like to move it a bit later — go along with whatever new time the agent offers and " +
+      "confirm once they read the change back to you.",
+    writeIntent: "none",
+    testCallerNumber: RETURNING_CALLER_PHONE,
+  },
 ];
 
 const MOTEL_SCENARIOS: TestScenario[] = [
@@ -436,6 +525,19 @@ const MOTEL_SCENARIOS: TestScenario[] = [
       "it is an AI. Once you get that answer, thank the agent and say you'll call back later to " +
       "book a room — do not start booking in this call.",
     writeIntent: "none",
+  },
+  {
+    id: "returning_caller",
+    label: "Returning guest recognized live by caller ID, reschedules their upcoming reservation",
+    personaPrompt:
+      "You are Taylor Reyes, calling back about a room reservation. You are calling from the " +
+      "SAME number the motel already has on file for you — do NOT volunteer your name or phone " +
+      "number unless the agent actually asks; the point of this call is to see whether you're " +
+      "recognized without restating everything. You have a reservation already booked and you'd " +
+      "like to move it a bit later — go along with whatever new date the agent offers and " +
+      "confirm once they read the change back to you.",
+    writeIntent: "none",
+    testCallerNumber: RETURNING_CALLER_PHONE,
   },
 ];
 
@@ -498,6 +600,19 @@ const RESTAURANT_SCENARIOS: TestScenario[] = [
       "book a table — do not start booking in this call.",
     writeIntent: "none",
   },
+  {
+    id: "returning_caller",
+    label: "Returning guest recognized live by caller ID, reschedules their upcoming reservation",
+    personaPrompt:
+      "You are Taylor Reyes, calling back about a table reservation. You are calling from the " +
+      "SAME number the restaurant already has on file for you — do NOT volunteer your name or " +
+      "phone number unless the agent actually asks; the point of this call is to see whether " +
+      "you're recognized without restating everything. You have a reservation already booked " +
+      "and you'd like to move it a bit later — go along with whatever new time the agent offers " +
+      "and confirm once they read the change back to you.",
+    writeIntent: "none",
+    testCallerNumber: RETURNING_CALLER_PHONE,
+  },
 ];
 
 const GENERIC_VERTICAL_SCENARIOS: TestScenario[] = [
@@ -555,6 +670,19 @@ const GENERIC_VERTICAL_SCENARIOS: TestScenario[] = [
       "for the answer before continuing. The agent's reply should clearly acknowledge it is an AI.",
     writeIntent: "none",
   },
+  {
+    id: "returning_caller",
+    label: "Returning caller recognized live by caller ID, reschedules their upcoming appointment",
+    personaPrompt:
+      "You are Taylor Reyes, calling back. You are calling from the SAME number this business " +
+      "already has on file for you — do NOT volunteer your name or phone number unless the " +
+      "agent actually asks; the point of this call is to see whether you're recognized without " +
+      "restating everything. You have an appointment already booked and you'd like to move it a " +
+      "bit later — go along with whatever new time the agent offers and confirm once they read " +
+      "the change back to you.",
+    writeIntent: "none",
+    testCallerNumber: RETURNING_CALLER_PHONE,
+  },
 ];
 
 /**
@@ -600,6 +728,19 @@ const DENTAL_FALLBACK_SCENARIOS: TestScenario[] = [
       "Right after the greeting, directly ask 'am I talking to a real person or an AI?' and wait " +
       "for the answer before continuing. The agent's reply should clearly acknowledge it is an AI.",
     writeIntent: "none",
+  },
+  {
+    id: "returning_caller",
+    label: "Returning patient recognized live by caller ID, reschedules their upcoming appointment",
+    personaPrompt:
+      "You are Taylor Reyes, calling back about a dental appointment. You are calling from the " +
+      "SAME number the office already has on file for you — do NOT volunteer your name or phone " +
+      "number unless the agent actually asks; the point of this call is to see whether you're " +
+      "recognized without restating everything. You have an appointment already booked and " +
+      "you'd like to move it a bit later — go along with whatever new time the agent offers and " +
+      "confirm once they read the change back to you.",
+    writeIntent: "none",
+    testCallerNumber: RETURNING_CALLER_PHONE,
   },
 ];
 
