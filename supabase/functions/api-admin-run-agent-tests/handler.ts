@@ -10,9 +10,11 @@ import {
   createTestCaseDefinition,
   listTestRuns,
 } from "../_shared/providers/retell.ts";
+import type { TestScenario, WriteIntent } from "../_shared/test-scenarios.ts";
 import { scenariosForVertical } from "../_shared/test-scenarios.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import type { Vertical } from "../_shared/vertical-defaults.ts";
+import { getMissingRequiredFields } from "../_shared/vertical-intake.ts";
 // CALL-7: same cross-function-folder import pattern already established by
 // `worker-tick/handler.ts` (imports from `../worker-adapter-push/handler.ts`
 // etc.) and `job-reconciliation/handler.ts` (imports `../voice-events/
@@ -120,6 +122,170 @@ export interface ScenarioResult {
    * multi-turn conversation before it reached its `tool_calls`/loop-abort
    * point, the exact thing this response exists to help diagnose. */
   transcript_preview: string | null;
+  /**
+   * CALL-8 (docs/BUILD_PLAN.md): "did the agent actually collect every
+   * detail this vertical needs for this write intent, not just settle
+   * `pass`?" — `null` for a `writeIntent: "none"` scenario (nothing to
+   * verify) or when Retell itself never reached `pass`/`fail` for it (a
+   * missing row would be a `settled: false`/`error`-state artifact, not a
+   * real field-capture failure). Populated by `verifyScenarioFields` once
+   * the batch settles, from the LIVE DB row the scenario's own write tool
+   * call produced (`bookings`/`orders` joined to `customers` by this
+   * scenario's own unique `expectedPhone`; `call_logs.structured_booking_payload`
+   * for `take_message` — see `test-scenarios.ts#TestScenario.expectedPhone`'s
+   * own doc comment for the one documented take_message/same-batch
+   * attribution limitation).
+   */
+  field_capture: {
+    write_intent: Exclude<WriteIntent, "none">;
+    row_found: boolean;
+    fields_required: string[];
+    fields_captured: string[];
+    fields_missing: string[];
+  } | null;
+}
+
+/**
+ * CALL-8: reconstructs the same `{customer: {name, phone}, start, end,
+ * party_size, structured_payload}` / `{caller_name, caller_phone,
+ * message_text, structured_payload}` shape `_shared/vertical-intake.ts#getMissingRequiredFields`
+ * checks against, FROM the real row the scenario's write tool call
+ * produced — this is the live-DB-facts version of the exact same gate
+ * `voice-tools/handler.ts#applyIntakeGate` already enforced BEFORE that row
+ * was ever written, so a `row_found: true` result with `fields_missing: []`
+ * is real, end-to-end proof the required fields both survived the call and
+ * landed durably, not just that the model said the right words at some
+ * point in the transcript.
+ */
+async function fetchScenarioIntakeArgs(
+  sql: SqlClient,
+  tenantId: string,
+  scenario: TestScenario,
+  startedAt: string,
+): Promise<{ found: boolean; args: Record<string, unknown> }> {
+  const phone = scenario.expectedPhone;
+  if (!phone) return { found: false, args: {} };
+
+  if (scenario.writeIntent === "create_booking") {
+    const rows = await sql<{
+      start_at: string;
+      end_at: string;
+      party_size: number | null;
+      structured_payload: Record<string, unknown> | null;
+      customer_name: string | null;
+      customer_phone: string;
+    }>`
+      select b.start_at, b.end_at, b.party_size, b.structured_payload,
+        c.name as customer_name, c.phone_e164 as customer_phone
+      from public.bookings b
+      join public.customers c on c.id = b.customer_id
+      where b.tenant_id = ${tenantId} and c.phone_e164 = ${phone} and b.created_at >= ${startedAt}
+      order by b.created_at desc
+      limit 1
+    `;
+    const row = rows[0];
+    if (!row) return { found: false, args: {} };
+    return {
+      found: true,
+      args: {
+        customer: { name: row.customer_name, phone: row.customer_phone },
+        start: row.start_at,
+        end: row.end_at,
+        party_size: row.party_size,
+        structured_payload: row.structured_payload ?? {},
+      },
+    };
+  }
+
+  if (scenario.writeIntent === "create_order") {
+    const rows = await sql<{ customer_name: string | null; customer_phone: string }>`
+      select c.name as customer_name, c.phone_e164 as customer_phone
+      from public.orders o
+      join public.customers c on c.id = o.customer_id
+      where o.tenant_id = ${tenantId} and c.phone_e164 = ${phone} and o.created_at >= ${startedAt}
+      order by o.created_at desc
+      limit 1
+    `;
+    const row = rows[0];
+    if (!row) return { found: false, args: {} };
+    return {
+      found: true,
+      args: { customer: { name: row.customer_name, phone: row.customer_phone } },
+    };
+  }
+
+  // take_message — see `TestScenario.expectedPhone`'s own doc comment for
+  // the documented same-batch/same-vertical multi-take_message-scenario
+  // attribution limitation (`call_logs` is a per-TENANT, not per-scenario,
+  // placeholder row on a batch-test run). `caller_name`/`caller_phone` were
+  // folded into `structured_booking_payload` (voice-tools/tools/take_message.ts,
+  // CALL-8) specifically so this is queryable at all regardless of whether
+  // `agent_configs.transfer_number` is configured (every test tenant has
+  // none — CALL-4).
+  const rows = await sql<{
+    message_text: string | null;
+    structured_booking_payload: Record<string, unknown> | null;
+  }>`
+    select message_text, structured_booking_payload
+    from public.call_logs
+    where tenant_id = ${tenantId}
+      and structured_booking_payload ->> 'caller_phone' = ${phone}
+      and started_at >= ${startedAt}
+    order by started_at desc
+    limit 1
+  `;
+  const row = rows[0];
+  if (!row) return { found: false, args: {} };
+  const payload = row.structured_booking_payload ?? {};
+  return {
+    found: true,
+    args: {
+      caller_name: payload["caller_name"],
+      caller_phone: payload["caller_phone"],
+      message_text: row.message_text,
+      structured_payload: payload,
+    },
+  };
+}
+
+/**
+ * CALL-8: populates `ScenarioResult.field_capture` for every settled
+ * scenario whose `TestScenario` declares a `writeIntent !== "none"`.
+ * Deliberately does NOT downgrade Retell's own `pass`/`fail`/`error`
+ * `status` — a scenario that settled `pass` with `fields_missing.length >
+ * 0` is real, actionable evidence the agent said the right things but
+ * didn't actually collect/persist everything required, which the caller
+ * (the CALL-8 test-run report) surfaces explicitly rather than silently
+ * folding into a binary pass/fail Retell's own transcript-only judge can't
+ * see.
+ */
+async function verifyScenarioFields(
+  sql: SqlClient,
+  tenantId: string,
+  vertical: Vertical,
+  scenarios: TestScenario[],
+  startedAt: string,
+  results: ScenarioResult[],
+): Promise<void> {
+  const byId = new Map(scenarios.map((s) => [s.id, s]));
+  for (const result of results) {
+    const scenario = byId.get(result.case_id);
+    if (!scenario || scenario.writeIntent === "none") continue;
+    if (result.status !== "pass" && result.status !== "fail") continue; // pending/in_progress/error: nothing settled to check
+    const { found, args } = await fetchScenarioIntakeArgs(sql, tenantId, scenario, startedAt);
+    const required = getMissingRequiredFields(vertical, scenario.writeIntent, {});
+    const requiredPaths = required.map((f) => f.path);
+    const missing = found
+      ? getMissingRequiredFields(vertical, scenario.writeIntent, args).map((f) => f.path)
+      : requiredPaths;
+    result.field_capture = {
+      write_intent: scenario.writeIntent,
+      row_found: found,
+      fields_required: requiredPaths,
+      fields_captured: requiredPaths.filter((p) => !missing.includes(p)),
+      fields_missing: missing,
+    };
+  }
 }
 
 export interface ToolHealthCount {
@@ -263,6 +429,7 @@ async function pollBatch(
             job?.transcript_snapshot != null
               ? JSON.stringify(job.transcript_snapshot).slice(0, 12000)
               : null,
+          field_capture: null,
         };
       });
       return { settled: allSettled, results };
@@ -282,6 +449,7 @@ async function pollBatch(
         job?.transcript_snapshot != null
           ? JSON.stringify(job.transcript_snapshot).slice(0, 12000)
           : null,
+      field_capture: null,
     };
   });
   return { settled: true, results };
@@ -413,17 +581,28 @@ export async function runAgentTests(
   let batchJobId: string;
   let caseDefinitions: Array<{ case_id: string; definition_id: string }>;
   let startedAt: string;
+  // CALL-8: needed after polling settles, to look up this vertical's
+  // `TestScenario[]`/required-field matrix for `verifyScenarioFields` —
+  // populated on BOTH the fresh-run and resumed-run paths (a resume call
+  // never re-fetches the tenant row otherwise, since everything else it
+  // needs already travels in `req.resume`).
+  let vertical: Vertical | null = null;
 
   if (req.resume) {
     batchJobId = req.resume.batch_job_id;
     caseDefinitions = req.resume.case_definitions;
     startedAt = req.resume.started_at;
+    const tenantRows = await sql<{ vertical: Vertical }>`
+      select vertical from public.tenants where id = ${req.tenant_id}
+    `;
+    vertical = tenantRows[0]?.vertical ?? null;
   } else {
     const tenantRows = await sql<{ vertical: Vertical; timezone: string; business_name: string }>`
       select vertical, timezone, name as business_name from public.tenants where id = ${req.tenant_id}
     `;
     const tenant = tenantRows[0];
     if (!tenant) return { status: 404, body: { error: "tenant_not_found" } };
+    vertical = tenant.vertical;
 
     const configRows = await sql<{
       compiled_config: Record<string, unknown> | null;
@@ -531,6 +710,22 @@ export async function runAgentTests(
   }
 
   const { settled, results } = await pollBatch(deps, batchJobId, caseDefinitions);
+
+  // CALL-8 (docs/BUILD_PLAN.md): only once the batch has genuinely settled
+  // (never on a `settled: false` resumable response — nothing to check yet)
+  // and only when `vertical` resolved (always true past this point in
+  // practice; the `tenant_not_found`/`no_matching_scenarios` early returns
+  // above already cover the cases where it wouldn't).
+  if (settled && vertical) {
+    await verifyScenarioFields(
+      sql,
+      req.tenant_id,
+      vertical,
+      scenariosForVertical(vertical),
+      startedAt,
+      results,
+    );
+  }
 
   const toolHealthRows = await sql<{ tool_name: string; cnt: number; success_cnt: number }>`
     select tool_name, count(*)::int as cnt, count(*) filter (where success)::int as success_cnt

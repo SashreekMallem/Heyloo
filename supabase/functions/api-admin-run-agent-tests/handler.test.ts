@@ -177,6 +177,262 @@ describe("runAgentTests", () => {
     expect(body.resume?.batch_job_id).toBe("batch_1");
   });
 
+  // CALL-8 (docs/BUILD_PLAN.md) — field_capture verification against the
+  // real DB row a write-intent scenario's tool call produced.
+  describe("CALL-8: field_capture (required-field verification per scenario)", () => {
+    it("reports fields_missing: [] once the real bookings row has every auto-required field, for the scenario whose expectedPhone matches", async () => {
+      const { sql } = makeSql({
+        "from public.tenants where id": [{ vertical: "auto", business_name: "Riverside Auto" }],
+        "from public.agent_configs": [
+          {
+            compiled_config: {
+              response_engine: { type: "conversation-flow", conversation_flow_id: "flow_1" },
+            },
+          },
+        ],
+        "from public.bookings b": [
+          {
+            start_at: "2026-01-05T15:00:00Z",
+            end_at: "2026-01-05T15:30:00Z",
+            party_size: null,
+            structured_payload: {
+              vehicle_year: 2019,
+              vehicle_make: "Honda",
+              vehicle_model: "Civic",
+              symptom_category: "oil_change",
+            },
+            customer_name: "Jamie Rivera",
+            customer_phone: "+15552010199",
+          },
+        ],
+        "from public.tool_health": [],
+        "select count(*)::int as cnt from public.call_logs": [{ cnt: 0 }],
+      });
+      const retellFetch = async (url: string) => {
+        if (url.includes("/create-test-case-definition")) {
+          return jsonResponse({ test_case_definition_id: "def_1" });
+        }
+        if (url.includes("/create-batch-test")) {
+          return jsonResponse({ test_case_batch_job_id: "batch_1" });
+        }
+        if (url.includes("/v2/list-test-runs/")) {
+          return jsonResponse({
+            items: [
+              {
+                test_case_job_id: "job_0",
+                status: "pass",
+                test_case_definition_id: "def_1",
+                result_explanation: "ok",
+                transcript_snapshot: {},
+              },
+            ],
+          });
+        }
+        throw new Error(`unexpected call: ${url}`);
+      };
+      const result = await runAgentTests(
+        sql,
+        { tenant_id: "t1", scenarios: ["book_new_caller"] },
+        { retellFetch, retellApiKey: "key", pollIntervalMs: 0, pollBudgetMs: 5000, logger },
+      );
+      const body = result.body as {
+        results: Array<{
+          case_id: string;
+          field_capture: {
+            write_intent: string;
+            row_found: boolean;
+            fields_missing: string[];
+            fields_captured: string[];
+          } | null;
+        }>;
+      };
+      const scenario = body.results.find((r) => r.case_id === "book_new_caller");
+      expect(scenario?.field_capture).toEqual(
+        expect.objectContaining({
+          write_intent: "create_booking",
+          row_found: true,
+          fields_missing: [],
+        }),
+      );
+      expect(scenario?.field_capture?.fields_captured).toEqual(
+        expect.arrayContaining([
+          "customer.name",
+          "customer.phone",
+          "start",
+          "end",
+          "structured_payload.vehicle_year",
+          "structured_payload.vehicle_make",
+          "structured_payload.vehicle_model",
+          "structured_payload.symptom_category",
+        ]),
+      );
+    });
+
+    it("reports the exact missing fields (never crashes) when no matching bookings row exists at all", async () => {
+      const { sql } = makeSql({
+        "from public.tenants where id": [{ vertical: "auto", business_name: "Riverside Auto" }],
+        "from public.agent_configs": [
+          {
+            compiled_config: {
+              response_engine: { type: "conversation-flow", conversation_flow_id: "flow_1" },
+            },
+          },
+        ],
+        "from public.tool_health": [],
+        "select count(*)::int as cnt from public.call_logs": [{ cnt: 0 }],
+      });
+      const retellFetch = async (url: string) => {
+        if (url.includes("/create-test-case-definition")) {
+          return jsonResponse({ test_case_definition_id: "def_1" });
+        }
+        if (url.includes("/create-batch-test")) {
+          return jsonResponse({ test_case_batch_job_id: "batch_1" });
+        }
+        if (url.includes("/v2/list-test-runs/")) {
+          return jsonResponse({
+            items: [
+              {
+                test_case_job_id: "job_0",
+                status: "fail",
+                test_case_definition_id: "def_1",
+                result_explanation: "did not book",
+              },
+            ],
+          });
+        }
+        throw new Error(`unexpected call: ${url}`);
+      };
+      const result = await runAgentTests(
+        sql,
+        { tenant_id: "t1", scenarios: ["book_new_caller"] },
+        { retellFetch, retellApiKey: "key", pollIntervalMs: 0, pollBudgetMs: 5000, logger },
+      );
+      const body = result.body as {
+        results: Array<{
+          case_id: string;
+          field_capture: { row_found: boolean; fields_missing: string[] } | null;
+        }>;
+      };
+      const scenario = body.results.find((r) => r.case_id === "book_new_caller");
+      expect(scenario?.field_capture?.row_found).toBe(false);
+      expect(scenario?.field_capture?.fields_missing.length).toBeGreaterThan(0);
+    });
+
+    it("verifies take_message intent from call_logs.structured_booking_payload (caller_phone-matched), for a vertical whose take_message overlay requires extra fields (legal)", async () => {
+      const { sql } = makeSql({
+        "from public.tenants where id": [{ vertical: "legal", business_name: "Firstlight Legal" }],
+        "from public.agent_configs": [
+          {
+            compiled_config: {
+              response_engine: { type: "multi-prompt", llm_id: "llm_1" },
+            },
+          },
+        ],
+        "structured_booking_payload ->> 'caller_phone'": [
+          {
+            message_text: "New client intake.",
+            structured_booking_payload: {
+              caller_name: "Taylor Brooks",
+              caller_phone: "+15552010166",
+              matter_type: "car accident",
+              opposing_party: "Jordan Reyes",
+              urgency: "standard",
+            },
+          },
+        ],
+        "from public.tool_health": [],
+        "select count(*)::int as cnt from public.call_logs": [{ cnt: 0 }],
+      });
+      const retellFetch = async (url: string) => {
+        if (url.includes("/create-test-case-definition")) {
+          return jsonResponse({ test_case_definition_id: "def_1" });
+        }
+        if (url.includes("/create-batch-test")) {
+          return jsonResponse({ test_case_batch_job_id: "batch_1" });
+        }
+        if (url.includes("/v2/list-test-runs/")) {
+          return jsonResponse({
+            items: [
+              {
+                test_case_job_id: "job_0",
+                status: "pass",
+                test_case_definition_id: "def_1",
+                result_explanation: "ok",
+              },
+            ],
+          });
+        }
+        throw new Error(`unexpected call: ${url}`);
+      };
+      const result = await runAgentTests(
+        sql,
+        { tenant_id: "t1", scenarios: ["new_client_intake"] },
+        { retellFetch, retellApiKey: "key", pollIntervalMs: 0, pollBudgetMs: 5000, logger },
+      );
+      const body = result.body as {
+        results: Array<{
+          case_id: string;
+          field_capture: {
+            write_intent: string;
+            row_found: boolean;
+            fields_missing: string[];
+          } | null;
+        }>;
+      };
+      const scenario = body.results.find((r) => r.case_id === "new_client_intake");
+      expect(scenario?.field_capture).toEqual(
+        expect.objectContaining({
+          write_intent: "take_message",
+          row_found: true,
+          fields_missing: [],
+        }),
+      );
+    });
+
+    it("leaves field_capture null for a writeIntent:'none' scenario (e.g. faq_hours_pricing)", async () => {
+      const { sql } = makeSql({
+        "from public.tenants where id": [{ vertical: "auto", business_name: "Riverside Auto" }],
+        "from public.agent_configs": [
+          {
+            compiled_config: {
+              response_engine: { type: "conversation-flow", conversation_flow_id: "flow_1" },
+            },
+          },
+        ],
+        "from public.tool_health": [],
+        "select count(*)::int as cnt from public.call_logs": [{ cnt: 0 }],
+      });
+      const retellFetch = async (url: string) => {
+        if (url.includes("/create-test-case-definition")) {
+          return jsonResponse({ test_case_definition_id: "def_1" });
+        }
+        if (url.includes("/create-batch-test")) {
+          return jsonResponse({ test_case_batch_job_id: "batch_1" });
+        }
+        if (url.includes("/v2/list-test-runs/")) {
+          return jsonResponse({
+            items: [
+              {
+                test_case_job_id: "job_0",
+                status: "pass",
+                test_case_definition_id: "def_1",
+                result_explanation: "ok",
+              },
+            ],
+          });
+        }
+        throw new Error(`unexpected call: ${url}`);
+      };
+      const result = await runAgentTests(
+        sql,
+        { tenant_id: "t1", scenarios: ["faq_hours_pricing"] },
+        { retellFetch, retellApiKey: "key", pollIntervalMs: 0, pollBudgetMs: 5000, logger },
+      );
+      const body = result.body as { results: Array<{ case_id: string; field_capture: unknown }> };
+      expect(body.results.find((r) => r.case_id === "faq_hours_pricing")?.field_capture).toBeNull();
+    });
+  });
+
   it("resumes an in-flight batch without recreating test case definitions", async () => {
     const { sql } = makeSql({
       "from public.tool_health": [],
