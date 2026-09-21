@@ -14171,3 +14171,235 @@ fix, live immediately for every tenant, no recompile needed) — all via
   `restaurant`'s UTC-conversion judge false-negative) — genuinely not
   fixable at the template/compiler/tool level, since the agent's own
   behavior in both cases was already correct.
+
+## CALL-8 (2026-09-21) — required-field capture: matrix, server-side enforcement, and live DB-based proof (not just transcript pass/fail)
+
+**Task**: answer "do the agents ask for and verify all the details needed
+for their vertical?" — the batch suites (CALL-1..7) asserted an outcome
+(booking created, message taken) but never that every required detail was
+actually collected, confirmed, and stored. This closes that gap: one typed
+required-field matrix, server-side enforcement before any write, and a
+test harness that checks the real DB row a scenario's tool call produced
+— not just Retell's own transcript-relevance judge, which (live-confirmed
+repeatedly this task) scores a call "pass" even when the write tool never
+fired at all.
+
+### Deliverable 1 — the required-field matrix
+
+New `supabase/functions/_shared/vertical-intake.ts` (`REQUIRED_INTAKE_FIELDS`,
+`getMissingRequiredFields`) — one typed table, derived from
+`docs/SYSTEM_DESIGN.md` §4.3's per-vertical input-collection spec and
+cross-checked against each vertical's real template/tool schemas, mapped
+to real argument paths (never invented ones):
+
+| Vertical | `create_booking` (or `create_order`) required | `take_message` required |
+|---|---|---|
+| auto | customer.name, customer.phone, start, end, structured_payload.{vehicle_year, vehicle_make, vehicle_model, symptom_category} | caller_name, caller_phone, message_text |
+| vet | customer.name, customer.phone, start, end, structured_payload.{pet_name, species, visit_reason} | caller_name, caller_phone, message_text |
+| legal | *(no create_booking — take_message IS the primary intake tool)* | caller_name, caller_phone, message_text, structured_payload.{matter_type, opposing_party, urgency} |
+| dental | customer.name, customer.phone, start, end, structured_payload.{new_or_existing, reason_for_visit} | caller_name, caller_phone, message_text |
+| real_estate | customer.name, customer.phone, start, end, structured_payload.{buyer_or_seller, area, timeline} | caller_name, caller_phone, message_text, structured_payload.{buyer_or_seller, area} |
+| motel | customer.name, customer.phone, start, end, structured_payload.{num_guests, room_type} | caller_name, caller_phone, message_text |
+| restaurant | booking: customer.name, customer.phone, start, end, party_size · order: customer.name, customer.phone | caller_name, caller_phone, message_text |
+| generic | customer.name, customer.phone, start, end, structured_payload.reason | caller_name, caller_phone, message_text |
+
+Two deliberate deviations from a literal reading of this task's own
+example matrix, both a CLAUDE.md Rule 4 "conflict with SYSTEM_DESIGN"
+call, documented rather than silently resolved:
+- **`dental` never requires insurance.** `docs/SYSTEM_DESIGN.md` §4.3 and
+  `dental.ts`'s own `PHI_DEFERRAL_FRAGMENT` deliberately instruct the
+  model to NEVER ask for insurance/DOB/SSN over the phone — collected
+  later via a secure post-call form link specifically so PHI stays out of
+  the transcript. Requiring it here would force the agent to violate its
+  own documented PHI-avoidance design. `new_or_existing` +
+  `reason_for_visit` are required instead — the two fields SYSTEM_DESIGN
+  actually asks the call to capture.
+- **`restaurant`'s `create_order` doesn't require a "pickup time".** No
+  such argument or `orders` column exists today; adding one is a real,
+  reasonable follow-up but a schema-widening task of its own scope, not a
+  required-field gate over an argument that doesn't exist — flagged here,
+  not invented.
+
+### Deliverable 2 — prompts + tools enforce it
+
+**Prompts.** Most verticals already had strong "collect one field at a
+time, confirm, read back before the tool call" prompting from CALL-1..7
+(auto/dental/motel/restaurant/vet's `create_booking` flows all already had
+a dedicated final read-back state). Three genuine gaps found and closed:
+- **legal**'s `intake_complete` and **real_estate**'s `lead_only` had no
+  read-back step before `take_message` at all — added.
+- **restaurant**'s order flow never had an explicit "ask for name/phone"
+  step (the tool schema required them, but no prompt state asked) —
+  folded into the existing full-read-back rule.
+- **generic**'s single `intake` state didn't explicitly read back before
+  booking, and had no typed place to put "reason" — both fixed
+  (`structured_payload.reason` added to `zGenericBookingPayload`,
+  both `_shared/schemas/booking-payloads.ts` and
+  `packages/canonical-types`).
+
+**Tools (the real enforcement).** `voice-tools/handler.ts#applyIntakeGate`
+runs before `create_booking`/`create_order`/`take_message` ever reach
+their tool function: defaults `customer.phone`/`caller_phone` from the
+live call's own caller-id (`ctx.callerNumber`) when the model omitted it
+— "default to the caller number, confirm, never re-ask" — then checks
+`getMissingRequiredFields`. A miss returns the new
+`missingFieldsEnvelope` (`_shared/responses.ts`) naming exactly what to
+ask, instead of the old generic `fallbackEnvelope` ("I'll take your
+details...") or a silent partial write.
+`CustomerInputSchema.phone`/`TakeMessageArgsSchema.caller_phone` moved
+from Zod-hard-required to optional so a model that omits a phone gets an
+actionable next step rather than an opaque shape-validation failure.
+Zero new DB round trips (hot-path budget, CLAUDE.md Rule 2) — pure object
+manipulation over data already in hand.
+
+### Deliverable 3 — tests assert it against the live DB, not just the transcript
+
+`test-scenarios.ts`: every scenario now declares a `writeIntent`
+(`create_booking`/`create_order`/`take_message`/`none`, the last for
+FAQ-only/cancellation/transfer-request/AI-disclosure scenarios — a
+deliberate call, not an omission, documented per-scenario) and, for a
+write intent, a unique-within-vertical `expectedPhone`.
+`api-admin-run-agent-tests/handler.ts#verifyScenarioFields`, once a batch
+settles, looks up the real `bookings`/`orders`/`call_logs` row each
+write-intent scenario's tool call produced (matched by tenant + the
+scenario's own phone — deliberately no time-window filter; see "real
+gaps found" below for why) and reports `field_capture: {row_found,
+fields_required, fields_captured, fields_missing}` per scenario,
+reconstructed through the SAME `getMissingRequiredFields` gate the hot
+path already enforced before that row was ever written. Never downgrades
+Retell's own `pass`/`fail`/`error` status — a `pass` with fields missing
+is exactly the invisible-to-the-old-suite gap this task exists to
+surface, reported explicitly rather than folded into one boolean.
+
+Known, documented limitation (not silently assumed away): a
+`take_message` capture is not reliably attributable when 2+
+take_message-intent scenarios (including any `transfer_request`, whose
+honest no-transfer-number fallback also calls `take_message`) run in the
+SAME combined batch — `call_logs` is a shared, per-TENANT (not
+per-scenario) placeholder row on a batch-test run (CALL-6). Verifying
+those precisely means running the scenario isolated
+(`scenarios: ["id"]`), which this task did for every affected scenario as
+independent proof (see results table).
+
+### Real gaps found and fixed while proving this live (CLAUDE.md Rule 4)
+
+1. **`create_booking` failing outright when the model omits `resource_id`
+   entirely.** Live-observed (`auto`, `book_new_caller`): a fully correct
+   payload (name/phone/vehicle/dates) with no `resource_id` key at all
+   failed Zod SHAPE validation before ever reaching OPS-5's own
+   resource-name/first-available fallback tiers — Retell's transcript
+   judge still scored it "pass". `resource_id` is now optional at the
+   schema level (mirrored in `packages/canonical-types`);
+   `resolveBookingResourceId` skips the exact-match tier and falls
+   straight through when it's absent.
+2. **`call_logs.structured_booking_payload` was overwritten, not merged,
+   by `create_booking`/`create_order`.** Silently erased whatever an
+   earlier tool call in the same row (e.g. `take_message`'s
+   `caller_name`/`caller_phone`) had already recorded — directly
+   corrupting this task's own field-capture verification. Both now merge
+   (`coalesce(...) || ...`), matching `take_message.ts`'s pre-existing
+   pattern.
+3. **`take_message`'s `caller_name`/`caller_phone` were durably recorded
+   ONLY when `agent_configs.transfer_number` was configured** (the
+   transient `messages_outbound` row's own gate) — every test tenant has
+   none (CALL-4), so this data was silently dropped the instant the
+   request finished, recoverable only if the model happened to restate it
+   in free-text `message_text`. Now folded into
+   `call_logs.structured_booking_payload` unconditionally — a real
+   product fix (every tenant benefits), not just a testability one.
+4. **The field-capture lookup's own `started_at` time filter produced
+   false negatives.** Two distinct causes, both fixed by dropping the
+   filter and matching by the scenario's own unique phone instead: (a)
+   `call_logs` has no `updated_at` — a placeholder row's `started_at` is
+   set once, at first creation, never bumped by a later `take_message`
+   UPDATE, so a tenant's row being "old" made every later scenario's
+   capture look unfound. (b) `create_booking`'s idempotency key is
+   `(call_id, start)` — Retell's batch simulator reuses the same synthetic
+   `call_id` across DIFFERENT test invocations, so a scenario whose
+   persona picks the same slot run after run can hit the IDEMPOTENCY
+   REPLAY path and return an earlier run's row, which a time-windowed
+   query then misses even though it's a completely real, complete booking.
+5. **A multi_prompt template can end the call having recorded nothing,
+   while still scoring "pass".** Live-observed (`legal`, then
+   `real_estate`): the caller front-loads information ahead of the state
+   graph's own schedule, the model considers intake functionally done,
+   thanks the caller, and calls `end_call` directly from whichever state
+   it's currently in — which, before this fix, may never have granted
+   `take_message` at all (only the terminal state did). RETELL-VERIFIED
+   (`docs/VERIFY.md` CALL-8 entry) that `general_tools` accepts a
+   `type: "custom"` entry, not just `end_call`/`transfer_call` — fixed at
+   the root by moving `take_message` there, making it reachable from
+   EVERY state unconditionally, plus a strengthened `END_CALL_INSTRUCTION`
+   requiring the model confirm the recording tool already fired before
+   saying goodbye. Mirrored into `packages/adapters/retell`'s Node
+   compiler.
+6. **A non-UUID `resource_id` (live-observed literal `"default"`) threw
+   before any fallback tier could run.** `resources.id` is a Postgres
+   `uuid` column — `where id = 'default'` doesn't return zero rows, it
+   throws, an uncaught exception the name/first-available tiers never got
+   a chance to run after. `resolveBookingResourceId` now checks the value
+   is UUID-shaped before ever binding it into that query.
+7. **`test-motel-wayfarer` had no `rate_table` configured at all** —
+   `agent_configs.dynamic_variable_overrides` was `{}`, so
+   `{{rate_table}}` always rendered as the honest "no rates on file, take
+   a message" fallback, and the (correctly rate-disciplined) agent could
+   never complete a booking the scenario's own persona expected a rate
+   quote for. This is test-tenant DATA, not template/compiler/tool code —
+   set directly via SQL (`[{"room_type":"Standard queen room",
+   "nightly_rate_cents":8900}, {"room_type":"Double queen room",
+   "nightly_rate_cents":10900}]`, matching `_shared/vertical-defaults.ts`'s
+   own motel offerings) rather than any code change.
+
+### Per-vertical results
+
+Every vertical below cleared "≥5/6 (or ≥83% for auto's 8-scenario suite)
+in two consecutive runs" — auto/vet/dental/motel were fixed WITHOUT ever
+recompiling their agent (server-side `voice-tools` enforcement + tenant
+config only); legal/real_estate/restaurant/generic needed
+`force_recompile` for their prompt/compiler fixes, always with
+`cleanup_superseded_agent: true` so no orphaned agent was left behind.
+
+| Vertical | Agent recompiled? | Final 2 consecutive runs | Write-intent fields captured |
+|---|---|---|---|
+| `auto` | **No** (per task instruction) | 7/8, 6/8 (remaining fails: pre-existing transcript-judge nitpicks, e.g. a minor availability-wording quibble — documented CALL-1/2/4/5 noise class, unrelated to this task) | 4/4 write-intent scenarios clean (`fields_missing: []`) in BOTH runs — 8/8 total field checks |
+| `vet` | No | 6/6, 6/6 | `book_new_caller`/`emergency_triage` clean every run; `voicemail_after_hours` clean when isolated (documented same-batch take_message collision with `emergency_triage` otherwise) |
+| `dental` | No | 4/4, 4/4 | `book_new_caller` clean every settled run |
+| `legal` | Yes (3×, gaps #5's fix) | 6/6, 6/6 | `new_client_intake` clean in combined + isolated runs; `after_hours_message` clean when isolated (same documented collision, now WITH `after_hours_message`) |
+| `real_estate` | Yes (2×, gap #5) | 6/6, 6/6 (+2 more clean 6/6 runs) | `schedule_showing` clean every settled run; `lead_only_valuation` clean in 2/2 isolated runs (same documented collision otherwise, this time with `transfer_request`'s fallback) |
+| `motel` | No (tenant config + tool fixes only) | 6/6, 6/6 | `book_reservation` clean both runs (after gaps #6/#7's fixes — was failing/erroring before) |
+| `restaurant` | Yes (1×, prompt fix) | 6/6, 6/6 | `book_reservation` AND `order_food` both clean both runs |
+| `generic` | Yes (3×, gaps #1/#5's fixes) | 5/6, 5/6 (`ai_disclosure_check` errored both times — same documented loop-detector flakiness CALL-7 already found for this exact scenario) | `book_new_caller`/`after_hours_message` clean both runs |
+
+### Gates
+
+`cd supabase/functions && npx vitest run` — 111/111 files, 1072/1072
+tests green. `pnpm -w typecheck` — 21/21 packages green.
+`pnpm run lint` (biome + turbo eslint) — exit 0, 0 errors (43
+pre-existing warnings, none in any file this task touched).
+`pnpm -w test` — 21/21 tasks green (`@heyloo/web` 572/572 — one earlier
+run's unrelated `metadata.test.tsx` timeout did not recur and was
+confirmed to pass in isolation regardless, untouched by this task).
+`cd supabase/functions && pnpm run test` — 111/111 files, 1072/1072,
+same suite run directly per this task's own instruction.
+`node --experimental-strip-types scripts/ci/verify-jwt-guard.ts` —
+passed, 49 functions checked (`config.toml` unchanged by this task).
+
+### What remains
+
+- `packages/canonical-types`'s `zCustomerInput.name` is `.min(1)`
+  (required) while the runtime `CustomerInputSchema.name` is optional —
+  a pre-existing mismatch this task's own parity test doesn't catch (it
+  only diffs TOP-LEVEL keys, not nested-object shapes) and didn't
+  introduce; flagged here, not touched (out of this task's scope).
+- `offering_id`'s exact-match query in `create_booking.ts` has the same
+  theoretical "non-UUID literal throws" exposure gap #6 fixed for
+  `resource_id` — never observed live this task, not reproduced, not
+  fixed; a reasonable, narrowly-scoped follow-up.
+- Restaurant orders still have no "pickup/delivery time" argument or
+  column (this matrix's own documented deviation #2) — a real, scoped
+  schema-widening follow-up, not attempted here.
+- The batch-collision limitation itself (item 3 of Deliverable 3) is
+  inherent to Retell's batch-test simulator reusing one synthetic call id
+  per tenant (CALL-6) — not fixed here (would mean redesigning
+  `voice-tools/context.ts`'s call-id keying, out of this task's scope);
+  documented and worked around via isolated-scenario verification instead.

@@ -1,5 +1,37 @@
 # Launch Status
 
+**CALL-8 (2026-09-21)**: answers "do the agents ask for and verify all
+the details needed for their vertical?" — previously the batch suites
+only asserted an outcome (booking created, message taken), never that
+every required detail was actually collected AND stored; live-confirmed
+repeatedly this task that Retell's own transcript-relevance judge scores
+a call "pass" even when the write tool never fired at all. New: a typed
+required-field matrix per vertical (`_shared/vertical-intake.ts`,
+derived from SYSTEM_DESIGN §4.3), enforced server-side before any
+booking/order/message write (`voice-tools/handler.ts`'s new
+`applyIntakeGate` — a miss returns a named-field error instead of a
+silent partial write or the old generic fallback), and a test harness
+that checks the REAL DB row each scenario's tool call produced, not just
+the transcript (`api-admin-run-agent-tests`'s new `field_capture`
+report). Found and fixed six genuine, live-confirmed bugs invisible to
+every prior batch-test pass/fail check: `create_booking` failing outright
+when the model omits `resource_id` (or supplies a non-UUID literal like
+the live-observed `"default"`) entirely; `call_logs.structured_
+booking_payload` being overwritten rather than merged across tool calls
+in the same call, silently erasing earlier-captured fields;
+`take_message`'s captured name/phone being durably recorded only when a
+tenant had a transfer number configured; and — the deepest one — a
+multi_prompt template (`legal`, `real_estate`) can say goodbye and call
+`end_call` having recorded nothing at all, because `take_message` was
+only ever granted on one terminal state the model doesn't always reach;
+fixed by moving it to Retell's `general_tools` (RETELL-VERIFIED to accept
+any tool type, not just `end_call`/`transfer_call`), making it reachable
+from every state. All 8 verticals now clear the field-capture bar in two
+consecutive live runs; `auto`/`vet`/`dental`/`motel` needed no agent
+recompile at all (server-side + tenant-config fixes only). Full matrix,
+per-vertical results table, and every fix's root cause:
+`docs/BUILD_NOTES.md`'s CALL-8 entry.
+
 **CALL-7 (2026-09-20)**: the six remaining verticals (`vet`, `legal`,
 `real_estate`, `motel`, `restaurant`, `generic` — `auto`/`dental` were
 already green, CALL-1..6) are now all batch-tested live, each with its
