@@ -14641,3 +14641,520 @@ project (table then cron) succeeded with no errors, which is the same SQL
 CI's re-apply step runs. No new env vars — reuses `CRON_INVOKE_SECRET`,
 `PROVISION_INTERNAL_SECRET`, `SUPABASE_URL`, all already documented in
 `.env.example`.
+
+## CALL-9 (2026-09-21) — pre-call DB lookup proven live; caller-ID recognition wired end-to-end; a live-observed cross-scenario contamination bug found and fixed
+
+**Owner's question**: "Did you test that it pulls data from our database
+before the call, and makes calls to the database during the call, like
+creating a new customer, or fetching the name of an existing customer when
+a call comes in?" — CALL-5/CALL-6/CALL-8 had already proven the DURING-call
+DB path (customer creation on booking, dedup, counters). The PRE-call path
+(`voice-inbound`'s customer-by-phone lookup) had unit tests but had NEVER
+run live — Retell's batch-test simulator and web calls both bypass the
+`/voice-inbound` webhook entirely, and this session cannot sign a Retell
+webhook request itself (CALL-5's own documented limitation). This task
+closes that gap, and along the way found that the pre-call lookup's own
+OUTPUT (`caller_recent_context`) was never actually wired into any
+compiled prompt — the data was being pulled correctly the whole time, but
+no agent ever spoke or acted on it.
+
+### Deliverable 1 — `heyloo_test_caller_number`, a test-only simulated caller number
+
+`voice-tools/context.ts`'s `resolveCallContext` now honors a new
+`heyloo_test_caller_number` dynamic variable, but ONLY on the exact same
+gate that already proves a call is a placeholder/batch-test/QA-harness
+call, never a real one: `isPlaceholderCallId(retellCallId)` (CALL-6's own
+regex — a real Retell call id is always `call_` + lowercase hex; a batch
+test always sends the literal `"playground"`). The override is applied
+inline, per tool call, from `call.retell_llm_dynamic_variables` — the
+same trust boundary `heyloo_tenant_id` already uses (Retell/harness-set
+call metadata, never anything from `args`). A REAL call's `retellCallId`
+never matches `isPlaceholderCallId`, so this branch is provably
+unreachable for a genuine phone/web call, which always keeps resolving
+`ctx.callerNumber` from Retell's own `call.from_number` exactly as before
+— zero behavior change for production traffic.
+
+**Authorization reasoning, spelled out**: this is not a new trust
+boundary, it's the SAME one `heyloo_tenant_id` already established in
+CALL-2 for exactly the same reason (Retell's batch-test payload carries
+no `agent_id`/`to_number`, so the harness has to hand the resolver
+something to key off of). `heyloo_test_caller_number` does the identical
+thing for the one piece of caller identity a real call gets for free
+(caller ID) that a batch test has no other way to simulate. Once
+`ctx.callerNumber` is populated this way, EVERY existing G6 check
+downstream (`lookup_customer`'s strict caller-scope match,
+`update_booking`/`cancel_booking`'s `verifyBookingIdentity`) runs exactly
+as it would for a real caller with that real number — this is what makes
+it possible to prove those checks live at all, since CALL-1's batch-test
+runner never previously supplied anything a G6 guard could authenticate
+against.
+
+**A real, live-observed bug found while proving this**: a placeholder
+call's `call_logs` row is shared per-tenant across EVERY scenario in the
+same Retell batch job (CALL-6's own documented keying —
+`"playground:tenant:" + tenantId` when `agent_id` is absent, which a
+batch-test payload always is). An earlier version of this task's fix
+persisted the test caller number onto that shared row (so it would
+survive a REUSED placeholder row across different runs) and read
+`CallContext.callerNumber` back from the row's stored column. Live-
+observed result: once the `returning_caller` scenario's own turn wrote
+`+15552010288` onto the shared row, the SAME batch job's unrelated
+`cancellation` scenario (a completely different simulated caller, no
+`heyloo_test_caller_number` of its own) inherited that live caller number
+too — `lookup_customer`'s now-fixed "phone optional, defaults to
+`ctx.callerNumber`" behavior (deliverable 3 below) then matched it to
+Taylor Reyes's real seeded account and genuinely cancelled that
+customer's booking, live, in the database. Confirmed live: 5 of the 7
+seeded bookings (every tenant whose suite also runs a `cancellation`
+scenario in the same batch — `auto`/`real_estate`/`motel`/`restaurant`/
+`generic`; `vet`/`dental` have no cancellation scenario and were
+unaffected, `legal` has no bookings table use at all) were found
+`status='cancelled'` immediately after a combined run, with correct
+`cancelled_at` timestamps matching the run window.
+
+Root-caused and fixed at the actual mechanism, not papered over:
+`CallContext.callerNumber` for a placeholder call is now ALWAYS built
+from that exact tool call's own freshly-resolved value (its own
+`heyloo_test_caller_number`/`from_number`, `null` if neither is set) —
+never read back from the shared `call_logs` row at all. A real
+(non-placeholder) call keeps the original CALL-2/CALL-6 behavior
+unchanged (trusting the row's returned value is safe there — a real
+`retell_call_id` is unique to one call, never shared across callers). The
+speculative `on conflict ... caller_number = coalesce(...)` SQL change
+this task's own earlier draft added to `upsertPlaceholderCallLog` was
+reverted — not needed at all once the read-back was removed, since each
+scenario's own conversation carries its own `heyloo_test_caller_number`
+on EVERY tool call it makes (Retell resends `call.retell_llm_dynamic_variables`
+on every function-call invocation), so no persistence was ever required
+for the intended behavior to work. New dedicated regression test
+(`context.test.ts`, "a placeholder call's callerNumber NEVER leaks in
+from the shared row a DIFFERENT scenario already wrote") reproduces the
+exact live bug with a mock fixture carrying the stale contaminated value,
+proving the fix. The 5 live-cancelled bookings were restored
+(`status='confirmed'`, fresh future `start_at`) via direct SQL before
+re-proving; every subsequent run (see the results table below) shows
+zero further contamination.
+
+### Deliverable 2 — the shared pre-call lookup, and a live `simulate` proof
+
+`supabase/functions/_shared/inbound-dynamic-variables.ts` (new) —
+`buildInboundDynamicVariables({sql, logger, now, fromNumber, config})` —
+extracted byte-for-byte from `voice-inbound/handler.ts`'s pre-task body:
+the `customers` lookup by `tenant_id`+`phone_e164` → `caller_recent_context`,
+`greeting_hours_context`/`current_date`/`upcoming_weekday_dates`,
+per-vertical `{{token}}` resolution (`resolveVerticalDynamicVariables`),
+and every `dynamic_variable_overrides` passthrough. `voice-inbound/handler.ts`
+now just fetches its DB row and calls this — no behavior change for a
+real call. `api-admin-run-agent-tests`'s batch-test harness was ALSO
+rewritten to call this SAME function per scenario (`fromNumber` = that
+scenario's own `testCallerNumber` when set, `null` otherwise) instead of
+hand-rolling a thinner subset (its pre-task body only ever set
+`current_date`/`current_weekday`/`upcoming_weekday_dates`/`heyloo_tenant_id`
+plus vertical tokens — never `caller_recent_context`,
+`greeting_hours_context`, `disclosure_line`, etc.). This is the literal
+answer to "is it the same code": yes, now provably so — proving the
+`simulate` action below live proves `voice-inbound`'s own logic, and
+proving a `returning_caller` batch scenario live proves the identical
+code path the batch harness itself now shares with it.
+`createTestCaseDefinition`'s `dynamic_variables` field is Retell's own
+`Record<string, string>` (booleans/arrays coerced to strings losslessly,
+`toRetellDynamicVariableStrings`) — `/voice-inbound`'s own response
+schema has no such constraint (a separate Retell endpoint), so the two
+callers' shared builder returns the richer typed shape and each caller
+converts it for its own endpoint's contract.
+
+**`action: "simulate"`** — new, on `api-admin-run-agent-tests` (same
+`x-internal-secret`-guarded action-dispatch pattern as `api-admin-attach-
+retell-number`'s own `action: "inspect"`, CALL-5): given `tenant_id` +
+optional `from_number`, resolves that tenant's config directly (same
+columns `voice-inbound/handler.ts`'s own query selects, WHERE'd by
+`tenant_id` instead of `phone_numbers.e164` so it works for every test
+tenant, including the six with no phone number attached at all — CALL-5/
+CALL-6) and calls the shared builder, returning exactly the
+`dynamic_variables` a real `call_inbound` webhook would have produced.
+**This is the honest boundary of what's provable from here**: it proves
+the DB-lookup half of the pipeline live, but not the `phone_numbers.e164
+-> tenant_id` routing lookup or the Retell webhook transport/signature
+verification in front of it — those remain provable only by dialing the
+tenant's real attached number (see "What remains provable only by a real
+call" below).
+
+**Live proof, redacted of nothing secret** (`tenant_id` is the public
+test-tenant id, not a credential):
+
+```
+POST /api-admin-run-agent-tests  {"action":"simulate",
+  "tenant_id":"b2efae9d-8309-46d6-a950-31d683616cdc",
+  "from_number":"555-201-0199"}
+-> 200 {
+  "tenant_id": "b2efae9d-8309-46d6-a950-31d683616cdc",
+  "from_number": "+15552010199",
+  "dynamic_variables": {
+    "business_name": "Riverside Auto Repair (TEST)",
+    "assistant_name": "the AI assistant",
+    "greeting_hours_context": "We're currently closed, opening today at 8 AM.",
+    "timezone": "America/New_York",
+    "current_date": "2026-09-21", "current_weekday": "Monday",
+    "upcoming_weekday_dates": "Tuesday=2026-09-22, ..., Monday=2026-09-28",
+    "special_instructions": "", "is_manual_mode": false, "language": "en",
+    "disclosure_line": "Thanks for calling {{business_name}}...",
+    "cancellation_policy_text": "we ask that you let us know ...",
+    "tow_partner_name": "our recommended tow partner",
+    "tow_partner_phone": "the number our team will provide",
+    "vehicle_makes_serviced": "all major makes and models",
+    "caller_recent_context": "Jamie has booked with us before."
+  }
+}
+```
+
+`+15552010199` is a real, already-seeded `customers` row for this tenant
+(Jamie Rivera, from CALL-1's own `book_new_caller` scenario, re-run many
+times over this session — `lifetime_bookings` well above 0) — this
+`caller_recent_context` value is a genuine live read of that row, not a
+fixture. Re-run with an unknown number
+(`"This is a new caller — no prior history is on file; collect their
+name and phone number normally."`) and with no `from_number` at all
+(`"No caller ID is available for this call — treat this as a first-time
+caller and collect their name and phone number normally."`) both
+confirmed live, proving all three branches of the pre-call lookup
+(known returning caller / new caller with a stated number / no caller ID
+at all) work against the real database, not just in unit tests.
+
+### The real gap this surfaced: `caller_recent_context` was completely inert
+
+Before this task, EVERY `/voice-inbound` response already computed and
+sent `caller_recent_context` — but grepping the entire repo for the
+literal placeholder `{{caller_recent_context}}` returned zero matches,
+anywhere, in any compiled prompt. RETELL-VERIFIED live
+(docs.retellai.com/build/dynamic-variables, 2026-09-21, `docs/VERIFY.md`
+CALL-9 entry): Retell does ONLY literal `{{name}}` substitution — a
+dynamic variable that's never referenced by `{{}}` in a prompt is
+completely invisible to the model, full stop, no automatic context
+injection. So for a REAL returning caller, before this task, the pre-call
+DB lookup was already correct and already ran — the agent just never
+knew about it. This directly answers half of the owner's question
+honestly: yes, the data was being pulled; no, nothing was said or done
+with it.
+
+Fixed at the compiler level (`_shared/compiler/template-compiler.ts`), a
+new `CALLER_RECENT_CONTEXT_INSTRUCTION` constant prepended to the START
+state/node of EVERY compile target, right after `disclosure_line` (the
+exact same "known-safe compile-time text ahead of the state's own
+authored prompt" pattern `disclosure_line` itself already uses) —
+`compileConversationFlow` (auto/vet/dental/motel/restaurant), `compileMultiPrompt`
+(legal/real_estate), `compileSinglePrompt` (generic): all three targets
+now say, verbatim, `"Caller history: {{caller_recent_context}} If this
+indicates a known returning caller, acknowledge that naturally early in
+the call... otherwise proceed as a normal first-time caller."`
+`caller_recent_context` itself is now REQUIRED (not `.optional()`) on
+`VoiceInboundDynamicVariablesSchema` and ALWAYS a real sentence from
+`resolveCallerRecentContext` (never omitted) — required precisely because
+it's now referenced by `{{}}` in every compiled prompt, and an omitted/
+optional dynamic variable there would leave a literal unresolved
+placeholder in the model's own instructions, the exact GAP_REGISTER §1.3
+anti-pattern every other resolver in this file already avoids.
+
+### Deliverable 1 cont'd — a real bug `lookup_customer`'s own schema forced
+
+Live-observed while proving `heyloo_test_caller_number`
+end-to-end: `lookup_customer`'s tool schema REQUIRED `phone`
+(`required: ["phone"]`, every vertical, `agent-template-seeds.ts`) even
+though its own description already said "always the number they are
+calling FROM" — but the model has NO way to actually know the true live
+caller-ID number itself (no `{{caller_phone}}`-shaped dynamic variable
+exists, by design — it would be pointless, since a real call's caller ID
+IS the caller's own line, nothing the model needs told to it). A model
+instructed (by this task's `manage_booking` state prompt) to look the
+caller up by "the number they're calling from," but never actually
+knowing that number, had no honest way to satisfy a REQUIRED field — live-
+observed fabricating a plausible-looking placeholder
+(`"+1-555-123-4567"`), which then failed `lookup_customer`'s own strict
+caller-match check on every single attempt, forcing the agent into a
+repeated verify-and-fail loop instead of ever recognizing the caller.
+
+Fixed at the schema + tool level, not papered over with a better prompt
+alone: `phone` is now OPTIONAL on `LookupCustomerArgsSchema`
+(`_shared/schemas/voice-tools.ts`) and on every vertical's compiled tool
+schema (`agent-template-seeds.ts`, all 8 — `required: ["phone"]` dropped
+entirely, description rewritten: "Call this with NO arguments at all to
+check the number this call is actually coming in on — the server already
+knows it and will use it automatically... Only pass `phone`... when there
+is no live caller-ID number to use at all"). `voice-tools/tools/
+lookup_customer.ts`'s G6 guard is UNCHANGED in what it protects — an
+EXPLICIT `args.phone` that disagrees with `ctx.callerNumber` still hits
+the exact same reject as before (`args.phone !== undefined &&
+!samePhone(...)`); the only change is that OMITTING `phone` (the new
+default way this tool is called) skips straight to using the live caller
+number, since there's nothing to authenticate it against — it IS the
+authoritative source. `packages/canonical-types/src/tools.ts`'s
+`zLookupCustomerRequest.phone` was ALSO made optional (unlike prior
+tasks' documented parity gaps left alone, this one broke an actively-
+enforced test — `_shared/schemas/voice-tools.test.ts`'s own "schema
+parity with packages/canonical-types" check — so it had to move in
+lockstep, not just be flagged).
+
+Also fixed, same root cause, one more layer up: the `manage_booking`
+state's own prompt (all 7 booking-capable verticals, byte-identical
+block) previously said "Look them up with lookup_customer using the
+number they're calling from" without saying HOW — live-observed the
+model still asking the caller to STATE their number out loud despite
+the schema fix, because nothing told it to skip that step. Rewritten:
+"Call lookup_customer FIRST, immediately, with NO arguments at all —
+never ask the caller for their phone number before this first attempt...
+If it returns a match (found: true), you already have their booking —
+proceed straight to update_booking/cancel_booking, do not re-ask for
+their name or phone." `booking_id`'s own parameter description on
+`update_booking`/`cancel_booking` also gained "from lookup_customer's own
+recent_bookings list — never invented or guessed," closing the same
+"model has no honest source, so it fabricates one" failure class at that
+field too.
+
+### Deliverable 3 — returning-caller scenarios, every vertical
+
+One seeded returning customer per test tenant — **Taylor Reyes,
+`+15552010288`**, `lifetime_bookings: 3`, one upcoming CONFIRMED booking
+where the vertical books (auto/vet/dental/real_estate/motel/restaurant/
+generic — 7 of 8; `legal` has no `create_booking`/booking concept at all,
+CALL-8's own documented design, not a gap — see that task's required-
+field matrix). New `returning_caller` scenario added to every vertical's
+suite (`_shared/test-scenarios.ts`, `RETURNING_CALLER_PHONE` constant),
+`testCallerNumber: RETURNING_CALLER_PHONE` set so
+`heyloo_test_caller_number` simulates a real caller-ID match live.
+Persona: explicitly told NOT to volunteer name/phone unless asked (the
+whole point is proving recognition without restating), then to ask for
+an existing booking to be moved later. For the 7 booking verticals this
+exercises (a) greeted-by-name recognition, (b) `lookup_customer`'s
+STRICT G6 caller-match path finding the real seeded booking, and (c) an
+actual `update_booking` reschedule against a real `booking_id` from that
+result — all three in one live, end-to-end proof. `legal`'s own version
+proves only (a)/(b) — documented in its own scenario comment as a real
+vertical-design fact, not something to build a booking tool for (Rule 4:
+do not build reschedule/cancel tools where this task discovered a design
+gap; legal genuinely has none).
+
+**Live transcript excerpt (auto, isolated `returning_caller` run, post-fix)**:
+
+```
+tool_call_invocation: {}                                    <- no phone argument at all
+tool_call_result: {"result":{"found":true,"name":"Taylor Reyes",
+  "segment":"returning","recent_bookings":[{"id":"df8307c9-...",
+  "start_at":"2026-10-01T16:46:38.318Z","status":"confirmed"}]}}
+agent: "I found your appointment scheduled for October 1st, 2026.
+  What new date and time would you like to reschedule it to?"
+...
+tool_call_invocation: {"booking_id":"df8307c9-...","new_start":
+  "2026-10-01T15:00:00-04:00","new_end":"2026-10-01T16:00:00-04:00"}
+tool_call_result: {"result":{"confirmed":true,"start":
+  "2026-10-01T19:00:00.000Z","end":"2026-10-01T20:00:00.000Z"}}
+```
+
+Confirmed against the live database immediately after: `select start_at,
+status from bookings where id='df8307c9-...'` -> `2026-10-01 19:00:00+00,
+confirmed` — the reschedule genuinely persisted, not just a transcript
+claim.
+
+**(d) brand-new caller / (e) dedup+counters**: not a new scenario — the
+EXISTING `book_new_caller`-class scenario in every vertical already
+proves this every single run (a fresh phone -> a new `customers` row),
+and this task's own repeated re-runs across the whole session are the
+(e) dedup proof: querying `customers` for both the `book_new_caller`
+phone (`+15552010199`) and the new `returning_caller` phone
+(`+15552010288`) across every tenant, after DOZENS of repeated runs each,
+shows `count(*) = 1` for every single `(tenant_id, phone_e164)` pair —
+guaranteed by the `customers_tenant_phone_unique` constraint
+(`create_booking.ts`'s `insert ... on conflict (tenant_id, phone_e164) do
+update`) and its DB trigger auto-incrementing `lifetime_bookings` on
+every new booking (`supabase/migrations/20260907131400_functions_triggers.sql`),
+never left to application logic to get right:
+
+```
+tenant                    phone           rows  lifetime_bookings
+auto (b2efae9d)            +15552010199    1     6
+auto (b2efae9d)            +15552010288    1     4
+dental (b8419fe1)          +15552010199    1     10
+dental (b8419fe1)          +15552010288    1     4
+generic (07ae6c2d)         +15552010199    1     5
+generic (07ae6c2d)         +15552010288    1     4
+real_estate (189f29b1)     +15552010288    1     4
+motel (3cda3859)           +15552010288    1     4
+legal (57fae321)           +15552010288    1     3   (no bookings, message-only)
+restaurant (8ff87186)      +15552010288    1     4
+vet (cad10349)             +15552010288    1     4
+```
+
+### Per-vertical results (final, post every fix, two consecutive runs each)
+
+| Vertical | Agent recompiled? | Final 2 consecutive runs | `returning_caller` |
+|---|---|---|---|
+| `auto` | Yes (3x — caller-recent-context wiring, lookup_customer schema, manage_booking prompt) | 9/9, 8/9 (both ≥83%; one earlier post-fix run hit 7/9 on the SAME pre-existing timezone-judge-nitpick class CALL-1/2/4/5/8 already documented as "auto tenant noise" unrelated to this task — book_new_caller/wrong_date_caller disputing an 8:30am-Eastern-vs-12:30pm-UTC framing, never a real booking/data error) | pass, pass (4/4 across every post-fix run) |
+| `vet` | Yes (same 3 recompiles, all 8 verticals) | 7/7, 6/7 (book_new_caller errored once — the same "Ending the conversation early as there might be a loop" simulator flakiness CALL-4/5/7/8 already documented) | pass, pass |
+| `dental` | Yes | 4/5, 4/5 (ai_disclosure_check/book_new_caller nitpicks — same documented noise classes) | pass, pass |
+| `legal` | Yes | 7/7, 7/7 | pass, pass |
+| `real_estate` | Yes | 7/7, 7/7 (both post-fix pairs) | pass, pass |
+| `motel` | Yes | 6/7, 7/7 | pass, pass |
+| `restaurant` | Yes | 7/7, 7/7 (both post-fix pairs) | pass, pass |
+| `generic` | Yes | 6/7, 6/7 (ai_disclosure_check errored both times — same documented loop-detector flakiness CALL-7/8 already found for this exact scenario) | pass, pass |
+
+Every vertical clears the established "≥5/6 (≥83%)-equivalent in two
+consecutive runs" bar; `returning_caller` itself passed in every single
+run across every vertical once the contamination bug (above) and the
+`lookup_customer` schema bug (above) were both fixed — 16/16 across the
+final two-run pairs, plus additional clean passes from the isolated
+proof runs used to diagnose the two bugs. All 8 test tenants were
+`force_recompile`d (with `cleanup_superseded_agent: true` every time, so
+no orphaned Retell agent was left behind) three times this task, once
+per template/compiler-level fix (caller-recent-context wiring,
+lookup_customer schema, manage_booking prompt) — necessary because each
+change lives in the compiled prompt/tool schema itself, not just runtime
+`voice-tools` code. **`test-riverside-auto`'s agent id changed as a side
+effect**, final value `agent_f8f2427f14159e7eddebea46fe`, re-attached to
+`+12602354330` via `api-admin-attach-retell-number` and re-verified live
+via `action: "inspect"` after every recompile (webhook_url still the
+correct `voice-events` URL, `is_published: true`, phone number's
+`inbound_agents` pointing at the new agent id, `inbound_webhook_url`
+still `voice-inbound`) — matching CALL-5/CALL-6/CALL-8's own established
+procedure for this exact situation.
+
+### What is now proven live vs. still only provable by a real phone call
+
+**Now proven live, this task**:
+- The pre-call DB lookup itself (`buildInboundDynamicVariables`,
+  customer-by-phone -> `caller_recent_context`) — via `action: "simulate"`
+  against the real database, all three branches (known caller / new
+  caller / no caller ID).
+- That the SAME code now backs both `/voice-inbound` and the batch-test
+  harness — proving one provably proves the other.
+- `lookup_customer`'s STRICT G6 caller-match path (never exercised live
+  before this task — OPS-5's own documented finding; only the no-caller-
+  id `unverified` fallback had ever run) — via `heyloo_test_caller_number`
+  simulating a real caller-ID match, live, against a real seeded
+  `customers` row.
+- A returning caller is greeted/acknowledged without re-asking for name
+  or phone, AND can reschedule a real upcoming booking, end to end,
+  live, for every booking-capable vertical.
+- Brand-new-caller customer creation and same-phone dedup+counter-
+  increment (via dozens of repeated live runs across this entire
+  session, `customers_tenant_phone_unique`-enforced).
+
+**Still only provable by a real call** (environment limitation, not a
+code gap — same conclusion CALL-5 reached and this task independently
+re-confirms): the Retell `call_inbound` webhook transport and signature
+verification in front of `/voice-inbound` itself, and the
+`phone_numbers.e164 -> tenant_id` routing lookup that only that real
+webhook exercises (`action: "simulate"` deliberately bypasses both,
+resolving by `tenant_id` directly — see deliverable 2's own doc comment
+for why). This session still cannot sign a Retell webhook request itself
+and Chromium-in-sandbox still cannot complete a real WebRTC call (CALL-5's
+own documented `net::ERR_CERT_AUTHORITY_INVALID` finding, unchanged).
+The owner dialing `+12602354330` directly remains the one action that
+closes this last gap.
+
+### Cross-agent coordination note
+
+This task ran concurrently with at least two other agents in the SAME
+working tree (not a separate worktree) — confirmed live mid-task via
+unexpected `git status` entries this task never touched: `DOCS-1`
+(`docs/GO_LIVE.md`, `.env.example`) and `NIGHTLY-1` (`job-agent-regression`,
+`agent_regression_runs`), both since committed and pushed to `main`
+(`ae05030`, `886ab5b`) — `NIGHTLY-1`'s own BUILD_NOTES entry explicitly
+notes it deliberately called `api-admin-run-agent-tests` over HTTP rather
+than importing its `handler.ts`, "owned by the concurrently-running
+CALL-9 task." A third, unidentified agent's in-progress work was also
+visible on disk throughout (`api-provision/*`, `_shared/providers/
+retell.ts`, `supabase/config.toml`, `packages/supabase-client/src/
+database.types.ts`, various `apps/web` scratch scripts) but never
+committed by this task — this task's own `git add` was scoped by hand to
+exactly the files listed under "Code" below, verified via `git status`
+before every commit, never `git add -A`. One side effect noted honestly:
+this task's live batch-test runs ran concurrently with `NIGHTLY-1`'s own
+proof runs against the SAME 8 test tenants at least once, and one round
+of 8 simultaneous batch-test invocations from this task alone returned
+"Internal Server Error" for two tenants (`vet`, `dental`) — resolved by
+retrying those two sequentially rather than in parallel; not investigated
+further as a platform bug (plausible Retell-side rate limiting or
+Supabase Edge Function concurrency contention from multiple agents
+hitting the same account simultaneously, not reproduced in isolation).
+
+### Gates
+
+`cd supabase/functions && npx vitest run` — 113/113 files, 1098/1098
+green (new: `_shared/inbound-dynamic-variables.ts` has no direct test
+file — covered indirectly through `voice-inbound/handler.test.ts` and
+`api-admin-run-agent-tests/handler.test.ts`'s own `simulateInboundCall`
+suite, both of which exercise it directly; extended: `voice-tools/
+context.test.ts` +3 cases, `voice-tools/tools/lookup_customer.test.ts` +2
+cases, `api-admin-run-agent-tests/handler.test.ts` +7 cases). `npx tsc -p
+supabase/functions/tsconfig.json --noEmit --pretty` clean. `packages/
+canonical-types`: `npx vitest run` 11/11 files, 166/166 green (parity
+fix), `npx tsc -b --pretty` clean. `pnpm -w typecheck` — 21/21 tasks
+green. `pnpm -w test` — 21/21 tasks green (`@heyloo/web` 572/572,
+`@heyloo/edge-functions` 1098/1098). `cd supabase/functions && pnpm run
+test` — 113/113, 1098/1098, same suite run directly per this task's own
+instruction. `npx biome check .` over every file this task actually
+touched — 0 errors (the repo-wide `pnpm lint` run during this task
+additionally reported 9 errors in OTHER agents' own untracked scratch
+files this task never created or staged — `apps/web/debug-*.mjs`,
+`apps/web/signup1-flow*.mjs` — not this task's to fix or commit,
+confirmed via `git status` that none were ever added).
+
+### What remains
+
+- `packages/canonical-types`'s/`packages/templates`'s/`packages/adapters/
+  retell`'s own copies of the compiled-prompt logic were NOT updated with
+  `CALLER_RECENT_CONTEXT_INSTRUCTION` or the `lookup_customer`
+  schema/description fix — that whole package chain remains unwired from
+  any live deploy path (OPS-5/CALL-6/CALL-8's own repeatedly-documented,
+  unchanged finding); `zLookupCustomerRequest.phone` was the one field
+  moved in lockstep, and only because an ACTIVELY ENFORCED parity test
+  (`_shared/schemas/voice-tools.test.ts`) would otherwise have broken,
+  not because this task widened its own scope.
+- `special_instructions`, `greeting_hours_context`, `language`,
+  `is_manual_mode`, `manager_name`/`manager_phone`, `parking_info`,
+  `accessibility_notes`, `accepted_payment_types` are ALL set on every
+  `/voice-inbound` response and now also on every batch-test scenario's
+  dynamic variables (deliverable 2's parity fix), but — like
+  `caller_recent_context` was before this task — none of them are
+  referenced by `{{}}` anywhere in any compiled prompt either, so they
+  remain completely inert for both a real call and a batch test. This
+  task fixed the one the owner's own question was actually about; the
+  rest is a real, scoped, same-shape follow-up this task did not attempt
+  (Rule 4 — flagged, not fixed, to stay inside this task's own
+  boundary).
+- The batch-test suite's other known limitation (CALL-8's own documented
+  item: `call_logs`'s per-tenant, not per-scenario, placeholder-row
+  sharing makes a `take_message` capture unreliable to attribute when 2+
+  take_message-intent scenarios share a batch) is unchanged by this task
+  — the cross-scenario contamination bug this task found and fixed is a
+  DIFFERENT, more serious instance of the same root sharing mechanism
+  (an actual cross-customer DATA MUTATION, not just an attribution
+  ambiguity in a read-only verification step) — fixed for `callerNumber`
+  specifically; the underlying shared-row design itself is unchanged and
+  documented as a live risk surface for any FUTURE feature that similarly
+  persists per-call state onto it.
+- Restaurant's still-undocumented "pickup/delivery time" argument gap
+  (CALL-8's own item) is untouched, out of this task's scope.
+
+### Code
+
+`supabase/functions/_shared/inbound-dynamic-variables.ts` (new,
+`buildInboundDynamicVariables`), `supabase/functions/_shared/schemas/
+voice-inbound.ts` (`caller_recent_context` required),
+`supabase/functions/_shared/schemas/voice-tools.ts`
+(`LookupCustomerArgsSchema.phone` optional), `supabase/functions/_shared/
+compiler/template-compiler.ts` (`CALLER_RECENT_CONTEXT_INSTRUCTION`, all
+3 compile targets), `supabase/functions/_shared/agent-template-seeds.ts`
+(`lookup_customer`/`update_booking`/`cancel_booking` schema + description
+fixes, `manage_booking` state prompt, all 7 booking verticals),
+`supabase/functions/_shared/test-scenarios.ts` (`testCallerNumber`,
+`returning_caller` scenario x8, `RETURNING_CALLER_PHONE`),
+`supabase/functions/voice-inbound/handler.ts` (now calls the shared
+builder), `supabase/functions/voice-tools/context.ts`
+(`heyloo_test_caller_number`, the contamination-bug fix),
+`supabase/functions/voice-tools/tools/lookup_customer.ts` (optional-phone
+handling), `supabase/functions/api-admin-run-agent-tests/{handler,index}.ts`
+(`action: "simulate"`, shared-builder rewrite, `heyloo_test_caller_number`
+per scenario), `packages/canonical-types/src/tools.ts`
+(`zLookupCustomerRequest.phone` optional, parity). Seed data (customer +
+one booking per tenant) and every `force_recompile`/re-attach/inspect
+call applied live via the documented SQL helper and internal admin
+endpoints — no migration needed (no schema change this task).

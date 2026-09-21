@@ -1,5 +1,48 @@
 # Launch Status
 
+**CALL-9 (2026-09-21)**: answers the owner's own question — "does it pull
+data from our database before the call, and use the database during the
+call, like recognizing an existing caller by phone?" `voice-inbound`'s
+pre-call customer-by-phone lookup had unit tests but had never run live
+(Retell's batch-test simulator and web calls both bypass that webhook
+entirely, and this session cannot sign a Retell webhook request). New:
+`_shared/inbound-dynamic-variables.ts` extracts the exact lookup +
+dynamic-variable assembly into one function BOTH `voice-inbound` (a real
+call) and the batch-test harness now call, and a new internal
+`action: "simulate"` proves that shared function live against the real
+database — confirmed returning a real seeded customer's
+`caller_recent_context` ("Jamie has booked with us before."), a
+new-caller default, and a no-caller-ID default, all three branches live.
+Bigger finding: `caller_recent_context` had been computed and sent on
+EVERY real call's response since it was added, but was never once
+referenced by `{{}}` in any compiled prompt (RETELL-VERIFIED: Retell only
+substitutes a dynamic variable where it's literally referenced) — so a
+real returning caller was never actually greeted by name. Fixed at the
+compiler level for all 3 compile targets, plus a real
+`lookup_customer` bug found proving it live: the tool schema REQUIRED a
+`phone` argument the model has no honest way to know (no such dynamic
+variable exists — the point of caller ID is that the server already
+knows it), so the model fabricated a fake number every time, which then
+failed its own strict caller-match check. Made `phone` optional
+end-to-end (schema, tool, prompt) — the server now defaults straight to
+the live caller's own number. A serious live-observed bug was found and
+fixed while proving this: Retell's batch-test simulator shares ONE
+placeholder `call_logs` row per tenant across every scenario in a batch
+job, and an early version of the new test-only caller-number mechanism
+persisted onto that shared row — a `returning_caller` scenario's own
+caller number leaked into an unrelated `cancellation` scenario in the
+same batch and genuinely cancelled a real seeded customer's booking, live,
+5 times across different tenants. Root-caused and fixed (never reads
+caller identity back from the shared row for a batch-test call), with a
+dedicated regression test reproducing the exact bug. All 8 verticals now
+have a seeded returning customer with a real upcoming booking and a new
+`returning_caller` scenario proving: greeted by name without re-asking
+for it, `lookup_customer`'s previously-never-exercised STRICT caller-
+match path finding their real booking, and an actual live reschedule
+against it — all 8 clear the pass bar in two consecutive runs. Full
+detail, live transcripts, and the exact dedup/counter evidence:
+`docs/BUILD_NOTES.md`'s CALL-9 entry.
+
 **NIGHTLY-1 (2026-09-21)**: nightly regression of the Retell batch-test
 suites against every `test-*` tenant, so an agent-behavior regression
 surfaces automatically instead of only being noticed the next time a
