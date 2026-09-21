@@ -1,15 +1,10 @@
-import {
-  computeCurrentDateContext,
-  computeGreetingHoursContext,
-  computeUpcomingWeekdayDates,
-} from "../_shared/business-hours.ts";
+import { buildInboundDynamicVariables } from "../_shared/inbound-dynamic-variables.ts";
 import { normalizeE164 } from "../_shared/phone.ts";
 import type {
   VoiceInboundRequest,
   VoiceInboundResponse,
 } from "../_shared/schemas/voice-inbound.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
-import { resolveVerticalDynamicVariables } from "./dynamic-variables.ts";
 
 /**
  * `/voice-inbound` core logic (BACKEND_SPEC §7.1) — number -> tenant ->
@@ -39,12 +34,6 @@ interface InboundRow {
   retell_agent_id: string | null;
   disclosure_line: string;
   transfer_number: string | null;
-}
-
-interface RecentCustomerRow {
-  name: string | null;
-  last_seen_at: string;
-  lifetime_bookings: number;
 }
 
 export type VoiceInboundResult =
@@ -99,78 +88,32 @@ export async function handleVoiceInbound(params: {
     return { status: 404, body: { error: "number_not_found" } };
   }
 
-  let callerRecentContext: string | undefined;
-  if (fromNumber) {
-    const recentRows = await sql<RecentCustomerRow>`
-      select name, last_seen_at, lifetime_bookings
-      from public.customers
-      where tenant_id = ${row.tenant_id} and phone_e164 = ${fromNumber}
-      limit 1
-    `;
-    const recent = recentRows[0];
-    if (recent) {
-      // G28 callback continuity — short, non-sensitive summary only.
-      const label = recent.name ? recent.name.split(" ")[0] : "This caller";
-      callerRecentContext =
-        recent.lifetime_bookings > 0
-          ? `${label} has booked with us before.`
-          : `${label} has called before.`;
-    }
-  }
-
-  const overrides = row.dynamic_variable_overrides ?? {};
-  const greetingHoursContext = computeGreetingHoursContext(
-    now,
-    row.timezone,
-    row.business_hours as never,
-    row.hours_exceptions as never,
-  );
-  const currentDateContext = computeCurrentDateContext(now, row.timezone);
-  const upcomingWeekdayDates = computeUpcomingWeekdayDates(now, row.timezone);
-
-  // GAP_REGISTER §1.3 — every per-vertical `{{token}}` the compiled prompt
-  // may reference (tow partner, practice areas, rate table, menu, ...),
-  // resolved with a safe default so a literal placeholder never reaches
-  // the model.
-  const verticalTokens = await resolveVerticalDynamicVariables({
+  // CALL-9 (docs/BUILD_NOTES.md): the customer-by-phone lookup + full
+  // dynamic-variable assembly now lives in one shared function this file
+  // and `api-admin-run-agent-tests`'s `simulate` action both call — proving
+  // one proves the other. No behavior change for a real call: this is the
+  // exact same logic that used to live inline here.
+  const dynamicVariables = await buildInboundDynamicVariables({
     sql,
-    tenantId: row.tenant_id,
-    vertical: row.vertical,
-    overrides,
     logger,
+    now,
+    fromNumber,
+    config: {
+      tenantId: row.tenant_id,
+      businessName: row.business_name,
+      vertical: row.vertical,
+      timezone: row.timezone,
+      businessHours: row.business_hours,
+      hoursExceptions: row.hours_exceptions,
+      manualMode: row.manual_mode,
+      languagePrimary: row.language_primary,
+      assistantName: row.assistant_name,
+      specialInstructions: row.special_instructions,
+      dynamicVariableOverrides: row.dynamic_variable_overrides ?? {},
+      disclosureLine: row.disclosure_line,
+      transferNumber: row.transfer_number,
+    },
   });
-
-  const dynamicVariables: VoiceInboundResponse["call_inbound"]["dynamic_variables"] = {
-    business_name: row.business_name,
-    assistant_name: row.assistant_name ?? "the AI assistant",
-    greeting_hours_context: greetingHoursContext,
-    timezone: row.timezone,
-    current_date: currentDateContext.date,
-    current_weekday: currentDateContext.weekday,
-    upcoming_weekday_dates: upcomingWeekdayDates,
-    special_instructions: row.special_instructions ?? "",
-    is_manual_mode: row.manual_mode,
-    language: row.language_primary,
-    disclosure_line: row.disclosure_line,
-    ...(row.transfer_number ? { transfer_number: row.transfer_number } : {}),
-    ...verticalTokens,
-    ...(typeof overrides["manager_name"] === "string"
-      ? { manager_name: overrides["manager_name"] as string }
-      : {}),
-    ...(typeof overrides["manager_phone"] === "string"
-      ? { manager_phone: overrides["manager_phone"] as string }
-      : {}),
-    ...(typeof overrides["parking_info"] === "string"
-      ? { parking_info: overrides["parking_info"] as string }
-      : {}),
-    ...(typeof overrides["accessibility_notes"] === "string"
-      ? { accessibility_notes: overrides["accessibility_notes"] as string }
-      : {}),
-    ...(Array.isArray(overrides["accepted_payment_types"])
-      ? { accepted_payment_types: overrides["accepted_payment_types"] as string[] }
-      : {}),
-    ...(callerRecentContext ? { caller_recent_context: callerRecentContext } : {}),
-  };
 
   return {
     status: 200,

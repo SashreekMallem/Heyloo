@@ -62,7 +62,13 @@ export const VoiceInboundDynamicVariablesSchema = z.object({
   accepted_payment_types: z.array(z.string()).optional(),
   is_manual_mode: z.boolean(),
   language: z.string(),
-  caller_recent_context: z.string().optional(),
+  // CALL-9 (docs/BUILD_NOTES.md): ALWAYS set now — every branch of
+  // `_shared/inbound-dynamic-variables.ts#resolveCallerRecentContext`
+  // returns a real sentence, never omits the field. Required (not
+  // `.optional()`) so a caller that forgets to set it fails validation
+  // loudly instead of leaving `{{caller_recent_context}}` as a literal
+  // unresolved placeholder in the compiled prompt that now references it.
+  caller_recent_context: z.string(),
   disclosure_line: z.string(),
   // GAP_REGISTER §1.3 — per-vertical `{{token}}`s every compiled prompt may
   // reference (packages/templates/src/red-team/prompt-lint.ts's

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import type { SqlClient } from "../_shared/types.ts";
-import { runAgentTests, runChatSmokeAgainstChatAgent, validateRequest } from "./handler.ts";
+import {
+  runAgentTests,
+  runChatSmokeAgainstChatAgent,
+  simulateInboundCall,
+  validateRequest,
+  validateSimulateRequest,
+} from "./handler.ts";
 
 const logger = createLogger();
 
@@ -54,7 +60,17 @@ describe("runAgentTests", () => {
 
   it("creates definitions + a batch test, polls to settlement, and returns per-scenario results plus tool_health counts", async () => {
     const { sql } = makeSql({
-      "from public.tenants where id": [{ vertical: "auto", business_name: "Riverside Auto" }],
+      "from public.tenants where id": [
+        {
+          vertical: "auto",
+          business_name: "Riverside Auto",
+          business_hours: {},
+          hours_exceptions: [],
+          manual_mode: false,
+          language_primary: "en",
+          timezone: "America/New_York",
+        },
+      ],
       "from public.agent_configs": [
         {
           compiled_config: {
@@ -133,7 +149,16 @@ describe("runAgentTests", () => {
 
   it("returns settled:false with a resume payload when the batch doesn't finish within the poll budget", async () => {
     const { sql } = makeSql({
-      "from public.tenants where id": [{ vertical: "auto" }],
+      "from public.tenants where id": [
+        {
+          vertical: "auto",
+          business_hours: {},
+          hours_exceptions: [],
+          manual_mode: false,
+          language_primary: "en",
+          timezone: "America/New_York",
+        },
+      ],
       "from public.agent_configs": [
         {
           compiled_config: {
@@ -182,7 +207,17 @@ describe("runAgentTests", () => {
   describe("CALL-8: field_capture (required-field verification per scenario)", () => {
     it("reports fields_missing: [] once the real bookings row has every auto-required field, for the scenario whose expectedPhone matches", async () => {
       const { sql } = makeSql({
-        "from public.tenants where id": [{ vertical: "auto", business_name: "Riverside Auto" }],
+        "from public.tenants where id": [
+          {
+            vertical: "auto",
+            business_name: "Riverside Auto",
+            business_hours: {},
+            hours_exceptions: [],
+            manual_mode: false,
+            language_primary: "en",
+            timezone: "America/New_York",
+          },
+        ],
         "from public.agent_configs": [
           {
             compiled_config: {
@@ -270,7 +305,17 @@ describe("runAgentTests", () => {
 
     it("reports the exact missing fields (never crashes) when no matching bookings row exists at all", async () => {
       const { sql } = makeSql({
-        "from public.tenants where id": [{ vertical: "auto", business_name: "Riverside Auto" }],
+        "from public.tenants where id": [
+          {
+            vertical: "auto",
+            business_name: "Riverside Auto",
+            business_hours: {},
+            hours_exceptions: [],
+            manual_mode: false,
+            language_primary: "en",
+            timezone: "America/New_York",
+          },
+        ],
         "from public.agent_configs": [
           {
             compiled_config: {
@@ -320,7 +365,17 @@ describe("runAgentTests", () => {
 
     it("verifies take_message intent from call_logs.structured_booking_payload (caller_phone-matched), for a vertical whose take_message overlay requires extra fields (legal)", async () => {
       const { sql } = makeSql({
-        "from public.tenants where id": [{ vertical: "legal", business_name: "Firstlight Legal" }],
+        "from public.tenants where id": [
+          {
+            vertical: "legal",
+            business_name: "Firstlight Legal",
+            business_hours: {},
+            hours_exceptions: [],
+            manual_mode: false,
+            language_primary: "en",
+            timezone: "America/New_York",
+          },
+        ],
         "from public.agent_configs": [
           {
             compiled_config: {
@@ -391,7 +446,17 @@ describe("runAgentTests", () => {
 
     it("leaves field_capture null for a writeIntent:'none' scenario (e.g. faq_hours_pricing)", async () => {
       const { sql } = makeSql({
-        "from public.tenants where id": [{ vertical: "auto", business_name: "Riverside Auto" }],
+        "from public.tenants where id": [
+          {
+            vertical: "auto",
+            business_name: "Riverside Auto",
+            business_hours: {},
+            hours_exceptions: [],
+            manual_mode: false,
+            language_primary: "en",
+            timezone: "America/New_York",
+          },
+        ],
         "from public.agent_configs": [
           {
             compiled_config: {
@@ -552,5 +617,137 @@ describe("runChatSmokeAgainstChatAgent (kept, not currently called by runAgentTe
     expect(completionCalls).toBe(2);
     expect(body.messages.length).toBe(4);
     expect(body.tool_health.total).toBe(1);
+  });
+});
+
+describe("validateSimulateRequest", () => {
+  it("accepts a bare tenant_id", () => {
+    expect(validateSimulateRequest({ tenant_id: "t1" })).toEqual({
+      ok: true,
+      data: { tenant_id: "t1" },
+    });
+  });
+
+  it("accepts an optional from_number", () => {
+    expect(validateSimulateRequest({ tenant_id: "t1", from_number: "+15552010199" })).toEqual({
+      ok: true,
+      data: { tenant_id: "t1", from_number: "+15552010199" },
+    });
+  });
+
+  it("rejects a missing tenant_id", () => {
+    expect(validateSimulateRequest({})).toEqual({ ok: false, error: "invalid_tenant_id" });
+  });
+
+  it("rejects a non-string from_number", () => {
+    expect(validateSimulateRequest({ tenant_id: "t1", from_number: 5 })).toEqual({
+      ok: false,
+      error: "invalid_from_number",
+    });
+  });
+});
+
+describe("simulateInboundCall", () => {
+  it("CALL-9: 404s when the tenant doesn't exist", async () => {
+    const { sql } = makeSql({});
+    const result = await simulateInboundCall(
+      sql,
+      { tenant_id: "no-such-tenant" },
+      { retellFetch: async () => jsonResponse({}), retellApiKey: "key", logger },
+    );
+    expect(result).toEqual({ status: 404, body: { error: "tenant_not_found" } });
+  });
+
+  it("CALL-9: with no from_number, returns dynamic variables with the first-time-caller default caller_recent_context", async () => {
+    const { sql, calls } = makeSql({
+      "from public.tenants t": [
+        {
+          business_name: "Riverside Auto Repair",
+          vertical: "auto",
+          timezone: "America/Los_Angeles",
+          business_hours: {},
+          hours_exceptions: [],
+          manual_mode: false,
+          language_primary: "en",
+          assistant_name: "Sam",
+          special_instructions: null,
+          dynamic_variable_overrides: {},
+          transfer_number: null,
+          disclosure_line: "This call may be recorded, and you're speaking with an AI assistant.",
+        },
+      ],
+    });
+    const result = await simulateInboundCall(
+      sql,
+      { tenant_id: "t1" },
+      {
+        retellFetch: async () => jsonResponse({}),
+        retellApiKey: "key",
+        logger,
+        now: () => new Date("2026-09-21T18:00:00.000Z"),
+      },
+    );
+    expect(result.status).toBe(200);
+    const body = result.body as {
+      tenant_id: string;
+      from_number: string | null;
+      dynamic_variables: Record<string, unknown>;
+    };
+    expect(body.tenant_id).toBe("t1");
+    expect(body.from_number).toBeNull();
+    expect(body.dynamic_variables["business_name"]).toBe("Riverside Auto Repair");
+    expect(body.dynamic_variables["assistant_name"]).toBe("Sam");
+    // CALL-9: always a real sentence now, never omitted (see
+    // inbound-dynamic-variables.ts#resolveCallerRecentContext).
+    expect(body.dynamic_variables["caller_recent_context"]).toBe(
+      "No caller ID is available for this call — treat this as a first-time caller and collect their name and phone number normally.",
+    );
+    // Never queried customers at all — no from_number to look up.
+    expect(calls.some((c) => c.text.includes("from public.customers"))).toBe(false);
+  });
+
+  it("CALL-9: with a from_number matching a seeded customer, returns caller_recent_context — the live pre-call DB pull proof", async () => {
+    const { sql, calls } = makeSql({
+      "from public.tenants t": [
+        {
+          business_name: "Riverside Auto Repair",
+          vertical: "auto",
+          timezone: "America/Los_Angeles",
+          business_hours: {},
+          hours_exceptions: [],
+          manual_mode: false,
+          language_primary: "en",
+          assistant_name: "Sam",
+          special_instructions: null,
+          dynamic_variable_overrides: {},
+          transfer_number: null,
+          disclosure_line: "This call may be recorded, and you're speaking with an AI assistant.",
+        },
+      ],
+      "from public.customers": [
+        { name: "Jamie Rivera", last_seen_at: "2026-09-01T00:00:00Z", lifetime_bookings: 2 },
+      ],
+    });
+    const result = await simulateInboundCall(
+      sql,
+      { tenant_id: "t1", from_number: "555-201-0199" },
+      {
+        retellFetch: async () => jsonResponse({}),
+        retellApiKey: "key",
+        logger,
+        now: () => new Date("2026-09-21T18:00:00.000Z"),
+      },
+    );
+    expect(result.status).toBe(200);
+    const body = result.body as {
+      from_number: string | null;
+      dynamic_variables: Record<string, unknown>;
+    };
+    expect(body.from_number).toBe("+15552010199"); // normalized E.164
+    expect(body.dynamic_variables["caller_recent_context"]).toBe(
+      "Jamie has booked with us before.",
+    );
+    const customerQuery = calls.find((c) => c.text.includes("from public.customers"));
+    expect(customerQuery?.values).toContain("+15552010199");
   });
 });

@@ -317,6 +317,24 @@ async function lookupPlaceholderRowPriorTenant(
  * resolved via the QA-harness-only `test_harness_tenant_id` tier — either
  * signal alone is sufficient, checked for both for robustness even though
  * they should always co-occur in practice.
+ *
+ * CALL-9 UPDATE: `caller_number` briefly gained an `on conflict` refresh
+ * (`coalesce(excluded.caller_number, call_logs.caller_number)`) to make
+ * `heyloo_test_caller_number` (this task's new QA-only dynamic variable)
+ * take effect on a REUSED placeholder row — reverted (kept first-writer-
+ * wins, unchanged from CALL-6) after finding it caused a real cross-
+ * SCENARIO contamination bug live: every scenario in the SAME batch job
+ * shares ONE placeholder row per tenant (CALL-6's own documented keying),
+ * so once one scenario's turn wrote a real caller number onto that shared
+ * row, a LATER, completely unrelated scenario in the same batch (e.g.
+ * `cancellation`) would inherit it too if `resolveCallContext` ever read
+ * `callerNumber` back from this row instead of from that call's OWN
+ * payload — live-observed cancelling/mutating the WRONG simulated
+ * customer's data. The actual fix is in `resolveCallContext` itself: a
+ * placeholder call's `CallContext.callerNumber` is now built ONLY from
+ * that exact tool call's own freshly-resolved value, never from this
+ * row — see that function's own doc comment. This insert needs no special
+ * handling for it at all, so it's back to the original CALL-6 shape.
  */
 async function upsertPlaceholderCallLog(
   sql: SqlClient,
@@ -379,7 +397,27 @@ export async function resolveCallContext(
   if (call) {
     const resolved = await resolveTenantFromPayload(sql, call);
     if (resolved) {
-      const callerNumber = normalizeE164(call.from_number ?? null);
+      // CALL-9 (docs/BUILD_NOTES.md): `heyloo_test_caller_number` — a
+      // QA-harness-only dynamic variable `api-admin-run-agent-tests` sets
+      // per scenario so a batch test can simulate a REAL caller number
+      // (e.g. a seeded returning customer's phone) even though Retell's
+      // batch-test/simulator payload never carries a real `from_number`
+      // (this module's own header, CALL-2). Honored ONLY when `placeholder`
+      // is true — the exact same gate that already proves this is a
+      // simulator/QA call, never a real one (a real Retell call id never
+      // matches `isPlaceholderCallId`, so this ternary is provably
+      // unreachable for a genuine phone/web call, which always keeps using
+      // `call.from_number` unchanged below). Never trusted from `args` —
+      // only from Retell's own call-metadata object, same trust boundary as
+      // `heyloo_tenant_id` above.
+      const testCallerNumber = placeholder
+        ? normalizeE164(
+            typeof call.retell_llm_dynamic_variables?.["heyloo_test_caller_number"] === "string"
+              ? (call.retell_llm_dynamic_variables["heyloo_test_caller_number"] as string)
+              : null,
+          )
+        : null;
+      const callerNumber = testCallerNumber ?? normalizeE164(call.from_number ?? null);
       const direction: "inbound" | "outbound" =
         call.direction === "outbound" ? "outbound" : "inbound";
       const channel: "phone" | "web_voice" =
@@ -431,7 +469,21 @@ export async function resolveCallContext(
           tenantId: upserted.tenant_id,
           callLogId: upserted.id,
           retellCallId,
-          callerNumber: upserted.caller_number,
+          // CALL-9: a placeholder call NEVER reads its caller number back
+          // from the shared row — `callerNumber` (this exact tool call's
+          // own freshly-resolved value, `null` when this scenario set
+          // neither `from_number` nor `heyloo_test_caller_number`) is
+          // final, full stop. This is the actual fix for the cross-
+          // scenario contamination bug this module's header now
+          // documents: EVERY scenario in a batch job shares one
+          // placeholder row per tenant, so reading a cached column back
+          // would leak whichever scenario happened to write a real number
+          // to it first into every OTHER scenario's own conversation. A
+          // real (non-placeholder) call keeps the original CALL-2/CALL-6
+          // behavior unchanged — trusting the row's returned value, which
+          // is safe there since a real `retell_call_id` is unique to that
+          // one call, never shared across callers.
+          callerNumber: placeholder ? callerNumber : upserted.caller_number,
           vertical: resolved.vertical,
           isTestCall: upserted.is_test_call,
         };

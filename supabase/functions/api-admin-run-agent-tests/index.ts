@@ -7,7 +7,7 @@ import { getSql } from "../_shared/deno/db.ts";
 import { requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
-import { runAgentTests } from "./handler.ts";
+import { runAgentTests, simulateInboundCall } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-admin-run-agent-tests" });
 const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
@@ -31,6 +31,24 @@ Deno.serve(async (req: Request) => {
   }
 
   const sql = getSql();
+
+  // CALL-9: `action: "simulate"` is a read-only sibling behind the SAME
+  // `x-internal-secret` check above — same pattern as `api-admin-attach-
+  // retell-number`'s own `action: "inspect"` (CALL-5). Proves the pre-call
+  // DB lookup live without needing a signed Retell `call_inbound` request.
+  if (
+    typeof body === "object" &&
+    body !== null &&
+    (body as { action?: unknown }).action === "simulate"
+  ) {
+    const result = await simulateInboundCall(sql, body, {
+      retellFetch: fetch,
+      retellApiKey: RETELL_API_KEY,
+      logger,
+    });
+    return jsonResponse(result.body, { status: result.status });
+  }
+
   const result = await runAgentTests(sql, body, {
     retellFetch: fetch,
     retellApiKey: RETELL_API_KEY,

@@ -1,7 +1,14 @@
+// CALL-9: `resolveVerticalDynamicVariables`'s own cross-function-folder
+// import (CALL-7's original note, kept here for history) is now reached
+// indirectly, through `buildInboundDynamicVariables` — see that function's
+// own doc comment (`_shared/inbound-dynamic-variables.ts`) for why this
+// file and `voice-inbound/handler.ts` share ONE builder instead of two
+// hand-rolled subsets of the same logic.
 import {
-  computeCurrentDateContext,
-  computeUpcomingWeekdayDates,
-} from "../_shared/business-hours.ts";
+  buildInboundDynamicVariables,
+  type InboundDynamicVariables,
+} from "../_shared/inbound-dynamic-variables.ts";
+import { normalizeE164 } from "../_shared/phone.ts";
 import type { RetellFetch } from "../_shared/providers/retell.ts";
 import {
   createBatchTest,
@@ -15,26 +22,6 @@ import { scenariosForVertical } from "../_shared/test-scenarios.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import type { Vertical } from "../_shared/vertical-defaults.ts";
 import { getMissingRequiredFields } from "../_shared/vertical-intake.ts";
-// CALL-7: same cross-function-folder import pattern already established by
-// `worker-tick/handler.ts` (imports from `../worker-adapter-push/handler.ts`
-// etc.) and `job-reconciliation/handler.ts` (imports `../voice-events/
-// handler.ts`) — reused here rather than duplicated, for the SAME reason:
-// `resolveVerticalDynamicVariables` is the one place every per-vertical
-// `{{token}}` a compiled prompt can reference (rate_table, species_treated,
-// practice_areas, menu_text, ...) gets resolved with a safe, non-
-// hallucinated default. A real inbound call always gets these via
-// `/voice-inbound`; a Retell batch-test session never goes through
-// `/voice-inbound` at all (CALL-2's own documented finding), and until this
-// fix this function only ever set `current_date`/`current_weekday`/
-// `upcoming_weekday_dates`/`heyloo_tenant_id` — every OTHER token a
-// vertical's prompt references (e.g. motel's "quote the nightly rate
-// strictly from {{rate_table}}", vet's emergency-referral name/phone, legal's
-// consult-fee text) was left as a literal unresolved dynamic variable on
-// every batch-test run, for every vertical, since CALL-1. Auto/dental's
-// prompts don't lean on these tokens for pass/fail as heavily as this task's
-// new vet/legal/motel/restaurant scenarios do (rate quotes, emergency
-// referrals, consult fees) — this surfaced now, not before.
-import { resolveVerticalDynamicVariables } from "../voice-inbound/dynamic-variables.ts";
 
 /**
  * `api-admin-run-agent-tests` (CALL-1, docs/BUILD_PLAN.md task 3): runs
@@ -595,6 +582,180 @@ export async function runChatSmokeAgainstChatAgent(
   };
 }
 
+/**
+ * CALL-9 (docs/BUILD_PLAN.md): "did you test that it pulls data from our
+ * database before the call?" — `voice-inbound/handler.ts`'s own webhook has
+ * never run live (Retell batch tests/web calls bypass it entirely, and
+ * signing a webhook request ourselves isn't possible from here — CALL-5's
+ * own documented finding). This proves the SAME pre-call DB path
+ * (`_shared/inbound-dynamic-variables.ts#buildInboundDynamicVariables` —
+ * the customer-by-phone lookup + full dynamic-variable assembly, extracted
+ * from `voice-inbound/handler.ts` this task so both callers share it) live,
+ * without needing a signed Retell request at all: given a `tenant_id` and
+ * an optional synthetic `from_number`, it resolves this tenant's own
+ * config (the exact same columns `voice-inbound/handler.ts`'s own query
+ * selects — `business_hours`/`hours_exceptions`/`dynamic_variable_
+ * overrides`/`disclosure_line`/`transfer_number`/etc.) and calls the same
+ * shared builder, returning whatever `dynamic_variables` a REAL
+ * `call_inbound` webhook would have produced for this tenant/caller pair —
+ * including `caller_recent_context` when `from_number` matches a seeded
+ * `customers` row, live, from the real table.
+ *
+ * Deliberately resolves by `tenant_id` directly rather than joining through
+ * `phone_numbers` the way `voice-inbound/handler.ts` itself does — this
+ * function exists to prove the DB-lookup half of the pipeline for ANY test
+ * tenant, including the six that have no phone number attached at all
+ * (CALL-5/CALL-6: only `test-riverside-auto` has one). The one thing this
+ * does NOT prove — and cannot, from here — is the `phone_numbers.e164 ->
+ * tenant_id` routing lookup itself, or the Retell webhook transport/
+ * signature verification in front of it; those remain provable only by a
+ * real call to a tenant's attached number (documented in this task's
+ * BUILD_NOTES entry).
+ */
+export interface SimulateInboundRequest {
+  tenant_id: string;
+  from_number?: string;
+}
+
+export interface SimulateInboundSuccessBody {
+  tenant_id: string;
+  from_number: string | null;
+  dynamic_variables: InboundDynamicVariables;
+}
+
+export interface SimulateInboundResult {
+  status: number;
+  body: SimulateInboundSuccessBody | { error: string };
+}
+
+export function validateSimulateRequest(
+  body: unknown,
+): { ok: true; data: SimulateInboundRequest } | { ok: false; error: string } {
+  if (typeof body !== "object" || body === null) return { ok: false, error: "invalid_body" };
+  const b = body as Record<string, unknown>;
+  const tenantId = b["tenant_id"];
+  if (typeof tenantId !== "string" || tenantId.length === 0) {
+    return { ok: false, error: "invalid_tenant_id" };
+  }
+  const fromNumber = b["from_number"];
+  if (fromNumber !== undefined && typeof fromNumber !== "string") {
+    return { ok: false, error: "invalid_from_number" };
+  }
+  return {
+    ok: true,
+    data: { tenant_id: tenantId, ...(fromNumber ? { from_number: fromNumber } : {}) },
+  };
+}
+
+interface SimulateInboundRow {
+  business_name: string;
+  vertical: string;
+  timezone: string;
+  business_hours: Record<string, unknown>;
+  hours_exceptions: unknown[];
+  manual_mode: boolean;
+  language_primary: string;
+  assistant_name: string | null;
+  special_instructions: string | null;
+  dynamic_variable_overrides: Record<string, unknown>;
+  disclosure_line: string;
+  transfer_number: string | null;
+}
+
+export async function simulateInboundCall(
+  sql: SqlClient,
+  rawBody: unknown,
+  deps: RunAgentTestsDeps,
+): Promise<SimulateInboundResult> {
+  const parsed = validateSimulateRequest(rawBody);
+  if (!parsed.ok) return { status: 422, body: { error: parsed.error } };
+  const req = parsed.data;
+  const now = deps.now ?? (() => new Date());
+
+  // Same join shape as voice-inbound/handler.ts's own InboundRow query,
+  // WHERE'd by tenant_id instead of phone_numbers.e164 (see this function's
+  // own doc comment for why).
+  const rows = await sql<SimulateInboundRow>`
+    select
+      t.name as business_name,
+      t.vertical,
+      t.timezone,
+      t.business_hours,
+      t.hours_exceptions,
+      t.manual_mode,
+      coalesce(t.language_config->>'primary', 'en') as language_primary,
+      ac.assistant_name,
+      ac.special_instructions,
+      ac.dynamic_variable_overrides,
+      ac.transfer_number,
+      at.disclosure_line
+    from public.tenants t
+    left join public.agent_configs ac on ac.tenant_id = t.id
+    left join public.agent_templates at on at.id = ac.template_id
+    where t.id = ${req.tenant_id} and t.deleted_at is null
+    limit 1
+  `;
+  const row = rows[0];
+  if (!row) return { status: 404, body: { error: "tenant_not_found" } };
+
+  const fromNumber = normalizeE164(req.from_number ?? null);
+  const dynamicVariables = await buildInboundDynamicVariables({
+    sql,
+    logger: deps.logger,
+    now: now(),
+    fromNumber,
+    config: {
+      tenantId: req.tenant_id,
+      businessName: row.business_name,
+      vertical: row.vertical,
+      timezone: row.timezone,
+      businessHours: row.business_hours,
+      hoursExceptions: row.hours_exceptions,
+      manualMode: row.manual_mode,
+      languagePrimary: row.language_primary,
+      assistantName: row.assistant_name,
+      specialInstructions: row.special_instructions,
+      dynamicVariableOverrides: row.dynamic_variable_overrides ?? {},
+      disclosureLine:
+        row.disclosure_line ??
+        "This call may be recorded, and you are speaking with an AI assistant.",
+      transferNumber: row.transfer_number,
+    },
+  });
+
+  return {
+    status: 200,
+    body: {
+      tenant_id: req.tenant_id,
+      from_number: fromNumber,
+      dynamic_variables: dynamicVariables,
+    },
+  };
+}
+
+/**
+ * CALL-9: `POST /create-test-case-definition`'s own `dynamic_variables`
+ * field is `Record<string, string>` (`_shared/providers/retell.ts`) — every
+ * value must be a string. `buildInboundDynamicVariables`'s return type
+ * mirrors `/voice-inbound`'s own response shape instead (which carries a
+ * couple of non-string fields — `is_manual_mode: boolean`,
+ * `accepted_payment_types: string[]` — Retell's separate `call_inbound`
+ * webhook-response contract, not `create-test-case-definition`'s). Converts
+ * losslessly (`String(true)` -> `"true"`, an array joined with `, `) rather
+ * than dropping either field, so a batch-test scenario still gets the same
+ * information a real call's dynamic variables would carry, just coerced to
+ * the shape THIS Retell endpoint actually accepts.
+ */
+function toRetellDynamicVariableStrings(vars: InboundDynamicVariables): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(vars)) {
+    if (value === undefined) continue;
+    out[key] =
+      typeof value === "string" ? value : Array.isArray(value) ? value.join(", ") : String(value);
+  }
+  return out;
+}
+
 export async function runAgentTests(
   sql: SqlClient,
   rawBody: unknown,
@@ -626,8 +787,29 @@ export async function runAgentTests(
     `;
     vertical = tenantRows[0]?.vertical ?? null;
   } else {
-    const tenantRows = await sql<{ vertical: Vertical; timezone: string; business_name: string }>`
-      select vertical, timezone, name as business_name from public.tenants where id = ${req.tenant_id}
+    // CALL-9: extended to every column `_shared/inbound-dynamic-variables.ts#
+    // buildInboundDynamicVariables` needs (the same shared function
+    // `voice-inbound/handler.ts` and this function's own `simulateInboundCall`
+    // both call) — so a batch-test scenario's dynamic variables are built by
+    // the EXACT SAME code as a real inbound call, not a thinner hand-rolled
+    // subset (this file's pre-CALL-9 body only ever set
+    // `current_date`/`current_weekday`/`upcoming_weekday_dates`/
+    // `heyloo_tenant_id` plus per-vertical tokens — never `greeting_hours_
+    // context`/`disclosure_line`/`special_instructions`/etc., and, before
+    // this task, never a `caller_recent_context` a returning-caller scenario
+    // could actually use).
+    const tenantRows = await sql<{
+      vertical: Vertical;
+      timezone: string;
+      business_name: string;
+      business_hours: Record<string, unknown>;
+      hours_exceptions: unknown[];
+      manual_mode: boolean;
+      language_primary: string;
+    }>`
+      select vertical, timezone, name as business_name, business_hours, hours_exceptions,
+        manual_mode, coalesce(language_config->>'primary', 'en') as language_primary
+      from public.tenants where id = ${req.tenant_id}
     `;
     const tenant = tenantRows[0];
     if (!tenant) return { status: 404, body: { error: "tenant_not_found" } };
@@ -636,10 +818,16 @@ export async function runAgentTests(
     const configRows = await sql<{
       compiled_config: Record<string, unknown> | null;
       assistant_name: string | null;
+      special_instructions: string | null;
       dynamic_variable_overrides: Record<string, unknown> | null;
+      transfer_number: string | null;
+      disclosure_line: string | null;
     }>`
-      select compiled_config, assistant_name, dynamic_variable_overrides
-      from public.agent_configs where tenant_id = ${req.tenant_id}
+      select ac.compiled_config, ac.assistant_name, ac.special_instructions,
+        ac.dynamic_variable_overrides, ac.transfer_number, at.disclosure_line
+      from public.agent_configs ac
+      left join public.agent_templates at on at.id = ac.template_id
+      where ac.tenant_id = ${req.tenant_id}
     `;
     const compiledConfig = configRows[0]?.compiled_config;
     const responseEngine = (compiledConfig as Record<string, unknown> | null)?.[
@@ -654,24 +842,42 @@ export async function runAgentTests(
     if (scenarios.length === 0) return { status: 422, body: { error: "no_matching_scenarios" } };
 
     startedAt = now().toISOString();
-    const currentDateContext = computeCurrentDateContext(now(), tenant.timezone);
-    const upcomingWeekdayDates = computeUpcomingWeekdayDates(now(), tenant.timezone);
-    // CALL-7: the same per-vertical token resolution `/voice-inbound`
-    // already applies for a real call (see this file's own import comment
-    // above) — a test tenant has no `dynamic_variable_overrides` configured,
-    // so every token resolves to its safe built-in default (e.g. vet's
-    // species_treated -> "cats and dogs", motel's rate_table -> an explicit
-    // "no rates on file" string), never a literal unresolved `{{token}}`.
     const overrides = configRows[0]?.dynamic_variable_overrides ?? {};
-    const verticalTokens = await resolveVerticalDynamicVariables({
-      sql,
+    const inboundConfig = {
       tenantId: req.tenant_id,
+      businessName: tenant.business_name,
       vertical: tenant.vertical,
-      overrides,
-      logger: deps.logger,
-    });
+      timezone: tenant.timezone,
+      businessHours: tenant.business_hours,
+      hoursExceptions: tenant.hours_exceptions,
+      manualMode: tenant.manual_mode,
+      languagePrimary: tenant.language_primary,
+      assistantName: configRows[0]?.assistant_name ?? null,
+      specialInstructions: configRows[0]?.special_instructions ?? null,
+      dynamicVariableOverrides: overrides,
+      disclosureLine:
+        configRows[0]?.disclosure_line ??
+        "This call may be recorded, and you are speaking with an AI assistant.",
+      transferNumber: configRows[0]?.transfer_number ?? null,
+    };
     caseDefinitions = [];
     for (const scenario of scenarios) {
+      // CALL-9: the SAME shared builder `voice-inbound/handler.ts` (a real
+      // call) and `simulateInboundCall` (this file's own internal proof
+      // action) both call — see this function's own doc comment above the
+      // extended `tenantRows`/`configRows` queries. `fromNumber` is this
+      // scenario's own `testCallerNumber` when set (a returning-caller
+      // scenario — `_shared/test-scenarios.ts`), `null` otherwise, exactly
+      // mirroring what a real caller's own `from_number` would be.
+      const scenarioFromNumber = normalizeE164(scenario.testCallerNumber ?? null);
+      const dynamicVariables = await buildInboundDynamicVariables({
+        sql,
+        logger: deps.logger,
+        now: now(),
+        fromNumber: scenarioFromNumber,
+        config: inboundConfig,
+      });
+
       const created = await createTestCaseDefinition(deps.retellFetch, deps.retellApiKey, {
         name: `${tenant.vertical}:${scenario.id}`.slice(0, 200),
         response_engine: responseEngine,
@@ -689,27 +895,22 @@ export async function runAgentTests(
           // `call.retell_llm_dynamic_variables` — a batch-test/QA-
           // harness-only mechanism, never present on a real call.
           heyloo_tenant_id: req.tenant_id,
-          // CALL-2: a batch test never goes through `/voice-inbound` (no
-          // `call_inbound` webhook fires for a simulated run), so the
-          // model has no `current_date`/`current_weekday` either —
-          // confirmed live this produced `check_availability` calls
-          // years off the real generated `availability_slots` window,
-          // which the model then hallucinated a booking confirmation for
-          // instead of honestly reporting `none_available`.
-          current_date: currentDateContext.date,
-          current_weekday: currentDateContext.weekday,
-          // CALL-6 (docs/BUILD_NOTES.md) — the `wrong_date_caller`
-          // scenario's own finding: the model still gets weekday-name
-          // arithmetic ("next Monday") wrong even with current_date/
-          // current_weekday alone. A precomputed lookup removes the need
-          // for the model to compute it itself.
-          upcoming_weekday_dates: upcomingWeekdayDates,
-          timezone: tenant.timezone,
-          business_name: tenant.business_name,
-          assistant_name: configRows[0]?.assistant_name ?? "the AI assistant",
-          // CALL-7: see this file's own import comment — every remaining
-          // per-vertical `{{token}}` a compiled prompt may reference.
-          ...verticalTokens,
+          // CALL-9: same QA-harness-only mechanism as `heyloo_tenant_id`
+          // above — `voice-tools/context.ts` honors this ONLY for a
+          // placeholder/batch-test call id, never a real one (see that
+          // module's own doc comment). Omitted entirely (never sent as an
+          // empty string) when this scenario has no `testCallerNumber`, so
+          // it's indistinguishable from every scenario before this task.
+          ...(scenarioFromNumber ? { heyloo_test_caller_number: scenarioFromNumber } : {}),
+          // CALL-9: every field `/voice-inbound` itself would have set for
+          // a real call to this tenant/caller — includes `current_date`/
+          // `current_weekday`/`upcoming_weekday_dates` (CALL-2/CALL-6's own
+          // fixes, unchanged in effect) and every per-vertical `{{token}}`
+          // (CALL-7), now built by the SAME shared function instead of a
+          // parallel hand-rolled subset. Coerced to Retell's own
+          // Record<string,string> contract for this endpoint (see
+          // `toRetellDynamicVariableStrings`'s own doc comment).
+          ...toRetellDynamicVariableStrings(dynamicVariables),
         },
       });
       const createdBody = created.body as { test_case_definition_id?: string };

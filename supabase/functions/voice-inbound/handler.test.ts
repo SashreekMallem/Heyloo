@@ -92,7 +92,12 @@ describe("handleVoiceInbound", () => {
         "Tuesday=2026-01-13, Wednesday=2026-01-14, Thursday=2026-01-15, " +
         "Friday=2026-01-16, Saturday=2026-01-17, Sunday=2026-01-18, Monday=2026-01-19",
     });
-    expect(result.body.call_inbound.dynamic_variables.caller_recent_context).toBeUndefined();
+    // CALL-9: no matching customers row — ALWAYS a real sentence now
+    // (never omitted), so `{{caller_recent_context}}` in the compiled
+    // prompt is never left as a literal unresolved placeholder.
+    expect(result.body.call_inbound.dynamic_variables.caller_recent_context).toBe(
+      "This is a new caller — no prior history is on file; collect their name and phone number normally.",
+    );
   });
 
   it("omits transfer_number when agent_configs.transfer_number is unset (FIX_REQUESTS.md)", async () => {

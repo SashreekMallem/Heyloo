@@ -339,6 +339,81 @@ describe("resolveCallContext", () => {
     expect(insertCall?.text).toContain("returning");
   });
 
+  it("CALL-9: honors heyloo_test_caller_number for a placeholder/batch-test call, so a seeded returning-customer number can be simulated live", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.tenants where id": [{ id: "t7", vertical: "auto" }],
+      "insert into public.call_logs": [
+        { id: "cl-new7", tenant_id: "t7", caller_number: "+15552010199", is_test_call: true },
+      ],
+    });
+    const call: ToolCall = {
+      call_type: "web_call",
+      from_number: "+15559990000", // must be IGNORED — the test override wins
+      retell_llm_dynamic_variables: {
+        heyloo_tenant_id: "t7",
+        heyloo_test_caller_number: "+15552010199",
+      },
+    };
+    const ctx = await resolveCallContext(sql, "playground", call, logger);
+    expect(ctx?.callerNumber).toBe("+15552010199");
+    const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
+    expect(insertCall?.values).toContain("+15552010199");
+    expect(insertCall?.values).not.toContain("+15559990000");
+  });
+
+  it("CALL-9: a placeholder call's callerNumber NEVER leaks in from the shared row a DIFFERENT scenario already wrote — the live-observed cross-scenario contamination bug, fixed", async () => {
+    // Simulates the exact live bug: an EARLIER scenario's tool call already
+    // upserted a real caller number onto this tenant's ONE shared
+    // placeholder row (CALL-6 keying — every scenario in a batch job
+    // shares it). THIS call belongs to a DIFFERENT scenario that never set
+    // `heyloo_test_caller_number` at all — the mock's own "insert into
+    // public.call_logs" fixture row still carries the OLD contaminated
+    // value (exactly what a real ON CONFLICT ... RETURNING would hand
+    // back), proving the fix reads from THIS call's own resolution, not
+    // that returned column.
+    const { sql } = makeRecordingSql({
+      "from public.tenants where id": [{ id: "t9", vertical: "auto" }],
+      "insert into public.call_logs": [
+        {
+          id: "cl-shared",
+          tenant_id: "t9",
+          caller_number: "+15552010288", // stale, from an EARLIER scenario
+          is_test_call: true,
+        },
+      ],
+    });
+    const call: ToolCall = {
+      call_type: "web_call",
+      // No `from_number`, no `heyloo_test_caller_number` — this scenario
+      // never claims to be any particular caller.
+      retell_llm_dynamic_variables: { heyloo_tenant_id: "t9" },
+    };
+    const ctx = await resolveCallContext(sql, "playground", call, logger);
+    expect(ctx?.callerNumber).toBeNull();
+  });
+
+  it("CALL-9: NEVER honors heyloo_test_caller_number for a real-shaped call id — a genuine call always keeps call.from_number", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.agent_configs": [{ tenant_id: "t8", vertical: "auto" }],
+      "insert into public.call_logs": [
+        { id: "cl-new8", tenant_id: "t8", caller_number: "+15551234567", is_test_call: false },
+      ],
+    });
+    const call: ToolCall = {
+      agent_id: "agent_real2",
+      call_type: "phone_call",
+      from_number: "+15551234567",
+      // An adversarial/leftover dynamic variable — must be ignored entirely
+      // for a real-shaped call id (isPlaceholderCallId is false here).
+      retell_llm_dynamic_variables: { heyloo_test_caller_number: "+15559990000" },
+    };
+    const ctx = await resolveCallContext(sql, REAL_CALL_ID, call, logger);
+    expect(ctx?.callerNumber).toBe("+15551234567");
+    const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
+    expect(insertCall?.values).toContain("+15551234567");
+    expect(insertCall?.values).not.toContain("+15559990000");
+  });
+
   it("(c) fails closed and logs a warning with the reason when neither call_logs nor the payload resolves a tenant", async () => {
     const { sql } = makeRecordingSql({});
     const { logger: warnLogger, warnings } = makeWarnCapturingLogger();
