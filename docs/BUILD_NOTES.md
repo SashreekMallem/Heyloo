@@ -16329,3 +16329,217 @@ staged and untouched throughout (committed by explicit pathspec, never
 `git add -A`/`git commit -a`). Deployed live: `api-provision`,
 `api-admin-provision-test-tenant`, `voice-events`,
 `api-admin-attach-retell-number`.
+
+## OPS-8 (2026-09-21) — `worker-recording-fetch` root-caused and fixed (two independent bugs); honest "provider not configured" park+DLQ for `messages_outbound`; retry hygiene + backlog visibility across every queue worker
+
+### Deliverable 1 — why `worker-recording-fetch` never completed a message, and the real fix
+
+**Starting evidence** (SELFCALL-1's own flagged gap): `recording_fetch_queue`
+had 5 messages stuck with `read_ct` 450-470+ (climbing every cron tick)
+while their message body still showed `"attempt":0` — i.e. the delete/
+retry/dead-letter write had never once executed, for any of them, ever.
+
+**Root cause #1 — an uncaught exception could strand the whole batch.**
+`runRecordingFetchWorker`'s `tenantRows` lookup ran OUTSIDE its
+try/catch, and the retry/dead-letter writes lived in a catch block with
+no protection of their own. An exception at EITHER point propagated
+straight out of the `for` loop mid-iteration. `pgmq.read` had already
+bumped every row's `read_ct` for that tick before the loop started, so
+the observed symptom — every message in the batch re-readable and
+climbing forever, none of them ever deleted/retried/dead-lettered —
+matches exactly. Fixed: every row's ENTIRE processing (tenant lookup
+through outcome) now lives inside one try/catch, and the catch's own
+retry/dead-letter writes are wrapped in a second, inner try/catch —
+nothing a single row does, at any step, can strand the rest of the
+batch. The same defensive shape (per-row try/catch, inner try/catch
+around the retry/dead-letter write) was applied to `worker-messages-
+outbound` and `worker-adapter-push` too — `worker-adapter-push`'s
+`pushToAdapter` call had this EXACT same latent bug (no try/catch at
+all around it), just never triggered live because `adapter_push_queue`
+has been empty in production.
+
+**Root cause #2 — found only once #1 stopped masking it, via a new
+`row_outcomes` diagnostic field added to `runRecordingFetchWorker`'s own
+response** (edge-log queries were unreliable throughout this session —
+`GET .../analytics/endpoints/logs.all` returned `"Backend error! Retry
+your query."` on every attempt, matching SELFCALL-1's own prior note on
+this same endpoint — so this response-body diagnostic was the only
+reliable evidence channel; kept permanently, bounded, optional/omitted
+when empty): `_shared/queue.ts#deleteMessage`/`archiveMessage` called
+`pgmq.delete`/`pgmq.archive` with UNTYPED bound parameters. Confirmed
+live against this project's own `pg_proc` catalog: pgmq ships TWO
+overloads of each — `(queue_name text, msg_id bigint)` and `(queue_name
+text, msg_ids bigint[])` (a batch form) — and Postgres could not resolve
+which to call: **every single `deleteMessage`/`archiveMessage` call
+failed with `function pgmq.delete(unknown, unknown) is not unique`,
+100% of the time.** This is the actual reason no message had EVER been
+deleted, retried past attempt 0, or dead-lettered by this worker in this
+project's history — root cause #1 just hid it behind "the loop crashes
+before it matters." `readBatch`'s `pgmq.read` and `enqueue`'s `pgmq.send`
+were NOT affected (each has only one same-arity overload). Fixed with
+explicit `::text`/`::bigint` casts in `queue.ts` — full detail in that
+file's own updated header comment. Migration
+`20260921130000_queue_indexes.sql` adds `pgmq.q_messages_outbound_queue
+(enqueued_at)` (used by deliverable 2's sweep below), additive/guarded,
+applied live.
+
+**Root cause #3 — Storage upload itself, found the same way** (`upload_
+failed` reasons surfacing via `row_outcomes` once #1/#2 were fixed): the
+platform-injected `SUPABASE_SECRET_KEYS` value (`sb_secret_...`, the new
+key format — CLAUDE.md Rule 1 item 3, this repo never uses the legacy
+`service_role` JWT name) sent alone on `authorization: Bearer` made
+every Storage upload fail live with `403 Invalid Compact JWS` — Storage's
+gateway still tries to parse `authorization` as a JWT regardless. Full
+verification against `supabase.com/docs/guides/getting-started/
+migrating-to-new-api-keys` (fetched live) plus the actual live-confirmed
+fix (both `authorization` and `apikey` headers carrying the same key —
+the docs' "apikey only" guidance did not fully hold against this
+project's gateway, which still required `authorization` to be present at
+all) is in `docs/VERIFY.md`'s new OPS-8 entry. Fixed in
+`worker-recording-fetch/index.ts` and `worker-tick/index.ts` (each
+file's own `uploadToStorage` copy — `worker-tick` bundles its own,
+independent copy of every leg's real dependencies at deploy time, so
+both needed the same fix deployed for the actual cron-invoked path to
+pick it up; this was re-discovered live mid-task when a fix to
+`worker-recording-fetch` alone didn't change cron-observed behavior
+until `worker-tick` was ALSO redeployed).
+
+**Storage bucket** — checked per this task's own brief ("`call-
+recordings` bucket was deleted during cleanup"): the code and
+`20260907131600_storage.sql` migration have only ever referenced a
+bucket named `recordings` (not `call-recordings`), and it already exists
+live, private (`public: false`, confirmed via direct SQL against
+`storage.buckets`) — no bucket work was needed. `docs/LAUNCH_STATUS.md`'s
+"storage buckets 4 → 1 (the one remaining bucket, `call-recordings`, is
+public...)" line was itself stale/incorrect (a naming/description error
+from that earlier cleanup pass, not a live gap) — corrected in this
+task's own refresh of that file.
+
+**Live proof** (`sbq.sh` against the live project, all timestamps UTC
+2026-09-21): re-enqueued the two SELFCALL-1 calls
+(`call_logs.id=03097a3c-2206-4699-a6b7-f42573f6fc39` and
+`7fec6d6d-edda-424f-8ca6-16b3ce9eb1af`) fresh (`attempt:0`) after all
+three fixes were deployed, invoked `worker-recording-fetch` directly:
+`{"stored":2,...}`. Both `call_logs` rows now have `recording_url`/
+`stereo_recording_url` populated
+(`recordings/b2efae9d-8309-46d6-a950-31d683616cdc/<call_id>.wav` and
+`..._stereo.wav`). Minted a real signed URL for one via a temporary
+debug branch (added, used once, then removed before the final commit —
+this file's own diff history shows the add/remove) and `curl -I`'d it:
+`HTTP_STATUS:200`, `content-type: audio/wav` — never printed the signed
+token itself. Queue drained to 0 (`recording_fetch_queue` length 0,
+`queue_visible_length: 0`); the three genuinely-recording-less messages
+from 2026-09-20 (pre-existing, unrelated to this task, `not_ready` every
+attempt) correctly exhausted `RECORDING_FETCH_MAX_ATTEMPTS` (8) and
+dead-lettered with `reason: "max_attempts_exceeded:not_ready"` — DLQ
+behavior confirmed correct, not just theorized.
+
+### Deliverable 2 — honest "provider not configured" behavior for `messages_outbound`
+
+**Definition adopted**: when Twilio/Resend secrets are absent, the leg
+must (a) skip QUICKLY, without ever calling `pgmq.read` on fresh messages
+(so `read_ct` never climbs while waiting — confirmed live, pre-existing:
+all 9 real queued messages sat at `read_ct: 0` throughout, since the leg
+was already being skipped entirely before this task), and (b) NOT let a
+message wait forever with zero visible signal — a message that has
+waited past a park window (`OUTBOUND_NOT_CONFIGURED_PARK_SECONDS`, 24h)
+gets dead-lettered with `reason: "provider_not_configured"` and its
+`messages_outbound.status` flipped to `failed`, so once the owner sets
+the secrets, everything queued within the window sends normally through
+the now-fixed retry/DLQ loop, and anything older is visibly dead (never
+silently lost).
+
+**Implementation** (`worker-messages-outbound/handler.ts#sweepNotConfiguredOutbound`):
+a plain SELECT against `pgmq.q_messages_outbound_queue` filtered by
+`enqueued_at` — deliberately NEVER `pgmq.read` (which bumps `read_ct`/
+sets a new visibility timeout even on messages it does nothing with) —
+so only messages already past the park window are touched at all; wired
+into `worker-tick`'s own not-configured leg handling (`runOutboundLeg`)
+and into `worker-messages-outbound/index.ts`'s own standalone
+not-configured branch, so both invocation paths behave identically.
+
+**Live proof, SQL before/after**: enqueued a throwaway test message
+(`message_id: 00000...0ops8`, no real tenant/customer row), backdated
+its `enqueued_at` to 25h ago via direct SQL (never possible from inside
+the worker itself — this is a test harness step only). Invoked
+`worker-tick`: the throwaway message was dead-lettered
+(`pgmq.q_messages_outbound_queue_dlq` row, `reason:
+"provider_not_configured"`) and removed from the live queue. The 9 REAL
+pre-existing queued messages (real tenant/booking-linked, `is_test:
+false` on most) were confirmed untouched throughout — same count (9),
+`read_ct` still 0 on every one, before and after.
+
+### Deliverable 3 — retry hygiene + backlog visibility across every queue worker
+
+- **Recorded reason on every dead-letter, every queue.**
+  `_shared/queue.ts#moveToDeadLetter` now takes a required `reason`
+  string and wraps the DLQ payload as `{reason, dead_lettered_at,
+  message}` (previously just the raw original message, no reason at
+  all). Every call site across `worker-recording-fetch`/`worker-
+  messages-outbound`/`worker-adapter-push` updated:
+  `max_attempts_exceeded:<last error>` for the normal exhausted-retry
+  path, `provider_not_configured` for the not-configured sweep.
+- **Per-row defensive isolation, all three workers** (root cause #1
+  above) — `worker-adapter-push`'s `pushToAdapter` call and `worker-
+  messages-outbound`'s own dead-letter write are both now wrapped the
+  same way `worker-recording-fetch`'s is, closing the same latent bug
+  class before it could bite in production the way it already had for
+  recording-fetch.
+- **`worker-tick` now reports per-queue backlog in its own response** —
+  new `_shared/queue.ts#metricsAll` (`select * from pgmq.metrics_all()`)
+  wired into `runWorkerTick`'s `queues` field (every queue, including
+  every `_dlq` companion), never allowed to fail the whole tick (caught,
+  defaults to `[]`). Confirmed live in `worker-tick`'s own response.
+- **New admin read**: `GET /admin-cockpit/queues` (`admin/handler.ts`,
+  following the existing `admin-cockpit/<page>` router pattern — ANALYSIS-1
+  does not own `admin/*`) returns the same `metricsAll` rows, so the
+  admin dashboard can show backlog/DLQ depth without a direct DB query.
+  Unit-tested; not exercised via a live authenticated curl (that needs a
+  real `platform_admin` JWT this session doesn't hold) — it shares the
+  exact same, already-live-proven `metricsAll` helper `worker-tick`'s
+  response already confirms works.
+
+### A note on the shared working tree
+
+This task's live function deploys (`worker-recording-fetch`, `worker-
+messages-outbound`, `worker-adapter-push`, `worker-tick`, `admin`) each
+bundle whatever is CURRENTLY ON DISK for every file they import,
+regardless of git commit status. `admin/handler.ts` imports `_shared/
+compiler/template-compiler.ts`, which had ANALYSIS-1's own uncommitted,
+concurrent in-progress changes sitting in the shared working tree at
+deploy time — those were bundled into the live `admin` function as a
+side effect of this task's own `admin` deploy (needed for the new
+`admin-cockpit/queues` route). `pnpm typecheck`/`pnpm run test` both
+passed clean at that moment (including ANALYSIS-1's own in-progress
+files), so this was a safe, if not fully clean, state to have deployed —
+flagged here transparently rather than attempted to work around (not
+this task's file to touch or judge).
+
+### Gates
+
+`cd supabase/functions && pnpm typecheck` clean. `pnpm run test`:
+**1152/1152 green** (115 files; +30 vs. the 1122 baseline this task
+started from — new coverage for `runRecordingFetchWorker`,
+`runOutboundWorker`, `sweepNotConfiguredOutbound`, `runAdapterPushWorker`,
+`moveToDeadLetter`'s reason, `metricsAll`, `runWorkerTick`'s `queues`/
+`parked` fields, and the new `admin-cockpit/queues` route).
+`npx biome check` on every file this task touched: clean. `pnpm lint`
+(repo-wide `biome check .` + `turbo run lint`): clean except
+pre-existing warnings/errors this task never touched (`packages/ui`,
+`packages/adapters/*`, `packages/templates`, `scripts/e2e/*`,
+`webhooks-pos/handler.test.ts`) — confirmed via `git status` and a
+direct grep of the lint output for this task's own paths (zero matches).
+
+### Code
+
+New: `supabase/migrations/20260921130000_queue_indexes.sql`. Changed:
+`supabase/functions/_shared/queue.ts` (+test — `reason` param,
+`metricsAll`, the `deleteMessage`/`archiveMessage` cast fix),
+`supabase/functions/worker-recording-fetch/{handler,index}.ts` (+test),
+`supabase/functions/worker-messages-outbound/{handler,index}.ts`
+(+test), `supabase/functions/worker-adapter-push/handler.ts` (+test),
+`supabase/functions/worker-tick/{handler,index}.ts` (+test),
+`supabase/functions/admin/handler.ts` (+test — new `admin-cockpit/queues`
+route). `docs/VERIFY.md` (new OPS-8 entry), `docs/LAUNCH_STATUS.md`
+(refreshed). Deployed live: `worker-recording-fetch`, `worker-messages-
+outbound`, `worker-adapter-push`, `worker-tick`, `admin`.

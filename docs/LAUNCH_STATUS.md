@@ -1,5 +1,37 @@
 # Launch Status
 
+**OPS-8 (2026-09-21)**: closed SELFCALL-1's other flagged gap —
+`recording_url` now actually populates. Three independent, compounding
+root causes, all fixed and live-proven (`docs/BUILD_NOTES.md`/
+`docs/VERIFY.md` OPS-8 entries have the full story): (1)
+`worker-recording-fetch` could let one row's exception strand every
+other message that tick's `pgmq.read` had already bumped `read_ct` for
+— messages sat with `read_ct` 450-470+ and `attempt` frozen at 0
+forever; (2) even past that, EVERY `pgmq.delete`/`pgmq.archive` call
+failed 100% of the time (`function pgmq.delete(unknown, unknown) is not
+unique` — pgmq ships two overloads and untyped bound params couldn't
+resolve which) — this, not (1), was the actual reason nothing had EVER
+been deleted/retried/dead-lettered by this worker; (3) once both of
+those were fixed, Storage uploads themselves failed
+(`403 Invalid Compact JWS` — the new-format `sb_secret_...` key sent
+alone on `authorization: Bearer` gets parsed as a JWT and rejected;
+fixed by also sending it on `apikey`, confirmed against Supabase's own
+current migration-to-new-keys docs). Both SELFCALL-1 calls now have
+`recording_url`/`stereo_recording_url` populated, live-verified
+retrievable via a signed URL (`HTTP 200`, `audio/wav`). Also: outbound
+messages queued while Twilio/Resend are unconfigured are now honestly
+parked (no `read_ct` growth) then dead-lettered with reason
+`provider_not_configured` past a 24h window rather than waiting forever
+with zero signal; every queue worker's dead-letters now carry a recorded
+reason; `worker-tick`'s own response and a new `admin-cockpit/queues`
+route both surface every queue's `pgmq.metrics_all()` backlog. **Stale
+correction**: this file's own prior "storage buckets 4 → 1 (the one
+remaining bucket, `call-recordings`, is public...)" line (below, in the
+2026-09-20 ops entry) was itself wrong — the code and migration have
+only ever used a bucket named `recordings`, already private, confirmed
+live; that earlier line is left as-is with this note rather than
+rewritten in place (it is inside an earlier task's own dated entry).
+
 **ANALYSIS-1 (2026-09-21)**: closed SELFCALL-1's own flagged gap — post-call
 analysis (`classification`/`outcome`/`follow_up_needed`/`urgency_flag`/
 `sentiment`) now actually reaches Retell and comes back populated on a real

@@ -2510,3 +2510,50 @@ voice-events.ts` (`parseCustomAnalysisData`, per-field validation),
 `supabase/functions/voice-events/handler.ts` (`handleCallAnalyzed`),
 `supabase/functions/api-admin-attach-retell-number/handler.ts`
 (`stableStringify` fix).
+
+## OPS-8 — Retell `GET /v2/get-call/{id}` recording fields, and Supabase Storage REST auth with the new secret-key system — **RESOLVED, confirmed live**
+
+**Retell recording fields** (`WebFetch` of
+`https://docs.retellai.com/api-references/get-call`, 2026-09-21):
+`recording_url` — "Recording of the call. Available after call ends.";
+`recording_multi_channel_url` — same, per-party channels;
+`scrubbed_recording_url`/`scrubbed_recording_multi_channel_url` — PII-
+scrubbed variants; `opt_in_signed_url` (boolean, per-agent) — when set,
+the URLs Retell returns already carry a 24h-expiring signature, no
+special handling needed on this side. **No documented availability
+window narrower than "after the call ends"** — `worker-recording-fetch/
+handler.ts`'s own pre-existing header comment asserting a "<10-minute
+availability window" is UNCONFIRMED against current docs (this repo's
+own prior VERIFY note already flagged the underlying `pgmq.read`/
+`pgmq.delete` signatures as reconstructed, not confirmed) and should be
+treated as a defensive assumption, not a documented Retell limit — the
+two real SELFCALL-1 calls, well over 45 minutes old at fetch time, both
+had `recording_url` populated with no error, consistent with "no hard
+short window."
+
+**Supabase Storage REST auth with the new-format `sb_secret_...` key**
+(`WebFetch` of `https://supabase.com/docs/guides/getting-started/
+migrating-to-new-api-keys`, 2026-09-21, plus live confirmation against
+this project's own `recordings` bucket): the new-format key is NOT a
+JWT. Sending it on `authorization: Bearer <key>` alone made every
+`POST /storage/v1/object/{bucket}/{path}` (and `.../sign/...`) call fail
+live with `403 {"error":"Unauthorized","message":"Invalid Compact
+JWS","code":"AccessDenied"}` — the gateway still tries to decode
+`authorization` as a JWT regardless of `apikey`. The docs' own stated
+fix ("Send publishable and secret keys on the `apikey` header only")
+does not fully hold against this project's live gateway either — a
+request with ONLY `apikey` set (no `authorization` at all) was rejected
+by request-schema validation itself (`400 {"message":"headers must have
+required property 'authorization'"}`), confirming `authorization` stays
+a required header regardless of key format. The combination that
+actually works, confirmed live (both a raw upload and a `sign` mint
+against the real `recordings` bucket, then a `HEAD` on the resulting
+signed URL returning `200`/`audio/wav`): **both headers set, same
+`sb_secret_...` value on each** (`authorization: Bearer <key>` +
+`apikey: <key>`). CLAUDE.md Rule 1 item 3 — this fix keeps the new
+secret-key system end to end; it does not fall back to a legacy
+`service_role` JWT anywhere.
+
+**Code:** `supabase/functions/worker-recording-fetch/index.ts` and
+`supabase/functions/worker-tick/index.ts` (`uploadToStorage`, each
+file's own copy — see `docs/BUILD_NOTES.md`'s OPS-8 entry for why two).
