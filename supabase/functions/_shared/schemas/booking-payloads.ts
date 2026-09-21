@@ -73,7 +73,18 @@ export const zRestaurantBookingPayload = z.looseObject({
   occasion: z.string().min(1).optional(),
 });
 
-export const zGenericBookingPayload = z.looseObject({});
+/**
+ * CALL-8 (docs/BUILD_PLAN.md): `reason` is the one vertical-specific field
+ * `generic`'s required-intake matrix (`_shared/vertical-intake.ts`) asks
+ * for — SYSTEM_DESIGN §4.3's own generic input-collection spec is "name ·
+ * phone · reason · message · callback window," and `generic.ts`'s
+ * `createBookingTool` description already says "once name, phone, reason,
+ * and a confirmed open time are collected" — this schema previously had
+ * nowhere typed to put it.
+ */
+export const zGenericBookingPayload = z.looseObject({
+  reason: z.string().min(1).optional(),
+});
 
 const BOOKING_PAYLOAD_SCHEMA_BY_VERTICAL = {
   auto: zAutoBookingPayload,

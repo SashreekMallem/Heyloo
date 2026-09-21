@@ -80,9 +80,11 @@ export const GENERIC_TEMPLATE: AgentTemplate = {
       name: "Intake",
       prompt_fragment:
         "Collect, one at a time: the caller's name · their phone number · the reason for the " +
-        "call. If the business can book what they need, offer check_availability/" +
-        "create_booking. Otherwise take a message with a clear callback window and let them " +
-        "know when to expect a call back.",
+        "call. Confirm each one back as you go. If the business can book what they need, once " +
+        "a time is chosen, read back the name, reason, and date/time, ask the consent " +
+        "question, then call create_booking with structured_payload set to the reason you " +
+        "captured. Otherwise take a message with a clear callback window and let them know " +
+        "when to expect a call back.",
       allowed_tools: [
         "check_availability",
         "create_booking",

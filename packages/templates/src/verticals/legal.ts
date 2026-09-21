@@ -236,8 +236,12 @@ const rawStates: AgentState[] = [
     id: "intake_complete",
     name: "Intake complete",
     prompt_fragment:
-      "Thank the caller, let them know an attorney will review the intake (including the " +
-      "conflict check) and follow up, and record the full intake as a message for the firm.",
+      "Before recording anything, read back what you have — the caller's name and phone, the " +
+      "matter type, the opposing party you'll run a conflict check on, the urgency, and a " +
+      "one-line summary of what they described — and get an explicit yes that it's correct, " +
+      "the same way every other vertical confirms a booking before finalizing it. Then thank " +
+      "the caller, let them know an attorney will review the intake (including the conflict " +
+      "check) and follow up, and record the full intake as a message for the firm.",
     allowed_tools: ["take_message"],
     is_terminal: true,
   },

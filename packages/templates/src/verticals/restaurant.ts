@@ -64,9 +64,11 @@ const ALLERGY_ASK_FRAGMENT =
   "volunteered — never skip this question for a food order.";
 
 const FULL_READBACK_FRAGMENT =
-  "Before closing out an order, read back every item, quantity, and modifier, the pickup-or-" +
-  "delivery choice (and address if delivery), and the total, and get an explicit yes before " +
-  "calling create_order.";
+  "Before closing out an order, ask for the caller's name and a callback number if you " +
+  "haven't already, reading the number back digit by digit to confirm — create_order needs " +
+  "both. Then read back every item, quantity, and modifier, the pickup-or-delivery choice " +
+  "(and address if delivery), and the total, and get an explicit yes before calling " +
+  "create_order.";
 
 const SYSTEM_PROMPT = buildSystemPrompt(
   "You are the phone assistant for a restaurant. Find out right away whether the caller wants " +

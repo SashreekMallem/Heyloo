@@ -146,7 +146,10 @@ export const REAL_ESTATE_TEMPLATE: AgentTemplate = {
       name: "Lead capture (no showing yet)",
       prompt_fragment:
         "The caller wants a valuation/quote or just isn't ready to schedule a showing yet. " +
-        "Take a message per the structured-lead-capture rule so an agent can follow up.",
+        "Before recording anything, read back their name and phone, whether they're buying or " +
+        "selling, and the property/area they're interested in, and get an explicit yes that " +
+        "it's correct. Then take a message per the structured-lead-capture rule so an agent " +
+        "can follow up.",
       allowed_tools: ["take_message"],
       is_terminal: true,
     },

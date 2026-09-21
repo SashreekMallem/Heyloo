@@ -95,10 +95,16 @@ export const zRestaurantBookingPayload = z.looseObject({
 });
 export type RestaurantBookingPayload = z.infer<typeof zRestaurantBookingPayload>;
 
-/** No vertical-specific shape yet (GAP_REGISTER.md §1.7 note on
- * `real_estate`/`generic`) — still a loose object, not `z.unknown()`, so
- * `create_booking.ts` keeps one validation code path for every vertical. */
-export const zGenericBookingPayload = z.looseObject({});
+/**
+ * CALL-8 (docs/BUILD_PLAN.md): `reason` — SYSTEM_DESIGN §4.3's generic
+ * input-collection spec ("name · phone · reason · message · callback
+ * window") and `_shared/vertical-intake.ts`'s required-field matrix both
+ * need somewhere typed to put it; mirrors the Deno-side `_shared/schemas/
+ * booking-payloads.ts`'s identical addition.
+ */
+export const zGenericBookingPayload = z.looseObject({
+  reason: z.string().min(1).optional(),
+});
 export type GenericBookingPayload = z.infer<typeof zGenericBookingPayload>;
 
 export const zBookingStructuredPayload = z.union([
@@ -204,5 +210,10 @@ export const BOOKING_STRUCTURED_PAYLOAD_PROPERTIES: Record<
     special_instructions: { type: "string" },
     occasion: { type: "string" },
   },
-  generic: {},
+  generic: {
+    reason: {
+      type: "string",
+      description: "The reason for the call/visit, in the caller's own words.",
+    },
+  },
 };
