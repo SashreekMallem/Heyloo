@@ -25,10 +25,29 @@ let serverQueue: Record<string, unknown[]> = {};
 let mockGetUser: () => Promise<{ data: { user: unknown } }> = async () => ({
   data: { user: null },
 });
+// AUTH-1 (docs/BUILD_NOTES.md): set only by the dedicated regression test
+// below to decouple `getClaims()`'s answer from `getUser()`'s, proving the
+// route honors the JWT-only claim rather than `user.app_metadata`.
+let mockClaimsOverride: unknown | undefined;
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({
-    auth: { getUser: () => mockGetUser() },
+    auth: {
+      getUser: () => mockGetUser(),
+      // AUTH-1 (docs/BUILD_NOTES.md): the route now reads claims via
+      // `auth.getClaims()`, not `user.app_metadata` — bridge it off the
+      // SAME mocked user so every existing `mockGetUser` scenario above
+      // still drives the route's authorization outcome unchanged, unless a
+      // test explicitly decouples it via `mockClaimsOverride`.
+      getClaims: async () => {
+        if (mockClaimsOverride !== undefined) {
+          return { data: { claims: { app_metadata: mockClaimsOverride } }, error: null };
+        }
+        const { data } = await mockGetUser();
+        const u = data.user as { app_metadata?: unknown } | null;
+        return { data: { claims: { app_metadata: u?.app_metadata ?? {} } }, error: null };
+      },
+    },
     from: makeFrom(serverQueue),
   }),
 }));
@@ -63,6 +82,26 @@ describe("GET /api/tenant/resources", () => {
     const res = await GET();
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ resources: [{ id: "r1", name: "Room 1" }] });
+  });
+
+  it("AUTH-1 regression: honors a tenant_id claim present ONLY in the JWT (auth.getClaims()), absent from user.app_metadata", async () => {
+    serverQueue = { resources: [{ data: [], error: null }] };
+    mockGetUser = async () => ({ data: { user: { id: "u1", app_metadata: {} } } });
+    mockClaimsOverride = { tenant_id: "t1", role: "owner" };
+    const res = await GET();
+    expect(res.status).toBe(200);
+    mockClaimsOverride = undefined;
+  });
+
+  it("AUTH-1 regression: 403s when the JWT's own claims carry no tenant_id, even if user.app_metadata (stale) has one", async () => {
+    serverQueue = {};
+    mockGetUser = async () => ({
+      data: { user: { id: "u1", app_metadata: { tenant_id: "stale-tenant", role: "owner" } } },
+    });
+    mockClaimsOverride = {};
+    const res = await GET();
+    expect(res.status).toBe(403);
+    mockClaimsOverride = undefined;
   });
 });
 

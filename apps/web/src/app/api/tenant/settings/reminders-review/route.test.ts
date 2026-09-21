@@ -29,7 +29,18 @@ const from = vi.fn((table: string) => {
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({
-    auth: { getUser: () => mockGetUser() },
+    auth: {
+      getUser: () => mockGetUser(),
+      // AUTH-1 (docs/BUILD_NOTES.md): the route now reads claims via
+      // `auth.getClaims()`, not `user.app_metadata` — bridge it off the
+      // SAME mocked user so every existing `mockGetUser` scenario above
+      // still drives the route's authorization outcome unchanged.
+      getClaims: async () => {
+        const { data } = await mockGetUser();
+        const u = data.user as { app_metadata?: unknown } | null;
+        return { data: { claims: { app_metadata: u?.app_metadata ?? {} } }, error: null };
+      },
+    },
     from,
   }),
 }));

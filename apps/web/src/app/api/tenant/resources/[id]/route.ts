@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { claimsFromUser } from "@/lib/auth/claims";
+import { claimsFromSupabaseClient } from "@/lib/auth/claims";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -21,7 +21,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-  const claims = claimsFromUser(user);
+  // AUTH-1 fix (docs/BUILD_NOTES.md, SIGNUP-1 root cause #3): claims live
+  // only in the JWT itself, never in the User/session object's
+  // app_metadata; claimsFromUser(user) always evaluated to {} for a real
+  // tenant/admin/partner here.
+  const claims = await claimsFromSupabaseClient(supabase);
   if (!claims.tenant_id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   let json: unknown;
@@ -66,7 +70,11 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-  const claims = claimsFromUser(user);
+  // AUTH-1 fix (docs/BUILD_NOTES.md, SIGNUP-1 root cause #3): claims live
+  // only in the JWT itself, never in the User/session object's
+  // app_metadata; claimsFromUser(user) always evaluated to {} for a real
+  // tenant/admin/partner here.
+  const claims = await claimsFromSupabaseClient(supabase);
   if (!claims.tenant_id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   const { data: existing } = await supabase
