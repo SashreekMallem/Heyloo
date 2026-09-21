@@ -27,14 +27,20 @@ function makeStepSql(steps: Step[]): { sql: SqlClient; callCount: () => number }
   return { sql, callCount: () => i };
 }
 
+// CALL-8: UUID-shaped (matching a real `resources.id`) rather than the
+// old plain "res_1" — the new UUID_RE guard in `resolveBookingResourceId`
+// would otherwise skip the exact-match query entirely for a non-UUID
+// value, silently changing what these positionally-mocked tests actually
+// exercise (they'd still pass by coincidence via the first-available
+// tier, but wouldn't be testing what their own names/comments claim).
 const args = {
-  resource_id: "res_1",
+  resource_id: "11111111-1111-1111-1111-111111111111",
   start: "2026-01-15T14:00:00.000Z",
   end: "2026-01-15T14:30:00.000Z",
   customer: { name: "Jordan Lee", phone: "555-123-4567" },
 };
 
-const RESOURCE_FOUND: Step = { rows: [{ id: "res_1" }] };
+const RESOURCE_FOUND: Step = { rows: [{ id: args.resource_id }] };
 const NO_ADAPTER_CONNECTIONS: Step = { rows: [] };
 
 describe("createBooking", () => {
@@ -53,10 +59,16 @@ describe("createBooking", () => {
     expect(result).toEqual({ confirmed: false, reason: "resource_not_found" });
   });
 
+  // A real (but non-matching) resources.id — UUID-shaped so it still
+  // exercises the exact-match query tier itself (CALL-8's own new
+  // UUID_RE guard only skips that tier for a value that ISN'T shaped like
+  // a real id at all — see the dedicated "default" literal test below).
+  const WRONG_BUT_UUID_SHAPED_ID = "00000000-0000-0000-0000-000000000099";
+
   it("OPS-5: resolves a hallucinated resource_id server-side via resource_name when the exact id doesn't match", async () => {
     const warn = vi.fn();
     const { sql } = makeStepSql([
-      { rows: [] }, // exact resource_id match: none (the model invented "res_bogus")
+      { rows: [] }, // exact resource_id match: none (the model invented a UUID-shaped id)
       { rows: [{ id: "res_real" }] }, // resource_name match: found
       { rows: [] }, // idempotency pre-check
       { rows: [{ id: "customer_1" }] }, // customer upsert
@@ -66,14 +78,14 @@ describe("createBooking", () => {
     const result = await createBooking(
       sql,
       ctx,
-      { ...args, resource_id: "res_bogus", resource_name: "Bay 2" },
+      { ...args, resource_id: WRONG_BUT_UUID_SHAPED_ID, resource_name: "Bay 2" },
       { logger: { ...createLogger(), warn }, appBaseUrl: "https://example.com" },
     );
     expect(result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
     expect(warn).toHaveBeenCalledWith(
       "create_booking_resource_id_resolved_fallback",
       expect.objectContaining({
-        requested_resource_id: "res_bogus",
+        requested_resource_id: WRONG_BUT_UUID_SHAPED_ID,
         resolved_resource_id: "res_real",
       }),
     );
@@ -88,7 +100,10 @@ describe("createBooking", () => {
       { rows: [{ id: "booking_1", start_at: args.start, end_at: args.end }] }, // booking insert
       NO_ADAPTER_CONNECTIONS,
     ]);
-    const result = await createBooking(sql, ctx, { ...args, resource_id: "res_bogus" });
+    const result = await createBooking(sql, ctx, {
+      ...args,
+      resource_id: WRONG_BUT_UUID_SHAPED_ID,
+    });
     expect(result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
   });
 
@@ -104,6 +119,19 @@ describe("createBooking", () => {
     const result = await createBooking(sql, ctx, argsWithoutResourceId as typeof args);
     expect(result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
     expect(callCount()).toBe(5); // one fewer call than the wrong-id case: no exact-match query at all
+  });
+
+  it("CALL-8: skips the exact-match query (never throws invalid input syntax for type uuid) when resource_id is a non-UUID literal like the live-observed 'default' — falls straight through to first-available", async () => {
+    const { sql, callCount } = makeStepSql([
+      { rows: [{ id: "res_open" }] }, // first-available fallback — the exact-match tier never ran
+      { rows: [] }, // idempotency pre-check
+      { rows: [{ id: "customer_1" }] }, // customer upsert
+      { rows: [{ id: "booking_1", start_at: args.start, end_at: args.end }] }, // booking insert
+      NO_ADAPTER_CONNECTIONS,
+    ]);
+    const result = await createBooking(sql, ctx, { ...args, resource_id: "default" });
+    expect(result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
+    expect(callCount()).toBe(5); // same call count as "omitted entirely" — no exact-match query attempted
   });
 
   it("EDGE_AUDIT B1: rejects an offering_id that doesn't belong to the caller's tenant", async () => {

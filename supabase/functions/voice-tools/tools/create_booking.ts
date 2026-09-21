@@ -119,16 +119,29 @@ const DEFAULT_DEPOSIT_HOLD_HOURS = 24;
  * resolves — never widens which resource a call is authorized to book,
  * only which one of THIS tenant's genuinely-open resources it lands on.
  */
+/** A real `resources.id` is a Postgres `uuid` — matching this shape BEFORE
+ * ever binding `args.resource_id` into a `where id = ...` comparison is
+ * what makes CALL-8's `default`-literal fix (below) actually safe: an
+ * obviously-non-UUID value (Retell live-observed literal `"default"`,
+ * matching CALL-2/OPS-5's own documented "model invents a placeholder id"
+ * class of bug) would otherwise make Postgres THROW `invalid input syntax
+ * for type uuid` rather than simply returning zero rows — an uncaught
+ * exception, not a graceful "not found" the name/first-available fallback
+ * tiers could ever run after. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function resolveBookingResourceId(
   sql: SqlClient,
   ctx: CallContext,
   args: Args,
 ): Promise<string | null> {
-  // CALL-8: `args.resource_id` is now optional (`_shared/schemas/
-  // voice-tools.ts`'s own comment) — skip this tier entirely rather than
-  // binding `undefined` as a query parameter when the model omitted it,
-  // falling straight through to the name/first-available tiers below.
-  if (args.resource_id) {
+  // CALL-8: `args.resource_id` is optional (`_shared/schemas/voice-tools.ts`'s
+  // own comment) — skip this tier entirely rather than binding `undefined`
+  // as a query parameter when the model omitted it, falling straight
+  // through to the name/first-available tiers below. Also skipped (rather
+  // than attempted and left to throw) for any value that isn't shaped like
+  // a real `resources.id` at all — see `UUID_RE`'s own comment.
+  if (args.resource_id && UUID_RE.test(args.resource_id)) {
     const exact = await sql<{ id: string }>`
       select id from public.resources
       where id = ${args.resource_id} and tenant_id = ${ctx.tenantId} and active
