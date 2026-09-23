@@ -223,26 +223,36 @@ export async function createBooking(
     });
   }
 
-  if (args.offering_id) {
-    const offeringRows = await sql<{ id: string }>`
-      select id from public.offerings
-      where id = ${args.offering_id} and tenant_id = ${ctx.tenantId} and active
-      limit 1
-    `;
-    if (!offeringRows[0]) {
-      return { confirmed: false, reason: "offering_not_found" };
-    }
-  }
-
   const idempotencyKey = bookingIdempotencyKey(ctx.retellCallId, args.start);
 
-  // Idempotent replay: a prior identical tool call already created this
-  // booking — return it rather than re-inserting or erroring.
-  const existing = await sql<{ id: string; start_at: string; end_at: string }>`
-    select id, start_at, end_at from public.bookings
-    where tenant_id = ${ctx.tenantId} and idempotency_key = ${idempotencyKey}
-    limit 1
-  `;
+  // QA-HOT (docs/BUILD_NOTES.md): the offering-ownership check and the
+  // idempotent-replay lookup are independent reads (neither's WHERE
+  // depends on the other's result) — run them over the same connection
+  // concurrently rather than as two sequential awaits. postgres.js
+  // pipelines concurrent queries on one connection by default, so this
+  // saves one full network round trip on the hot path instead of paying
+  // it twice in series (live-measured: real query EXECUTION time is only
+  // single-digit ms per EXPLAIN ANALYZE, docs/VERIFY.md QA-HOT — the cost
+  // this cuts is the ROUND TRIP itself, not server-side work).
+  const [offeringRows, existing] = await Promise.all([
+    args.offering_id
+      ? sql<{ id: string }>`
+          select id from public.offerings
+          where id = ${args.offering_id} and tenant_id = ${ctx.tenantId} and active
+          limit 1
+        `
+      : Promise.resolve([]),
+    // Idempotent replay: a prior identical tool call already created this
+    // booking — return it rather than re-inserting or erroring.
+    sql<{ id: string; start_at: string; end_at: string }>`
+      select id, start_at, end_at from public.bookings
+      where tenant_id = ${ctx.tenantId} and idempotency_key = ${idempotencyKey}
+      limit 1
+    `,
+  ]);
+  if (args.offering_id && !offeringRows[0]) {
+    return { confirmed: false, reason: "offering_not_found" };
+  }
   const priorBooking = existing[0];
   if (priorBooking) {
     return {
@@ -345,26 +355,32 @@ export async function createBooking(
       returning id, start_at, end_at
     `;
 
-    if (consentPayload && customerId) {
-      await sql`
-        update public.customers set consent = ${consentPayload}::jsonb
-        where id = ${customerId}
-      `;
-    }
-
     // GAP_REGISTER.md §1.8 — vehicles (auto) / pets (vet) recurring-asset
     // history, so a repeat caller's `lookup_customer` result can skip
     // re-asking (see that tool's already-existing `vehicles`/`pets` read).
     // Skipped entirely (zero extra query) when this vertical/call has
     // nothing new to remember.
     const metadataMerge = extractMetadataMerge(ctx.vertical, structuredPayload, customerMetadata);
-    if (metadataMerge && customerId) {
-      await sql`
-        update public.customers
-        set metadata = metadata || ${{ [metadataMerge.key]: metadataMerge.entries }}::jsonb
-        where id = ${customerId}
-      `;
-    }
+
+    // QA-HOT (docs/BUILD_NOTES.md): these two customer-record writes are
+    // independent of each other (neither reads the other's result) and
+    // both only need `customerId`, already known — run them concurrently
+    // instead of two sequential awaited round trips.
+    await Promise.all([
+      consentPayload && customerId
+        ? sql`
+            update public.customers set consent = ${consentPayload}::jsonb
+            where id = ${customerId}
+          `
+        : Promise.resolve(),
+      metadataMerge && customerId
+        ? sql`
+            update public.customers
+            set metadata = metadata || ${{ [metadataMerge.key]: metadataMerge.entries }}::jsonb
+            where id = ${customerId}
+          `
+        : Promise.resolve(),
+    ]);
 
     const booking = inserted[0];
     if (!booking) {
@@ -389,49 +405,56 @@ export async function createBooking(
     // corrupting field-capture verification for take_message-intent
     // scenarios that happened to share a batch run with a create_booking-
     // intent scenario.
-    if (Object.keys(structuredPayload).length > 0) {
-      await sql`
-        update public.call_logs
-        set structured_booking_payload = coalesce(structured_booking_payload, '{}'::jsonb) || ${structuredPayload}::jsonb
-        where id = ${ctx.callLogId} and tenant_id = ${ctx.tenantId}
-      `;
-    }
-
-    // FIX_REQUESTS.md: dental-only, best-effort post-booking intake-link
-    // send. Never throws/blocks the booking itself on failure — same
-    // fail-open posture as any other post-booking side effect (reminders,
-    // review requests) — wrapped in try/catch and logged.
-    if (ctx.vertical === "dental" && deps) {
-      try {
-        await issueDentalIntakeToken(
-          sql,
-          {
-            tenantId: ctx.tenantId,
-            bookingId: booking.id,
-            customerPhoneE164: phone,
-            customerName: args.customer.name ?? null,
-          },
-          { appBaseUrl: deps.appBaseUrl },
-        );
-      } catch (err) {
-        deps.logger.error("dental_intake_token_issue_failed", {
-          booking_id: booking.id,
-          tenant_id: ctx.tenantId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-
-    // E2E_FLOWS_AUDIT B4 (producer side): push this booking to every
-    // connected deep-integration adapter — never inline (hot-path
-    // discipline), and a no-op for the common case of a tenant with no
-    // connected adapter.
-    await enqueueAdapterPush(sql, {
-      tenantId: ctx.tenantId,
-      entityType: "booking",
-      entityId: booking.id,
-      idempotencyKey,
-    });
+    // QA-HOT (docs/BUILD_NOTES.md): these three post-insert side effects
+    // are all independent of one another (none reads another's result,
+    // all only need `booking.id`/already-known values) — run them
+    // concurrently instead of three sequential awaited round trips. Each
+    // keeps its own existing failure posture unchanged: the dental-intake
+    // send stays wrapped in its own try/catch (fail-open, never blocks or
+    // fails the booking); the other two propagate a real error exactly as
+    // before (this function's own `try` already wraps the whole insert
+    // path).
+    await Promise.all([
+      Object.keys(structuredPayload).length > 0
+        ? sql`
+            update public.call_logs
+            set structured_booking_payload = coalesce(structured_booking_payload, '{}'::jsonb) || ${structuredPayload}::jsonb
+            where id = ${ctx.callLogId} and tenant_id = ${ctx.tenantId}
+          `
+        : Promise.resolve(),
+      // FIX_REQUESTS.md: dental-only, best-effort post-booking intake-link
+      // send. Never throws/blocks the booking itself on failure — same
+      // fail-open posture as any other post-booking side effect (reminders,
+      // review requests) — wrapped in try/catch and logged.
+      ctx.vertical === "dental" && deps
+        ? issueDentalIntakeToken(
+            sql,
+            {
+              tenantId: ctx.tenantId,
+              bookingId: booking.id,
+              customerPhoneE164: phone,
+              customerName: args.customer.name ?? null,
+            },
+            { appBaseUrl: deps.appBaseUrl },
+          ).catch((err) => {
+            deps.logger.error("dental_intake_token_issue_failed", {
+              booking_id: booking.id,
+              tenant_id: ctx.tenantId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          })
+        : Promise.resolve(),
+      // E2E_FLOWS_AUDIT B4 (producer side): push this booking to every
+      // connected deep-integration adapter — never inline (hot-path
+      // discipline), and a no-op for the common case of a tenant with no
+      // connected adapter.
+      enqueueAdapterPush(sql, {
+        tenantId: ctx.tenantId,
+        entityType: "booking",
+        entityId: booking.id,
+        idempotencyKey,
+      }),
+    ]);
 
     return {
       booking_id: booking.id,

@@ -36,6 +36,7 @@ import type {
   PostCallAnalysisDataField,
 } from "../compiler/template-compiler.ts";
 import { compileTemplate as compileRetellTemplate } from "../compiler/template-compiler.ts";
+import { resolveRetellAgentLanguage } from "../inbound-dynamic-variables.ts";
 import type { RetellFetch } from "../providers/retell.ts";
 import {
   createAgent,
@@ -68,6 +69,13 @@ export interface CompiledTemplateResult {
   voiceId: string;
   model: string;
   agentName: string;
+  /** QA-HOT (docs/BUILD_NOTES.md): Retell's agent-level `language` field
+   * (STT locale + default TTS voice), resolved from this tenant's
+   * `tenants.language_config.primary` via
+   * `resolveRetellAgentLanguage` — see that function's own doc comment
+   * for why this is a SEPARATE thing from the compiled prompt's
+   * `{{language}}` dynamic-variable instruction. */
+  language: string;
   disclosureVerified: boolean;
   flow: CompiledFlowRequest;
   /** ANALYSIS-1 (docs/BUILD_NOTES.md): the template's dead per-state
@@ -156,6 +164,15 @@ export async function compileTenantTemplate(
   const row = rows[0];
   if (!row) return null;
 
+  // QA-HOT: one extra indexed read (provisioning path, not the hot
+  // `/voice/tools` path — no latency-budget concern), scoped to this exact
+  // tenant only (CLAUDE.md Rule 2).
+  const languageRows = await sql<{ language_primary: string }>`
+    select coalesce(language_config ->> 'primary', 'en') as language_primary
+    from public.tenants where id = ${tenantId}
+  `;
+  const language = resolveRetellAgentLanguage(languageRows[0]?.language_primary ?? "en");
+
   const template: CompilerAgentTemplate = {
     compile_target: row["compile_target"] as CompilerAgentTemplate["compile_target"],
     system_prompt: (row["system_prompt"] as string | null) ?? null,
@@ -186,6 +203,7 @@ export async function compileTenantTemplate(
     // spoken, but a real difference the diff table flagged). A tenant is
     // a tenant regardless of `is_test`.
     agentName: `heyloo-tenant-${tenantId}`,
+    language,
     disclosureVerified: compiled.disclosureVerified,
     flow: compiled.flow,
     postCallAnalysisData: compiled.postCallAnalysisData,
@@ -248,6 +266,14 @@ export async function compileAndCreateAgent(
     response_engine: responseEngine,
     webhook_url: deps.eventsWebhookUrl,
     webhook_timeout_ms: 10000,
+    // QA-HOT (docs/BUILD_NOTES.md): previously never sent at all — every
+    // agent, regardless of the tenant's own `tenants.language_config`,
+    // silently got Retell's `en-US` default (RETELL-VERIFIED,
+    // docs.retellai.com/api-references/create-agent) for STT/TTS, so a
+    // Spanish-configured tenant's caller speech was transcribed as if it
+    // were English. `compiled.language` is resolved from that tenant's own
+    // config just above.
+    language: compiled.language,
     // ANALYSIS-1 (docs/BUILD_NOTES.md): every agent, real or test, gets its
     // template's post-call extraction schema by construction — previously
     // never sent to Retell at all (SELFCALL-1's own live-observed gap:

@@ -148,6 +148,45 @@ const CALLER_RECENT_CONTEXT_INSTRUCTION =
   "any) and don't ask them to restate information already on file — otherwise proceed as a " +
   "normal first-time caller.";
 
+/**
+ * QA-HOT (docs/BUILD_NOTES.md): the SAME always-set-dynamic-variable
+ * prepend pattern as `CALLER_RECENT_CONTEXT_INSTRUCTION` above, for
+ * `tenants.language_config.primary` (`{{language}}`, already assembled and
+ * sent on every `/voice-inbound` response by
+ * `_shared/inbound-dynamic-variables.ts` — CALL-9's own header on that
+ * file's `InboundTenantConfig.languagePrimary` field) but, before this
+ * task, never once referenced by `{{}}` anywhere in any compiled
+ * template — the exact same "assembled but completely inert" gap
+ * `caller_recent_context` had before CALL-9, this time for the tenant's
+ * configured spoken-call language (FRONTEND_SPEC.md §6.6 "Agent →
+ * Language", `packages/canonical-types/src/schemas/agent-language.ts`).
+ * `{{language}}` is Retell's own literal-substitution dynamic variable
+ * (RETELL-VERIFIED, same mechanism CALL-9 already confirmed for
+ * `{{caller_recent_context}}`/`{{transfer_number}}`) and resolves to the
+ * tenant's ISO 639-1 short code (`"en"`/`"es"` — `AGENT_LANGUAGES`), so
+ * this instruction spells out what those two values mean rather than
+ * assuming the model infers it.
+ *
+ * NOT the whole fix: Retell's own agent-level `language` field (governs
+ * STT locale/default TTS voice, RETELL-VERIFIED docs.retellai.com/
+ * api-references/create-agent 2026-09-23 — supported values include
+ * `es-419`/`es-ES`, no bare `es-US`) is set by the PROVISIONING layer
+ * (`_shared/provisioning/compile-and-publish.ts`'s `createAgent` call,
+ * via `_shared/inbound-dynamic-variables.ts#resolveRetellAgentLanguage`),
+ * never by this compiler — this instruction only governs what the model
+ * SAYS once Retell has already transcribed the caller's speech
+ * correctly. Both halves are required for a genuinely bilingual call;
+ * see docs/BUILD_NOTES.md QA-HOT for the full gap analysis (tracked
+ * pre-existing as SYSTEM_DESIGN §14 gap G12, "bilingual agent support").
+ */
+const LANGUAGE_INSTRUCTION =
+  'Configured call language: {{language}} (an ISO 639-1 code — "en" = English, ' +
+  '"es" = Spanish). Conduct this entire call in that language by default — greeting, the ' +
+  "AI/recording disclosure above, every question, and every confirmation — using natural, " +
+  "conversational speech, not a literal translation. If the caller speaks a different language " +
+  "than the configured one, switch to match the caller instead of insisting on the configured " +
+  "language.";
+
 function toolsFor(template: CompilerAgentTemplate, toolWebhookUrl: string): FunctionTool[] {
   return template.tools.map((tool) => ({
     type: "custom" as const,
@@ -603,7 +642,7 @@ function compileConversationFlow(
     // packages/adapters/retell's identical documented assumption) — guard
     // defensively rather than assume.
     if (startNode && startNode.type !== "transfer_call") {
-      startNode.instruction.text = `${template.disclosure_line}\n\n${CALLER_RECENT_CONTEXT_INSTRUCTION}\n\n${startNode.instruction.text}`;
+      startNode.instruction.text = `${template.disclosure_line}\n\n${LANGUAGE_INSTRUCTION}\n\n${CALLER_RECENT_CONTEXT_INSTRUCTION}\n\n${startNode.instruction.text}`;
     }
   }
 
@@ -956,7 +995,7 @@ function compileMultiPrompt(
   if (startState) {
     const compiledStart = statesByName.get(startState.id);
     if (compiledStart) {
-      compiledStart.state_prompt = `${template.disclosure_line}\n\n${CALLER_RECENT_CONTEXT_INSTRUCTION}\n\n${compiledStart.state_prompt}`;
+      compiledStart.state_prompt = `${template.disclosure_line}\n\n${LANGUAGE_INSTRUCTION}\n\n${CALLER_RECENT_CONTEXT_INSTRUCTION}\n\n${compiledStart.state_prompt}`;
     }
   }
 
@@ -1032,7 +1071,11 @@ function compileSinglePrompt(
   );
   const hasTransferCallTool = template.tools.some((t) => t.name === TRANSFER_CALL_TOOL_NAME);
 
-  const sections: string[] = [template.disclosure_line, CALLER_RECENT_CONTEXT_INSTRUCTION];
+  const sections: string[] = [
+    template.disclosure_line,
+    LANGUAGE_INSTRUCTION,
+    CALLER_RECENT_CONTEXT_INSTRUCTION,
+  ];
   if (template.system_prompt) sections.push(template.system_prompt);
   for (const state of template.states) {
     sections.push(`## ${state.name}\n${state.prompt_fragment}`);

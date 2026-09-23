@@ -149,6 +149,10 @@ describe("PARITY-1: api-provision vs api-admin-provision-test-tenant compile+cre
       response_engine: { type: "conversation-flow", conversation_flow_id: "flow_1" },
       webhook_url: EVENTS_WEBHOOK_URL,
       webhook_timeout_ms: 10000,
+      // QA-HOT: this fixture's `makeSql` has no row for the tenant's own
+      // `language_config` lookup, so it degrades to the documented
+      // `"en"` default -> `resolveRetellAgentLanguage("en")` -> `"en-US"`.
+      language: "en-US",
     });
   });
 });

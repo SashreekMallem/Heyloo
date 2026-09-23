@@ -114,6 +114,39 @@ async function resolveCallerRecentContext(
     : `${label} has called before.`;
 }
 
+/**
+ * QA-HOT (docs/BUILD_NOTES.md): `tenants.language_config.primary` stores a
+ * bare ISO 639-1 short code (`AGENT_LANGUAGES` — `"en"`/`"es"`,
+ * `packages/canonical-types/src/schemas/agent-language.ts`), but Retell's
+ * own agent-level `language` field (governs STT locale + default TTS
+ * voice, distinct from the `{{language}}` DYNAMIC VARIABLE this module
+ * also sends — that one only tells the MODEL which language to speak,
+ * never the speech pipeline's own locale) requires a full locale string.
+ * RETELL-VERIFIED (docs.retellai.com/api-references/create-agent,
+ * 2026-09-23, docs/VERIFY.md QA-HOT): the supported set has no bare
+ * `es-US` — `es-419` (Latin American Spanish) is the closest match for a
+ * US-based tenant's Spanish-speaking callers (vs. `es-ES`, Castilian
+ * Spanish), so that's the mapping chosen here. Used by
+ * `_shared/provisioning/compile-and-publish.ts`'s `createAgent` call —
+ * the actual Retell-facing half of language support; this module's own
+ * `language` dynamic variable (below) is the other half (what the
+ * compiled prompt tells the model to speak,
+ * `_shared/compiler/template-compiler.ts#LANGUAGE_INSTRUCTION`). Falls
+ * back to `en-US` for any short code this map doesn't recognize —
+ * never leaves the agent's `language` field unset/undefined, since an
+ * omitted field defaults to `en-US` anyway (RETELL-VERIFIED) and an
+ * explicit fallback here is one less place that silent Retell default has
+ * to be remembered.
+ */
+const RETELL_LANGUAGE_BY_SHORT_CODE: Record<string, string> = {
+  en: "en-US",
+  es: "es-419",
+};
+
+export function resolveRetellAgentLanguage(languagePrimary: string): string {
+  return RETELL_LANGUAGE_BY_SHORT_CODE[languagePrimary] ?? "en-US";
+}
+
 export async function buildInboundDynamicVariables(params: {
   sql: SqlClient;
   logger: Logger;

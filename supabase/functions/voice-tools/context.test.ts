@@ -151,7 +151,9 @@ describe("resolveCallContext", () => {
   it("CALL-6: the strongest signal (agent_id) overrides a stale tenant already stored under the same placeholder key, and logs a warning", async () => {
     const { sql } = makeRecordingSql({
       "from public.agent_configs": [{ tenant_id: "new-tenant", vertical: "auto" }],
-      "as prior_tenant_id": [{ prior_tenant_id: "old-tenant" }],
+      "is_test_call from public.call_logs": [
+        { id: "cl-old", tenant_id: "old-tenant", caller_number: null, is_test_call: true },
+      ],
       "insert into public.call_logs": [
         { id: "cl-x", tenant_id: "new-tenant", caller_number: null, is_test_call: true },
       ],
@@ -161,6 +163,31 @@ describe("resolveCallContext", () => {
     const ctx = await resolveCallContext(sql, "playground", call, warnLogger);
     expect(ctx?.tenantId).toBe("new-tenant");
     expect(warnings.some((w) => w.msg === "voice_tools_call_context_agent_id_mismatch")).toBe(true);
+  });
+
+  it("QA-HOT: skips the write entirely (no INSERT/UPDATE, no trigger cost) when a placeholder row already reflects the resolved tenant", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.agent_configs": [{ tenant_id: "t-same", vertical: "auto" }],
+      "is_test_call from public.call_logs": [
+        {
+          id: "cl-existing",
+          tenant_id: "t-same",
+          caller_number: "+15550009999",
+          is_test_call: true,
+        },
+      ],
+    });
+    const call: ToolCall = { agent_id: "agent_abc", from_number: "+15550009999" };
+    const ctx = await resolveCallContext(sql, "playground", call, logger);
+    expect(ctx).toEqual({
+      tenantId: "t-same",
+      callLogId: "cl-existing",
+      retellCallId: "playground",
+      callerNumber: "+15550009999",
+      vertical: "auto",
+      isTestCall: true,
+    });
+    expect(calls.some((c) => c.text.includes("insert into public.call_logs"))).toBe(false);
   });
 
   it("CALL-6: prefers retell_llm_dynamic_variables.heyloo_tenant_id over call.to_number when both are present", async () => {

@@ -264,6 +264,10 @@ describe("runProvisioningSaga", () => {
       // CALL-5 fix.
       webhook_url: "https://example.supabase.co/functions/v1/voice-events",
       webhook_timeout_ms: 10000,
+      // QA-HOT: this fixture's sql stub has no row for the tenant's own
+      // `language_config` lookup, so it degrades to the documented "en"
+      // default -> `resolveRetellAgentLanguage("en")` -> "en-US".
+      language: "en-US",
     });
   });
 });

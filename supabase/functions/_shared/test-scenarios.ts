@@ -683,16 +683,52 @@ const GENERIC_VERTICAL_SCENARIOS: TestScenario[] = [
     writeIntent: "none",
     testCallerNumber: RETURNING_CALLER_PHONE,
   },
+  {
+    // QA-HOT (docs/BUILD_PLAN.md): exercises the compiler's `{{language}}`
+    // dynamic-variable instruction (`_shared/compiler/template-compiler.ts`
+    // `LANGUAGE_INSTRUCTION`) end to end against a tenant whose
+    // `tenants.language_config.primary` is actually set to `"es"` — the
+    // persona speaks ONLY Spanish throughout, so a pass here requires the
+    // agent to greet, deliver the AI/recording disclosure, and complete a
+    // real booking entirely in Spanish, not just accept Spanish input and
+    // reply in English. Assigned to `generic` (not a new vertical-specific
+    // file) since the ONE test tenant this scenario is meant to run
+    // against, `test-generic-anyservice`, is a `generic`-vertical tenant —
+    // see docs/BUILD_NOTES.md QA-HOT for the live result and the separate,
+    // still-open STT/TTS-locale half of this gap (Retell's own agent-level
+    // `language` field, `_shared/inbound-dynamic-variables.ts#
+    // resolveRetellAgentLanguage`).
+    id: "spanish_caller_booking",
+    label: "Spanish-speaking caller books entirely in Spanish (tenant language_config = es)",
+    personaPrompt:
+      "Eres Elena Vargas y llamas por primera vez a este negocio. Habla ÚNICAMENTE en español " +
+      "durante toda la llamada — nunca cambies a inglés, incluso si el agente te saluda en " +
+      "inglés; en ese caso, pídele educadamente, en español, que continúe la llamada en " +
+      "español. Quieres reservar la primera cita disponible para una consulta general. Cuando " +
+      "te lo pidan, da tu nombre y un número de contacto (555-201-0189), y confirma la primera " +
+      "hora que te ofrezcan.",
+    writeIntent: "create_booking",
+    expectedPhone: "+15552010189",
+  },
 ];
 
 /**
- * The ORIGINAL (pre-CALL-7) 4-scenario generic fallback, kept byte-for-byte
- * unchanged and still assigned to `dental` below — CALL-6 already batch-
- * tested `dental` against exactly this set (4/4, two consecutive runs,
- * docs/BUILD_NOTES.md) and this task's scope is the six OTHER verticals,
- * never dental's already-proven suite (CLAUDE.md Rule 4). `generic` (the
- * vertical) gets its own richer, dedicated `GENERIC_VERTICAL_SCENARIOS`
- * suite above instead of reusing this fallback silently.
+ * The ORIGINAL (pre-CALL-7) 4-scenario generic fallback, still assigned to
+ * `dental` below — CALL-6 already batch-tested `dental` against exactly
+ * this set (4/4, two consecutive runs, docs/BUILD_NOTES.md) and CALL-7's
+ * own scope was the six OTHER verticals, never dental's already-proven
+ * suite (CLAUDE.md Rule 4). `generic` (the vertical) gets its own richer,
+ * dedicated `GENERIC_VERTICAL_SCENARIOS` suite above instead of reusing
+ * this fallback silently.
+ *
+ * QA-HOT (docs/BUILD_PLAN.md): added `emergency_triage` below — the one
+ * gap this original set left, now that this task's own deliverable is
+ * explicitly "vet AND DENTAL emergency triage". `agent-template-seeds.ts`'s
+ * dental template already has real emergency-handling logic (its
+ * `pain_triage` state's same-day urgency tier for a knocked-out/badly-
+ * broken tooth or breathing-affecting swelling, PLUS the shared
+ * `safety_emergency` referral state) — it was simply never exercised by
+ * any scenario before this.
  */
 const DENTAL_FALLBACK_SCENARIOS: TestScenario[] = [
   {
@@ -720,6 +756,27 @@ const DENTAL_FALLBACK_SCENARIOS: TestScenario[] = [
       "You immediately ask to speak to a real person rather than an AI. Insist on a human " +
       "transfer if the agent tries to keep helping you itself.",
     writeIntent: "none",
+  },
+  {
+    // QA-HOT: see this file's `DENTAL_FALLBACK_SCENARIOS` own doc comment
+    // above. Mirrors `VET_SCENARIOS`' `emergency_triage` persona shape
+    // (immediate, unambiguous emergency stated up front, never let the
+    // call drift into routine scheduling) but exercises dental's OWN
+    // same-day-urgency criteria (`pain_triage`'s knocked-out/badly-broken-
+    // tooth trigger) rather than reusing a generic "something's wrong"
+    // persona.
+    id: "emergency_triage",
+    label: "Caller describes a dental emergency (tooth knocked out, mouth bleeding)",
+    personaPrompt:
+      "You are Casey Nguyen — you were just in a minor bike accident and a front tooth got " +
+      "completely knocked out; your mouth is bleeding and starting to swell. Say this clearly " +
+      "as soon as the agent asks what's going on. Do NOT let the conversation turn into routine " +
+      "scheduling — you need to know right now whether this office can see you TODAY or whether " +
+      "you should go to an emergency room instead. If the agent offers the earliest possible " +
+      "same-day slot, accept it; otherwise let them take a message with your name (Casey Nguyen) " +
+      "and callback number (555-201-0198) so someone can call you back immediately.",
+    writeIntent: "take_message",
+    expectedPhone: "+15552010198",
   },
   {
     id: "ai_disclosure_check",

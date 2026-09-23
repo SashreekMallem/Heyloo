@@ -262,25 +262,43 @@ interface UpsertedCallLogRow {
 }
 
 /**
- * CALL-6: reads a placeholder row's CURRENT tenant_id before the upsert
- * below runs, so the caller can tell whether the upsert's `excluded.
- * tenant_id` override (agent_id-resolved placeholders only) actually
- * CHANGED anything worth a warning — a plain, separate SELECT rather than
- * folding this into the upsert's own statement (e.g. a `WITH` CTE) so the
- * upsert's own query text stays simple and unambiguous, and this extra
- * round trip only ever happens on the narrow placeholder+agent_id path,
- * never the real-call hot path.
+ * QA-HOT (docs/BUILD_NOTES.md): reads a placeholder/upsert-key row's
+ * CURRENT full state before deciding whether a write is even needed —
+ * `resolveCallContext`'s fast path below (the actual fix) skips
+ * `upsertPlaceholderCallLog` entirely whenever this shows the row already
+ * reflects the freshly-resolved tenant, since `call_logs` carries an
+ * `AFTER INSERT OR UPDATE` Realtime-broadcast trigger
+ * (`trg_broadcast_call_logs` -> `fn_broadcast_tenant_update`, dashboard
+ * live-call-list support) that fires on every row it touches REGARDLESS of
+ * whether any column's value actually changed — `ON CONFLICT ... DO
+ * UPDATE` always performs a real row update (and re-fires the trigger) for
+ * a matched conflict, even when the values are identical. Live EXPLAIN
+ * ANALYZE (docs/VERIFY.md QA-HOT) measured that trigger at ~80-140ms
+ * server-side per write, against a real `call_logs` row — a genuinely
+ * expensive statement compared to the ~15ms this exact query itself
+ * costs. A batch-test scenario (or a real call racing several tool calls
+ * in flight) calls `resolveCallContext` — and, before this fix,
+ * unconditionally `upsertPlaceholderCallLog` — once per TOOL invocation,
+ * all sharing the SAME upsert key, so this was previously the single
+ * largest repeated cost on the `/voice-tools` hot path: paid again on
+ * every tool call in a call, not just the first.
+ *
+ * Doubles as CALL-6's original "read the prior tenant before an
+ * agent_id-resolved overwrite, to know whether to log a mismatch warning"
+ * lookup — same query, now run unconditionally (it was already a cheap,
+ * trigger-free SELECT) instead of only on the narrow overwrite-eligible
+ * path, since the fast path below needs the full row either way.
  */
-async function lookupPlaceholderRowPriorTenant(
+async function lookupPlaceholderRowByKey(
   sql: SqlClient,
   retellCallId: string,
-): Promise<string | null> {
-  const rows = await sql<{ prior_tenant_id: string }>`
-    select tenant_id as prior_tenant_id from public.call_logs
+): Promise<UpsertedCallLogRow | null> {
+  const rows = await sql<UpsertedCallLogRow>`
+    select id, tenant_id, caller_number, is_test_call from public.call_logs
     where retell_call_id = ${retellCallId}
     limit 1
   `;
-  return rows[0]?.prior_tenant_id ?? null;
+  return rows[0] ?? null;
 }
 
 /**
@@ -435,20 +453,33 @@ export async function resolveCallContext(
       // Only the strongest signal (agent_id) is allowed to override a
       // stale tenant already stored under this exact key on conflict.
       const overwriteTenantOnConflict = placeholder && resolved.via === "agent_id";
-      const priorTenantId = overwriteTenantOnConflict
-        ? await lookupPlaceholderRowPriorTenant(sql, upsertKey)
-        : null;
 
-      const upserted = await upsertPlaceholderCallLog(sql, {
-        retellCallId: upsertKey,
-        tenantId: resolved.tenantId,
-        phoneNumberId: resolved.phoneNumberId,
-        callerNumber,
-        direction,
-        channel,
-        isTestCall,
-        overwriteTenantOnConflict,
-      });
+      // QA-HOT fast path: always check the CURRENT row first (cheap,
+      // trigger-free — `lookupPlaceholderRowByKey`'s own doc comment). Only
+      // fall through to the real INSERT/UPDATE (and its Realtime-broadcast
+      // trigger cost) when a write is actually needed: no row yet under
+      // this key, or the overwrite-eligible tier's resolution genuinely
+      // disagrees with what's stored. Every other repeat call against the
+      // same key (the overwhelmingly common case within one batch-test
+      // scenario or one real multi-tool call) returns the existing row
+      // as-is, with zero writes.
+      const existingRow = await lookupPlaceholderRowByKey(sql, upsertKey);
+      const priorTenantId = overwriteTenantOnConflict ? (existingRow?.tenant_id ?? null) : null;
+      const writeNeeded =
+        !existingRow || (overwriteTenantOnConflict && existingRow.tenant_id !== resolved.tenantId);
+
+      const upserted = writeNeeded
+        ? await upsertPlaceholderCallLog(sql, {
+            retellCallId: upsertKey,
+            tenantId: resolved.tenantId,
+            phoneNumberId: resolved.phoneNumberId,
+            callerNumber,
+            direction,
+            channel,
+            isTestCall,
+            overwriteTenantOnConflict,
+          })
+        : existingRow;
       if (upserted) {
         if (priorTenantId && priorTenantId !== resolved.tenantId) {
           logger.warn("voice_tools_call_context_agent_id_mismatch", {
