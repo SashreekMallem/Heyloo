@@ -62,7 +62,14 @@ Deno.serve(async (req: Request) => {
     {
       supabaseAdmin: { fetchImpl: fetch, url: SUPABASE_URL, serviceRoleKey: SB_SECRET_KEY },
       logger,
-      redirectTo: `${APP_BASE_URL.replace(/\/+$/, "")}/dashboard`,
+      // QA-PORTAL root-cause fix (docs/BUILD_NOTES.md, docs/VERIFY.md):
+      // GoTrue's invite link redirects to `<redirectTo>?token_hash=...&
+      // type=invite` — pointing straight at `/dashboard` left the invite
+      // permanently unacceptable (no session was ever established, so
+      // `middleware.ts` bounced the unauthenticated visitor to `/login`
+      // before the app ever saw `token_hash`). `/auth/confirm` calls
+      // `verifyOtp` server-side first, then forwards to `next`.
+      redirectTo: `${APP_BASE_URL.replace(/\/+$/, "")}/auth/confirm?next=%2Fdashboard`,
     },
   );
 

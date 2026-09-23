@@ -5768,3 +5768,193 @@ Pushed to `claude/voice-ai-agent-architecture-dcw0n8` then to `main`
 (commit `54a83c4`, fast-forward both — no rebase needed, nothing new had
 landed on either branch since this task's own base). All 11 jobs green:
 `https://github.com/SashreekMallem/Heyloo/actions/runs/35810773146`.
+
+## QA-PORTAL (2026-09-23) — Realtime, team invites, website widget, admin/partner portals: live proof, two production-breaking bugs found and fixed at the root
+
+**Task:** live-verify `apps/web/**`, `api-widget-*`/web-call widget
+functions, `admin/*`, and partner functions against the deployed site
+(`https://heyloo-voice.vercel.app`) and the live Supabase project
+(`qulcubtwqsqgqpfgvorn`).
+
+### Results table
+
+| # | Deliverable | Result | Notes |
+|---|---|---|---|
+| 1 | Realtime (tenant broadcast channel) | **PASS, no bug** | `tenant:<id>` private broadcast, RLS-enforced, verified live end to end |
+| 2 | Team invites | **PARTIAL — root-cause bug fixed, live accept blocked by shared mailer rate limit** | Auth fixed; owner/member role gating correct; invite send itself fails closed live (see below) |
+| 3 | Website voice widget + text chat | **PASS, no bug** | Full token→web-call round trip proven live; text chat proven to fail closed without an Anthropic key |
+| 4 | Admin cockpit | **Root-cause bug found and fixed (undeployed)** | Auth/AAL2 layer correct; every `admin-*` API route was 404ing in production before this fix |
+| 4 | Partner portal | **Root-cause bug found and fixed (undeployed)** | Missing migration made the ENTIRE partner portal unreachable; migration written, cannot apply live from this sandbox |
+
+### Deliverable 1 — Realtime
+
+Read `tenant-shell-client.tsx` -> `useTenantRealtimeStatus` ->
+`tenant-realtime-provider.tsx` -> `channel.ts`. Confirmed contract:
+`private: true` broadcast channel `tenant:<tenant_id>`, matching
+`fn_broadcast_tenant_update()`'s topic and the
+`tenant_channel_broadcast_select` RLS policy exactly (this was already
+fixed by an earlier task per that file's own doc comment referencing
+E2E_FLOWS_AUDIT B3 — nothing further to fix here).
+
+Live proof (Node `@supabase/supabase-js`, two real password-authenticated
+owner sessions — `onboard1-...@gmail.com` on tenant `signup-1-auto`
+5a446e12, and a fresh confirmed test user on tenant `riverside-auto`
+b2efae9d): both subscribed `SUBSCRIBED` to their own channel. Owner B's
+channel subscribe attempt DIRECTLY AGAINST tenant A's topic was rejected
+by Realtime's own RLS check: `CHANNEL_ERROR` /
+`"Unauthorized: You do not have permissions to read from this Channel
+topic: tenant:5a446e12-..."` — cross-tenant isolation is enforced by RLS
+itself, not just topic-string obscurity. Inserted a real `bookings` row
+for tenant A (SQL, `is_test: true`) — owner A received the broadcast
+within ~1.5s with the exact `{table: "bookings", operation: "INSERT",
+record: {...}}` payload shape the provider expects; owner B's own
+channel received nothing. No bug found; no code changed for this
+deliverable.
+
+### Deliverable 2 — Team invites
+
+`POST /api/tenant/team/invite` -> `api-team-invite` (GoTrue admin
+`/auth/v1/invite`, not Resend — `docs/VERIFY.md` has the full research
+trail). Live: owner call correctly requires `role = 'owner'`
+(`memberships`), a `member` caller gets `403 {"error":"not_tenant_owner"}`
+live, `/api/tenant/agent/publish` and `/api/tenant/team/invite` both
+correctly gate owner-only actions (member 403 / owner 200 live for
+publish; billing-portal returns 404 for BOTH roles — `api-billing-portal`
+isn't deployed yet, a pre-existing documented gap, not a role-check bug,
+out of this task's owned paths).
+
+The invite call itself failed closed live every time it was tried
+(`502 {"error":"invite_failed"}`, GoTrue `400` — function logs show
+`team_invite_gotrue_invite_failed status:400`), consistent with the
+project's shared 2-invocation/hour mailer limit (this session's own one
+permitted `auth.signUp` plus the invite calls both draw from it, and
+concurrent QA-BILL/QA-HOT sessions share the same project). The owner-
+facing UI shows a clean `"Couldn't send the invite — please try again."`
+toast, and — critically — **no `memberships` row is ever created when
+the invite fails** (fails closed at the data layer too, not just the UI).
+This could not be pushed past to a real accepted invite this session.
+
+While investigating why acceptance could never be proven, found and
+fixed a real, independent, root-cause bug (see `docs/VERIFY.md`): **no
+route anywhere in this repo ever called `verifyOtp`/`exchangeCodeForSession`**,
+so even a successfully-sent invite (or a signup confirmation, or a
+password reset) email's link would land the user on a page assuming a
+session that was never established. Added `apps/web/src/app/auth/confirm/
+route.ts` (the documented Supabase pattern), wired `api-team-invite` and
+`reset-password/page.tsx`'s `redirectTo` through it, added the
+`middleware.ts` next-intl bypass it needs (same T5 hazard as `/api/*`).
+Unit tested (8 new tests) since the live mailer limit blocked an actual
+end-to-end email click-through.
+
+### Deliverable 3 — Website voice widget + text chat
+
+Read `widget-voice.js`, `api/widget/{config,session,voice-token}/route.ts`,
+`packages/widget/src/{api,panel}.ts`. Configured tenant A's widget live
+(as the real dashboard page does, via RLS) with a real allow-listed
+origin, then proved the full flow with real HTTP requests carrying that
+`Origin` header:
+- `GET /api/widget/config` — 200 for the allowed origin+key, 404
+  (indistinguishable) for a disallowed origin AND for a wrong key.
+- `POST /api/widget/session` — mints a `widget_token`.
+- `POST /api/widget/voice-token` — 200 with a real Retell `access_token`
+  + `call_id`, bound to tenant A's own published agent.
+- Replaying that same `widget_token` from a DIFFERENT `Origin` — `403
+  {"error":"origin_mismatch"}` (the token's own origin claim is
+  re-checked against the request, not just checked once at mint time).
+- A disallowed origin can't even mint a session for a valid key —
+  `404`.
+Actual WebRTC audio could not be exercised in this sandbox (documented
+known limit) — everything up to and including the Retell access token
+being issued for the correct tenant's correct agent is proven.
+
+`api-text-chat` (no `ANTHROPIC_API_KEY` configured live): a real widget
+session's chat call returns a clean `503 {"error":"not_configured"}`
+(the function's own `optionalEnv`, never a crash). `packages/widget/
+src/panel.ts`'s `handleResult` shows the user `"Sorry, that didn't go
+through. Please try again."` — a sensible, non-broken UI state, not a
+silent hang. No bug found; no code changed for this deliverable.
+
+### Deliverable 4 — Admin and partner portals
+
+`select * from public.platform_admins` / `referral_partners` — both
+empty live, so both needed a grant + revoke this session
+(`docs/BUILD_NOTES.md`/task brief's documented path — public schema
+only, restored after). Granted `onboard1`'s existing confirmed test
+owner `platform_admin` (role `superadmin`), then completed a REAL TOTP
+MFA enrollment + AAL2 step-up for that account (RFC 6238 computed
+locally, no external service) since `(admin) layout.tsx`'s page guard
+requires a verified factor + AAL2 regardless of `platform_admins.
+aal2_required` — this is real, not a mock. Granted a second fresh test
+user `referral_partner_id` for partner-side testing.
+
+**Auth/authorization layer is correct and live-proven**: `/cockpit/*`
+pages return 200 for the AAL2 platform_admin session and redirect a
+`member` session to `/?toast=no_access` (six pages checked); `/portal/*`
+correctly requires `referral_partner_id`, non-partner gets `no_access`.
+
+**But the admin cockpit's entire DATA layer was completely broken in
+production** — every single `admin-*` route (tenants, cockpit/queues
+[OPS-8], agent-regression [NIGHTLY-1], alerts, ...) 404'd, confirmed by
+curling the deployed `admin` edge function directly with a real
+AAL2 JWT (`x-served-by: supabase-edge-runtime` + a real
+`x-deno-execution-id` in the response — the isolate genuinely ran).
+Root cause: `admin/index.ts`'s URL-prefix-stripping regex assumed the
+wrong shape of `req.url` (see `docs/VERIFY.md` — WebFetch-verified
+against current Supabase docs + live-confirmed). Fixed in source, unit
+tests corrected and green, but **could not be deployed to the live
+project from this sandbox** (Edge Function deploy blocked by this
+environment's own "Production Deploy" classifier, same restriction
+CALL-2 hit for a migration-runner function — not routed around).
+`api-intake/index.ts` has the identical bug pattern; flagged, not
+touched (outside this task's owned paths).
+
+**The partner portal was completely unreachable for any real partner**,
+independent of the above: `require-partner-session.ts` selects
+`referral_partners.ftc_acknowledged_at`/`ftc_acknowledged_version`,
+columns that were flagged missing back in T5's own `docs/VERIFY.md`
+entry and never added. Confirmed live: a real `referral_partner_id`
+session still gets bounced to `/?toast=no_access` on every `/portal/*`
+page, and `POST /api/partner/disclosure` 500s with `"Could not find the
+'ftc_acknowledged_at' column"`. Fixed with an additive migration
+(`supabase/migrations/20260923030000_referral_partners_ftc_disclosure.sql`)
+— **also could not be applied to the live project from this sandbox**
+(same Production Deploy restriction, this time for `alter table` DDL).
+
+All test grants revoked, TOTP factor unenrolled, tenant A's widget
+config restored to its prior state, all test `memberships` rows removed.
+
+### Gates
+
+`pnpm lint` — 0 errors (33 pre-existing warnings, none new, none in
+touched files). `pnpm typecheck` — 21/21 packages clean. `pnpm test
+--filter=@heyloo/web` — 117/117 files, 619/619 tests green. `cd
+supabase/functions && npx vitest run` — 119/119 files, 1185/1185 tests
+green.
+
+### Code
+
+New: `apps/web/src/app/auth/confirm/{route,route.test}.ts`,
+`supabase/migrations/20260923030000_referral_partners_ftc_disclosure.sql`.
+Changed: `apps/web/src/middleware.ts` (+`.test.ts`),
+`apps/web/src/app/[locale]/reset-password/page.tsx`,
+`supabase/functions/api-team-invite/index.ts`,
+`supabase/functions/admin/index.ts` (+`.test.ts`), `docs/VERIFY.md`.
+
+### What remains blocked, and why
+
+- **Deploy `admin` edge function and apply the FTC-disclosure migration
+  to the live project** — both fixes are committed and unit-tested but
+  this sandbox's "Production Deploy" classifier blocks both a
+  `supabase functions deploy`-equivalent call and a live `alter table`.
+  Whoever has that authority should deploy/apply both, then re-run this
+  session's live admin/partner route matrix (above) to confirm 2xx.
+- **A real end-to-end team-invite acceptance** — blocked by the shared
+  project's mailer rate limit this session (GoTrue admin invite 400s);
+  the `/auth/confirm` fix this task added is unit-tested but not
+  live-click-through-proven for lack of a deliverable email.
+- **`api-billing-portal`** — not deployed; pre-existing, documented,
+  out of this task's owned paths (QA-BILL/billing wave).
+- **`api-intake/index.ts`** — same URL-prefix-stripping bug pattern as
+  `admin/index.ts`, flagged in `docs/VERIFY.md`, not fixed (outside
+  owned paths, no live intake tenant available this session to confirm
+  without risking an unasked-for change).

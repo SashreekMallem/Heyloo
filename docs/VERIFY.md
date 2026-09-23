@@ -2762,3 +2762,116 @@ replayed delivery.
 **Code:** `supabase/functions/_shared/stripe-signature.ts` (header comment
 updated), `supabase/functions/webhooks-stripe/signature-flow.test.ts`
 (new).
+
+## QA-PORTAL (2026-09-23) — Supabase Auth email-link confirmation (`/auth/confirm`)
+
+**Endpoint/feature:** GoTrue email-link auth (`auth.signUp`'s confirmation
+link, `POST /auth/v1/invite`'s invite link, `auth.resetPasswordForEmail`'s
+recovery link) consumed by an `@supabase/ssr` Next.js App Router client.
+
+**Doc fetched live this session:**
+`https://supabase.com/docs/guides/auth/server-side/email-based-auth-with-pkce-flow-for-ssr`
+(WebFetch, 2026-09-23). Confirmed current guidance: every one of these
+links redirects the browser to `<redirectTo>?token_hash=<hash>&type=<
+EmailOtpType>` (never a URL that already carries a session), and the
+documented Next.js fix is a dedicated Route Handler
+(`app/auth/confirm/route.ts` in their example) that calls
+`supabase.auth.verifyOtp({ type, token_hash })` server-side — which both
+verifies the token AND establishes the session (writing the `@supabase/ssr`
+cookies) — then redirects to `next`.
+
+**Gap found (QA-PORTAL deliverable 2, team invites):** this repo had no
+such route anywhere — confirmed by grepping the whole of `apps/web/src`
+for `exchangeCodeForSession`/`verifyOtp`: zero matches before this task.
+`api-team-invite`'s `redirectTo` pointed straight at `<APP_BASE_URL>/
+dashboard` and `reset-password/page.tsx`'s pointed straight at
+`<origin>/reset-password/confirm` — both assuming a session that was
+never established. `/dashboard` unauthenticated bounces to `/login` via
+`middleware.ts` (the `token_hash`/`type` params are silently dropped);
+`/reset-password/confirm` called `auth.updateUser({password})` directly,
+which fails with "Auth session missing!" with no prior `verifyOtp` call.
+Net effect: a team invite could never actually be accepted, and a
+password reset could never actually complete, for any real user clicking
+the real email link — independent of, and in addition to, the live
+mailer-rate-limit failure also hit this session (see
+`docs/BUILD_NOTES.md` QA-PORTAL entry) which prevented observing this
+particular gap via an actual delivered email in this sandboxed session
+(reasoned instead from `@supabase/auth-js@2.116.0`'s actual shipped
+`GoTrueClient._exchangeCodeForSession` source, which throws
+`AuthPKCECodeVerifierMissingError` for a browser that never held the
+matching PKCE code verifier — true of every invite recipient's browser
+by construction — and from the simple fact that GoTrue's `token_hash`-
+based links were never consumed by anything in this repo at all,
+independent of PKCE).
+
+**Fixed:** `apps/web/src/app/auth/confirm/route.ts` (new, outside
+`[locale]` — same next-intl-bypass hazard as `/api/*`, T5,
+`middleware.ts` updated to bypass it too), `next` validated as a
+same-origin relative path only (open-redirect guard, unit tested).
+`api-team-invite/index.ts` and `reset-password/page.tsx` now point their
+`redirectTo` through it.
+
+**Code:** `apps/web/src/app/auth/confirm/route.ts`,
+`apps/web/src/app/auth/confirm/route.test.ts`, `apps/web/src/middleware.ts`
+(+ `.test.ts`), `apps/web/src/app/[locale]/reset-password/page.tsx`,
+`supabase/functions/api-team-invite/index.ts`.
+
+## QA-PORTAL (2026-09-23) — Supabase Edge Functions URL routing (`admin/index.ts`)
+
+**Endpoint/feature:** Deno `Deno.serve()` request URL shape inside a
+Supabase Edge Function, for a function that does its own internal path
+routing (BACKEND_SPEC.md §7.7 "one function with internal path routing" —
+`admin` is the only function in this repo built that way).
+
+**Doc fetched live this session:**
+`https://supabase.com/docs/guides/functions/routing` (WebFetch,
+2026-09-23): "the `/functions/v1/` infrastructure prefix is stripped, but
+the function name itself remains" on `req.url` inside the handler.
+
+**Gap found (QA-PORTAL deliverable 4, admin cockpit), LIVE-CONFIRMED:**
+`admin/index.ts` computed `ctx.path` via
+`url.pathname.replace(/^\/functions\/v1\/admin\//, "")` — assuming the
+FULL `/functions/v1/admin/` prefix was still present. It is not: live,
+`url.pathname` is `/admin/admin-tenants` (only `/functions/v1/` is
+stripped), so the regex never matched, `.replace()` was a no-op, and
+`ctx.path` stayed `/admin/admin-tenants` — `segments()` split that into
+`["admin", "admin-tenants"]`, so `routeAdminRequest`'s `first` was
+always the literal string `"admin"`, matching NONE of its route names.
+**Every single `admin-*` route 404'd, uniformly, in production** —
+confirmed by curling the deployed function directly with a real,
+AAL2-stepped-up `platform_admin` JWT (`admin-tenants`, `admin-cockpit/
+queues`, `admin-agent-regression` all returned `{"error":"not_found"}`
+with `x-served-by: supabase-edge-runtime` and a real
+`x-deno-execution-id` — i.e. the isolate genuinely ran and returned this
+itself, not a gateway-level miss). `index.test.ts` never caught this
+because it mocked the SAME wrong prefix assumption instead of the real
+one — its own test requests used the fictional full
+`https://project.supabase.co/functions/v1/admin/...` URL.
+
+**Fixed:** `path: url.pathname.replace(/^\/[^/]+\//, "")` — strips
+exactly one leading path segment (the function's own name, whatever it
+is) rather than a hardcoded literal prefix. `index.test.ts` rewritten to
+construct requests with the real live URL shape
+(`https://project.supabase.co/admin/...`, no `/functions/v1/`).
+**Could not be deployed to the live project from this sandbox** — Supabase
+Edge Function deploys are blocked by this environment's own "Production
+Deploy" classifier (same restriction CALL-2 hit for a migration-runner
+function; not routed around, per that precedent and CLAUDE.md's
+environment constraints). Confirmed via `require-admin-session.ts`'s own
+page-level guard (platform_admin + AAL2) that the AUTHORIZATION layer is
+correct and unaffected — `/cockpit/*` pages return live 200 for a real
+AAL2 platform_admin session and redirect non-admins to
+`/?toast=no_access` — only the DATA layer (every `admin-*` API route)
+was broken. Whoever has edge-function deploy authority next should
+redeploy `admin` and re-run this session's live route matrix
+(docs/BUILD_NOTES.md QA-PORTAL entry) to confirm the fix live.
+
+**Also found, NOT fixed (out of this task's owned paths, flagged for
+whoever owns it):** `api-intake/index.ts` has the exact same bug pattern
+(`url.pathname.replace(/^\/functions\/v1\/api-intake\//, "")`) — every
+tokenized intake link is almost certainly broken the same way live
+(the extracted "token" would actually be `"api-intake/<real-token>"`,
+never matching any real token). Not touched — outside QA-PORTAL's owned
+paths (`apps/web/**`, `api-widget-*`, `api-text-chat` read-only,
+`admin/*`, partner functions) and no live intake tenant was available
+this session to confirm without risking a change nobody asked for.

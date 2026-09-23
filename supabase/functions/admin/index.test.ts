@@ -43,13 +43,21 @@ describe("admin function entrypoint — URL to ctx.path dispatch", () => {
     routeAdminRequestSpy.mockClear();
   });
 
-  it("strips the `/functions/v1/admin/` prefix so the cockpit route dispatches, not 404", async () => {
+  // QA-PORTAL (docs/BUILD_NOTES.md): these requests now use the REAL,
+  // live-confirmed URL shape Supabase's edge runtime actually delivers to
+  // `Deno.serve` — `/functions/v1/` stripped, the function's OWN name
+  // segment (`admin`) still present (supabase.com/docs/guides/functions/
+  // routing: "paths should always be prefixed with the function name").
+  // The previous version of this test used a fictional
+  // `/functions/v1/admin/...` pathname that matched the OLD (buggy)
+  // implementation's own wrong assumption instead of reality — which is
+  // exactly how this bug shipped to production undetected.
+  it("strips the function's own name segment so the cockpit route dispatches, not 404", async () => {
     expect(capturedHandler).toBeDefined();
 
-    const req = new Request(
-      "https://project.supabase.co/functions/v1/admin/admin-cockpit/waterfall",
-      { method: "GET" },
-    );
+    const req = new Request("https://project.supabase.co/admin/admin-cockpit/waterfall", {
+      method: "GET",
+    });
     const res = await capturedHandler?.(req);
     const body = await res?.json();
 
@@ -61,7 +69,7 @@ describe("admin function entrypoint — URL to ctx.path dispatch", () => {
   });
 
   it("would 404 if the function-name segment were left in ctx.path (regression guard)", async () => {
-    const req = new Request("https://project.supabase.co/functions/v1/admin/admin-tenants", {
+    const req = new Request("https://project.supabase.co/admin/admin-tenants", {
       method: "GET",
     });
     const res = await capturedHandler?.(req);

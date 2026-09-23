@@ -12,6 +12,38 @@ build environment cannot create — the full, ordered checklist is
 for "is X done" — the entries stay as history/detail, not as the current
 source of truth.
 
+**QA-PORTAL (2026-09-23)**: `apps/web`, the website voice widget, and the
+admin/partner portals all had at least one live-only path never before
+exercised. Realtime (tenant broadcast channel) and the website widget
+(token mint -> real Retell web-call, origin/cross-tenant misuse
+rejected, text chat fails closed without an Anthropic key) are both
+proven live end to end with **no bugs found**. Two independent,
+production-breaking bugs WERE found and fixed at the root, both
+currently blocked on deployment this sandbox cannot perform (see
+"blocked" below): (1) **the entire admin cockpit's data layer 404'd in
+production** — `admin/index.ts` stripped the wrong URL prefix (fixed:
+strip one leading path segment, not a hardcoded `/functions/v1/admin/`
+literal; the page-level `platform_admin`+AAL2 auth guard itself was
+already correct and is live-proven with a real TOTP-enrolled AAL2
+session); (2) **the entire partner portal was unreachable for any real
+partner** — `referral_partners.ftc_acknowledged_at`/
+`ftc_acknowledged_version`, flagged missing since T5's own
+`docs/VERIFY.md` entry, were never actually added (fixed: additive
+migration). Also found and fixed (unit-tested, live-click-through
+blocked by the project's shared mailer rate limit): no route anywhere in
+this repo ever exchanged a GoTrue email-link token
+(`token_hash`/`type`) for a session, so a team invite, a signup
+confirmation, or a password reset could never actually complete for a
+real user clicking the real email link — added the standard
+`/auth/confirm` route Supabase's own docs specify. **Blocked, needs
+deploy authority this sandbox doesn't have**: the `admin` edge function
+redeploy and the FTC-disclosure migration `alter table` are both
+committed but could not be pushed to the live project (this
+environment's own "Production Deploy" classifier denies both DB DDL and
+Edge Function deploys from this sandbox — not routed around). Full
+detail, live proof transcripts, and the exact live route matrix:
+`docs/BUILD_NOTES.md` QA-PORTAL.
+
 **QA-BILL (2026-09-23)**: billing/lifecycle had never been exercised
 live before this task — it wasn't just unproven, `job-billing-cycle` and
 `job-offboarding` were both **crashing on every single invocation** (500

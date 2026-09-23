@@ -25,7 +25,12 @@ export async function middleware(request: NextRequest) {
   // "as-needed" mode, which 404s every `/api/*` route in a production
   // build (confirmed empirically against `next start`; dev's on-demand
   // compilation papers over it). See docs/BUILD_NOTES.md T5 entry.
-  const isApiRoute = request.nextUrl.pathname.startsWith("/api/");
+  // `/auth/confirm` (QA-PORTAL) is the same story as `/api/*` above — a
+  // Route Handler living outside `[locale]` that GoTrue redirects real
+  // users to directly (their email client, not our own locale-aware
+  // nav), so it must bypass next-intl's rewrite too.
+  const isApiRoute =
+    request.nextUrl.pathname.startsWith("/api/") || request.nextUrl.pathname.startsWith("/auth/");
   const intlResponse = isApiRoute ? undefined : intlMiddleware(request);
   const response = intlResponse ?? NextResponse.next({ request });
   // No Server Component API exposes the current request pathname directly

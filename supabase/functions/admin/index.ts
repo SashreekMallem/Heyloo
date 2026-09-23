@@ -91,7 +91,28 @@ Deno.serve(async (req: Request) => {
     sql,
     {
       method: req.method,
-      path: url.pathname.replace(/^\/functions\/v1\/admin\//, ""),
+      // QA-PORTAL root-cause fix (docs/BUILD_NOTES.md, docs/VERIFY.md):
+      // live-confirmed against the REAL deployed function (every single
+      // `admin-*` route 404'd, uniformly, regardless of which one) and
+      // against the current supabase.com/docs/guides/functions/routing
+      // guidance (WebFetch, this session) — Supabase's edge runtime
+      // strips only the `/functions/v1/` infrastructure prefix before
+      // invoking the function; the function's OWN name segment (`admin`)
+      // stays on `req.url`. The old regex assumed the full
+      // `/functions/v1/admin/` prefix was still present, so it never
+      // matched anything live, silently no-opping `.replace()` and
+      // leaving `ctx.path` as `/admin/admin-tenants` (etc.) — `segments()`
+      // then split that into `["admin", "admin-tenants"]`, so `first` was
+      // always the literal string `"admin"`, which matches none of
+      // `routeAdminRequest`'s route names, so EVERY admin route fell
+      // through to the final `404 {error: "not_found"}`. The whole admin
+      // cockpit (tenants, queues, regression runs, alerts, everything)
+      // was unreachable in production despite passing every unit test —
+      // `index.test.ts` mocked the OLD, wrong prefix assumption too, so
+      // nothing caught it. Stripping only the function's own leading path
+      // segment (not a hardcoded literal) is robust to this regardless of
+      // the function's slug.
+      path: url.pathname.replace(/^\/[^/]+\//, ""),
       claims,
       body,
       adminUserId: claims?.sub ?? null,

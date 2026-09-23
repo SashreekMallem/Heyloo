@@ -152,4 +152,11 @@ describe("middleware — guard #1 redirect matrix (FRONTEND_SPEC.md §0.1)", () 
     const res = await middleware(req("/api/tenant/bookings/b1"));
     expect(res.headers.get("location")).toBeNull();
   });
+
+  it("leaves /auth/confirm unguarded and un-rewritten (QA-PORTAL: it lives outside [locale], same T5 hazard as /api)", async () => {
+    mockUser = null;
+    mockClaimsAppMetadata = {};
+    const res = await middleware(req("/auth/confirm?token_hash=abc&type=invite"));
+    expect(res.headers.get("location")).toBeNull();
+  });
 });

@@ -26,7 +26,15 @@ export default function ResetPasswordRequestPage() {
 
   async function onSubmit(values: ResetPasswordRequest) {
     await supabaseBrowserClient.auth.resetPasswordForEmail(values.email, {
-      redirectTo: `${window.location.origin}/reset-password/confirm`,
+      // QA-PORTAL root-cause fix (docs/BUILD_NOTES.md): the recovery link
+      // GoTrue emails redirects to `<redirectTo>?token_hash=...&
+      // type=recovery`, never to a URL that already carries a session —
+      // `/reset-password/confirm` calling `updateUser({password})`
+      // directly failed with "Auth session missing!" for every real
+      // click. `/auth/confirm` establishes the session first.
+      redirectTo: `${window.location.origin}/auth/confirm?next=${encodeURIComponent(
+        "/reset-password/confirm",
+      )}`,
     });
     setSent(true);
   }
