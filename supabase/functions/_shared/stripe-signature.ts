@@ -11,18 +11,18 @@ import { hmacSha256Hex, timingSafeEqual } from "./crypto.ts";
  * algorithm itself is a stable, extensively documented public contract, not
  * an internal shape likely to drift silently the way a REST payload would.
  *
- * VERIFY (docs/VERIFY.md): Stripe's docs (docs.stripe.com/webhooks/signatures)
- * were unreachable from this environment (egress-blocked) — the scheme below
- * matches the well-established, training-knowledge-confident Stripe
- * signing-secret v1 scheme (unchanged for years across Stripe's own SDKs):
+ * VERIFY (docs/VERIFY.md, QA-BILL 2026-09-23): confirmed VERBATIM live
+ * against docs.stripe.com/webhooks/signatures (reachable this session,
+ * unlike an earlier session's EGRESS_BLOCKED result) — the scheme below
+ * matches Stripe's documented signing-secret v1 scheme exactly:
  *   - Header `Stripe-Signature: t=<unix_seconds>,v1=<hex HMAC-SHA256>[,v1=...][,v0=...]`
  *     (multiple `v1` values appear during secret rotation — accept a match
  *     against ANY of them, never require exactly one).
  *   - Signed payload = `${t}.${rawBody}` (literal dot separator).
  *   - HMAC-SHA256 with the endpoint's signing secret (`whsec_...`), hex digest.
- *   - Default replay tolerance 300s (5 minutes), matching Stripe's own SDK
- *     default — confirm current `STRIPE_API_VERSION`/tolerance recommendation
- *     against live docs before go-live.
+ *   - Default replay tolerance 300s (5 minutes) — "Our libraries have a
+ *     default tolerance of 5 minutes between the timestamp and the current
+ *     time," per that same doc.
  */
 
 export interface StripeSignatureResult {

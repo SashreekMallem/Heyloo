@@ -52,6 +52,46 @@ function makeSql(fixtures: unknown[] = []): { sql: SqlClient; calls: unknown[][]
   return { sql, calls };
 }
 
+describe("releaseOneNumber — Twilio not configured (QA-BILL, OPS-5/SIGNUP-1 precedent)", () => {
+  it("fails closed with twilio_not_configured (no Twilio call, no crash, no DB write) when the Twilio secrets are unset", async () => {
+    const { sql, calls } = makeSql();
+    let twilioCalled = false;
+    const outcome = await releaseOneNumber(
+      sql,
+      candidateRow(),
+      makeDeps({
+        twilioAccountSid: undefined,
+        twilioAuthToken: undefined,
+        twilioFetch: (async () => {
+          twilioCalled = true;
+          return new Response(null, { status: 204 });
+        }) as OffboardingDeps["twilioFetch"],
+      }),
+    );
+    expect(outcome).toBe("twilio_not_configured");
+    expect(twilioCalled).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("still tries the Retell delete first even when Twilio is unconfigured (un-import happens before any Twilio dependency)", async () => {
+    const { sql } = makeSql();
+    let retellCalled = false;
+    await releaseOneNumber(
+      sql,
+      candidateRow(),
+      makeDeps({
+        twilioAccountSid: undefined,
+        twilioAuthToken: undefined,
+        retellFetch: (async () => {
+          retellCalled = true;
+          return new Response("{}", { status: 200 });
+        }) as OffboardingDeps["retellFetch"],
+      }),
+    );
+    expect(retellCalled).toBe(true);
+  });
+});
+
 describe("releaseOneNumber", () => {
   it("releases the number in Twilio and marks phone_numbers.released_at once Retell delete succeeds", async () => {
     const { sql, calls } = makeSql();
@@ -143,6 +183,33 @@ describe("runOffboarding", () => {
     }) as SqlClient;
 
     const result = await runOffboarding(sql, new Date("2026-09-10T00:00:00Z"), makeDeps());
-    expect(result).toEqual({ numbers_released: 1, numbers_failed: 0, tenants_archived: 1 });
+    expect(result).toEqual({
+      numbers_released: 1,
+      numbers_failed: 0,
+      numbers_skipped_not_configured: 0,
+      tenants_archived: 1,
+    });
+  });
+
+  it("archives a tenant with zero outstanding phone numbers even when Twilio is entirely unconfigured (QA-BILL: the throwaway-test-tenant path)", async () => {
+    let call = 0;
+    const sql = ((_strings: TemplateStringsArray, ..._values: unknown[]) => {
+      call += 1;
+      if (call === 1) return Promise.resolve([]); // findPortOutCandidates — no numbers
+      if (call === 2) return Promise.resolve([{ tenant_id: "t1" }]); // findArchiveCandidates
+      return Promise.resolve([]); // archive update
+    }) as SqlClient;
+
+    const result = await runOffboarding(
+      sql,
+      new Date("2026-09-10T00:00:00Z"),
+      makeDeps({ twilioAccountSid: undefined, twilioAuthToken: undefined }),
+    );
+    expect(result).toEqual({
+      numbers_released: 0,
+      numbers_failed: 0,
+      numbers_skipped_not_configured: 0,
+      tenants_archived: 1,
+    });
   });
 });

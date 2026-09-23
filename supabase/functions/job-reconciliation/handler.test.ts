@@ -31,6 +31,24 @@ describe("reconcileOneCall", () => {
     expect(result).toBe(false);
   });
 
+  it("returns false and writes nothing when Retell's get-call response doesn't match the expected shape (QA-BILL: never writes incorrect data on a mismatch)", async () => {
+    const calls: string[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      calls.push(strings.join(" "));
+      return Promise.resolve([]);
+    }) as SqlClient;
+    const result = await reconcileOneCall(sql, row, {
+      retellFetch: (() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ not_a_call_object: true }), { status: 200 }),
+        )) as never,
+      retellApiKey: "key",
+      logger,
+    });
+    expect(result).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
   it("backfills analysis fields and returns true on a valid response", async () => {
     const calls: string[] = [];
     const sql = ((strings: TemplateStringsArray) => {

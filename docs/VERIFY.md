@@ -2662,3 +2662,103 @@ PUBLISH-1 for the full live transcript.
 `packages/adapters/retell/src/compiler/conversation-flow.ts`,
 `supabase/functions/_shared/inbound-dynamic-variables.ts`,
 `supabase/functions/api-tenant-agent-publish/{handler,index}.ts`.
+
+## QA-PORTAL (2026-09-23) — Supabase Auth email-link confirmation (`/auth/confirm`)
+
+**Endpoint/feature:** GoTrue email-link auth (`auth.signUp`'s confirmation
+link, `POST /auth/v1/invite`'s invite link, `auth.resetPasswordForEmail`'s
+recovery link) consumed by an `@supabase/ssr` Next.js App Router client.
+
+**Doc fetched live this session:**
+`https://supabase.com/docs/guides/auth/server-side/email-based-auth-with-pkce-flow-for-ssr`
+(WebFetch, 2026-09-23). Confirmed current guidance: every one of these
+links redirects the browser to `<redirectTo>?token_hash=<hash>&type=<
+EmailOtpType>` (never a URL that already carries a session), and the
+documented Next.js fix is a dedicated Route Handler
+(`app/auth/confirm/route.ts` in their example) that calls
+`supabase.auth.verifyOtp({ type, token_hash })` server-side — which both
+verifies the token AND establishes the session (writing the `@supabase/ssr`
+cookies) — then redirects to `next`.
+
+**Gap found (QA-PORTAL deliverable 2, team invites):** this repo had no
+such route anywhere — confirmed by grepping the whole of `apps/web/src`
+for `exchangeCodeForSession`/`verifyOtp`: zero matches before this task.
+`api-team-invite`'s `redirectTo` pointed straight at `<APP_BASE_URL>/
+dashboard` and `reset-password/page.tsx`'s pointed straight at
+`<origin>/reset-password/confirm` — both assuming a session that was
+never established. `/dashboard` unauthenticated bounces to `/login` via
+`middleware.ts` (the `token_hash`/`type` params are silently dropped);
+`/reset-password/confirm` called `auth.updateUser({password})` directly,
+which fails with "Auth session missing!" with no prior `verifyOtp` call.
+Net effect: a team invite could never actually be accepted, and a
+password reset could never actually complete, for any real user clicking
+the real email link — independent of, and in addition to, the live
+mailer-rate-limit failure also hit this session (see
+`docs/BUILD_NOTES.md` QA-PORTAL entry) which prevented observing this
+particular gap via an actual delivered email in this sandboxed session
+(reasoned instead from `@supabase/auth-js@2.116.0`'s actual shipped
+`GoTrueClient._exchangeCodeForSession` source, which throws
+`AuthPKCECodeVerifierMissingError` for a browser that never held the
+matching PKCE code verifier — true of every invite recipient's browser
+by construction — and from the simple fact that GoTrue's `token_hash`-
+based links were never consumed by anything in this repo at all,
+independent of PKCE).
+
+**Fixed:** `apps/web/src/app/auth/confirm/route.ts` (new, outside
+`[locale]` — same next-intl-bypass hazard as `/api/*`, T5,
+`middleware.ts` updated to bypass it too), `next` validated as a
+same-origin relative path only (open-redirect guard, unit tested).
+`api-team-invite/index.ts` and `reset-password/page.tsx` now point their
+`redirectTo` through it.
+
+**Code:** `apps/web/src/app/auth/confirm/route.ts`,
+`apps/web/src/app/auth/confirm/route.test.ts`, `apps/web/src/middleware.ts`
+(+ `.test.ts`), `apps/web/src/app/[locale]/reset-password/page.tsx`,
+`supabase/functions/api-team-invite/index.ts`.
+
+## QA-BILL (2026-09-23) — Stripe webhook signature scheme + event type names
+
+**Endpoint/feature:** `Stripe-Signature` header verification
+(`_shared/stripe-signature.ts`) and the four event types
+`webhooks-stripe/handler.ts` branches on for billing/lifecycle:
+`checkout.session.completed`, `invoice.paid`, `invoice.payment_failed`,
+`customer.subscription.deleted`.
+
+**Docs fetched live this session** (WebFetch, 2026-09-23 — reachable this
+time, unlike the `EGRESS_BLOCKED` result `stripe-signature.ts`'s own header
+comment recorded from an earlier session):
+
+- `https://docs.stripe.com/webhooks/signatures` — confirmed VERBATIM
+  against this repo's existing hand-rolled implementation: header format
+  `Stripe-Signature: t=<unix_seconds>,v1=<hex>[,v0=<hex>]` ("a real
+  `Stripe-Signature` header is on a single line"; multiple `v1` values
+  appear "when you roll an endpoint's secret ... for up to 24 hours");
+  `signed_payload = "${t}.${rawBody}"` ("concatenating: the timestamp (as
+  a string), the character `.`, the actual JSON payload"); HMAC-SHA256
+  keyed by the `whsec_...` signing secret, hex digest, constant-time
+  compare; default replay tolerance **5 minutes** ("Our libraries have a
+  default tolerance of 5 minutes between the timestamp and the current
+  time"). Every one of these already matched `stripe-signature.ts`'s
+  from-training-knowledge implementation exactly — no code change needed,
+  only removing the "egress-blocked, unconfirmed" caveat from that file's
+  header comment.
+- `https://docs.stripe.com/api/events/types` — confirmed the exact event
+  type strings and each one's `data.object` resource, verbatim:
+  `checkout.session.completed` (`data.object` is a `checkout.session`),
+  `customer.subscription.deleted` (`subscription`), `invoice.paid`
+  (`invoice`), `invoice.payment_failed` (`invoice`) — matching
+  `handler.ts`'s field reads (`.customer`/`.subscription`/`.metadata` on
+  Checkout Session; `.customer` on Subscription; `.id`/`.customer` on
+  Invoice) exactly.
+
+**Result:** no bug — this confirms `stripe-signature.ts`'s prior
+train-of-knowledge implementation and `handler.ts`'s event-type
+`switch` were already correct; only the "VERIFY" caveats are resolved.
+New tests added that compute a real signature against these confirmed
+semantics and drive the full `verify -> dedup -> processStripeEvent`
+pipeline for the four named event types, including idempotency on a
+replayed delivery.
+
+**Code:** `supabase/functions/_shared/stripe-signature.ts` (header comment
+updated), `supabase/functions/webhooks-stripe/signature-flow.test.ts`
+(new).

@@ -21,10 +21,22 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
  * once Stripe subscription data is read into a local column (flagged for
  * follow-up, not a T3 hot-path concern).
  */
+/**
+ * OPS (docs/BUILD_NOTES.md QA-BILL): Stripe is not configured on this
+ * platform yet (no `STRIPE_SECRET_KEY`/`STRIPE_METER_EVENT_NAME` secret) —
+ * both are optional here, matching the `api-checkout`/`webhooks-stripe`
+ * SIGNUP-1/OPS-5 precedent of reading Stripe secrets with `optionalEnv`
+ * rather than `requireEnv`, so this job never crashes cold-start. When
+ * either is unset (or a tenant has no `stripe_customer_id` yet) the Stripe
+ * Billing Meter report is skipped with a logged reason — the invoice row
+ * below is still computed and written as `draft` either way (CLAUDE.md Rule
+ * 4: "never mark anything paid, never crash"). Only `webhooks-stripe`'s
+ * `invoice.paid` handler ever flips a `billing_invoices` row to `paid`.
+ */
 export interface BillingCycleDeps {
   stripeFetch: StripeFetch;
-  stripeSecretKey: string;
-  billingMeterEventName: string;
+  stripeSecretKey: string | undefined;
+  billingMeterEventName: string | undefined;
   logger: Logger;
 }
 
@@ -79,6 +91,34 @@ export async function findTenantsForBilling(
   `;
 }
 
+/**
+ * Pure invoice-amount calculation (plan base fee + rounded per-minute
+ * overage, integer cents) — reachable and independently testable with NO
+ * Stripe call in the loop (CLAUDE.md Rule 2 "money in integer cents";
+ * QA-BILL deliverable 2: proven directly against a hand calculation from
+ * `platform_settings.price_card_<vertical>`, not only via the Stripe-gated
+ * path below).
+ */
+export interface InvoiceAmountInputs {
+  base_cents: number;
+  included_minutes: number;
+  overage_cents_per_minute: number;
+  billable_minutes: number;
+}
+
+export interface InvoiceAmounts {
+  overageMinutes: number;
+  overageCents: number;
+  totalCents: number;
+}
+
+export function computeInvoiceAmounts(row: InvoiceAmountInputs): InvoiceAmounts {
+  const overageMinutes = Math.max(0, row.billable_minutes - row.included_minutes);
+  const overageCents = Math.round(overageMinutes * row.overage_cents_per_minute);
+  const totalCents = row.base_cents + overageCents;
+  return { overageMinutes, overageCents, totalCents };
+}
+
 export async function billOneTenant(
   sql: SqlClient,
   row: TenantBillingRow,
@@ -86,11 +126,9 @@ export async function billOneTenant(
   periodEnd: string,
   deps: BillingCycleDeps,
 ): Promise<boolean> {
-  const overageMinutes = Math.max(0, row.billable_minutes - row.included_minutes);
-  const overageCents = Math.round(overageMinutes * row.overage_cents_per_minute);
-  const totalCents = row.base_cents + overageCents;
+  const { overageMinutes, overageCents, totalCents } = computeInvoiceAmounts(row);
 
-  if (row.stripe_customer_id) {
+  if (row.stripe_customer_id && deps.stripeSecretKey && deps.billingMeterEventName) {
     const meterResult = await createBillingMeterEvent(deps.stripeFetch, deps.stripeSecretKey, {
       eventName: deps.billingMeterEventName,
       stripeCustomerId: row.stripe_customer_id,
@@ -107,6 +145,14 @@ export async function billOneTenant(
       // the meter-event failure is separately alertable via
       // `billing.meter_event.error` webhooks (§7.4).
     }
+  } else if (row.stripe_customer_id) {
+    // Stripe not configured on this platform yet (OPS, docs/BUILD_NOTES.md
+    // QA-BILL) — skip the meter-event report, never crash, still write the
+    // draft invoice below so billing math keeps accruing correctly and can
+    // be back-reported to Stripe once the secret is provisioned.
+    deps.logger.warn("billing_cycle_meter_event_skipped_not_configured", {
+      tenant_id: row.tenant_id,
+    });
   }
 
   const inserted = await sql<{ id: string }>`

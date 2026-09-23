@@ -12,6 +12,41 @@ build environment cannot create — the full, ordered checklist is
 for "is X done" — the entries stay as history/detail, not as the current
 source of truth.
 
+**QA-BILL (2026-09-23)**: billing/lifecycle had never been exercised
+live before this task — it wasn't just unproven, `job-billing-cycle` and
+`job-offboarding` were both **crashing on every single invocation** (500
+`WORKER_ERROR`, confirmed live via curl and via `net._http_response`
+showing null/timed-out responses from their nightly `pg_cron` runs),
+because both read an unconfigured provider secret (`STRIPE_SECRET_KEY`/
+`STRIPE_METER_EVENT_NAME`, `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`) with
+`requireEnv` at Deno cold start — the exact OPS-5/SIGNUP-1 pattern
+already fixed elsewhere, just missed on these two. Fixed the same way
+(`optionalEnv`, skip only the unconfigured provider call, never the rest
+of the job); both now return 200 live. Also proved, live, against the
+project's `test-*`/`signup-1-auto` tenants only: the usage-rollup SQL
+job (`fn_upsert_usage_daily`/`fn_cron_usage_rollup`) reconciles exactly
+against `call_logs`/`usage_events` and is idempotent on rerun; test
+calls are flagged (not excluded) via `usage_events.is_billable = not
+is_test_call` — `total_calls`/`total_minutes` include them,
+`billable_minutes` (what billing reads) doesn't; `job-billing-cycle`'s
+computed invoice amounts hand-verified against
+`platform_settings.price_card_auto` and never mark anything paid
+without Stripe; `webhooks-stripe` re-confirmed fail-closed 503 with no
+signing secret, plus new locally-signed-signature tests proving tenant
+status transitions and `webhook_events` idempotency for
+`checkout.session.completed`/`invoice.paid`/`invoice.payment_failed`/
+`customer.subscription.deleted`; a real cancel-and-offboard run on a
+throwaway `test-offboard-<ts>` tenant (no phone number) correctly
+un-imports nothing (there was nothing to un-import) and soft-deletes
+(`deleted_at`) the tenant after the 30-day port-out grace window;
+`job-internal-retention-sweep`'s `webhook_events`(90d)/`tool_health`(14d)
+platform-wide pruning deletes exactly the rows past each threshold and
+nothing else; `job-retention-sweep`'s per-tenant Storage-recording purge
+correctly refuses to null `call_logs.recording_url` when the Storage
+delete itself doesn't confirm (retry-safe, never silently drops a
+still-live recording's column). Full detail: `docs/BUILD_NOTES.md`
+QA-BILL.
+
 **PUBLISH-1 (2026-09-21)**: closes ONBOARD-1's own two remaining gaps
 below — a tenant's transfer number is now LIVE at call time (compiled
 flows always reference the `{{transfer_number}}` dynamic variable

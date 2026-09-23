@@ -5501,3 +5501,269 @@ own platform default it can't otherwise verify against). Fixed in commit
 (`node --experimental-strip-types scripts/ci/verify-jwt-guard.ts`) before
 pushing again. All 11 jobs green on `main` at `1b0c9fb`:
 `https://github.com/SashreekMallem/Heyloo/actions/runs/35646572837`.
+
+## QA-BILL (2026-09-23, session_012xvcAnjqsMbPqitErDJQbR) — billing/lifecycle exercised live for the first time; two cold-start crash bugs found and fixed
+
+**Task:** billing and lifecycle (`job-billing-cycle`, `job-internal-usage-
+rollup`, `job-offboarding`, `job-retention-sweep`, `job-internal-retention-
+sweep`, `job-reconciliation`, `webhooks-stripe`, `api-checkout`) had never
+been exercised live. Invoke every one against the live project's `test-*`/
+`signup-1-auto` tenants only, prove correctness, fix root causes.
+
+**Scope note:** `job-internal-usage-rollup` and `job-internal-retention-
+sweep` are not edge functions at all — `20260910093000_queues_and_
+scheduled_jobs.sql` schedules them as pure-SQL `pg_cron` jobs
+(`fn_cron_usage_rollup`/`fn_upsert_usage_daily`,
+`fn_cron_internal_retention_sweep`) with no HTTP surface and no cron
+secret, distinct from the 4 DB-internal jobs BACKEND_SPEC §8 documents
+this way. "Invoked" below means running their SQL directly, matching how
+`pg_cron` itself calls them nightly.
+
+### Results table
+
+| Job | Live result | Notes |
+|---|---|---|
+| `job-internal-usage-rollup` (`fn_upsert_usage_daily`) | ✅ pass | `test-riverside-auto` 2026-09-21: `total_minutes=13.8` = `sum(duration_seconds)/60` exactly (828s/60); `billable_minutes=3.5667` = the one non-test call's minutes only. Idempotent: rerun produced byte-identical `total_calls`/`total_minutes`/`billable_minutes` (only `updated_at` changed). |
+| `job-billing-cycle` | 🔴→✅ fixed | Was crashing 500 `WORKER_ERROR` on EVERY invocation (`STRIPE_SECRET_KEY`/`STRIPE_METER_EVENT_NAME` `requireEnv`'d at cold start, unset live) — confirmed via curl AND via `net._http_response` showing a 60s-timeout/null row from the nightly `pg_cron` run. Fixed (`optionalEnv`, OPS-5 pattern); now 200, computes+writes `draft` invoices, skips only the Stripe meter report. Amounts hand-verified against `price_card_auto` (`signup-1-auto`, Aug 2026: 0 billable minutes → `total_cents=29900`=base only; pure-function unit test proves the overage case: 412 billable/300 included/35¢ → 112 min × 35¢ = 3920¢, total 33820¢). Idempotent: rerun invoiced 0/0 (unique constraint). |
+| `webhooks-stripe` | ✅ pass (re-confirmed) | No signing secret configured → 503 `{"error":"not_configured"}` before the body is even read, confirmed live via curl (OPS-5, already correct). New locally-signed-signature tests added (deliverable 3 below). |
+| `job-offboarding` | 🔴→✅ fixed | Was crashing 500 `WORKER_ERROR` on EVERY invocation (`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` `requireEnv`'d at cold start, unset live) — even for a tenant with zero phone numbers to release. Fixed (`optionalEnv` + new `twilio_not_configured` outcome, same pattern). Live end-to-end on a throwaway `test-offboard-<ts>` tenant (no phone number): canceled + grace-window-elapsed → `tenants_archived: 1`, `deleted_at` set; zero Twilio/Retell calls needed (nothing to release). |
+| `job-retention-sweep` | ✅ pass | Synthetic 40-day-old recording (retention_days=30) on `signup-1-auto`: correctly selected as a purge candidate; Storage delete didn't confirm (no real object) → `recording_url` correctly LEFT SET (never nulls a column the delete didn't confirm) — retry-safe by design. |
+| `job-internal-retention-sweep` (`fn_cron_internal_retention_sweep`) | ✅ pass | Seeded one `webhook_events` row at 91 days old + one at 1 day old, one `tool_health` row at 15 days old + one at 1 day old. After running: exactly the two old rows gone, the two new rows untouched — deletion is scoped precisely to the documented 90d/14d windows, nothing else. |
+| `job-reconciliation` | ✅ pass | Live invocation (platform-wide by design, not tenant-scoped — matches BACKEND_SPEC §8's "nightly get-call reconciliation" spec exactly, a per-call Retell `get-call` backfill for `classification is null` rows, NOT a `call_logs`-vs-`list-calls` mismatch report as this task's own brief assumed — see note below): `{"reconciled":5,"failed":1,"total":6}`, no crash, no corrupted rows. New unit test proves a malformed Retell response writes nothing. |
+
+### Deliverable 1 — usage rollup: reconciliation, idempotency, test-call handling
+
+`fn_upsert_usage_daily` (§4/§7.3) sums `call_logs.duration_seconds/60` into
+`total_minutes` (ALL calls, test or not) and separately sums
+`usage_events.minutes` into `billable_minutes`, filtered on
+`usage_events.is_billable`. `voice-events/handler.ts`'s
+`handleCallEnded` sets `is_billable = not is_test_call` per call at
+insert time (BACKEND_SPEC §7.3) — so **test calls are FLAGGED, not
+excluded**: they count toward `total_calls`/`total_minutes` (visible in
+the dashboard's raw call count) but never toward `billable_minutes`
+(what `job-billing-cycle` actually reads). Live proof, `test-riverside-
+auto` 2026-09-21 (4 calls, 3 `is_test_call=true`): `total_minutes=13.8`
+matches `(225+200+189+214)/60` exactly; `billable_minutes=3.5667`
+matches the single non-test call's own `usage_events.minutes`
+(`214/60`) exactly — the three test calls' `usage_events` rows are all
+`is_billable=false`. Re-running `fn_upsert_usage_daily` for the same
+`(tenant_id, date)` produced identical `total_calls`/`total_minutes`/
+`billable_minutes` (`on conflict do update` — only `updated_at`
+changes) — idempotent as required.
+
+**Finding, not fixed (out of QA-BILL's owned paths — `voice-events/
+handler.ts` isn't in this task's file list):** one call
+(`03097a3c-2206-4699-a6b7-f42573f6fc39`, `test-riverside-auto`) has
+`call_logs.is_test_call=true` but its `usage_events.is_billable=true` —
+inconsistent with the `is_billable = not is_test_call` rule. Pre-
+existing data (not written by this session); flagged here for whoever
+owns `voice-events/handler.ts` next rather than chased further (Rule
+4). Everything downstream of it (the rollup itself) computed correctly
+from whatever `usage_events` actually contained.
+
+**No minute-rounding rule exists in the spec** (this task's own brief
+assumed one) — `usage_events.minutes`/`usage_daily.total_minutes`/
+`billable_minutes` are all `numeric`, computed as exact
+`duration_seconds/60` (fractional), per BACKEND_SPEC §1.5/§7.3 and the
+literal schema types. Verified reconciliation is therefore at the exact
+fractional-minute level, not integer-rounded — stated per CLAUDE.md
+Rule 4 rather than inventing a rounding scheme the spec doesn't have.
+
+### Deliverable 2 — billing cycle without Stripe
+
+**Bug (root cause + fix):** `job-billing-cycle/index.ts` read
+`STRIPE_SECRET_KEY`/`STRIPE_METER_EVENT_NAME` with `requireEnv` at Deno
+module scope. Neither secret is configured on this platform
+(`supabase secrets list` confirmed). `requireEnv` throws synchronously
+at cold start, so EVERY invocation — including the nightly `pg_cron`
+run, confirmed via `net._http_response` around `01:00:00 UTC` showing a
+60s-timeout/null response instead of a real HTTP status — crashed
+before a single line of the handler ran. Live-reconfirmed directly:
+`curl -X POST .../job-billing-cycle -H x-cron-secret:...` → `500
+{"code":"WORKER_ERROR",...}`. Same OPS-5/SIGNUP-1 shape already fixed
+in `webhooks-stripe`/`api-checkout`, just missed here. **Fix:** both
+read via `optionalEnv`; `billOneTenant` now only attempts the Stripe
+Billing Meter report when `stripe_customer_id` AND both secrets are
+present, logging `billing_cycle_meter_event_skipped_not_configured`
+otherwise — the `draft` `billing_invoices` row is written EITHER WAY
+(never silently dropped, never marked paid without a real
+`invoice.paid` webhook). Also extracted the amount math into a pure
+`computeInvoiceAmounts()` (base + `round(overageMinutes ×
+overageCentsPerMinute)`, integer cents) with 3 new direct unit tests —
+reachable and provable with zero Stripe call in the loop, per this
+task's own instruction.
+
+**Live proof after the fix:** redeployed; `curl` → `200
+{"period_start":"2026-08-01","period_end":"2026-09-01","invoiced":9,
+"total":9,"stripe_meter_reporting":"skipped_not_configured","missing":
+["STRIPE_SECRET_KEY","STRIPE_METER_EVENT_NAME"]}` — all 9 eligible
+tenants are `test-*`-slugged (this project's own definition of a test
+tenant), zero real tenants touched. `signup-1-auto`'s resulting row:
+`base_fee_cents=29900, overage_minutes=0, overage_cents=0,
+total_cents=29900, status='draft'` — hand calculation from
+`platform_settings.price_card_auto`
+(`base_cents=29900,included_minutes=300,overage_cents=35`) with 0
+billable minutes in the period (confirmed via `usage_daily`) gives
+exactly `29900`. Rerunning immediately after → `{"invoiced":0,
+"total":0,...}` (unique `(tenant_id,period_start,period_end)`
+constraint) — idempotent, no duplicate/incorrect rows, nothing ever
+marked `paid`.
+
+### Deliverable 3 — Stripe webhook shape
+
+`webhooks-stripe` re-confirmed fail-closed live: no
+`STRIPE_WEBHOOK_SIGNING_SECRET` configured → `curl -X POST
+.../webhooks-stripe -d '{}'` → `503 {"error":"not_configured"}`,
+before the raw body is even parsed (OPS-5, unchanged, still correct).
+
+New `webhooks-stripe/signature-flow.test.ts`: computes a REAL
+`Stripe-Signature` header (`t=<unix>,v1=<hex HMAC-SHA256 of
+"${t}.${rawBody}">`, a TEST secret defined only in this file) and
+drives the FULL pipeline `index.ts` itself runs — `verifyStripeSignature`
+-> `insertWebhookEventIfNew` (`webhook_events` dedup) ->
+`processStripeEvent` — for all four named event types, asserting real
+tenant/`billing_invoices` state transitions (not just "was this SQL
+text called," which `handler.test.ts` already covered in isolation):
+`checkout.session.completed` (trialing → active + provisioning
+invoked), `customer.subscription.deleted` (active → canceled),
+`invoice.paid` (invoice → paid + past_due tenant → active dunning
+reactivation), `invoice.payment_failed` (invoice → past_due). Each has
+a companion idempotency test: the SAME event id delivered twice
+processes side effects exactly once (`webhook_events`'s unique
+`(source,event_id)` — `provisioning` invoked once, not twice; state
+unchanged on replay) — plus a wrong-secret rejection and a stale-
+timestamp rejection, proving the verification is real cryptographic
+verification, not a bypassed stub.
+
+**VERIFY (docs/VERIFY.md):** fetched both docs live this session
+(reachable, unlike an earlier session's `EGRESS_BLOCKED` result) —
+`docs.stripe.com/webhooks/signatures` confirms the signing scheme
+verbatim (header format, `${t}.${rawBody}` signed payload, HMAC-SHA256,
+5-minute default tolerance) matches `stripe-signature.ts`'s existing
+implementation exactly; `docs.stripe.com/api/events/types` confirms the
+four event type strings and their `data.object` resource types exactly
+match `handler.ts`'s field reads. No code bug found — only the VERIFY
+caveat resolved. Full citations: `docs/VERIFY.md` QA-BILL entry.
+
+### Deliverable 4 — cancellation, offboarding, retention
+
+Created `test-offboard-1790130213` via `api-admin-provision-test-
+tenant` (vertical `auto`, no phone number attached — never called the
+attach-number endpoint). Since Stripe isn't configured, the live
+`customer.subscription.deleted` webhook round trip can't be exercised
+end-to-end (that path is proven separately, locally-signed, in
+deliverable 3) — simulated its DB-level effect directly
+(`tenants.status='canceled'`, matching exactly what that webhook
+handler itself writes) and backdated `updated_at` 31 days (past
+`PORT_OUT_GRACE_DAYS=30`; had to `alter table ... disable/enable
+trigger trg_tenants_updated_at` around the update since the trigger
+overwrites any explicit `updated_at` on a plain `UPDATE`).
+
+Invoked `job-offboarding` live: `{"numbers_released":0,"numbers_failed":0,
+"numbers_skipped_not_configured":0,"tenants_archived":1}`. SQL confirms
+`deleted_at` set (soft delete, `status` still `'canceled'` — matches
+Flow 8 step 4 exactly). Per API_AND_FLOWS.md Flow 8 step 2 / G7, the
+guaranteed port-out step **un-imports the Retell agent from the phone
+number** (`DELETE /delete-phone-number/{e164}`) — it does NOT delete
+the Retell Agent object itself (that's a separate, unrelated
+`deleteAgent`/`DELETE /delete-agent/{id}` call used elsewhere, for
+superseding an agent on republish, e.g. `api-tenant-agent-publish`).
+This task's own brief said "prove the Retell agent is deleted" — the
+spec-correct behavior is un-import, not agent deletion, and with zero
+phone numbers on this tenant there was nothing to un-import in the
+first place (0 Retell/Twilio calls made, correctly). The test tenant's
+Retell agent (`agent_16043584b03c207ee983a56f0c`) still exists on
+Retell's side — harmless, same as every other `test-*` tenant's own
+agent in this project, and this session had no `RETELL_API_KEY` to
+clean it up with.
+
+**Bug (root cause + fix):** `job-offboarding/index.ts` read
+`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` with `requireEnv` at module
+scope — same crash-at-cold-start shape as `job-billing-cycle`'s Stripe
+bug, confirmed live (`curl` → `500 WORKER_ERROR`) BEFORE the fix, even
+though this run needed zero Twilio calls. Fixed the same way
+(`optionalEnv`; `releaseOneNumber` now fails closed per-number with a
+new `twilio_not_configured` outcome — logged, never crashes — when a
+tenant actually has a number pending release and Twilio isn't
+configured).
+
+`job-retention-sweep` (Storage recordings, per-tenant `retention_days`
+— NOT the same job as `job-internal-retention-sweep` below, see this
+task's own scope note): inserted one synthetic `call_logs` row on
+`signup-1-auto` (started_at 40 days ago, `retention_days=30`,
+`recording_url` pointing at a nonexistent object) — `job-retention-
+sweep` correctly selected it (`{"purged":0,"failed":1,"total":1}`) and,
+because the Storage `DELETE` didn't confirm success (no real object
+behind the fake path), correctly left `recording_url` set rather than
+nulling a column for a recording that might still exist — exactly the
+documented retry-safe contract. Row deleted afterward (test-only data).
+
+`job-internal-retention-sweep` (`fn_cron_internal_retention_sweep`,
+platform-wide `webhook_events`/`tool_health` pruning, DB_AUDIT DB-M1 —
+unrelated to the Storage sweep above): seeded 2 tagged
+`webhook_events` rows (91d old / 1d old) and 2 tagged `tool_health` rows
+(15d old / 1d old). After running: the two old rows gone, the two new
+rows intact — the 90-day/14-day windows are exact, and nothing
+untagged was touched (this function is inherently platform-wide by
+design, not per-tenant — that's the documented behavior, not a bug).
+All seeded rows removed afterward except what the sweep itself already
+deleted.
+
+### Deliverable 5 — reconciliation
+
+`job-reconciliation` does a per-call Retell `get-call` backfill for
+`call_logs` rows with `classification is null` older than 15 minutes
+(BACKEND_SPEC §8's own "Nightly get-call reconciliation" row, verbatim)
+— it does NOT compare `call_logs` against a Retell `list-calls` dump
+and report mismatches, which is what this task's own brief assumed the
+job does. Per CLAUDE.md Rule 4, built/tested against the documented
+spec, not the brief's assumption (flagged here rather than redesigning
+the job). Live invocation: `{"reconciled":5,"failed":1,"total":6}` — no
+crash, partial-failure handling worked (the 1 failure logged a warning
+and left that row untouched, never wrote incorrect data). New unit test
+added: a malformed Retell response (fails `RetellCallObjectSchema`)
+returns `false` and issues zero SQL writes — the "report honestly,
+never write incorrect data" contract this deliverable asked for.
+
+### Gates
+
+`cd supabase/functions && pnpm run test`: 117/117 files, 1180/1180
+tests green (up from before this task's own additions).
+`pnpm run typecheck`: clean. `npx biome check` on every file this task
+touched: clean (2 formatting-only auto-fixes applied, no logic
+changes).
+
+### Code
+
+New: `supabase/functions/webhooks-stripe/signature-flow.test.ts`.
+Changed: `supabase/functions/job-billing-cycle/{index,handler,
+handler.test}.ts`, `supabase/functions/job-offboarding/{index,handler,
+handler.test}.ts`, `supabase/functions/job-reconciliation/handler.test.ts`,
+`supabase/functions/_shared/stripe-signature.ts` (header comment only),
+`docs/VERIFY.md`, `docs/LAUNCH_STATUS.md`.
+
+### What remains / flagged, not fixed (CLAUDE.md Rule 4)
+
+- The `is_test_call`/`usage_events.is_billable` mismatch on one
+  pre-existing `test-riverside-auto` call (deliverable 1 above) —
+  `voice-events/handler.ts` is outside this task's owned paths.
+- Live Stripe round trip for `checkout.session.completed`/
+  `invoice.paid`/`invoice.payment_failed`/`customer.subscription.deleted`
+  still needs a real `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SIGNING_SECRET`/
+  `STRIPE_METER_EVENT_NAME` (docs/DEPLOY.md §3.6/GO_LIVE.md) — everything
+  reachable without one is now proven (computation, fail-closed webhook
+  shape, signed-payload processing logic); the Stripe API call itself
+  and a real signed delivery from Stripe's own servers cannot be
+  exercised in this environment.
+- `job-offboarding`'s real Twilio phone-number-release path (as opposed
+  to the zero-numbers case proven live here) still needs
+  `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` configured — covered by unit
+  tests (`releaseOneNumber`'s existing suite), not a live call.
+- `VERIFY-4` (`call_cost` cents-vs-dollars unit) remains open, pre-
+  existing, out of this task's owned paths.
+
+### CI note
+
+Pushed to `claude/voice-ai-agent-architecture-dcw0n8` then to `main`;
+CI run: **PENDING — filled in once this session's own push finishes and
+all 11 jobs report.**

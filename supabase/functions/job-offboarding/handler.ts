@@ -52,16 +52,32 @@ export async function findPortOutCandidates(
   `;
 }
 
+/**
+ * OPS (docs/BUILD_NOTES.md QA-BILL): Twilio is not configured on this
+ * platform yet (no `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` secret) —
+ * both optional here, same `optionalEnv` precedent as Stripe in
+ * `job-billing-cycle` (OPS-5/SIGNUP-1), so this job never crashes
+ * cold-start. A tenant with NO phone numbers to release (the common case
+ * for a throwaway test tenant, and for most cancellations before a number
+ * ever gets ported) still reaches the archive step with zero Twilio calls
+ * made; a tenant that genuinely has a number pending port-out fails that
+ * one release CLOSED (`twilio_not_configured`, logged) rather than
+ * crashing the whole run or calling Twilio with an undefined credential.
+ */
 export interface OffboardingDeps {
   retellFetch: RetellFetch;
   retellApiKey: string;
   twilioFetch: TwilioFetch;
-  twilioAccountSid: string;
-  twilioAuthToken: string;
+  twilioAccountSid: string | undefined;
+  twilioAuthToken: string | undefined;
   logger: Logger;
 }
 
-export type ReleaseOutcome = "released" | "retell_delete_failed" | "twilio_release_failed";
+export type ReleaseOutcome =
+  | "released"
+  | "retell_delete_failed"
+  | "twilio_release_failed"
+  | "twilio_not_configured";
 
 export async function releaseOneNumber(
   sql: SqlClient,
@@ -76,6 +92,14 @@ export async function releaseOneNumber(
       status: retellResult.status,
     });
     return "retell_delete_failed";
+  }
+
+  if (!deps.twilioAccountSid || !deps.twilioAuthToken) {
+    deps.logger.warn("job_offboarding_twilio_not_configured", {
+      tenant_id: row.tenant_id,
+      phone_number_id: row.phone_number_id,
+    });
+    return "twilio_not_configured";
   }
 
   const twilioResult = await releasePhoneNumber(
@@ -136,6 +160,7 @@ export async function archiveOneTenant(sql: SqlClient, tenantId: string): Promis
 export interface OffboardingRunResult {
   numbers_released: number;
   numbers_failed: number;
+  numbers_skipped_not_configured: number;
   tenants_archived: number;
 }
 
@@ -149,9 +174,11 @@ export async function runOffboarding(
   const numberCandidates = await findPortOutCandidates(sql, graceCutoff);
   let numbersReleased = 0;
   let numbersFailed = 0;
+  let numbersSkippedNotConfigured = 0;
   for (const row of numberCandidates) {
     const outcome = await releaseOneNumber(sql, row, deps);
     if (outcome === "released") numbersReleased += 1;
+    else if (outcome === "twilio_not_configured") numbersSkippedNotConfigured += 1;
     else numbersFailed += 1;
   }
 
@@ -163,6 +190,7 @@ export async function runOffboarding(
   return {
     numbers_released: numbersReleased,
     numbers_failed: numbersFailed,
+    numbers_skipped_not_configured: numbersSkippedNotConfigured,
     tenants_archived: archiveCandidates.length,
   };
 }
