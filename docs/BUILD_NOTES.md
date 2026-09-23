@@ -5764,6 +5764,7 @@ handler.test}.ts`, `supabase/functions/job-reconciliation/handler.test.ts`,
 
 ### CI note
 
-Pushed to `claude/voice-ai-agent-architecture-dcw0n8` then to `main`;
-CI run: **PENDING — filled in once this session's own push finishes and
-all 11 jobs report.**
+Pushed to `claude/voice-ai-agent-architecture-dcw0n8` then to `main`
+(commit `54a83c4`, fast-forward both — no rebase needed, nothing new had
+landed on either branch since this task's own base). All 11 jobs green:
+`https://github.com/SashreekMallem/Heyloo/actions/runs/35810773146`.
