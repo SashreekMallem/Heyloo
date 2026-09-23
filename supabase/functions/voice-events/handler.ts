@@ -163,7 +163,7 @@ export async function handleCallStarted(
   // "DEPLOYMENT NOTE" for why that column isn't written this session):
   // safe either way, since a retried/duplicate call_started delivery for
   // an already-webhook-populated row just re-writes the same values.
-  await sql`
+  const upserted = await sql<{ id: string; is_test_call: boolean }>`
     insert into public.call_logs (
       tenant_id, phone_number_id, retell_call_id, caller_number, direction, started_at, is_test_call, channel
     ) values (
@@ -178,7 +178,32 @@ export async function handleCallStarted(
       started_at = excluded.started_at,
       is_test_call = excluded.is_test_call,
       channel = excluded.channel
+    returning id, is_test_call
   `;
+
+  // FOLLOWUP-1 (docs/BUILD_NOTES.md QA-BILL/FOLLOWUP-1): this upsert's own
+  // `on conflict` branch above can be the SECOND writer for this call_id —
+  // `handleCallEnded`'s own out-of-order fallback (below) may already have
+  // inserted a `call_logs` row AND its matching `usage_events` row (with
+  // `is_billable` derived from ITS OWN `resolveIsTestCall` snapshot) before
+  // this webhook's authoritative `call_started` delivery lands and
+  // unconditionally overwrites `is_test_call` here. Without this, the
+  // already-written `usage_events.is_billable` never gets corrected —
+  // exactly the mismatch QA-BILL found live (one row: `is_test_call=true`,
+  // `usage_events.is_billable=true`). Resolving `is_test_call` here is the
+  // LAST point in this file where it can change for a call, so re-sync any
+  // already-existing usage_events row for it right here — a cheap,
+  // indexed (`idx_usage_events_call`), conditional no-op update when no
+  // such row exists yet or it's already correct.
+  const row = upserted[0];
+  if (row) {
+    await sql`
+      update public.usage_events
+      set is_billable = ${!row.is_test_call}
+      where call_id = ${row.id}
+        and is_billable is distinct from ${!row.is_test_call}
+    `;
+  }
 }
 
 export async function handleCallEnded(

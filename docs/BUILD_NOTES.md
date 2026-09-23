@@ -6329,3 +6329,225 @@ https://github.com/SashreekMallem/Heyloo/actions/runs/35810773146.
 `69838e4` (this task's second commit, the transfer-only-prompt fix, on
 top of QA-BILL's own follow-up commits) — green:
 https://github.com/SashreekMallem/Heyloo/actions/runs/35811083407.
+
+## FOLLOWUP-1 (2026-09-23, session_012xvcAnjqsMbPqitErDJQbR) — three QA-flagged root-cause bugs fixed at the source, each with unit tests; code + tests only, deploy/migration-apply still owner-gated
+
+**Task:** fix the three items QA-BILL/QA-HOT/QA-PORTAL each flagged but
+left out of their own owned paths (CLAUDE.md Rule 4). Code + tests only —
+this sandbox still blocks Edge Function deploys and DDL, same restriction
+every QA-* session this day already hit.
+
+### Fix 1 — `api-intake/index.ts`: identical URL-prefix routing bug QA-PORTAL fixed in `admin/index.ts`
+
+**Root cause:** Supabase's edge runtime strips only the `/functions/v1/`
+infrastructure prefix before invoking a function — the function's OWN
+name segment stays on `req.url`'s pathname (`supabase.com/docs/guides/
+functions/routing`, same citation QA-PORTAL already verified this
+session's own predecessor). `api-intake/index.ts`'s token-extraction regex
+still assumed the fictional `/functions/v1/api-intake/{token}` shape;
+against the real `/api-intake/{token}` pathname it never matched, so
+`.replace()` silently no-opped and the extracted "token" became
+`api-intake/{realToken}` (the function's own name segment still glued onto
+the front) for every real request — never resolving to a real
+`intake_tokens.token_hash` row, so every intake link (the SMS'd public
+patient-intake form) 404'd in production. Same shape as `admin/index.ts`'s
+own bug, same fix: strip only the function's own leading path segment
+(`/^\/[^/]+\//`), not a hardcoded literal prefix.
+
+Grepped every `supabase/functions/*/index.ts` for the same pattern
+(`req.url`/`url.pathname` routing logic): only three files parse the URL
+for routing at all — `admin/index.ts` (already fixed, QA-PORTAL),
+`api-intake/index.ts` (fixed here), and `webhooks-pos/index.ts`, which
+uses `url.pathname.split("/").filter(Boolean).pop()` — the LAST path
+segment, prefix-agnostic by construction, correct regardless of whether
+`/functions/v1/` or the function's own name segment is present. No other
+fix needed there (its header comment's literal `/functions/v1/...` example
+is descriptive prose, not logic the code depends on).
+
+New `supabase/functions/api-intake/index.test.ts` (none existed before —
+`handler.test.ts` only drives `getIntakeStatus`/`submitIntake` directly
+with hand-built token strings, the same split QA-PORTAL's own
+`admin/index.test.ts` vs `handler.test.ts` has): shims the Deno entrypoint
+surface, drives it with a REAL `Request` against the real URL shape
+(`https://project.supabase.co/api-intake/{token}`), and asserts the
+extracted token is the bare token — not `api-intake/{token}` — for both
+GET and POST, plus a regression guard.
+
+### Fix 2 — `packages/adapters/retell/src/compiler/conversation-flow.ts`: same transfer-only router prompt-discard bug QA-HOT fixed in `_shared/compiler/template-compiler.ts`
+
+**Root cause:** exactly the bug QA-HOT root-caused and fixed this same day
+in the live Deno compiler (`_shared/compiler/template-compiler.ts`'s
+`compileConversationFlow`) — flagged there as "the identical pattern
+exists in `packages/adapters/retell/src/compiler/conversation-flow.ts`
+lines ~286/294 — outside this task's owned paths" and left untouched.
+`buildRouterAndTransferNodes`'s router node set `instruction.text` to the
+generic `TRANSFER_ROUTER_INSTRUCTION` ALONE, discarding the state's own
+authored `prompt_fragment` entirely — unlike `buildNode`'s equivalent
+branch just above it, which always keeps both. This is the PARITY package
+(`parity.test.ts` compiles a shared fixture through both compilers and
+asserts matching node shapes) — QA-HOT's own live-observed bug (vet's
+`emergency_warm_transfer` state losing its own emergency-hospital-referral
+content the instant a transfer-only state compiled, confirmed via a real
+batch-test transcript where the agent never re-answered the caller's
+repeated "should I rush to the ER?") applies here too, for any tenant
+whose agent gets compiled through this package instead of the live Deno
+compiler.
+
+**Fix:** combined `state.prompt_fragment` with `TRANSFER_ROUTER_INSTRUCTION`
+for the router node (both the `subagent` and `conversation` node-type
+branches), mirroring `template-compiler.ts`'s own fix exactly. New test in
+`conversation-flow.test.ts` ("the router's own instruction text carries
+BOTH the state's own prompt_fragment AND the generic transfer-router
+instruction") asserts both fragments are present in the compiled router's
+`instruction.text` — same assertion shape as `template-compiler.test.ts`'s
+own QA-HOT regression test. `parity.test.ts` (the cross-compiler parity
+suite) stays green unmodified — it doesn't assert on instruction text
+content, only on node/edge shape, so this fix doesn't change parity at
+all, only correctness within this one compiler.
+
+### Fix 3 — `usage_events.is_billable` can go stale relative to `call_logs.is_test_call`
+
+**Where the row is written:** `voice-events/handler.ts` — NOT a trigger;
+grepped the full migrations tree and `_shared/`, confirmed only
+`handleCallEnded` ever inserts into `usage_events`, computing
+`is_billable = not call_logs.is_test_call` from a single snapshot taken at
+insert time.
+
+**Root cause (matches QA-BILL's own one flagged live row —
+`03097a3c-2206-4699-a6b7-f42573f6fc39`, `test-riverside-auto`:
+`is_test_call=true`, `usage_events.is_billable=true`):**
+`voice-events/handler.ts`'s own header documents it's "tolerant of
+out-of-order delivery (call_ended before call_started)". When `call_ended`
+arrives first, `handleCallEnded`'s own fallback path resolves
+`is_test_call` itself and writes the `usage_events` row against that
+value — internally consistent at that moment. But when the authoritative
+`call_started` webhook lands afterward, `handleCallStarted`'s own upsert
+UNCONDITIONALLY overwrites `call_logs.is_test_call` with its own,
+separately-resolved determination (`on conflict do update set
+is_test_call = excluded.is_test_call`) — and nothing ever re-touched the
+already-written `usage_events` row. `is_test_call` can change again after
+the usage row exists, and the usage row never learns about it — exactly
+"is_billable can be true for a call whose is_test_call is true."
+
+**Fix (code, `voice-events/handler.ts`, no migration needed for the actual
+write path):** `handleCallStarted`'s own upsert is the LAST place in this
+file where `is_test_call` can change for a call, so it's also the right
+place to re-sync — added `returning id, is_test_call` to that upsert and,
+when it returns a row, issued one additional conditional, indexed
+(`idx_usage_events_call`) `update public.usage_events set is_billable =
+not is_test_call where call_id = id and is_billable is distinct from not
+is_test_call` immediately after. Idempotent, a cheap no-op whenever no
+`usage_events` row exists yet or it's already correct, and it fires
+whether the value actually changed on this call or not (correctness over
+micro-optimizing away the one query — this is background `EdgeRuntime.
+waitUntil` processing, not the `/voice/tools` hot path QA-HOT's own
+budget applies to). Four new tests in `voice-events/handler.test.ts`: the
+exact QA-BILL scenario (resolves `is_test_call=true` -> syncs
+`is_billable=false`), the mirror case (`is_test_call=false` ->
+`is_billable=true`), and a guard that no sync query runs when the upsert
+returns no row.
+
+**Defense-in-depth, ADDITIVE MIGRATION, NOT APPLIED (this sandbox blocks
+DDL) — `supabase/migrations/20260923040000_usage_events_is_billable_sync.sql`:**
+the application-code fix above only covers the ONE place `is_test_call`
+is known to change today (`handleCallStarted`'s own upsert). Per this
+task's own instruction ("make is_billable follow the final is_test_call
+value... If it is a trigger, write a NEW timestamped migration"), added a
+trigger so ANY future direct change to `call_logs.is_test_call` — from any
+code path, including one that doesn't exist yet (e.g. an admin
+data-quality tool) — keeps every one of that call's `usage_events` rows
+correct permanently, the same way `trg_call_logs_cost_rollup` already
+keeps `call_logs.cost_cents` in sync with `cost_events`. Guarded by
+`when (old.is_test_call is distinct from new.is_test_call)` so it never
+fires on a no-op `on conflict do update` — the exact anti-pattern QA-HOT's
+own hot-path fix root-caused for `trg_broadcast_call_logs` firing on every
+ON CONFLICT match regardless of whether any column value changed. Full SQL:
+
+```sql
+create or replace function public.fn_sync_usage_events_is_billable()
+returns trigger
+language plpgsql as $$
+begin
+  update public.usage_events
+  set is_billable = not new.is_test_call
+  where call_id = new.id
+    and is_billable is distinct from (not new.is_test_call);
+  return new;
+end;
+$$;
+
+comment on function public.fn_sync_usage_events_is_billable() is
+  'FOLLOWUP-1: keeps every usage_events row for a call in sync with call_logs.is_test_call whenever it changes after the usage row was already written (out-of-order call_started/call_ended webhook delivery, or any later correction) — never lets a test call stay billable or a real call stay excluded from billing.';
+
+create trigger trg_call_logs_sync_usage_billable
+  after update of is_test_call on public.call_logs
+  for each row
+  when (old.is_test_call is distinct from new.is_test_call)
+  execute function public.fn_sync_usage_events_is_billable();
+```
+
+**Not done, per this task's own instruction:** no repair SQL was written
+or run against the one live mismatched row QA-BILL found — that row is
+pre-existing data, not something either fix here touches; whoever applies
+the migration above can decide separately whether to backfill it (a plain
+`update usage_events set is_billable = not cl.is_test_call from call_logs
+cl where cl.id = usage_events.call_id and usage_events.is_billable is
+distinct from not cl.is_test_call` would be idempotent and safe, but is
+data-repair SQL, explicitly out of this task's scope).
+
+### What needs redeploying / applying (owner action — this sandbox cannot do either)
+
+- **Redeploy `api-intake`** — Fix 1 is code-complete, unit-tested, and
+  cannot take effect until this function is redeployed (same "Production
+  Deploy" classifier block QA-PORTAL/QA-HOT both hit this same day for
+  `admin` and the language/latency fixes — this session hit the identical
+  block attempting `supabase functions deploy api-intake ...`).
+- **Redeploy `voice-events`** — Fix 3's code fix (`handler.ts`) needs a
+  redeploy to take effect live; same blocked-deploy reason.
+- **No redeploy needed for Fix 2** — `packages/adapters/retell` is a
+  library package (kept in PARITY with the live Deno compiler, CALL-4),
+  not itself a deployed edge function. Its only current consumers are
+  `packages/templates/src/red-team/{run-simulation,prompt-lint,
+  compiler-gate.test}.ts` (offline tooling), not any live tenant-facing
+  provisioning path — this fix is correct-and-picked-up automatically
+  the next time any of those run, nothing to deploy.
+- **Apply migration `20260923040000_usage_events_is_billable_sync.sql`**
+  (full SQL above) — additive, not yet applied to the live project; DDL is
+  blocked from this sandbox. Whoever applies it should also decide on the
+  optional one-time backfill noted above for the one row QA-BILL already
+  found (not included in the migration itself, since it's data repair, not
+  schema).
+- Also still outstanding from QA-PORTAL's own session, unrelated to this
+  task, restated here only because it blocks the SAME deploy/DDL path:
+  redeploy `admin` and apply
+  `20260923030000_referral_partners_ftc_disclosure.sql`.
+
+### Gates
+
+`pnpm lint` — 0 errors (46 pre-existing biome warnings + 1 info + 33
+pre-existing eslint warnings in `@heyloo/web`, all in files this task
+never touched — spot-checked every warning's file path against this
+task's own changed-file list). `pnpm typecheck` — 21/21 packages clean.
+`pnpm test` (repo root) — 21/21 tasks green. `cd supabase/functions && pnpm run test` —
+120/120 files, 1191/1191 tests green (up from QA-HOT's own 119/1185 — +1
+file, `api-intake/index.test.ts`, new (3 tests); +3 tests in
+`voice-events/handler.test.ts`). `packages/adapters/retell`'s own
+`vitest run` (its `conversation-flow.test.ts` gained 1 new test; not
+counted in the `supabase/functions` numbers above — separate package) —
+20/20 files, 191/191 tests green.
+
+### Code
+
+New: `supabase/functions/api-intake/index.test.ts`,
+`supabase/migrations/20260923040000_usage_events_is_billable_sync.sql`.
+Changed: `supabase/functions/api-intake/index.ts`,
+`supabase/functions/voice-events/handler.ts` (+`.test.ts`),
+`packages/adapters/retell/src/compiler/conversation-flow.ts`
+(+`.test.ts`).
+
+### CI
+
+Pending — pushed to `claude/voice-ai-agent-architecture-dcw0n8` then to
+`main`; watching for all 11 jobs green (URL recorded in a short follow-up
+note once confirmed, matching QA-BILL's own "record green CI run URL"
+pattern).

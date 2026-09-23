@@ -7,8 +7,18 @@
 // beyond that (CLAUDE.md Rule 2 "fail closed") — see handler.ts's header.
 //
 // Routing: the token is the ENTIRE remaining path segment after the
-// function name (`GET/POST /functions/v1/api-intake/{token}`), matching
-// `admin/index.ts`'s own "strip the function-name prefix" convention.
+// function name (`GET/POST /functions/v1/api-intake/{token}`). FOLLOWUP-1
+// (docs/BUILD_NOTES.md QA-PORTAL/FOLLOWUP-1): this had the identical
+// URL-prefix bug `admin/index.ts` was fixed for under QA-PORTAL — Supabase's
+// edge runtime strips only the `/functions/v1/` infrastructure prefix
+// before invoking the function, so `req.url`'s pathname is actually
+// `/api-intake/{token}`, NOT `/functions/v1/api-intake/{token}`. The old
+// regex only matched the fictional latter shape, so `.replace()` silently
+// no-opped and `token` became `api-intake/{realToken}` (the function's own
+// name segment still glued onto the front) for every real request — never
+// resolving to a real `intake_tokens.token_hash`, so every intake link
+// 404'd in production. Fixed the same way as `admin/index.ts`: strip only
+// the function's own leading path segment, not a hardcoded literal prefix.
 import { getSql } from "../_shared/deno/db.ts";
 import { requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
@@ -21,7 +31,7 @@ const INTAKE_ENCRYPTION_KEY = requireEnv("INTAKE_ENCRYPTION_KEY");
 
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
-  const token = url.pathname.replace(/^\/functions\/v1\/api-intake\//, "").replace(/^\/+/, "");
+  const token = url.pathname.replace(/^\/[^/]+\//, "");
   if (!token) return jsonResponse({ valid: false }, { status: 404 });
 
   const sql = getSql();

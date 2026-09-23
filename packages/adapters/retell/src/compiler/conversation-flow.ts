@@ -277,13 +277,23 @@ function buildTransferOnlyNodes(
       ]
     : [];
 
+  // FOLLOWUP-1 (docs/BUILD_NOTES.md QA-HOT/FOLLOWUP-1): mirrors the
+  // template-compiler.ts fix exactly. This router node's instruction used
+  // to be the generic `TRANSFER_ROUTER_INSTRUCTION` ALONE, discarding the
+  // state's OWN authored `prompt_fragment` entirely — unlike `buildNode`'s
+  // equivalent branch above, which always keeps both. Same live-observed
+  // bug QA-HOT root-caused in the Deno compiler (vet's
+  // `emergency_warm_transfer` state losing its own emergency-specific
+  // content the instant it compiled here). Now combined the same way.
+  const routerInstructionText = `${state.prompt_fragment}\n\n${TRANSFER_ROUTER_INSTRUCTION}`;
+
   const routerNode: RetellConversationFlowNode =
     toolIds.length > 0
       ? ({
           id: state.id,
           type: "subagent",
           name: state.name,
-          instruction: { type: "prompt", text: TRANSFER_ROUTER_INSTRUCTION },
+          instruction: { type: "prompt", text: routerInstructionText },
           edges: [...hasTransferEdge, ...fallbackDoneEdges],
           tool_ids: toolIds,
         } satisfies RetellSubagentNode)
@@ -291,7 +301,7 @@ function buildTransferOnlyNodes(
           id: state.id,
           type: "conversation",
           name: state.name,
-          instruction: { type: "prompt", text: TRANSFER_ROUTER_INSTRUCTION },
+          instruction: { type: "prompt", text: routerInstructionText },
           edges: [...hasTransferEdge, ...fallbackDoneEdges],
         } satisfies RetellConversationNode);
 

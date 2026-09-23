@@ -178,6 +178,24 @@ describe("compileConversationFlow — transfer_call (PUBLISH-1, was CALL-4, mirr
       expect(router.tool_ids).toEqual(["take_message"]);
     }
   });
+
+  // FOLLOWUP-1 (docs/BUILD_NOTES.md QA-HOT/FOLLOWUP-1): mirrors the fix +
+  // regression test already added to `template-compiler.test.ts` under
+  // QA-HOT — the router's own instruction text must carry BOTH the
+  // state's own authored `prompt_fragment` ("Connecting you now.", set by
+  // `withTransferState` above) AND the generic transfer/no-transfer-
+  // fallback instruction (`TRANSFER_ROUTER_INSTRUCTION`) — previously the
+  // state's own content was silently discarded here, replaced entirely by
+  // the generic instruction.
+  it("the router's own instruction text carries BOTH the state's own prompt_fragment AND the generic transfer-router instruction", () => {
+    const flow = compileConversationFlow(withTakeMessage(), TOOL_WEBHOOK_URL);
+    const router = flow.nodes.find((n) => n.id === "transfer_to_human");
+    expect(router?.type).toBe("subagent");
+    if (router?.type === "subagent") {
+      expect(router.instruction.text).toContain("Connecting you now.");
+      expect(router.instruction.text).toContain("The live transfer number for this business");
+    }
+  });
 });
 
 describe("compileConversationFlow — predicate-on-tool-result", () => {

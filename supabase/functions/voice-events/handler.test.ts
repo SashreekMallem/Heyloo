@@ -166,6 +166,73 @@ describe("handleCallStarted", () => {
     // CLAUDE.md Rule 2).
     expect(calls.filter((c) => c.text.includes("insert into public.call_logs")).length).toBe(1);
   });
+
+  // FOLLOWUP-1 (docs/BUILD_NOTES.md QA-BILL/FOLLOWUP-1): the exact live
+  // mismatch QA-BILL found — a call whose usage_events.is_billable was
+  // already written (by handleCallEnded's own out-of-order fallback, using
+  // a stale is_test_call snapshot) must be corrected the instant this,
+  // the LAST writer of call_logs.is_test_call, resolves the authoritative
+  // value.
+  it("FOLLOWUP-1: re-syncs an already-existing usage_events row's is_billable to match the freshly-resolved is_test_call", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.phone_numbers": [
+        { tenant_id: "t1", phone_number_id: "pn1", owner_test_phone: null, is_test_tenant: true },
+      ],
+      "insert into public.call_logs": [{ id: "cl1", is_test_call: true }],
+    });
+    const call: RetellCallObject = {
+      call_id: "call_1",
+      from_number: "+15551234567",
+      to_number: "+15559998888",
+      start_timestamp: 1_700_000_000_000,
+    };
+    await handleCallStarted(sql, call, logger);
+
+    const syncCall = calls.find((c) => c.text.includes("update public.usage_events"));
+    expect(syncCall).toBeDefined();
+    expect(syncCall?.text).toContain("call_id");
+    // is_test_call resolved true here -> is_billable must be set to false,
+    // never left at whatever handleCallEnded's own earlier snapshot wrote.
+    expect(syncCall?.values).toContain(false);
+    expect(syncCall?.values).toContain("cl1");
+  });
+
+  it("FOLLOWUP-1: resolves is_test_call=false -> syncs usage_events.is_billable to true", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.phone_numbers": [
+        { tenant_id: "t1", phone_number_id: "pn1", owner_test_phone: null, is_test_tenant: false },
+      ],
+      "insert into public.call_logs": [{ id: "cl2", is_test_call: false }],
+    });
+    const call: RetellCallObject = {
+      call_id: "call_2",
+      from_number: "+15559998888",
+      to_number: "+15551112222",
+      start_timestamp: 1_700_000_000_000,
+    };
+    await handleCallStarted(sql, call, logger);
+
+    const syncCall = calls.find((c) => c.text.includes("update public.usage_events"));
+    expect(syncCall).toBeDefined();
+    expect(syncCall?.values).toContain(true);
+    expect(syncCall?.values).toContain("cl2");
+  });
+
+  it("does not touch usage_events when the upsert returns no row (mock has no fixture for it — real Postgres always returns one via RETURNING)", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.phone_numbers": [
+        { tenant_id: "t1", phone_number_id: "pn1", owner_test_phone: null },
+      ],
+    });
+    const call: RetellCallObject = {
+      call_id: "call_3",
+      from_number: "+15551234567",
+      to_number: "+15559998888",
+      start_timestamp: 1_700_000_000_000,
+    };
+    await handleCallStarted(sql, call, logger);
+    expect(calls.some((c) => c.text.includes("update public.usage_events"))).toBe(false);
+  });
 });
 
 describe("handleCallEnded", () => {
