@@ -6547,7 +6547,14 @@ Changed: `supabase/functions/api-intake/index.ts`,
 
 ### CI
 
-Pending — pushed to `claude/voice-ai-agent-architecture-dcw0n8` then to
-`main`; watching for all 11 jobs green (URL recorded in a short follow-up
-note once confirmed, matching QA-BILL's own "record green CI run URL"
-pattern).
+Pushed to `claude/voice-ai-agent-architecture-dcw0n8` then fast-forwarded
+to `main` (commit `0fb38ec`, no rebase needed — this task's own base was
+identical to `main` at the start). All 11 jobs green, including
+`Migrations check`, `RLS cross-tenant probe`, and `Cron jobs + pgmq queues
+check` — each runs `supabase start (applies all migrations + seed)`
+against a fresh local Postgres, so the new
+`20260923040000_usage_events_is_billable_sync.sql` migration applying
+cleanly from zero in all three is direct proof its SQL is valid and
+reproducible-from-zero (CLAUDE.md Rule 2), independent of it not being
+applied to the live project yet:
+https://github.com/SashreekMallem/Heyloo/actions/runs/35812785589.
