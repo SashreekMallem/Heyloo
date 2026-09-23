@@ -268,13 +268,28 @@ describe("compileTemplate — conversation_flow — transfer_call (CALL-4, PUBLI
     // into it still resolves) is ALWAYS also present: take_message
     // granted, and a runtime edge onto the transfer node above.
     const router = nodes.find((n) => n.id === "transfer_to_human") as
-      | { type: string; tool_ids?: string[]; edges?: { destination_node_id: string }[] }
+      | {
+          type: string;
+          tool_ids?: string[];
+          edges?: { destination_node_id: string }[];
+          instruction?: { text: string };
+        }
       | undefined;
     expect(router?.type).toBe("subagent");
     expect(router?.tool_ids).toEqual(["take_message"]);
     expect(
       router?.edges?.some((e) => e.destination_node_id === "transfer_to_human__transfer"),
     ).toBe(true);
+    // QA-HOT (docs/BUILD_NOTES.md): the router's own instruction text must
+    // carry BOTH the state's own authored prompt_fragment AND the generic
+    // transfer/no-transfer-fallback instruction — previously the state's
+    // own content was silently discarded here (replaced entirely by the
+    // generic instruction), a real live bug for any vertical whose
+    // transfer-only state's own prompt matters beyond "connect them"
+    // (e.g. vet's emergency_warm_transfer, which must keep repeating its
+    // own emergency-hospital referral in the no-transfer fallback).
+    expect(router?.instruction?.text).toContain("The caller wants a human, use transfer_call.");
+    expect(router?.instruction?.text).toContain("The live transfer number for this business");
   });
 
   it("omitting the options argument entirely compiles the exact same router + transfer_call node pair (back-compat default, PUBLISH-1)", () => {

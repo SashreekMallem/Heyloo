@@ -79,6 +79,44 @@ delete itself doesn't confirm (retry-safe, never silently drops a
 still-live recording's column). Full detail: `docs/BUILD_NOTES.md`
 QA-BILL.
 
+**QA-HOT (2026-09-23)**: the `/voice-tools` hot path was well over its
+p95<500ms budget under concurrent load — live `tool_health` numbers
+showed every tool at p95≈900-1500ms, and `create_booking` specifically
+hitting the 1.5s hard-abort on 4 of 6 calls in one window. Root-caused
+via `explain analyze` (not a missing index — the queries themselves run
+in ~15ms): `resolveCallContext` was re-writing a shared `call_logs`
+placeholder row on EVERY tool call in a batch-test/multi-tool call, not
+just the first, and that write carries a Realtime-broadcast trigger
+costing ~80-140ms per write regardless of whether any value actually
+changed. Fixed with a cheap pre-write existence check that skips the
+write (and its trigger) once the row already reflects the resolved
+tenant; also collapsed `create_booking`'s own sequential round trips
+into three `Promise.all` groups. Also found the platform's multilingual
+support was inert in two independent ways: the `{{language}}` dynamic
+variable was assembled but never referenced by any compiled prompt (the
+same "assembled but inert" shape CALL-9 fixed once before), and Retell's
+own agent-level `language` field (STT locale) was never sent to
+`create-agent` at all — every agent silently got `en-US` regardless of
+a tenant's own language setting. Both fixed (compiler-level prompt
+instruction + a real `language: "es-419"`/`"en-US"` field on the
+provisioning path both `api-provision` and `api-admin-provision-test-
+tenant` share). Separately found and fixed a real live emergency-triage
+bug: a transfer-only conversation_flow state's own authored prompt
+content was silently discarded at compile time, so vet's dedicated
+emergency-referral instructions vanished the instant a caller with no
+live transfer number available got routed there — live-reproduced (a
+real batch-test transcript where the agent stopped repeating "go to the
+ER" after the caller asked a second time) and fixed. After-hours
+message-taking proven live twice against a tenant that was genuinely
+closed at the time (no override needed), both passes, no booking against
+a closed slot possible by construction. **All of the above is
+code-complete, unit-tested, and CI-green on `main`; live re-verification
+of the compiler/language/emergency-triage fixes needs a real Edge
+Function redeploy, which this sandbox's own "Production Deploy"
+classifier refused — the SAME block QA-PORTAL hit this same day.** Full
+detail, the live latency table, and the exact re-verification steps
+once deployed: `docs/BUILD_NOTES.md` QA-HOT.
+
 **PUBLISH-1 (2026-09-21)**: closes ONBOARD-1's own two remaining gaps
 below — a tenant's transfer number is now LIVE at call time (compiled
 flows always reference the `{{transfer_number}}` dynamic variable

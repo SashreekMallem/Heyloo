@@ -2875,3 +2875,59 @@ never matching any real token). Not touched — outside QA-PORTAL's owned
 paths (`apps/web/**`, `api-widget-*`, `api-text-chat` read-only,
 `admin/*`, partner functions) and no live intake tenant was available
 this session to confirm without risking a change nobody asked for.
+
+## QA-HOT (2026-09-23) — Retell `language` field (create-agent) and the actual multilingual gap
+
+**Endpoint/feature**: `POST /create-agent`'s agent-level `language` field
+(governs STT locale + default TTS voice — distinct from a
+`{{language}}` prompt dynamic variable, which only tells the MODEL what
+to speak).
+
+**Docs fetched live this session** (WebFetch,
+`https://docs.retellai.com/api-references/create-agent`, 2026-09-23 —
+reachable this time): field name `language`; type is a single locale
+string, an array of locales for "multilingual agents", or the deprecated
+`"multi"` string; **default `en-US`**; NOT required. Full supported set
+verbatim: `en-US, en-IN, en-GB, en-AU, en-NZ, de-DE, es-ES, es-419,
+hi-IN, fr-FR, fr-CA, ja-JP, pt-PT, pt-BR, zh-CN, ru-RU, it-IT, ko-KR,
+nl-NL, nl-BE, pl-PL, tr-TR, vi-VN, ro-RO, bg-BG, ca-ES, th-TH, da-DK,
+fi-FI, el-GR, hu-HU, id-ID, no-NO, sk-SK, sv-SE, lt-LT, lv-LV, cs-CZ,
+ms-MY, af-ZA, ar-SA, az-AZ, bs-BA, cy-GB, fa-IR, fil-PH, gl-ES, he-IL,
+hr-HR, hy-AM, is-IS, kk-KZ, kn-IN, mk-MK, mr-IN, ne-NP, sl-SI, sr-RS,
+sw-KE, ta-IN, ur-IN, yue-CN, uk-UA`. **There is no bare `es-US`** —
+`es-419` (Latin American Spanish) is the closest match for a US-based
+tenant's Spanish-speaking callers, chosen over `es-ES` (Castilian) for
+that reason; this is a judgment call, not a documented recommendation,
+flagged here for anyone who wants to revisit it.
+
+**Result — a real, two-part gap, not a doc-confidence question**: this
+field was never sent by ANY of this codebase's three `createAgent` call
+sites before this task (confirmed by reading `_shared/provisioning/
+compile-and-publish.ts`, `admin/handler.ts`, `api-admin-self-call/
+handler.ts` — none referenced `language` at all), so every agent this
+platform has ever created got Retell's silent `en-US` default regardless
+of `tenants.language_config`. Separately, the `{{language}}` dynamic
+variable this codebase DID already assemble and send
+(`_shared/inbound-dynamic-variables.ts`) was never referenced by
+`{{}}` in any compiled template prompt — the same "assembled but
+completely inert" shape CALL-9 already found once before for
+`{{caller_recent_context}}`. Both are now fixed in
+`_shared/provisioning/compile-and-publish.ts` (the `language` field) and
+`_shared/compiler/template-compiler.ts` (a new `LANGUAGE_INSTRUCTION`
+prompt fragment) respectively — full writeup, live test-tenant result,
+and the (owner-authority-gated) deploy blocker in `docs/BUILD_NOTES.md`
+QA-HOT.
+
+**Also found, NOT fixed (out of this task's owned paths)**: `admin/
+handler.ts` and `api-admin-self-call/handler.ts` each have their own
+separate `createAgent(...)` call site with the identical missing-
+`language`-field gap — neither file is in this task's owned-path list
+(`voice-tools/*`, `voice-inbound/*`, the specific `_shared/*` files
+CLAUDE.md-equivalent task instructions named, `scripts/load/*`), so they
+were read to confirm the gap but not changed.
+
+**Code**: `supabase/functions/_shared/inbound-dynamic-variables.ts`
+(`resolveRetellAgentLanguage`, +`.test.ts`), `supabase/functions/_shared/
+provisioning/compile-and-publish.ts` (+`.test.ts`, `.parity.test.ts`),
+`supabase/functions/_shared/compiler/template-compiler.ts`
+(`LANGUAGE_INSTRUCTION`, +`.test.ts`).

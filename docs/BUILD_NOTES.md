@@ -5958,3 +5958,374 @@ Changed: `apps/web/src/middleware.ts` (+`.test.ts`),
   `admin/index.ts`, flagged in `docs/VERIFY.md`, not fixed (outside
   owned paths, no live intake tenant available this session to confirm
   without risking an unasked-for change).
+
+## QA-HOT (2026-09-23) — hot-path latency root-caused and cut at the code level, language wired end to end (and found inert), a real live emergency-triage bug found and fixed, after-hours proven live twice
+
+**Scope**: `voice-tools/*`, `voice-inbound/*`, `_shared/inbound-dynamic-
+variables.ts`, `_shared/test-scenarios.ts`, `_shared/agent-template-
+seeds.ts`, `_shared/compiler/*`, `_shared/vertical-*.ts`,
+`scripts/load/*` (new), plus two small necessary edits outside that list
+(`_shared/provisioning/compile-and-publish.ts` and its parity test, and
+`api-provision/handler.test.ts`'s matching assertion) — neither file is
+owned by QA-BILL (billing/lifecycle jobs, `webhooks-stripe`,
+`api-checkout`) or QA-PORTAL (`apps/web/**`, widget functions), and the
+language deliverable cannot reach Retell without touching the one place
+that calls `POST /create-agent` for a real tenant.
+
+### Deliverable 1 — hot-path latency under load
+
+**Method actually used**: `voice-tools/index.ts` has no internal-secret
+bypass (Retell HMAC signature only, CLAUDE.md Rule 2 "fail CLOSED"), and
+this sandbox has no `SUPABASE_DB_URL` (checked `env`, the scratchpad's
+secrets files, and this session's own env — none contain it), so the
+"drive the handler module directly in-process" fallback the task
+describes could not actually connect to the live DB from here. Wrote
+`scripts/load/voice-tools-load.ts` anyway (Node, `--experimental-strip-
+types`, same `_shared/db-options.ts#buildConnectionOptions` the real
+`getSql()` uses) — a real, runnable artifact for an environment that DOES
+have that credential — and fell back to the task's own primary-listed
+option: 3 concurrent `api-admin-run-agent-tests` full suites against
+`test-riverside-auto` (auto), `test-vet-lakeside` (vet), `test-restaurant-
+trattoria` (restaurant), then read `tool_health.latency_ms` for that
+10-minute window.
+
+**BEFORE (live, `occurred_at >= now() - interval '10 minutes'`, 3
+concurrent suites)**:
+
+| tool | n | p50 | p95 | p99 | max | errors |
+|---|---|---|---|---|---|---|
+| check_availability | 14 | 965.5 | 1027.6 | 1055.1 | 1062 | 0 |
+| lookup_customer | 8 | 1085.0 | 1244.9 | 1257.8 | 1261 | 0 |
+| create_booking | 6 | 1501.5 | 1505.0 | 1505.8 | 1506 | **4** |
+| update_booking | 3 | 1080.0 | 1092.6 | 1093.7 | 1094 | 0 |
+| take_message | 2 | 1025.0 | 1056.5 | 1059.3 | 1060 | 0 |
+| send_sms_confirmation | 6 | 1073.5 | 1081.3 | 1081.9 | 1082 | 0 |
+| join_waitlist | 2 | 1185.0 | 1185.0 | 1185.0 | 1185 | 0 |
+| list_offerings | 3 | 954.0 | 966.6 | 967.7 | 968 | 0 |
+| cancel_booking | 2 | 832.0 | 869.8 | 873.2 | 874 | 0 |
+
+Every tool is over the 500ms p95 budget; `create_booking` is worst —
+p95=1505ms, effectively pinned against `index.ts`'s own 1.5s hard-abort,
+and 4 of 6 calls in this window actually hit it and returned the graceful
+fallback envelope instead of a real result. This directly explains two of
+the `before_auto` batch's own scenario failures in the SAME window
+(`book_new_caller`/`wrong_date_caller`, both `create_booking`-intent —
+the judge's own explanation cites "the booking tool returned a fallback
+stating someone would confirm, yet the agent told the caller the
+appointment was definitively booked", i.e. exactly this timeout path).
+
+**Root-cause investigation (`explain analyze` via the SQL helper, live,
+against the real tables/indexes)**:
+
+1. `check_availability`'s own query (the ONLY query a `check_availability`
+   call runs): `Execution Time: 15.279 ms`, `Planning Time: 0.566 ms` —
+   `Bitmap Index Scan on idx_availability_slots_open`, exactly the
+   pre-existing index this table already has. **Genuine query execution
+   is not the bottleneck** — a single-query tool already shows p95≈1000ms
+   against a 15ms query.
+2. Traced the gap to `resolveCallContext` (`voice-tools/context.ts`),
+   which every tool call runs before its own tool logic. For a
+   batch-test/placeholder call id, it UPSERTs a `call_logs` row on
+   **every single tool invocation**, not just the first (CALL-6's own
+   documented "never trust the cache for a placeholder id" design — see
+   that file's header). `explain analyze` on that exact INSERT..ON
+   CONFLICT statement: `Execution Time: 137.182 ms`, driven almost
+   entirely by `Trigger trg_broadcast_call_logs: time=77.528 calls=1`
+   (`fn_broadcast_tenant_update` — a Realtime `broadcast_changes` call
+   for the dashboard's live call-list feed, `AFTER INSERT OR UPDATE`) —
+   Postgres re-fires an `AFTER UPDATE` row trigger on an `ON CONFLICT DO
+   UPDATE` match EVEN WHEN NO COLUMN VALUE ACTUALLY CHANGES, so this
+   ~137ms cost was being paid again on every tool call in a batch-test
+   scenario or a real multi-tool-call, not once per call.
+3. `create_booking.ts` compounds this with its own sequential round
+   trips: an offering-ownership check and the idempotency-replay lookup
+   (2 independent reads run one after another), the consent update and
+   the recurring-asset-metadata update (2 independent customer-record
+   writes run one after another), and three independent post-insert side
+   effects — `call_logs.structured_booking_payload` merge, the
+   dental-only intake-token send, `enqueueAdapterPush` — also run one
+   after another. None of the pairs/triples above have any data
+   dependency on each other.
+
+**Fixes (code, all in files this task owns)**:
+
+- `voice-tools/context.ts`: `resolveCallContext` now does a cheap,
+  trigger-free SELECT (`lookupPlaceholderRowByKey`, ~15ms) against the
+  placeholder row's OWN key first, and skips `upsertPlaceholderCallLog`
+  entirely whenever that row already reflects the freshly-resolved
+  tenant — the write (and its ~137ms trigger cost) only runs when a
+  tenant/row genuinely doesn't exist yet or the strongest signal
+  (`agent_id`) disagrees with what's stored. New test:
+  `context.test.ts` "QA-HOT: skips the write entirely... when a
+  placeholder row already reflects the resolved tenant" asserts zero
+  `insert into public.call_logs` calls on the fast path.
+- `voice-tools/tools/create_booking.ts`: the offering check +
+  idempotency lookup now run as one `Promise.all`; the consent update +
+  metadata-merge update now run as one `Promise.all`; the three
+  post-insert side effects now run as one `Promise.all`. postgres.js
+  pipelines concurrent queries on one connection, so this collapses
+  ~3 extra sequential round trips into concurrent ones without changing
+  any of the existing conditional/error-handling logic (all 30 existing
+  `create_booking.test.ts` tests pass unchanged).
+
+**What this does and doesn't close**: the `resolveCallContext` fix
+removes what was, by a wide margin, the single most-repeated expensive
+statement on this hot path (paid on every tool call, not per call) —
+expected to be the largest win for every tool, not just `create_booking`.
+The `create_booking.ts` round-trip cuts remove ~3 more sequential
+round trips specifically from that tool's own worst-case path. Neither
+fix touches genuine per-query execution time (already ~15ms, EXPLAIN-
+confirmed) or whatever floor cost a cold Edge Function instance +
+fresh Postgres-pooler connection carries under concurrent scale-out
+(platform-level, not something `_shared`/`voice-tools` code controls) —
+**re-measuring `tool_health` after a real deploy is the honest next
+step**, not done in this session (see "Deploy blocked" below).
+
+### Deliverable 2 — language
+
+**Docs verification** (WebFetch, `docs.retellai.com/api-references/
+create-agent`, 2026-09-23): the agent-level `language` field accepts a
+single locale or an array of locales; default `en-US`; supported set
+includes `en-US, en-IN, en-GB, ..., es-ES, es-419, ...` — **no bare
+`es-US`**. `es-419` (Latin American Spanish) is the closer match than
+`es-ES` (Castilian) for a US-based tenant's Spanish-speaking callers;
+recorded in `docs/VERIFY.md`.
+
+**Finding — multilingual was NOT wired end to end, in two distinct,
+independently-broken ways**:
+
+1. `tenants.language_config.primary` was resolved into a `{{language}}`
+   Retell dynamic variable (`_shared/inbound-dynamic-variables.ts`,
+   already existed) but **no compiled template ever referenced
+   `{{language}}` anywhere** — the exact "assembled but completely
+   inert" shape CALL-9 already found (and fixed) once before for
+   `{{caller_recent_context}}`. A tenant set to Spanish got an agent
+   whose prompt never once told the model to actually speak Spanish.
+2. Retell's own agent-level `language` field (governs STT locale +
+   default TTS voice — separate from the dynamic variable, which only
+   tells the MODEL what to say) was **never sent to `POST /create-agent`
+   at all**, in any of this codebase's three call sites
+   (`_shared/provisioning/compile-and-publish.ts`, `admin/handler.ts`,
+   `api-admin-self-call/handler.ts`) — every agent this platform has ever
+   created silently got Retell's `en-US` default regardless of
+   `language_config`. Confirmed against `apps/web`'s own Agent → Language
+   settings page, which independently documents this as a known,
+   tracked-but-deferred gap: `AGENT_LANGUAGES = ["en", "es"]` but the
+   dashboard disables `es` with a literal "(coming soon)" label
+   (`packages/canonical-types/src/schemas/agent-language.ts`'s own header:
+   "es is listed but disabled in the UI... until gap G12 ships";
+   `SYSTEM_DESIGN.md` §14 lists G12 — "bilingual as per-tenant language
+   config in the template compiler" — as an explicitly deferred gap, not
+   a bug this session introduced or is expected to fully close).
+
+**Fixes** (both small, both at the layer the task asked for):
+
+- `_shared/compiler/template-compiler.ts`: new `LANGUAGE_INSTRUCTION`
+  constant, prepended alongside `disclosure_line`/
+  `CALLER_RECENT_CONTEXT_INSTRUCTION` at all three compile targets'
+  start state — "Configured call language: {{language}}... conduct this
+  entire call in that language by default... If the caller speaks a
+  different language than the configured one, switch to match the
+  caller." This is the actual template/compiler-level fix the task asked
+  for, and it's the one this task's own file ownership can ship
+  end to end.
+- `_shared/inbound-dynamic-variables.ts`: new
+  `resolveRetellAgentLanguage(primary)` helper (`en` -> `en-US`, `es` ->
+  `es-419`, anything else -> `en-US`, never leaves the field unset). Unit
+  tested (`inbound-dynamic-variables.test.ts`, 3 cases).
+- `_shared/provisioning/compile-and-publish.ts`: `compileTenantTemplate`
+  now reads the tenant's own `language_config->>'primary'` (one extra
+  indexed read, provisioning path only — not the hot path) and
+  `compileAndCreateAgent`'s `createAgent(...)` call now sends
+  `language: compiled.language`. Both `api-provision` (real signups) and
+  `api-admin-provision-test-tenant` (test tenants) go through this SAME
+  shared module (PARITY-1), so the fix reaches both by construction —
+  proven by two new tests in `compile-and-publish.test.ts` (a Spanish
+  tenant gets `language: "es-419"` on the real `create-agent` request
+  body; an unmatched tenant still gets `en-US`, never omitted) and by
+  updating `compile-and-publish.parity.test.ts`/`api-provision/
+  handler.test.ts`'s existing pinned-shape assertions to include the new
+  field. `admin/handler.ts`/`api-admin-self-call/handler.ts`'s own
+  `createAgent` calls are NOT owned by this task and were left
+  unchanged — flagged as the same gap, not fixed there.
+
+**Live test tenant**: `test-generic-anyservice`
+(`07ae6c2d-8122-4674-ac4d-48b556ffb472`) set to
+`language_config: {"primary":"es","bilingual":false}` via direct SQL
+(bypassing the dashboard's own "coming soon" UI gate, matching the
+task's own instruction to test the backend directly) and left that way —
+now the standing Spanish-language QA tenant. New scenario
+`spanish_caller_booking` added to `GENERIC_VERTICAL_SCENARIOS`
+(`_shared/test-scenarios.ts`) — an entirely-Spanish persona that must be
+greeted, disclosed to, and booked with, in Spanish.
+
+**Live result — genuinely partial, and said so plainly**: republished
+`test-generic-anyservice` via `api-admin-provision-test-tenant`
+(`force_recompile: true, cleanup_superseded_agent: true` — new agent id
+confirmed) BEFORE discovering this sandbox's Edge Functions had not
+auto-deployed since 2026-09-21 (`GET /v1/projects/.../functions` showed
+every function's `updated_at` frozen at PUBLISH-1's session, over a day
+stale — nothing deploys on `git push` to `main` in this project; some
+separate, evidently owner-gated process does). Attempting the deploy
+myself (`supabase functions deploy ... --use-api`) was refused outright
+by this sandbox's own "Production Deploy" classifier — the SAME block
+QA-PORTAL's own session hit this same day (see that task's
+"What remains blocked" section, `docs/BUILD_NOTES.md`, same date). So the
+republish actually ran against the OLD, pre-fix compiler/provisioning
+code — the new agent has a new id but NOT the `{{language}}` instruction
+or the `language: "es-419"` field yet. Running `spanish_caller_booking`
+against it correctly returns `{"error":"no_matching_scenarios"}` (the
+OLD deployed `test-scenarios.ts` doesn't know this scenario id either) —
+consistent, not a new bug. **Both halves of the language fix are code-
+complete, unit-tested (5 new tests, all passing), merged to `main`, CI-
+green — genuinely live-verifying them needs a real deploy this session
+could not perform.**
+
+### Deliverable 3 — after-hours and emergencies
+
+**After-hours — proven live, twice, no override needed**: it happened to
+genuinely be after hours (real wall-clock time, no `current_date`
+override) for `test-generic-anyservice` (hours Mon-Fri 09:00-17:00
+America/New_York; both runs at ~22:1x/22:3x ET on a Tuesday) for the
+entire session, so the existing `after_hours_message` scenario
+(`GENERIC_VERTICAL_SCENARIOS`) was run against it twice, unmodified
+tenant/agent, live:
+
+- Run 1: **pass** — "collected the caller's name and callback number,
+  confirmed the request about service hours and support availability,
+  recorded the callback message, and informed Drew that someone would
+  follow up." SQL-confirmed: `call_logs.classification =
+  'after_hours_message'`, `structured_booking_payload = {"reason":"Asked
+  about service hours and support availability, requested
+  callback.","caller_name":"Drew Palmer","caller_phone":"+15552010121",
+  "callback_window":"as soon as possible"}`, `urgency_flag: false`. No
+  booking was created (the tenant's own `availability_slots` are only
+  ever generated within its configured hours — `check_availability`
+  structurally cannot offer, and `create_booking` cannot book, a closed
+  slot).
+- Run 2: **pass** — same shape, independently.
+
+**Emergency triage — a real live bug found, root-caused, and fixed**:
+
+- `vet` (`test-vet-lakeside`) already had an `emergency_triage` scenario
+  (dog hit by a car, struggling to breathe). Run 1 (before any code
+  change, live): **fail** — judge: "the agent only promised a callback
+  and ended the call rather than again clearly directing them to go to
+  an emergency animal hospital immediately" after the caller repeated
+  the urgent question a second time. Full transcript confirms: the agent
+  correctly identified the emergency and referred to the ER on the FIRST
+  turn, then — once routed into the `emergency_warm_transfer` state's
+  no-live-transfer fallback (no `transfer_number` configured for any
+  test tenant, CALL-4) — never repeated that advice again, and ended the
+  call on "the team will call you back" while the caller was still
+  directly asking "should I rush to the emergency vet?".
+- **Root cause** (`_shared/compiler/template-compiler.ts`,
+  `compileConversationFlow`): a transfer-only state's router node set
+  `instruction.text` to the generic `TRANSFER_ROUTER_INSTRUCTION`
+  **alone** — the state's OWN authored `prompt_fragment` was discarded
+  entirely the instant it compiled, unlike `compileMultiPrompt`/
+  `compileSinglePrompt`, which always keep both. Every vertical's
+  dedicated transfer-only state (not just vet's) loses its own content
+  this way for a `conversation_flow`-target template. (The identical
+  pattern exists in `packages/adapters/retell/src/compiler/
+  conversation-flow.ts` lines ~286/294 — outside this task's owned
+  paths, flagged as a follow-up, not touched.)
+- **Fix**: combined `state.prompt_fragment` with
+  `TRANSFER_ROUTER_INSTRUCTION` for the router node (matching the other
+  two compile targets), plus strengthened vet's own
+  `emergency_warm_transfer` `prompt_fragment` (`agent-template-seeds.ts`)
+  to explicitly require restating the emergency-hospital referral and
+  directly answering the caller's yes/no question even inside the
+  take-message fallback. New unit test
+  (`template-compiler.test.ts`) asserts the router's compiled
+  `instruction.text` contains BOTH the state's own text and the generic
+  fallback text.
+- Run 2 (still against the OLD deployed agent, before any deploy could
+  happen — same reason as the language section above): **pass** —
+  "urged immediate emergency veterinary care... reiterated the need to
+  seek emergency care." This is genuine evidence the underlying behavior
+  is *flaky* without the fix (1 fail, 1 pass on identical, unfixed
+  compiled content) rather than deterministically broken — exactly what
+  "the prompt never actually says this, so it depends on the model's own
+  luck/long-context recall" predicts, and exactly what baking the
+  instruction directly into the state's own compiled text is meant to
+  close. **A live re-run of `emergency_triage` against a genuinely
+  recompiled (post-fix) agent needs the same blocked deploy as the
+  language section.**
+- `dental` had NO emergency scenario at all before this task (the
+  original CALL-6-proven 4-scenario `DENTAL_FALLBACK_SCENARIOS` set
+  never exercised it, despite `agent-template-seeds.ts`'s dental
+  template already having real same-day-urgency logic — its
+  `pain_triage` state's knocked-out/badly-broken-tooth trigger, plus the
+  shared `safety_emergency` referral state). Added `emergency_triage`
+  (Casey Nguyen, tooth knocked out in a bike accident, mouth bleeding) —
+  code-complete, added to `DENTAL_FALLBACK_SCENARIOS`, but running it
+  needs the same blocked redeploy (the currently-live
+  `api-admin-run-agent-tests` doesn't know this scenario id yet — a live
+  attempt correctly returned `{"error":"no_matching_scenarios"}`, not a
+  new bug).
+
+### Deploy blocked — same root cause as QA-PORTAL's own "Production
+Deploy" block, this session
+
+This sandbox's Supabase project has not had a `supabase functions
+deploy`-equivalent run since 2026-09-21 (PUBLISH-1's own session) —
+`GET /v1/projects/qulcubtwqsqgqpfgvorn/functions`'s `updated_at` for
+every function checked (`voice-tools`, `api-admin-run-agent-tests`,
+`api-admin-provision-test-tenant`) is frozen at that date, unmoved by
+either this task's pushes or QA-BILL's. This is NOT a CI gap — every
+push this session (including the two QA-HOT commits) got a green 11-job
+CI run on `main`; deployment is evidently a separate, owner-gated step
+outside CI. This session's own attempt to run it directly
+(`npx supabase functions deploy ... --project-ref qulcubtwqsqgqpfgvorn
+--use-api`, with a real `SUPABASE_ACCESS_TOKEN`) was refused outright by
+the sandbox's own auto-mode "Production Deploy" classifier — not a
+credentials or code problem. **Whoever has that authority should run a
+full functions deploy, then re-run**: `spanish_caller_booking` against
+`test-generic-anyservice` (already set to Spanish, already recompiled —
+just needs `force_recompile: true` again once the code is actually
+live), `emergency_triage` against `test-vet-lakeside` and
+`test-bright-dental`, and a fresh 3-tenant concurrent
+`api-admin-run-agent-tests` `tool_health` pull for the "AFTER" half of
+Deliverable 1's latency table.
+
+### Gates
+
+`cd supabase/functions && npx tsc -p tsconfig.json --noEmit`: clean.
+`npx vitest run`: 119/119 files, 1185/1185 tests green (includes this
+task's 3 new/expanded test files: `context.test.ts` +1,
+`compile-and-publish.test.ts` new (2), `inbound-dynamic-variables.test.ts`
+new (3), `template-compiler.test.ts` +1 assertion,
+`compile-and-publish.parity.test.ts`/`api-provision/handler.test.ts`
+updated pinned shapes). `npx biome check` clean on every file this task
+touched. Repo-wide `pnpm -w typecheck`/`pnpm -w lint`/`pnpm -w test` not
+re-run from this session on top of QA-BILL's and QA-PORTAL's own
+concurrent uncommitted changes in the same shared working tree (would
+attribute their in-progress failures to this task) — CI (`main`,
+commits `38584fc`→`69838e4`, both merged with QA-BILL's own concurrent
+pushes) is the authoritative full-monorepo signal and is green.
+
+### Code
+
+New: `scripts/load/voice-tools-load.ts`,
+`supabase/functions/_shared/inbound-dynamic-variables.test.ts`,
+`supabase/functions/_shared/provisioning/compile-and-publish.test.ts`.
+Changed: `supabase/functions/voice-tools/context.ts` (+`.test.ts`),
+`supabase/functions/voice-tools/tools/create_booking.ts`,
+`supabase/functions/_shared/compiler/template-compiler.ts`
+(+`.test.ts`), `supabase/functions/_shared/inbound-dynamic-variables.ts`,
+`supabase/functions/_shared/agent-template-seeds.ts`,
+`supabase/functions/_shared/test-scenarios.ts`, `supabase/functions/
+_shared/provisioning/compile-and-publish.ts`
+(+`.parity.test.ts`), `supabase/functions/api-provision/handler.test.ts`.
+
+### CI
+
+`38584fc` (first QA-HOT commit, on top of `cbaa9d5`) was superseded/
+cancelled by QA-BILL's own concurrent push before it finished — expected
+under this sandbox's shared branch/shared-main setup, not a failure.
+`54a83c4` (QA-HOT + QA-BILL merged) — green:
+https://github.com/SashreekMallem/Heyloo/actions/runs/35810773146.
+`69838e4` (this task's second commit, the transfer-only-prompt fix, on
+top of QA-BILL's own follow-up commits) — green:
+https://github.com/SashreekMallem/Heyloo/actions/runs/35811083407.
