@@ -580,7 +580,24 @@ function compileConversationFlow(
       name: state.name,
       instruction: {
         type: "prompt",
-        text: transferOnly ? TRANSFER_ROUTER_INSTRUCTION : state.prompt_fragment,
+        // QA-HOT (docs/BUILD_NOTES.md): a transfer-only state's OWN
+        // authored `prompt_fragment` used to be discarded entirely here,
+        // replaced by the generic `TRANSFER_ROUTER_INSTRUCTION` alone —
+        // unlike `compileMultiPrompt`'s equivalent branch (below), which
+        // always keeps both. Live-observed real bug: vet's
+        // `emergency_warm_transfer` state's own content (which exists
+        // specifically to keep the emergency-hospital referral front and
+        // center) vanished the instant this state compiled, so a caller
+        // routed here with no live transfer number configured got the
+        // generic "no transfer line, let me take a message" fallback with
+        // NONE of the state's own emergency-specific instructions —
+        // confirmed via a live batch-test transcript where the agent
+        // never re-answered the caller's repeated "should I rush to the
+        // ER?" before ending the call. Now combined the same way
+        // `compileMultiPrompt`/`compileSinglePrompt` already do.
+        text: transferOnly
+          ? `${state.prompt_fragment}\n\n${TRANSFER_ROUTER_INSTRUCTION}`
+          : state.prompt_fragment,
       },
       edges: [...hasTransferEdge, ...fallbackDoneEdge],
       ...(toolIds.length > 0 ? { tool_ids: toolIds } : {}),

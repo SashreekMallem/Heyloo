@@ -1455,7 +1455,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "emergency_warm_transfer",
           name: "Emergency warm transfer",
           prompt_fragment:
-            "The caller wants to be connected directly to this clinic right now. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Let them know you're connecting them now, then use transfer_call.",
+            "The caller wants to be connected directly to this clinic right now, about a pet emergency. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Let them know you're connecting them now, then use transfer_call. If no live transfer line is available this call (see below), this is still an active emergency, not a routine callback request: before or while taking a message, clearly repeat that they should go to {{emergency_referral_name}} right now rather than wait for a callback, and directly answer any yes/no question the caller asks about whether to go (e.g. 'should I rush to the emergency vet?' -> 'yes, go now') — never end the call on a generic 'the team will call you back' alone when the caller is still asking that question.",
           allowed_tools: ["transfer_call"],
           extraction: [
             {
