@@ -8367,3 +8367,166 @@ Restored through the UI and matching the snapshot, except for these:
 under dev-server load, green in isolation and on re-run; edge-functions 137
 files; every other package green), `check:server-barrels` OK. No edge
 function, migration or secret changes: deploy the web app only.
+
+## VOICE-ALERTS-1 (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — owner alerts that fire, confirmation texts that queue, Manual Mode enforced, slots that respect closed days and booking rules
+
+**Task:** the five verified gaps below. Scope: `supabase/functions/voice-tools/**`,
+`_shared/owner-alerts.ts` (extended only), `packages/canonical-types` (one
+additive value), one migration, and the small touches listed under "Outside
+the owned paths". Nothing deployed, nothing applied live.
+
+### What changed
+
+- **(a) Confirmation texts** — `send_sms_confirmation` always inserts `queued`
+  and calls `enqueue(messagesOutbound)`. The worker already picks SMS or the
+  owner-email reroute at send time (`resolveSmsRoute` → `sender_not_verified`).
+  Also drops the per-call `tenants.a2p_status` read. Live before: 238
+  `pending_verification` rows (checked read-only); the worker sweep rescues
+  rows under 24 h old, older ones stay history.
+- **(b) `take_message`** — the owner alert goes through
+  `enqueueOwnerAlert(kind: 'message_taken')` instead of an insert gated on
+  `agent_configs.transfer_number` (10 of 10 live tenants have none). Alert
+  phone → transfer number → email is decided by the shared producer from the
+  tenant's delivery preferences; the worker fans out SMS/email at send time.
+- **(c) Other alerts.** Kinds that existed: `message_taken`, `new_booking`,
+  `urgent_call`, `missed_transfer`. `voice-events` `call_analyzed` already sent
+  new-booking / urgent / missed-transfer alerts, but only when the call ended
+  and analysis arrived. Now: `create_booking` sends `new_booking` right after
+  the booking commits (inside its existing deferred post-commit batch; the
+  service name comes from the preflight statement, no extra query) and
+  `create_order` sends a NEW kind `new_order` (canonical + Deno mirror +
+  `owner_new_order` template). Failed transfers and urgent/emergency calls
+  stay with `voice-events`: neither the tool arguments nor Retell's native
+  transfer tool carry a signal the voice tools can see, so `call_analyzed`
+  (`transfer_cancelled`, `emergency_detected`) is the earliest truthful source.
+  Preferences: only `sms_enabled` / `email_enabled` / `alert_phone` /
+  `notification_email` exist (there are no per-kind toggles), and they are
+  honored as before by `enqueueOwnerAlert` + the worker. Idempotency changed
+  from per (call, kind) to per booking / per order when one is attached, so
+  two bookings on one call each alert once and the `voice-events` alert for a
+  booking a tool already announced is suppressed. Test calls never alert (same
+  rule as `voice-events`), and an alert failure is logged and never fails the
+  tool (`enqueueOwnerAlertBestEffort`).
+- **(d) Manual Mode** — the flag is `tenants.manual_mode` (not
+  `agent_configs.is_manual_mode`, which is only the dynamic variable sent to
+  the call). `resolveCallContext` now reads it in the tenants join every path
+  already runs (`CallContext.manualMode`, present only when true — zero extra
+  round trips). `create_booking` and `create_order` refuse before any SQL with
+  `{confirmed:false, reason:'manual_mode', message}`; the message tells the
+  model to call `take_message` and never to say it was booked or to mention
+  the mode. The dispatcher answers before the intake gate so a caller is not
+  walked through required fields for a booking that cannot be made.
+  `take_message` (and its alert) keep working.
+- **(e) Slots** — migration `20260929161000_availability_slots_closed_days_and_bad_dates.sql`
+  (create-or-replace only). `fn_regenerate_availability_slots`: honors
+  `closed` on windows, on exception `hours`, and on object-shaped days
+  (`{"closed":true}`) as well as the canonical `[]`/`{date, closed}` shapes;
+  skips and WARNs on unreadable exception entries (blank/garbage/impossible
+  dates, non-objects) and unreadable window times; reads
+  `tenants.booking_horizon_days` (NULL = 21, motel 30; capped 1–365); a
+  `slot_minutes` that is not a positive integer falls back to the vertical
+  default; motels do not parse hours/exceptions at all. `fn_cron_availability_rollforward`
+  isolates each resource so one bad tenant (e.g. an invalid time zone) is
+  skipped with a WARNING instead of stopping every tenant's rebuild.
+  `check_availability` reads `tenants.booking_min_notice_minutes` (vertical
+  default when NULL) and only ever offers slots of active resources.
+
+### Bugs found on the way (fixed in the same migration)
+
+- Every rerun of the generator DUPLICATED today's already-started slots (the
+  delete removed only slots starting after `now()`, the loop re-inserted from
+  today), including a motel's current night: reproduced on scratch Postgres
+  (motel 31 → 32 slots, one duplicated range). Now slots that have not ended
+  are replaced and ended ones are left alone.
+- `metadata.slot_minutes = 0` made the generator loop forever (the old function
+  hung until the session was killed in the scratch test).
+
+### Proof (all against a throwaway local Postgres 16)
+
+Migration chain: all 74 migrations (73 existing + this one) apply from zero
+with `ON_ERROR_STOP` on a bare Postgres 16 with platform stubs (auth/storage/
+realtime schemas and roles, a `pgmq` stub; `pg_cron`/`pg_net` absent, which
+the migrations already skip). Scenario script old vs new function (same data):
+
+| Case | Old | New |
+|---|---|---|
+| Saturday stored `[{…,"closed":true}]` | 12 slots on Saturdays | 0 |
+| exception date `''` / `garbage` / `2026-02-30` / non-object | `22007`, regeneration aborts | skipped, WARNING per entry |
+| window time `"bad"` | `22007` abort | window skipped, WARNING |
+| `slot_minutes: 0` | infinite loop | falls back to 30 |
+| `booking_horizon_days = 5` | column ignored, 21 days (from reading the function; not run) | 6 dates (same inclusive range as before) |
+| motel with a bad exception + `closed` | never read exceptions | 31 nights, unaffected |
+| rollforward with one invalid-time-zone tenant | (would abort all) | that tenant's slots kept, the rest rebuilt |
+| second run of the generator | motel/today duplicates | no duplicate ranges |
+
+`check_availability`'s new query was also run by hand on the scratch database:
+default notice, owner notice 120 (beats default 30), owner notice 0 (beats
+default 60), inactive resource excluded, and again with
+`booking_min_notice_minutes` dropped from `tenants` (the migration
+`20260929140000` is not live yet): it still answers with the default. That is
+deliberate: the value is read as `to_jsonb(tn) ->> 'booking_min_notice_minutes'`,
+not as a column, so deploying the function before the migration cannot
+break the hot path with `42703`. Once `20260929140000` is live everywhere it
+can become a plain column read.
+
+### Hot path (`/voice/tools`, p95 < 500 ms)
+
+Not benchmarked live (nothing is deployed). The argument, statement by
+statement:
+
+- `check_availability`: still 1 statement (2 when empty). The tenant row was
+  already read per statement for the time zone; it is now a one-row CTE that
+  also carries the notice (primary-key lookup, uncorrelated, evaluated once).
+  The resource filter was already a semi-join when a type/party filter was
+  given; it is now always present (`idx_resources_tenant_active`), a hash
+  semi-join on a handful of rows.
+- `create_booking`: +1 scalar subselect on `offerings` inside the existing
+  preflight statement (primary key), the manual-mode check is an in-memory
+  boolean, and the alert (3 statements: contact select, idempotent insert,
+  `pgmq.send`) runs inside the already-deferred post-commit batch, i.e. after
+  the response. Response-path cost: none beyond the subselect.
+- `create_order`: manual-mode boolean on the response path; the alert is handed
+  to `defer` (`EdgeRuntime.waitUntil` in `index.ts`), also after the response.
+- `take_message`: previously 2 statements + 1 enqueue on the response path; now
+  1 statement on the response path, the alert deferred (3 statements after
+  the response). Faster for the caller than before.
+- `send_sms_confirmation`: one fewer statement (no `a2p_status` read).
+- Context resolution: one extra selected column in a join that already ran.
+
+On the deferred alerts: the hot path runs one Postgres connection, so a
+deferred alert queues behind nothing the caller waits for; the next tool call
+in the same call comes seconds later. If the isolate is recycled before the
+deferred task finishes the alert is lost (same exposure as the existing
+deferred post-commit effects); `voice-events` still sends the booking alert at
+end of call, deduped per booking.
+
+### Outside the owned paths (minimal, needed)
+
+- `_shared/providers/messaging/types.ts`: the Deno mirror of `OWNER_ALERT_KINDS`
+  (`canonical-parity.test.ts` diffs it against canonical-types).
+- `_shared/templates.ts`: the `owner_new_order` template and an optional
+  `note` on `owner_new_booking` ("awaiting deposit" for a motel hold).
+- `_shared/text-agent/tool-router.ts`: passes `{ logger }` to `takeMessage`
+  (its new required deps). The text agent's `CallContext` does not carry
+  `manualMode`, so **Manual Mode is not enforced for the text/chat agent
+  yet** (follow-up: read `tenants.manual_mode` in `buildCallContext`).
+- `docs/design/MESSAGING_PROVIDERS.md`: owner-alert table.
+
+### Not done / follow-ups
+
+- Manual Mode for the text agent (above). The compiled voice prompt does not
+  mention manual mode; the enforcement is at tool level as asked. The
+  dashboard page still says "saved but not enforced" (`apps/web` was out of
+  scope): remove that label once this is deployed.
+- Per-kind alert preferences (no schema for them).
+- Slots already generated keep their old shape until the next rebuild. After
+  applying the migration: `select public.fn_cron_availability_rollforward();`
+  (or wait for 04:00 UTC).
+- `webhooks`/worker unchanged. The `messages_outbound` `pending_verification`
+  rows older than 24 h stay as history.
+- The `enqueueStrandedMessages` comment in the worker still names
+  `send_sms_confirmation` as a producer of un-enqueued rows; it no longer is.
+- One timing-dependent edge-functions test (its failure message mentioned
+  `confirmation_pending`, i.e. the create_booking deadline tests) failed once
+  in the full parallel `pnpm run test`; the whole edge-functions suite then
+  passed in isolation (142 files / 1581 tests).
