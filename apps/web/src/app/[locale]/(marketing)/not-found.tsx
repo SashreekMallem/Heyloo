@@ -8,6 +8,7 @@ import { Link } from "@/i18n/navigation";
 export default function MarketingNotFound() {
   return (
     <Section spacing="spacious" className="pb-24">
+      <title>Page not found — Heyloo</title>
       <Container size="content" className="flex flex-col items-center text-center">
         <span className="flex size-14 items-center justify-center rounded-2xl bg-secondary">
           <PhoneOff className="size-7 text-muted-foreground" aria-hidden="true" />

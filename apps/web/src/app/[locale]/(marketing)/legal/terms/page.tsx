@@ -3,7 +3,11 @@ import { setRequestLocale } from "next-intl/server";
 import { LegalPage } from "@/components/marketing/legal-page";
 import { getLegalDoc } from "@/lib/content/legal";
 
-export const metadata: Metadata = { title: "Terms of Service — Heyloo" };
+export const metadata: Metadata = {
+  title: "Terms of Service — Heyloo",
+  description: "The terms that govern your use of the Heyloo AI receptionist service.",
+  alternates: { canonical: "/legal/terms" },
+};
 
 export default async function TermsPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
