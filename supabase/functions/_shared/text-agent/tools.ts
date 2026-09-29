@@ -1,8 +1,8 @@
-import type { AnthropicToolDef } from "./anthropic-messages.ts";
+import type { LlmToolDef } from "../providers/llm/types.ts";
 import type { TextChannel } from "./types.ts";
 
 /**
- * Anthropic tool-use declarations for the text-agent engine. Hand-authored
+ * Provider-neutral tool declarations (`LlmToolDef`) for the text-agent engine. Hand-authored
  * here rather than imported from `packages/templates/src/shared/tools.ts`
  * (the canonical Retell/voice-facing `CanonicalTool` builders) for two
  * independent reasons: (1) this package's Deno-executed files cannot import
@@ -10,8 +10,8 @@ import type { TextChannel } from "./types.ts";
  * doesn't add (same documented constraint `admin/schemas.ts` and
  * `_shared/schemas/booking-payloads.ts` already carry for
  * `@heyloo/canonical-types` — `packages/templates` is exactly as
- * unreachable from here at runtime); (2) Anthropic's tool-use schema
- * (`input_schema`, flat JSON Schema) and Retell's function-calling
+ * unreachable from here at runtime); (2) an LLM tool declaration
+ * (`inputSchema`, flat JSON Schema; each LLM adapter maps it to its vendor's field) and Retell's function-calling
  * declaration are genuinely different artifacts tuned for different
  * conversation shapes (a voice state-machine's `allowed_tools` gating vs. a
  * free-form SMS/chat tool-use loop) — this was never "the same tool
@@ -28,13 +28,13 @@ import type { TextChannel } from "./types.ts";
  * different calling convention.
  */
 
-export function checkAvailabilityTool(): AnthropicToolDef {
+export function checkAvailabilityTool(): LlmToolDef {
   return {
     name: "check_availability",
     description:
       "Check real open slots for a resource/date range. Never state a time is open without " +
       "calling this first — never invent availability.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         offering_id: { type: "string" },
@@ -52,14 +52,14 @@ export function checkAvailabilityTool(): AnthropicToolDef {
   };
 }
 
-export function listOfferingsTool(): AnthropicToolDef {
+export function listOfferingsTool(): LlmToolDef {
   return {
     name: "list_offerings",
     description:
       "List the tenant's configured appointment types/services (id, name, category, duration, " +
       "price where set). Resolve a stated reason for visiting to a real offering_id before " +
       "check_availability/create_booking — never invent an offering_id.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: { category: { type: "string" } },
     },
@@ -72,13 +72,13 @@ const CUSTOMER_SCHEMA = {
   required: ["name", "phone"],
 } as const;
 
-export function createBookingTool(): AnthropicToolDef {
+export function createBookingTool(): LlmToolDef {
   return {
     name: "create_booking",
     description:
       "Create a confirmed booking once resource, time, and customer name+phone are collected " +
       "and the consent question has been asked.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         resource_id: { type: "string" },
@@ -98,11 +98,11 @@ export function createBookingTool(): AnthropicToolDef {
   };
 }
 
-export function updateBookingTool(): AnthropicToolDef {
+export function updateBookingTool(): LlmToolDef {
   return {
     name: "update_booking",
     description: "Reschedule an existing booking to a new confirmed-open start/end time.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         booking_id: { type: "string" },
@@ -121,11 +121,11 @@ export function updateBookingTool(): AnthropicToolDef {
   };
 }
 
-export function cancelBookingTool(): AnthropicToolDef {
+export function cancelBookingTool(): LlmToolDef {
   return {
     name: "cancel_booking",
     description: "Cancel an existing booking.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         booking_id: { type: "string" },
@@ -145,13 +145,13 @@ export function cancelBookingTool(): AnthropicToolDef {
 
 /** G6: server-side cross-checked against the conversation's OWN verified
  * phone — never trusted from the model/customer alone (`tool-router.ts`). */
-export function lookupCustomerTool(): AnthropicToolDef {
+export function lookupCustomerTool(): LlmToolDef {
   return {
     name: "lookup_customer",
     description:
       "Look up the texter's own account by phone number — always the phone this conversation " +
       "is verified against, never a different number the customer types in.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: { phone: { type: "string" } },
       required: ["phone"],
@@ -159,11 +159,11 @@ export function lookupCustomerTool(): AnthropicToolDef {
   };
 }
 
-export function takeMessageTool(): AnthropicToolDef {
+export function takeMessageTool(): LlmToolDef {
   return {
     name: "take_message",
     description: "Record a message/callback request for staff follow-up.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         caller_name: { type: "string" },
@@ -177,14 +177,14 @@ export function takeMessageTool(): AnthropicToolDef {
   };
 }
 
-export function joinWaitlistTool(): AnthropicToolDef {
+export function joinWaitlistTool(): LlmToolDef {
   return {
     name: "join_waitlist",
     description:
       "Add the customer to the waitlist for a preferred date/time window that's fully booked. " +
       "If text messages are available they are texted automatically when a matching slot " +
       "opens up; if the result says texting is unavailable, do not promise a text.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         customer: CUSTOMER_SCHEMA,
@@ -199,13 +199,13 @@ export function joinWaitlistTool(): AnthropicToolDef {
   };
 }
 
-export function createOrderTool(): AnthropicToolDef {
+export function createOrderTool(): LlmToolDef {
   return {
     name: "create_order",
     description:
       "Create an order from items on the real menu/catalog only — never invent an item or " +
       "price. Delivery orders require a full delivery_address.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         items: {
@@ -244,7 +244,7 @@ export function createOrderTool(): AnthropicToolDef {
   };
 }
 
-export function sendPaymentLinkTool(): AnthropicToolDef {
+export function sendPaymentLinkTool(): LlmToolDef {
   return {
     name: "send_payment_link",
     description:
@@ -252,7 +252,7 @@ export function sendPaymentLinkTool(): AnthropicToolDef {
       "for this business (see the Text messages right now line); if the result says texting is " +
       "unavailable, no link exists, so never say one is coming. NEVER ask for a card number, " +
       "expiry, or CVC in the chat.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         order_id: { type: "string" },
@@ -274,7 +274,7 @@ export function sendPaymentLinkTool(): AnthropicToolDef {
  * `engine.ts` intercepts the customer's next reply to check it before
  * resuming the normal tool-use loop — see `verification.ts`.
  */
-export function verifyPhoneTool(): AnthropicToolDef {
+export function verifyPhoneTool(): LlmToolDef {
   return {
     name: "verify_phone",
     description:
@@ -283,7 +283,7 @@ export function verifyPhoneTool(): AnthropicToolDef {
       "this before looking up an existing customer/booking by phone, or when the customer wants " +
       "to confirm their identity. After calling this, ask the customer to type the code they " +
       "receive.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: { phone: { type: "string" } },
       required: ["phone"],
@@ -296,7 +296,7 @@ export function verifyPhoneTool(): AnthropicToolDef {
  * either — the engine's own reply IS the confirmation channel, so a
  * separate confirmation tool call would just duplicate it. `verify_phone`
  * is web_chat-only (see its own docstring above). */
-export function toolsForChannel(channel: TextChannel): AnthropicToolDef[] {
+export function toolsForChannel(channel: TextChannel): LlmToolDef[] {
   const shared = [
     checkAvailabilityTool(),
     listOfferingsTool(),

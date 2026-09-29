@@ -1,5 +1,5 @@
-import type { AnthropicFetch } from "../_shared/providers/anthropic.ts";
-import { classifyReplyIntent } from "../_shared/providers/anthropic.ts";
+import { classifyReplyIntent } from "../_shared/outreach-llm.ts";
+import type { LlmClient } from "../_shared/providers/llm/types.ts";
 import type { SmartleadFetch } from "../_shared/providers/smartlead.ts";
 import { updateCampaignStatus } from "../_shared/providers/smartlead.ts";
 import type { SqlClient } from "../_shared/types.ts";
@@ -25,7 +25,8 @@ export interface NormalizedOutreachEvent {
  * as every other optional-deps group in this codebase (`admin/handler.ts`'s
  * `AdminDeps`). */
 export interface OutreachEventDeps {
-  anthropic?: { fetchImpl: AnthropicFetch; apiKey: string; model: string };
+  /** The LLM port (LLM-1); unset (no provider configured) skips classification. */
+  llm?: LlmClient;
   smartlead?: { fetchImpl: SmartleadFetch; apiKey: string };
 }
 
@@ -73,17 +74,12 @@ export async function processOutreachEvent(
       `;
       const replyId = insertedReply[0]?.id;
 
-      // Sync haiku classification (BACKEND_SPEC §1.8/§7.5) — a failed/
+      // Sync fast-tier classification (BACKEND_SPEC §1.8/§7.5) — a failed/
       // unset classification leaves `ai_intent` null and the reply
       // surfaces in an "unclassified" admin queue rather than guessing
       // (API_AND_FLOWS.md A.5's documented failure-handling rule).
-      if (replyId && deps.anthropic) {
-        const intent = await classifyReplyIntent(
-          deps.anthropic.fetchImpl,
-          deps.anthropic.apiKey,
-          deps.anthropic.model,
-          event.body ?? "",
-        );
+      if (replyId && deps.llm) {
+        const intent = await classifyReplyIntent(deps.llm, event.body ?? "");
         if (intent) {
           await sql`update public.replies set ai_intent = ${intent} where id = ${replyId}`;
         }

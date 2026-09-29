@@ -55,7 +55,15 @@ export default function MenuImportPage() {
   const [items, setItems] = useState<ParsedItem[] | null>(null);
   const [parsing, setParsing] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [unavailable, setUnavailable] = useState(false);
+  // Why menu import can't run right now: the AI service isn't configured on this
+  // platform (LLM-1: `ai_not_configured`, names the missing key), it rejected our
+  // credentials/credit (`ai_unavailable`), or the function isn't reachable.
+  const [unavailable, setUnavailable] = useState<
+    | null
+    | { kind: "ai_not_configured"; missing: string[] }
+    | { kind: "ai_unavailable" }
+    | { kind: "other" }
+  >(null);
 
   async function handleFile(file: File) {
     setFileName(file.name);
@@ -78,7 +86,7 @@ export default function MenuImportPage() {
 
   async function runImport(body: unknown) {
     setParsing(true);
-    setUnavailable(false);
+    setUnavailable(null);
     const res = await fetch("/api/tenant/offerings/import", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -86,7 +94,22 @@ export default function MenuImportPage() {
     });
     setParsing(false);
     if (res.status === 503) {
-      setUnavailable(true);
+      const body = (await res.json().catch(() => null)) as {
+        error?: string;
+        missing?: unknown;
+      } | null;
+      if (body?.error === "ai_not_configured") {
+        setUnavailable({
+          kind: "ai_not_configured",
+          missing: Array.isArray(body.missing)
+            ? body.missing.filter((m): m is string => typeof m === "string")
+            : [],
+        });
+      } else if (body?.error === "ai_unavailable") {
+        setUnavailable({ kind: "ai_unavailable" });
+      } else {
+        setUnavailable({ kind: "other" });
+      }
       return;
     }
     if (!res.ok) {
@@ -209,8 +232,24 @@ export default function MenuImportPage() {
                 {parsing ? "Reading menu…" : "Import from URL"}
               </Button>
             </div>
-            {unavailable && (
-              <p className="text-sm text-destructive">
+            {unavailable?.kind === "ai_not_configured" && (
+              <p role="alert" className="text-sm text-destructive">
+                AI isn&apos;t configured yet, so menu import can&apos;t read your menu
+                {unavailable.missing.length > 0
+                  ? ` (missing ${unavailable.missing.join(", ")})`
+                  : ""}
+                . Please add items manually from the Offerings page for now, or ask your Heyloo
+                administrator to finish the AI setup.
+              </p>
+            )}
+            {unavailable?.kind === "ai_unavailable" && (
+              <p role="alert" className="text-sm text-destructive">
+                The AI service isn&apos;t accepting requests right now (an account or credit problem
+                on the platform side). Please add items manually from the Offerings page for now.
+              </p>
+            )}
+            {unavailable?.kind === "other" && (
+              <p role="alert" className="text-sm text-destructive">
                 Menu import isn&apos;t available yet — please add items manually from the Offerings
                 page for now, or try again shortly.
               </p>

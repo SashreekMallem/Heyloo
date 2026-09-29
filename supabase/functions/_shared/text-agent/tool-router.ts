@@ -74,7 +74,7 @@ function attemptedVerifyPhones(conversation: TextConversationRow): string[] {
 }
 
 /**
- * Dispatches one Anthropic `tool_use` block to the SAME voice-tools
+ * Dispatches one LLM tool call (`LlmToolCall`) to the SAME voice-tools
  * implementations `voice-tools/handler.ts` dispatches to for a live call
  * (CLAUDE.md Rule 4 / this task's explicit instruction: reuse, never fork,
  * booking logic) — every booking/order/message/waitlist/lookup tool call
@@ -239,7 +239,7 @@ async function runVerifyPhone(
 /** Called by `engine.ts` BEFORE the normal tool-use loop whenever a pending
  * verification exists and the customer's message looks like a code —
  * short-circuits straight to a yes/no check rather than spending an
- * Anthropic call on it. Returns `verified: true` (and promotes the
+ * LLM call on it. Returns `verified: true` (and promotes the
  * conversation's phone) or `verified: false` with a reason the engine turns
  * into a short, non-LLM-generated reply. */
 export async function tryVerifyCode(

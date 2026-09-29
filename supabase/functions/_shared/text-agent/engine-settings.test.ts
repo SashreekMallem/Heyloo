@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { chatText, type FakeLlm, fakeLlm } from "../providers/llm/test-support.ts";
 import type { Logger, SqlClient } from "../types.ts";
 import type { TenantTextContext, TextConversationRow } from "./types.ts";
 
@@ -6,8 +7,8 @@ import type { TenantTextContext, TextConversationRow } from "./types.ts";
 // the portal saves (on/off switch, tone, sign-off, FAQ, special instructions,
 // facts, Manual Mode) and owner text can never remove the mandatory first-reply
 // disclosure. Same isolation as `engine.test.ts`: conversation store, tool
-// router and rate limiter are mocked; the Anthropic call is a queue-based fake
-// whose request body is inspected.
+// router and rate limiter are mocked; the LLM port is a fake
+// whose request is inspected.
 vi.mock("./conversation-store.ts", () => ({
   loadOrCreateSmsConversation: vi.fn(),
   createWebChatConversation: vi.fn(),
@@ -81,32 +82,19 @@ function conversation(overrides: Partial<TextConversationRow> = {}): TextConvers
   };
 }
 
-function fakeAnthropicFetch(replyText = "Happy to help."): {
-  fetchImpl: typeof fetch;
-  calls: RequestInit[];
+function fakeLlmReply(replyText = "Happy to help."): {
+  llm: FakeLlm;
+  calls: FakeLlm["calls"]["chat"];
 } {
-  const calls: RequestInit[] = [];
-  const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
-    if (init) calls.push(init);
-    return new Response(
-      JSON.stringify({
-        content: [{ type: "text", text: replyText }],
-        stop_reason: "end_turn",
-        usage: { input_tokens: 1, output_tokens: 1 },
-      }),
-      { status: 200 },
-    );
-  }) as unknown as typeof fetch;
-  return { fetchImpl, calls };
+  const llm = fakeLlm({ chat: () => chatText(replyText) });
+  return { llm, calls: llm.calls.chat };
 }
 
-function baseDeps(anthropicFetch: typeof fetch): TextAgentDeps {
+function baseDeps(llm: FakeLlm): TextAgentDeps {
   return {
     sql: (() => Promise.resolve([])) as unknown as SqlClient,
     logger: silentLogger,
-    anthropicFetch,
-    anthropicApiKey: "key",
-    model: "claude-sonnet-5",
+    llm,
     appBaseUrl: "https://heyloo.app",
     turnTimeoutMs: 500,
   };
@@ -123,10 +111,10 @@ function sms(message = "hi") {
 
 async function systemPromptFor(context: Partial<TenantTextContext>): Promise<string> {
   vi.mocked(resolveTenantTextContext).mockResolvedValue({ ...TENANT_CONTEXT, ...context });
-  const { fetchImpl, calls } = fakeAnthropicFetch();
-  await handleInboundText(baseDeps(fetchImpl), sms());
+  const { llm, calls } = fakeLlmReply();
+  await handleInboundText(baseDeps(llm), sms());
   expect(calls).toHaveLength(1);
-  return (JSON.parse(calls[0]?.body as string) as { system: string }).system;
+  return calls[0]?.system ?? "";
 }
 
 beforeEach(() => {
@@ -143,8 +131,8 @@ describe("SETTINGS-2: text agent on/off", () => {
       ...TENANT_CONTEXT,
       textAgentEnabled: false,
     });
-    const { fetchImpl, calls } = fakeAnthropicFetch();
-    const result = await handleInboundText(baseDeps(fetchImpl), sms("can I book?"));
+    const { llm, calls } = fakeLlmReply();
+    const result = await handleInboundText(baseDeps(llm), sms("can I book?"));
     expect(result.sent).toBe(false);
     expect(result.reply).toBeNull();
     expect(result.reason).toBe("text_agent_disabled");
@@ -158,8 +146,8 @@ describe("SETTINGS-2: text agent on/off", () => {
   });
 
   it("replies when it is on", async () => {
-    const { fetchImpl } = fakeAnthropicFetch();
-    const result = await handleInboundText(baseDeps(fetchImpl), sms());
+    const { llm } = fakeLlmReply();
+    const result = await handleInboundText(baseDeps(llm), sms());
     expect(result.sent).toBe(true);
   });
 
@@ -172,8 +160,8 @@ describe("SETTINGS-2: text agent on/off", () => {
       conversation: conversation({ channel: "web_chat", phoneE164: null }),
       sessionToken: "tok",
     });
-    const { fetchImpl } = fakeAnthropicFetch();
-    const result = await handleInboundText(baseDeps(fetchImpl), {
+    const { llm } = fakeLlmReply();
+    const result = await handleInboundText(baseDeps(llm), {
       channel: "web_chat",
       tenantId: "t1",
       message: "hello",
@@ -232,8 +220,8 @@ describe("SETTINGS-2 red team: owner text cannot override the mandatory disclosu
         parking_info: HOSTILE,
       },
     });
-    const { fetchImpl } = fakeAnthropicFetch("Sure thing.");
-    const result = await handleInboundText(baseDeps(fetchImpl), sms());
+    const { llm } = fakeLlmReply("Sure thing.");
+    const result = await handleInboundText(baseDeps(llm), sms());
     expect(result.reply?.startsWith("You're texting with Acme Dental's AI assistant.")).toBe(true);
     expect(result.reply).toContain("Reply STOP at any time to opt out.");
   });

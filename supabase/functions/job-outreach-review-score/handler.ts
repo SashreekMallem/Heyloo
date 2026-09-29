@@ -1,7 +1,6 @@
-import { extractJsonObject } from "../_shared/json-extract.ts";
 import { recordPipelineCost } from "../_shared/outreach-cost.ts";
-import type { AnthropicFetch } from "../_shared/providers/anthropic.ts";
-import { classifyPhoneComplaintScore } from "../_shared/providers/anthropic.ts";
+import { classifyPhoneComplaintScore } from "../_shared/outreach-llm.ts";
+import type { LlmClient } from "../_shared/providers/llm/types.ts";
 import type { OutscraperFetch, OutscraperPlaceReviews } from "../_shared/providers/outscraper.ts";
 import { pollGoogleMapsReviews, startGoogleMapsReviews } from "../_shared/providers/outscraper.ts";
 import type { ReviewComplaintEvidence } from "../_shared/schemas/review-score.ts";
@@ -36,7 +35,7 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
  * `api-outreach-fetch-leads/handler.ts` already does for its own Outscraper
  * Maps-search spend.
  *
- * Failure handling matches every other Anthropic call site in this
+ * Failure handling matches every other LLM call site in this
  * codebase (API_AND_FLOWS.md A.5's documented rule): a failed/unparseable/
  * schema-invalid classification never blocks anything downstream — the
  * lead is still marked `reviews_analyzed_at` (the Outscraper spend already
@@ -60,9 +59,8 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
 export interface ReviewScoreDeps {
   outscraperFetch: OutscraperFetch;
   outscraperApiKey: string;
-  anthropicFetch: AnthropicFetch;
-  anthropicApiKey: string;
-  reviewScoreModel: string;
+  /** The LLM port (fast tier — LLM-1; Gemini by default). */
+  llm: LlmClient;
   /** Injectable sleep for the Outscraper poll loop — tests pass a no-op so
    * the poll loop resolves instantly (same pattern as
    * `api-outreach-fetch-leads/handler.ts`'s `FetchLeadsDeps.sleep`). */
@@ -90,7 +88,7 @@ export const PER_RUN_LEAD_CAP = 25;
 // invoice before relying on this for hard CAC numbers).
 const OUTSCRAPER_REVIEWS_COST_CENTS_PER_1000 = 300;
 
-// SYSTEM_DESIGN §3's own "~$0.02/lead" directional Anthropic-cost figure
+// SYSTEM_DESIGN §3's own "~$0.02/lead" directional LLM-cost figure
 // (same constant `job-outreach-personalize-collect/handler.ts` uses for
 // its own per-lead hook-write call) — this job's classification call is a
 // comparably-sized single short prompt, so the same directional estimate
@@ -211,42 +209,32 @@ export async function scoreLeadReviews(
   let evidence: ReviewComplaintEvidence[] = [];
 
   if (reviewsWithText.length > 0) {
-    const call = await classifyPhoneComplaintScore(
-      deps.anthropicFetch,
-      deps.anthropicApiKey,
-      deps.reviewScoreModel,
-      reviewsWithText,
-    );
+    const call = await classifyPhoneComplaintScore(deps.llm, reviewsWithText);
     if (call.ok) {
-      try {
-        const raw = extractJsonObject(call.text);
-        const parsed = ReviewScoreClassificationSchema.safeParse(raw);
-        if (parsed.success) {
-          score = parsed.data.score;
-          evidence = filterFabricatedEvidence(
-            parsed.data.evidence,
-            reviewsWithText.map((r) => r.text),
-          );
-          await recordPipelineCost(sql, {
-            category: "review_scoring",
-            amountCents: ESTIMATED_CLASSIFY_COST_CENTS_PER_LEAD,
-            occurredAt: now,
-          });
-        } else {
-          deps.logger.warn("outreach_review_score_schema_mismatch", {
-            lead_id: lead.id,
-            issues: parsed.error.issues,
-          });
-        }
-      } catch {
-        deps.logger.warn("outreach_review_score_unparseable_response", { lead_id: lead.id });
+      const parsed = ReviewScoreClassificationSchema.safeParse(call.json);
+      if (parsed.success) {
+        score = parsed.data.score;
+        evidence = filterFabricatedEvidence(
+          parsed.data.evidence,
+          reviewsWithText.map((r) => r.text),
+        );
+        await recordPipelineCost(sql, {
+          category: "review_scoring",
+          amountCents: ESTIMATED_CLASSIFY_COST_CENTS_PER_LEAD,
+          occurredAt: now,
+        });
+      } else {
+        deps.logger.warn("outreach_review_score_schema_mismatch", {
+          lead_id: lead.id,
+          issues: parsed.error.issues,
+        });
       }
     } else {
       deps.logger.warn("outreach_review_score_classify_call_failed", { lead_id: lead.id });
     }
   } else {
     // No reviews at all for this place — a confident, real "no signal
-    // found" rather than an unclassified one; nothing to invoke Anthropic
+    // found" rather than an unclassified one; nothing to invoke the LLM
     // on, so no classification cost either.
     score = 0;
   }

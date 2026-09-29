@@ -7,7 +7,7 @@ import type { TenantTextContext, TextChannel, TextConversationRow, TextTurn } fr
 /** Bounded recent-turn replay window (this task's own instruction: "do not
  * resend the whole history each turn beyond N messages; summarize"). Kept
  * as raw turns rather than an LLM-summarized blob — see this module's
- * docstring below — so no extra Anthropic call is spent compressing
+ * docstring below — so no extra LLM call is spent compressing
  * history on every turn (latency/cost budget: "keep prompts lean"). */
 export const MAX_REPLAYED_TURNS = 12;
 

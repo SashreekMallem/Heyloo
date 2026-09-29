@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { type FakeLlm, fakeLlm, textOk } from "../_shared/providers/llm/test-support.ts";
+import type { LlmBatchStatus, LlmResult, LlmTextResponse } from "../_shared/providers/llm/types.ts";
+import { llmFailure } from "../_shared/providers/llm/types.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import { collectResearchBatch, findInFlightResearchBatchIds } from "./handler.ts";
 
@@ -31,38 +34,66 @@ function jsonRes(body: unknown, ok = true, status = 200): Response {
   } as unknown as Response;
 }
 
+/** An LLM whose batch has the given status and whose hook write returns `hook`. */
+function llmWith(
+  status: LlmBatchStatus,
+  hook: (system: string | undefined) => LlmResult<LlmTextResponse> = () =>
+    textOk("Loved what Acme is building — quick question."),
+): FakeLlm {
+  return fakeLlm({
+    batch: { get: async () => ({ ok: true, status }) },
+    text: (req) => hook(req.system),
+  });
+}
+
+const succeeded = (results: { key: string; text: string | null }[]): LlmBatchStatus => ({
+  state: "succeeded",
+  results,
+});
+
 describe("findInFlightResearchBatchIds", () => {
   it("returns distinct batch ids for queued, not-yet-personalized leads", async () => {
     const { sql } = makeSql({
-      "from public.leads": [{ batch_id: "batch_1" }, { batch_id: "batch_2" }],
+      "from public.leads": [{ batch_id: "batches/1" }, { batch_id: "msgbatch_2" }],
     });
     const ids = await findInFlightResearchBatchIds(sql);
-    expect(ids).toEqual(["batch_1", "batch_2"]);
+    expect(ids).toEqual(["batches/1", "msgbatch_2"]);
   });
 });
 
 describe("collectResearchBatch", () => {
-  const deps = {
-    anthropicApiKey: "key",
-    personalizeModel: "claude-sonnet-5",
+  const baseDeps = {
     smartleadApiKey: "key",
     canSpamFooter: "Acme Inc, 123 Main St. Unsubscribe anytime.",
     logger: makeLogger(),
     now: new Date("2026-01-01T00:00:00Z"),
   };
+  const smartlead = () => vi.fn(async () => jsonRes({ added_count: 1 })) as never;
 
   it("does nothing and reports not-ended while the batch is still in progress", async () => {
-    const { sql } = makeSql();
-    const anthropicFetch = vi.fn(async () =>
-      jsonRes({ processing_status: "in_progress" }),
-    ) as never;
-    const result = await collectResearchBatch(sql, "batch_1", {
-      ...deps,
-      anthropicFetch,
+    const { sql, calls } = makeSql();
+    const llm = llmWith({ state: "in_progress" });
+    const result = await collectResearchBatch(sql, "batches/1", {
+      ...baseDeps,
+      llm,
       smartleadFetch: vi.fn() as never,
     });
     expect(result.ended).toBe(false);
     expect(result.collected).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("does nothing and reports not-ended when the batch status call fails", async () => {
+    const { sql } = makeSql();
+    const llm = fakeLlm({
+      batch: { get: async () => llmFailure("unavailable", 503, "down", true) },
+    });
+    const result = await collectResearchBatch(sql, "batches/1", {
+      ...baseDeps,
+      llm,
+      smartleadFetch: vi.fn() as never,
+    });
+    expect(result).toEqual({ collected: 0, ended: false });
   });
 
   it("writes personalization, records costs, and pushes to Smartlead for a succeeded, emailed lead", async () => {
@@ -73,47 +104,24 @@ describe("collectResearchBatch", () => {
       "from public.send_events": [{ id: "se1", campaign_id: "camp1" }],
       "from public.campaigns": [{ external_campaign_id: "ext_1", provider: "smartlead" }],
     });
+    const llm = llmWith(succeeded([{ key: "l1", text: "Acme does great work." }]));
 
-    let call = 0;
-    const anthropicFetch = vi.fn(async () => {
-      call += 1;
-      if (call === 1) {
-        return jsonRes({ processing_status: "ended", results_url: "https://x/results" });
-      }
-      if (call === 2) {
-        return {
-          ok: true,
-          status: 200,
-          text: async () =>
-            `${JSON.stringify({
-              custom_id: "l1",
-              result: {
-                type: "succeeded",
-                message: { content: [{ type: "text", text: "Acme does great work." }] },
-              },
-            })}\n`,
-        } as unknown as Response;
-      }
-      return jsonRes({
-        content: [{ type: "text", text: "Loved what Acme is building — quick question." }],
-      });
-    }) as never;
-
-    const smartleadFetch = vi.fn(async () => jsonRes({ added_count: 1 })) as never;
-
-    const result = await collectResearchBatch(sql, "batch_1", {
-      ...deps,
-      anthropicFetch,
-      smartleadFetch,
+    const result = await collectResearchBatch(sql, "batches/1", {
+      ...baseDeps,
+      llm,
+      smartleadFetch: smartlead(),
     });
 
     expect(result.ended).toBe(true);
     expect(result.collected).toBe(1);
-    expect(calls.some((c) => c.text.includes("'personalization'"))).toBe(true);
+    // The hook write is a quality-tier text call carrying the research text.
+    expect(llm.calls.text[0]?.tier).toBe("quality");
+    expect(String(llm.calls.text[0]?.input)).toContain("Acme does great work.");
+    expect(calls.some((c) => c.text.includes("jsonb_build_object"))).toBe(true);
     // JSONB-2: untyped parameters inside jsonb_build_object (a variadic "any"
     // function) fail at prepare time with 42P18 "could not determine data type
     // of parameter" — each must carry an explicit ::text cast.
-    const personalizationSql = calls.find((c) => c.text.includes("'personalization'"))?.text ?? "";
+    const personalizationSql = calls.find((c) => c.text.includes("jsonb_build_object"))?.text ?? "";
     expect(personalizationSql).toMatch(/'research',\s*\S*\s*::text/);
     expect(personalizationSql).toMatch(/'opening_line',\s*\S*\s*::text/);
     expect(calls.some((c) => c.text.includes("insert into public.pipeline_costs"))).toBe(true);
@@ -126,6 +134,32 @@ describe("collectResearchBatch", () => {
     );
   });
 
+  it("reads the batch from its issuing vendor's client (batchLlm) while the hook uses the current provider", async () => {
+    const { sql } = makeSql({
+      "from public.leads": [
+        { id: "l1", company_name: "Acme", contact_name: null, email: "jane@acme.com" },
+      ],
+      "from public.send_events": [{ id: "se1", campaign_id: "camp1" }],
+      "from public.campaigns": [{ external_campaign_id: "ext_1", provider: "smartlead" }],
+    });
+    const hookLlm = llmWith({ state: "in_progress" });
+    const batchLlm = llmWith(succeeded([{ key: "l1", text: "research" }]));
+    const getSpy = vi.spyOn(batchLlm.batch, "get");
+    const hookGetSpy = vi.spyOn(hookLlm.batch, "get");
+
+    await collectResearchBatch(sql, "msgbatch_1", {
+      ...baseDeps,
+      llm: hookLlm,
+      batchLlm,
+      smartleadFetch: smartlead(),
+    });
+
+    expect(getSpy).toHaveBeenCalledWith("msgbatch_1");
+    expect(hookGetSpy).not.toHaveBeenCalled();
+    expect(hookLlm.calls.text).toHaveLength(1);
+    expect(batchLlm.calls.text).toHaveLength(0);
+  });
+
   it("falls back to a generic opener and still pushes when the research result errored", async () => {
     const { sql, calls } = makeSql({
       "from public.leads": [
@@ -134,28 +168,17 @@ describe("collectResearchBatch", () => {
       "from public.send_events": [{ id: "se1", campaign_id: "camp1" }],
       "from public.campaigns": [{ external_campaign_id: "ext_1", provider: "smartlead" }],
     });
+    const llm = llmWith(succeeded([{ key: "l1", text: null }]));
 
-    let call = 0;
-    const anthropicFetch = vi.fn(async () => {
-      call += 1;
-      if (call === 1)
-        return jsonRes({ processing_status: "ended", results_url: "https://x/results" });
-      return {
-        ok: true,
-        status: 200,
-        text: async () => `${JSON.stringify({ custom_id: "l1", result: { type: "errored" } })}\n`,
-      } as unknown as Response;
-    }) as never;
-    const smartleadFetch = vi.fn(async () => jsonRes({ added_count: 1 })) as never;
-
-    const result = await collectResearchBatch(sql, "batch_1", {
-      ...deps,
-      anthropicFetch,
-      smartleadFetch,
+    const result = await collectResearchBatch(sql, "batches/1", {
+      ...baseDeps,
+      llm,
+      smartleadFetch: smartlead(),
     });
 
     expect(result.collected).toBe(1);
-    const personalizationCall = calls.find((c) => c.text.includes("'personalization'"));
+    expect(llm.calls.text).toHaveLength(0);
+    const personalizationCall = calls.find((c) => c.text.includes("jsonb_build_object"));
     expect(
       personalizationCall?.values.some(
         (v) => typeof v === "string" && v.includes("might be a good fit"),
@@ -163,8 +186,55 @@ describe("collectResearchBatch", () => {
     ).toBe(true);
   });
 
-  it("OUTREACH-2: instructs the hook write to reference the strongest phone-complaint snippet for a high-scoring lead", async () => {
+  it("collects a lead the results omit (generic opener) instead of leaving it queued forever", async () => {
     const { sql, calls } = makeSql({
+      "from public.leads": [
+        { id: "l1", company_name: "Acme", contact_name: null, email: "jane@acme.com" },
+        { id: "l2", company_name: "Beta", contact_name: null, email: "bob@beta.com" },
+      ],
+      "from public.send_events": [{ id: "se1", campaign_id: "camp1" }],
+      "from public.campaigns": [{ external_campaign_id: "ext_1", provider: "smartlead" }],
+    });
+    const llm = llmWith(succeeded([{ key: "l1", text: "Acme research" }]));
+
+    const result = await collectResearchBatch(sql, "batches/1", {
+      ...baseDeps,
+      llm,
+      smartleadFetch: smartlead(),
+    });
+
+    expect(result.collected).toBe(2);
+    expect(calls.filter((c) => c.text.includes("jsonb_build_object"))).toHaveLength(2);
+  });
+
+  it("collects every lead with a generic opener when the whole batch failed or expired", async () => {
+    const { sql, calls } = makeSql({
+      "from public.leads": [
+        { id: "l1", company_name: "Acme", contact_name: null, email: "jane@acme.com" },
+      ],
+      "from public.send_events": [{ id: "se1", campaign_id: "camp1" }],
+      "from public.campaigns": [{ external_campaign_id: "ext_1", provider: "smartlead" }],
+    });
+    const logger = makeLogger();
+    const llm = llmWith({ state: "failed", reason: "BATCH_STATE_EXPIRED" });
+
+    const result = await collectResearchBatch(sql, "batches/1", {
+      ...baseDeps,
+      logger,
+      llm,
+      smartleadFetch: smartlead(),
+    });
+
+    expect(result).toEqual({ collected: 1, ended: true });
+    expect(logger.warn).toHaveBeenCalledWith(
+      "outreach_personalize_collect_batch_failed",
+      expect.objectContaining({ reason: "BATCH_STATE_EXPIRED" }),
+    );
+    expect(calls.some((c) => c.text.includes("jsonb_build_object"))).toBe(true);
+  });
+
+  it("OUTREACH-2: instructs the hook write to reference the strongest phone-complaint snippet for a high-scoring lead", async () => {
+    const { sql } = makeSql({
       "from public.leads": [
         {
           id: "l1",
@@ -178,43 +248,20 @@ describe("collectResearchBatch", () => {
       "from public.send_events": [{ id: "se1", campaign_id: "camp1" }],
       "from public.campaigns": [{ external_campaign_id: "ext_1", provider: "smartlead" }],
     });
+    const hookSystemPrompts: (string | undefined)[] = [];
+    const llm = llmWith(succeeded([{ key: "l1", text: "Acme does great work." }]), (system) => {
+      hookSystemPrompts.push(system);
+      return textOk("Saw you're hard to reach by phone.");
+    });
 
-    let call = 0;
-    const hookSystemPrompts: string[] = [];
-    const anthropicFetch = vi.fn(async (_url: string, init?: RequestInit) => {
-      call += 1;
-      if (call === 1) {
-        return jsonRes({ processing_status: "ended", results_url: "https://x/results" });
-      }
-      if (call === 2) {
-        return {
-          ok: true,
-          status: 200,
-          text: async () =>
-            `${JSON.stringify({
-              custom_id: "l1",
-              result: {
-                type: "succeeded",
-                message: { content: [{ type: "text", text: "Acme does great work." }] },
-              },
-            })}\n`,
-        } as unknown as Response;
-      }
-      const body = JSON.parse((init?.body as string) ?? "{}");
-      hookSystemPrompts.push(body.system);
-      return jsonRes({ content: [{ type: "text", text: "Saw you're hard to reach by phone." }] });
-    }) as never;
-    const smartleadFetch = vi.fn(async () => jsonRes({ added_count: 1 })) as never;
-
-    const result = await collectResearchBatch(sql, "batch_1", {
-      ...deps,
-      anthropicFetch,
-      smartleadFetch,
+    const result = await collectResearchBatch(sql, "batches/1", {
+      ...baseDeps,
+      llm,
+      smartleadFetch: smartlead(),
     });
 
     expect(result.collected).toBe(1);
     expect(hookSystemPrompts[0]).toContain("called three times and got voicemail");
-    void calls;
   });
 
   it("OUTREACH-2: falls back directly to the complaint opener when the hook call fails for a high-scoring lead", async () => {
@@ -232,34 +279,17 @@ describe("collectResearchBatch", () => {
       "from public.send_events": [{ id: "se1", campaign_id: "camp1" }],
       "from public.campaigns": [{ external_campaign_id: "ext_1", provider: "smartlead" }],
     });
+    const llm = llmWith(succeeded([{ key: "l1", text: "research text" }]), () =>
+      llmFailure("unavailable", 500, "hook failed", true),
+    );
 
-    let call = 0;
-    const anthropicFetch = vi.fn(async () => {
-      call += 1;
-      if (call === 1)
-        return jsonRes({ processing_status: "ended", results_url: "https://x/results" });
-      if (call === 2) {
-        return {
-          ok: true,
-          status: 200,
-          text: async () =>
-            `${JSON.stringify({
-              custom_id: "l1",
-              result: {
-                type: "succeeded",
-                message: { content: [{ type: "text", text: "research text" }] },
-              },
-            })}\n`,
-        } as unknown as Response;
-      }
-      // Hook write call fails.
-      return jsonRes({}, false, 500);
-    }) as never;
-    const smartleadFetch = vi.fn(async () => jsonRes({ added_count: 1 })) as never;
+    await collectResearchBatch(sql, "batches/1", {
+      ...baseDeps,
+      llm,
+      smartleadFetch: smartlead(),
+    });
 
-    await collectResearchBatch(sql, "batch_1", { ...deps, anthropicFetch, smartleadFetch });
-
-    const personalizationCall = calls.find((c) => c.text.includes("'personalization'"));
+    const personalizationCall = calls.find((c) => c.text.includes("jsonb_build_object"));
     expect(
       personalizationCall?.values.some(
         (v) => typeof v === "string" && v.includes("never picked up the phone"),
@@ -271,24 +301,12 @@ describe("collectResearchBatch", () => {
     const { sql, calls } = makeSql({
       "from public.leads": [{ id: "l1", company_name: "Acme", contact_name: null, email: null }],
     });
-    let call = 0;
-    const anthropicFetch = vi.fn(async () => {
-      call += 1;
-      if (call === 1)
-        return jsonRes({ processing_status: "ended", results_url: "https://x/results" });
-      if (call === 2) {
-        return {
-          ok: true,
-          status: 200,
-          text: async () =>
-            `${JSON.stringify({ custom_id: "l1", result: { type: "succeeded", message: { content: [{ type: "text", text: "x" }] } } })}\n`,
-        } as unknown as Response;
-      }
-      return jsonRes({ content: [{ type: "text", text: "A quick note about your business." }] });
-    }) as never;
+    const llm = llmWith(succeeded([{ key: "l1", text: "x" }]), () =>
+      textOk("A quick note about your business."),
+    );
     const smartleadFetch = vi.fn(async () => jsonRes({})) as never;
 
-    await collectResearchBatch(sql, "batch_1", { ...deps, anthropicFetch, smartleadFetch });
+    await collectResearchBatch(sql, "batches/1", { ...baseDeps, llm, smartleadFetch });
 
     expect(smartleadFetch).not.toHaveBeenCalled();
     expect(calls.some((c) => c.text.includes("update public.leads set status = 'sent'"))).toBe(

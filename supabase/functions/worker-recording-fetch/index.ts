@@ -5,6 +5,7 @@ import { getSql } from "../_shared/deno/db.ts";
 import { requireEnv, requireServiceRoleKey } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
+import { RECORDING_FETCH_OPTIONS, SafeFetchError, safeFetchBytes } from "../_shared/safe-fetch.ts";
 import type { UploadResult } from "./handler.ts";
 import { runRecordingFetchWorker } from "./handler.ts";
 
@@ -57,10 +58,18 @@ async function uploadToStorage(
   return { ok: false, detail: `${res.status}:${bodyText.slice(0, 200)}` };
 }
 
+// SSRF-1: the recording URL comes out of a provider payload, so it is fetched
+// through the SSRF-safe helper (public https/http only, no private targets, 64 MB
+// and 60 s caps, audio/binary content types). A blocked URL reads as "not ready".
 async function fetchRecordingBytes(url: string): Promise<ArrayBuffer | null> {
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  return res.arrayBuffer();
+  try {
+    const res = await safeFetchBytes(url, RECORDING_FETCH_OPTIONS);
+    return res.ok ? res.bytes : null;
+  } catch (err) {
+    if (!(err instanceof SafeFetchError)) throw err;
+    logger.warn("recording_fetch_blocked", { code: err.code });
+    return null;
+  }
 }
 
 Deno.serve(async (req: Request) => {

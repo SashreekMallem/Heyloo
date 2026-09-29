@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { fakeLlm, jsonOk } from "../_shared/providers/llm/test-support.ts";
 import type { SqlClient } from "../_shared/types.ts";
 import { processOutreachEvent } from "./handler.ts";
 
@@ -86,7 +87,7 @@ describe("processOutreachEvent", () => {
     expect(pause).toBeUndefined();
   });
 
-  it("classifies the reply via Claude (haiku, sync) and stores ai_intent when anthropic deps are provided", async () => {
+  it("classifies the reply via the LLM port (fast tier, sync) and stores ai_intent when llm deps are provided", async () => {
     const { sql, calls } = makeSql({
       "from public.campaigns": [
         { id: "camp_1", provider: "smartlead", external_campaign_id: "ext_1" },
@@ -94,9 +95,7 @@ describe("processOutreachEvent", () => {
       "from public.send_events": [{ id: "se_1", lead_id: "lead_1" }],
       "insert into public.replies": [{ id: "reply_1" }],
     });
-    const anthropicFetch = vi.fn(async () =>
-      jsonRes({ content: [{ type: "text", text: "interested" }] }),
-    ) as never;
+    const llm = fakeLlm({ json: () => jsonOk({ intent: "interested" }) });
 
     await processOutreachEvent(
       sql,
@@ -108,15 +107,39 @@ describe("processOutreachEvent", () => {
         occurred_at: "2026-01-01T00:00:00Z",
         provider_message_id: "msg_1",
       },
-      { anthropic: { fetchImpl: anthropicFetch, apiKey: "key", model: "claude-haiku-4-5" } },
+      { llm },
     );
+    // The reply body is sent as untrusted data, never as an instruction.
+    expect(llm.calls.json[0]?.input).toBe("sounds interesting, tell me more");
+    expect(llm.calls.json[0]?.system).toContain("untrusted data");
 
     const classifyUpdate = calls.find((c) => c.text.includes("set ai_intent"));
     expect(classifyUpdate?.values).toContain("interested");
     expect(calls.some((c) => c.text.includes("set status = 'replied'"))).toBe(true);
   });
 
-  it("leaves ai_intent unset when no anthropic deps are provided", async () => {
+  it("leaves ai_intent null when the classifier's answer is outside the intent set", async () => {
+    const { sql, calls } = makeSql({
+      "from public.campaigns": [{ id: "camp_1" }],
+      "from public.send_events": [{ id: "se_1", lead_id: "lead_1" }],
+      "insert into public.replies": [{ id: "reply_1" }],
+    });
+    await processOutreachEvent(
+      sql,
+      {
+        campaign_external_id: "camp_1",
+        lead_email_or_phone: "a@example.com",
+        event: "reply",
+        body: "hello",
+        occurred_at: "2026-01-01T00:00:00Z",
+        provider_message_id: "msg_1",
+      },
+      { llm: fakeLlm({ json: () => jsonOk({ intent: "buy_now" }) }) },
+    );
+    expect(calls.some((c) => c.text.includes("set ai_intent"))).toBe(false);
+  });
+
+  it("leaves ai_intent unset when no llm deps are provided", async () => {
     const { sql, calls } = makeSql({
       "from public.campaigns": [{ id: "camp_1" }],
       "from public.send_events": [{ id: "se_1", lead_id: "lead_1" }],

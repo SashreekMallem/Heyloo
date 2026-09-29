@@ -65,7 +65,7 @@ export function DemoFlow({ initialVertical }: { initialVertical?: string | undef
       });
       if (res.status === 503) {
         // `api-demo-agent` answers 503 `not_configured` when building a demo
-        // from a website is switched off (no Anthropic key): say so plainly
+        // from a website is switched off (no LLM key: `ai_not_configured`): say so plainly
         // instead of blaming the visitor's URL.
         setStep({ name: "not_configured" });
         return;

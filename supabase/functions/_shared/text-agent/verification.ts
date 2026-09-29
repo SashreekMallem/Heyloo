@@ -56,7 +56,7 @@ export async function checkVerificationCode(params: {
 
 /** A message "looks like" a verification-code attempt if it's mostly
  * digits and roughly the right length — used by the engine to short-
- * circuit straight to verification instead of spending an Anthropic call
+ * circuit straight to verification instead of spending an LLM call
  * on "123456". Deliberately loose (allows spaces/dashes a customer might
  * type, e.g. "123 456") since a false negative just falls through to the
  * normal engine turn, which handles an incorrect/garbled code gracefully

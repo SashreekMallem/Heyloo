@@ -5,32 +5,31 @@
 
 import { timingSafeEqual } from "../_shared/crypto.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { missingEnv, optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { requireEnv } from "../_shared/deno/env.ts";
+import { resolveLlmFromEnv } from "../_shared/deno/llm.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
+import { SafeFetchError, safeFetchText } from "../_shared/safe-fetch.ts";
 import { findLeadsNeedingResearch, submitResearchBatch } from "./handler.ts";
 
 const logger = createLogger({ fn: "job-outreach-personalize" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
-const RESEARCH_MODEL = optionalEnv("ANTHROPIC_OUTREACH_RESEARCH_MODEL") ?? "claude-haiku-4-5";
 
-// ANTHROPIC_API_KEY is an optional-integration secret (OPS-1,
-// docs/BUILD_NOTES.md): read lazily inside the handler, after the
-// cron-secret check, so the job skips cleanly instead of crashing
-// cold-start every 15 minutes while outreach isn't configured yet.
-const OPTIONAL_VARS = ["ANTHROPIC_API_KEY"] as const;
+// The LLM key is an optional-integration secret (OPS-1, docs/BUILD_NOTES.md;
+// LLM-1: Gemini by default): resolved lazily inside the handler, after the
+// cron-secret check, so the job skips cleanly instead of crashing cold-start
+// every 15 minutes while outreach isn't configured yet.
 
 const SCRAPE_TIMEOUT_MS = 10_000;
 
 async function fetchUrl(url: string): Promise<string | null> {
+  // SSRF-1: `url` comes from a scraped/enriched lead record (third-party data),
+  // so it is fetched through safeFetchText, never a bare fetch().
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), SCRAPE_TIMEOUT_MS);
-    const res = await fetch(url, { signal: controller.signal, redirect: "follow" });
-    clearTimeout(timer);
-    if (!res.ok) return null;
-    return await res.text();
-  } catch {
+    const res = await safeFetchText(url, { timeoutMs: SCRAPE_TIMEOUT_MS });
+    return res.ok ? res.text : null;
+  } catch (err) {
+    if (err instanceof SafeFetchError) logger.warn("outreach_scrape_blocked", { code: err.code });
     return null;
   }
 }
@@ -41,19 +40,16 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "unauthorized" }, { status: 401 });
   }
 
-  const missing = missingEnv(OPTIONAL_VARS);
-  if (missing.length > 0) {
-    logger.warn("job_skipped_not_configured", { missing });
-    return jsonResponse({ skipped: "not_configured", missing }, { status: 200 });
+  const llm = resolveLlmFromEnv();
+  if (!llm.ok) {
+    logger.warn("job_skipped_not_configured", { missing: llm.missing, provider: llm.providerId });
+    return jsonResponse({ skipped: "not_configured", missing: llm.missing }, { status: 200 });
   }
-  const ANTHROPIC_API_KEY = requireEnv("ANTHROPIC_API_KEY");
 
   const sql = getSql();
   const leads = await findLeadsNeedingResearch(sql);
   const result = await submitResearchBatch(sql, leads, {
-    anthropicFetch: fetch,
-    anthropicApiKey: ANTHROPIC_API_KEY,
-    researchModel: RESEARCH_MODEL,
+    llm: llm.client,
     fetchUrl,
     logger,
   });

@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import { chatText, type FakeLlm, fakeLlm } from "../_shared/providers/llm/test-support.ts";
 import type { TextAgentDeps } from "../_shared/text-agent/engine.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import { handleTextChat } from "./handler.ts";
@@ -40,17 +41,8 @@ function makeSql(fixtures: Record<string, unknown[]> = {}): SqlClient {
   }) as SqlClient;
 }
 
-function fakeAnthropicFetch(replyText: string): typeof fetch {
-  return vi.fn().mockResolvedValue(
-    new Response(
-      JSON.stringify({
-        content: [{ type: "text", text: replyText }],
-        stop_reason: "end_turn",
-        usage: { input_tokens: 1, output_tokens: 1 },
-      }),
-      { status: 200 },
-    ),
-  ) as unknown as typeof fetch;
+function fakeLlmReply(replyText: string): FakeLlm {
+  return fakeLlm({ chat: () => chatText(replyText) });
 }
 
 const WEB_CHAT_CONVERSATION_ROW = {
@@ -105,9 +97,7 @@ describe("handleTextChat", () => {
     const deps: TextAgentDeps & { widgetTokenSecret: string } = {
       sql,
       logger: silentLogger,
-      anthropicFetch: fakeAnthropicFetch("Hi! How can I help?"),
-      anthropicApiKey: "key",
-      model: "claude-sonnet-5",
+      llm: fakeLlmReply("Hi! How can I help?"),
       appBaseUrl: "https://heyloo.app",
       widgetTokenSecret: WIDGET_SECRET,
     };
@@ -130,9 +120,7 @@ describe("handleTextChat", () => {
     const deps: TextAgentDeps & { widgetTokenSecret: string } = {
       sql,
       logger: silentLogger,
-      anthropicFetch: fakeAnthropicFetch("unused"),
-      anthropicApiKey: "key",
-      model: "claude-sonnet-5",
+      llm: fakeLlmReply("unused"),
       appBaseUrl: "https://heyloo.app",
       widgetTokenSecret: WIDGET_SECRET,
     };
@@ -161,9 +149,7 @@ describe("handleTextChat", () => {
     const deps: TextAgentDeps & { widgetTokenSecret: string } = {
       sql,
       logger: silentLogger,
-      anthropicFetch: fakeAnthropicFetch("unused"),
-      anthropicApiKey: "key",
-      model: "claude-sonnet-5",
+      llm: fakeLlmReply("unused"),
       appBaseUrl: "https://heyloo.app",
       widgetTokenSecret: WIDGET_SECRET,
     };
@@ -183,9 +169,7 @@ describe("handleTextChat", () => {
     const deps: TextAgentDeps & { widgetTokenSecret: string } = {
       sql,
       logger: silentLogger,
-      anthropicFetch: fakeAnthropicFetch("unused"),
-      anthropicApiKey: "key",
-      model: "claude-sonnet-5",
+      llm: fakeLlmReply("unused"),
       appBaseUrl: "https://heyloo.app",
       widgetTokenSecret: WIDGET_SECRET,
     };
@@ -220,9 +204,7 @@ describe("handleTextChat", () => {
     const deps: TextAgentDeps & { widgetTokenSecret: string } = {
       sql,
       logger: silentLogger,
-      anthropicFetch: fakeAnthropicFetch("Sure, I can help with that."),
-      anthropicApiKey: "key",
-      model: "claude-sonnet-5",
+      llm: fakeLlmReply("Sure, I can help with that."),
       appBaseUrl: "https://heyloo.app",
       widgetTokenSecret: WIDGET_SECRET,
     };
