@@ -59,16 +59,21 @@ function stubApi(
   return { calls, patches: calls };
 }
 
-async function renderPage() {
+function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <Suspense fallback={null}>
+        <TenantDetailPage params={PARAMS} />
+      </Suspense>
+    </QueryClientProvider>,
+  );
+}
+
+/** `use(params)` suspends on first render; the mount has to happen inside an awaited act. */
+async function renderPage() {
   await act(async () => {
-    render(
-      <QueryClientProvider client={client}>
-        <Suspense fallback={null}>
-          <TenantDetailPage params={PARAMS} />
-        </Suspense>
-      </QueryClientProvider>,
-    );
+    mount();
   });
 }
 

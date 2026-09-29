@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Suspense } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -74,16 +74,21 @@ function stubApi() {
   return posts;
 }
 
-async function renderPage() {
+function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <Suspense fallback={null}>
+        <AdminSupportTicketPage params={PARAMS} />
+      </Suspense>
+    </QueryClientProvider>,
+  );
+}
+
+/** `use(params)` suspends on first render; the mount has to happen inside an awaited act. */
+async function renderPage() {
   await act(async () => {
-    render(
-      <QueryClientProvider client={client}>
-        <Suspense fallback={null}>
-          <AdminSupportTicketPage params={PARAMS} />
-        </Suspense>
-      </QueryClientProvider>,
-    );
+    mount();
   });
 }
 
@@ -102,9 +107,9 @@ describe("Admin support ticket thread", () => {
     expect(screen.getAllByText("Support team")).toHaveLength(2);
     expect(screen.getAllByText("Tenant")).toHaveLength(1);
     // only the hidden note carries the badge
-    const internalBadge = screen.getByText("Internal");
-    expect(internalBadge.closest("div")).toHaveTextContent("They asked twice already");
-    expect(screen.getAllByText("Internal")).toHaveLength(1);
+    expect(within(screen.getByTestId("support-note-n2")).getByText("Internal")).toBeInTheDocument();
+    expect(within(screen.getByTestId("support-note-n1")).queryByText("Internal")).toBeNull();
+    expect(within(screen.getByTestId("support-note-n3")).queryByText("Internal")).toBeNull();
   });
 
   it("sends a reply visible to the tenant and confirms it", async () => {

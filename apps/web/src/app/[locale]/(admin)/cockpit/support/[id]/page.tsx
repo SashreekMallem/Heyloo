@@ -131,7 +131,11 @@ export default function AdminSupportTicketPage({ params }: { params: Promise<{ i
                 <p className="mt-1 text-sm">{data.ticket.body}</p>
               </div>
               {(data.notes ?? []).map((note) => (
-                <div key={note.id} className="border-t border-border pt-4">
+                <div
+                  key={note.id}
+                  data-testid={`support-note-${note.id}`}
+                  className="border-t border-border pt-4"
+                >
                   <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <span className="font-medium text-foreground">
                       {note.author_role === "admin" ? "Support team" : "Tenant"}

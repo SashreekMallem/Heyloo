@@ -4,11 +4,10 @@ import { Button, Label, Switch } from "@heyloo/ui";
 import {
   createContext,
   type ReactNode,
-  useCallback,
   useContext,
-  useEffect,
   useMemo,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 export type MarginPeriodChoice = "mtd" | "last_month" | "quarter";
@@ -75,36 +74,56 @@ interface MarginControlsContextValue extends MarginControlsState {
   setIncludeTest: (includeTest: boolean) => void;
 }
 
-function useMarginControlsState(): MarginControlsContextValue {
-  const [state, setState] = useState<MarginControlsState>(DEFAULT_STATE);
+/**
+ * A tiny external store (read with `useSyncExternalStore`) rather than
+ * `useState` + a mount effect: the server snapshot is always the defaults, so
+ * SSR and hydration agree, and the client snapshot (URL / sessionStorage) is
+ * picked up right after hydration without a set-state-in-effect.
+ */
+interface MarginStore {
+  getSnapshot: () => MarginControlsState;
+  getServerSnapshot: () => MarginControlsState;
+  subscribe: (listener: () => void) => () => void;
+  update: (patch: Partial<MarginControlsState>) => void;
+}
 
-  // Hydrate after mount (never during render: the server render always uses the defaults).
-  useEffect(() => {
-    setState(readInitialState());
-  }, []);
+function createMarginStore(): MarginStore {
+  let current: MarginControlsState | null = null;
+  const listeners = new Set<() => void>();
+  const read = (): MarginControlsState => {
+    if (current === null) current = readInitialState();
+    return current;
+  };
+  return {
+    getSnapshot: read,
+    getServerSnapshot: () => DEFAULT_STATE,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    update(patch) {
+      current = { ...read(), ...patch };
+      persistState(current);
+      for (const listener of listeners) listener();
+    },
+  };
+}
 
-  const setPeriod = useCallback((period: MarginPeriodChoice) => {
-    setState((prev) => {
-      const next = { ...prev, period };
-      persistState(next);
-      return next;
-    });
-  }, []);
-  const setIncludeTest = useCallback((includeTest: boolean) => {
-    setState((prev) => {
-      const next = { ...prev, includeTest };
-      persistState(next);
-      return next;
-    });
-  }, []);
-
+function useMarginStoreState(store: MarginStore): MarginControlsContextValue {
+  const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getServerSnapshot);
   return useMemo(
-    () => ({ ...state, setPeriod, setIncludeTest }),
-    [state, setPeriod, setIncludeTest],
+    () => ({
+      ...state,
+      setPeriod: (period: MarginPeriodChoice) => store.update({ period }),
+      setIncludeTest: (includeTest: boolean) => store.update({ includeTest }),
+    }),
+    [state, store],
   );
 }
 
-const MarginControlsContext = createContext<MarginControlsContextValue | null>(null);
+const MarginStoreContext = createContext<MarginStore | null>(null);
 
 /**
  * COCKPIT-F20/F13: the period and "include test data" choice used to live in
@@ -115,8 +134,8 @@ const MarginControlsContext = createContext<MarginControlsContextValue | null>(n
  * about test data), and survives a reload via the URL / sessionStorage.
  */
 export function MarginControlsProvider({ children }: { children: ReactNode }) {
-  const value = useMarginControlsState();
-  return <MarginControlsContext.Provider value={value}>{children}</MarginControlsContext.Provider>;
+  const [store] = useState(createMarginStore);
+  return <MarginStoreContext.Provider value={store}>{children}</MarginStoreContext.Provider>;
 }
 
 /**
@@ -129,9 +148,11 @@ export function MarginControlsProvider({ children }: { children: ReactNode }) {
  * page-local state.
  */
 export function useMarginControls(opts: { withPeriod?: boolean; withTestToggle?: boolean } = {}) {
-  const shared = useContext(MarginControlsContext);
-  const local = useMarginControlsState();
-  const { period, includeTest, setPeriod, setIncludeTest } = shared ?? local;
+  const sharedStore = useContext(MarginStoreContext);
+  const [localStore] = useState(createMarginStore);
+  const { period, includeTest, setPeriod, setIncludeTest } = useMarginStoreState(
+    sharedStore ?? localStore,
+  );
 
   const params = new URLSearchParams();
   if (opts.withPeriod) params.set("period", period);

@@ -18,7 +18,7 @@ function ctx(overrides: Partial<AdminRequestContext>): AdminRequestContext {
 }
 
 /** The exact rows `supabase/seed/seed.sql` writes (what fn_check_referral_qualification reads). */
-const SEEDED = [
+const SEEDED: { key: string; value: Record<string, unknown> }[] = [
   { key: "referral_flat_amount_cents", value: { flat_amount_cents: 20000 } },
   { key: "referral_qualification_rule", value: { rule: "paid_invoices_gte", value: 2 } },
 ];

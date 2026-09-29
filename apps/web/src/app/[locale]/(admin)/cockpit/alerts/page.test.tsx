@@ -85,11 +85,9 @@ describe("Alerts page", () => {
   it("F07: lists the open alerts with severity, tenant and details", async () => {
     stubApi();
     renderPage();
-    const riverside = await screen.findByText("Riverside Auto Repair");
-    const row = riverside.closest("tr");
-    expect(row).not.toBeNull();
-    expect(within(row as HTMLElement).getByText("warning")).toBeInTheDocument();
-    expect(within(row as HTMLElement).getByText(/margin cents: -500/)).toBeInTheDocument();
+    const row = await screen.findByRole("row", { name: /Riverside Auto Repair/ });
+    expect(within(row).getByText("warning")).toBeInTheDocument();
+    expect(within(row).getByText(/margin cents: -500/)).toBeInTheDocument();
     // a platform-wide alert has no tenant
     expect(screen.getByText("Platform")).toBeInTheDocument();
     expect(screen.getByText("critical")).toBeInTheDocument();
