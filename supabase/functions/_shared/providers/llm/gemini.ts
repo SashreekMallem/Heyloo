@@ -221,6 +221,34 @@ function keepsDefaultTemperature(model: string): boolean {
   return /^(?:models\/)?gemini-(?:[3-9]|\d{2,})/.test(model);
 }
 
+/** Inline media types the Gemini API accepts (ai.google.dev/gemini-api/docs/
+ * image-understanding "Supported image formats" + document-processing): GIF is
+ * NOT among them, so it is refused locally with a clear error instead of a
+ * round trip that ends in an opaque 400. */
+const GEMINI_MEDIA_TYPES: ReadonlySet<string> = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+  "application/pdf",
+]);
+
+function unsupportedMediaType(input: LlmTextRequest["input"]): string | undefined {
+  for (const part of toInputParts(input)) {
+    if (part.kind === "media" && !GEMINI_MEDIA_TYPES.has(part.mimeType.toLowerCase())) {
+      return part.mimeType;
+    }
+  }
+  return undefined;
+}
+
+/** `GEMINI_MODEL` may be written `models/<id>` (the docs' resource form): the
+ * bare id is what pricing and cost categorisation key on. */
+function bareModelId(model: string): string {
+  return model.replace(/^models\//, "");
+}
+
 function modelPath(model: string): string {
   return `models/${encodeURIComponent(model.replace(/^models\//, ""))}`;
 }
@@ -310,7 +338,8 @@ export const GEMINI_BATCH_ID_PATTERN = BATCH_ID;
 export function createGeminiClient(config: GeminiClientConfig): LlmClient {
   const baseUrl = config.baseUrl ?? GEMINI_BASE_URL;
   const headroom = config.thinkingHeadroomTokens ?? GEMINI_DEFAULT_THINKING_HEADROOM_TOKENS;
-  const modelFor = (tier: LlmTier): string => config.models?.[tier] ?? GEMINI_DEFAULT_MODEL;
+  const modelFor = (tier: LlmTier): string =>
+    bareModelId(config.models?.[tier] ?? GEMINI_DEFAULT_MODEL);
   const headers = { "x-goog-api-key": config.apiKey, "content-type": "application/json" };
   let callSeq = 0;
 
@@ -319,7 +348,7 @@ export function createGeminiClient(config: GeminiClientConfig): LlmClient {
     : undefined;
 
   const modelOf = (req: { model?: string | undefined; tier?: LlmTier | undefined }): string =>
-    req.model ?? modelFor(req.tier ?? "fast");
+    bareModelId(req.model ?? modelFor(req.tier ?? "fast"));
 
   function baseBody(
     model: string,
@@ -353,6 +382,7 @@ export function createGeminiClient(config: GeminiClientConfig): LlmClient {
       body,
       timeoutMs: req.timeoutMs,
       maxRetries: req.maxRetries,
+      totalTimeoutMs: req.totalTimeoutMs,
       classify: classifyGeminiError,
     });
     if (!res.ok) return { ok: false, error: res.error };
@@ -395,6 +425,8 @@ export function createGeminiClient(config: GeminiClientConfig): LlmClient {
   }
 
   async function generateText(req: LlmTextRequest): Promise<LlmResult<LlmTextResponse>> {
+    const badMedia = unsupportedMediaType(req.input);
+    if (badMedia) return llmFailure("invalid_request", 0, `unsupported media type: ${badMedia}`);
     const result = await generate(req, {
       contents: [{ role: "user", parts: toGeminiParts(toInputParts(req.input)) }],
       ...baseBody(modelOf(req), req),
@@ -419,6 +451,8 @@ export function createGeminiClient(config: GeminiClientConfig): LlmClient {
   }
 
   async function generateJson(req: LlmJsonRequest): Promise<LlmResult<LlmJsonResponse>> {
+    const badMedia = unsupportedMediaType(req.input);
+    if (badMedia) return llmFailure("invalid_request", 0, `unsupported media type: ${badMedia}`);
     const result = await generate(req, {
       contents: [{ role: "user", parts: toGeminiParts(toInputParts(req.input)) }],
       ...baseBody(modelOf(req), req, {

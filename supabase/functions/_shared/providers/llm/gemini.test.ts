@@ -163,6 +163,28 @@ describe("gemini adapter — request shape (ai.google.dev/api/generate-content)"
     ]);
   });
 
+  it("refuses a media type Gemini does not accept (GIF) without a network call", async () => {
+    const { llm, calls } = client([json(fx.GEMINI_JSON_RESPONSE)]);
+    const result = await llm.generateJson({
+      tier: "vision",
+      input: [{ kind: "media", mimeType: "image/gif", dataBase64: "R0lGODlh" }],
+      schema: { type: "object" },
+      maxOutputTokens: 100,
+    });
+    expect(result).toMatchObject({ ok: false, error: { kind: "invalid_request" } });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("accepts GEMINI_MODEL written as models/<id> and reports the bare id", async () => {
+    const { llm, calls } = client([json(fx.GEMINI_TEXT_RESPONSE)], {
+      models: { fast: "models/gemini-3.5-flash-lite" },
+    });
+    const result = await llm.generateText({ input: "hi", maxOutputTokens: 10 });
+    expect(calls[0]?.url).toContain("/v1beta/models/gemini-3.5-flash-lite:generateContent");
+    expect(result).toMatchObject({ ok: true, model: "gemini-3.5-flash-lite" });
+    expect(llm.modelFor("fast")).toBe("gemini-3.5-flash-lite");
+  });
+
   it("declares tools as functionDeclarations with parametersJsonSchema", async () => {
     const { llm, calls } = client([json(fx.GEMINI_TEXT_RESPONSE)]);
     const inputSchema = {
@@ -539,6 +561,25 @@ describe("gemini adapter — errors, retries, timeouts (ai.google.dev/gemini-api
       error: { kind: "timeout", status: 0, retryable: true },
     });
     expect(calls).toHaveLength(2);
+  });
+
+  it("totalTimeoutMs caps all attempts: no retry starts once the budget is spent", async () => {
+    const hang = (init: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    const { llm, calls } = client([hang, hang, hang]);
+    const started = Date.now();
+    const res = await llm.generateText({
+      input: "x",
+      maxOutputTokens: 5,
+      timeoutMs: 5_000,
+      totalTimeoutMs: 40,
+      maxRetries: 2,
+    });
+    expect(res).toMatchObject({ ok: false, error: { kind: "timeout" } });
+    expect(calls).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 
   it("never throws: every failure arm is a value", async () => {

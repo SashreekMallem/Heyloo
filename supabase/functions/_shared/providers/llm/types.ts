@@ -113,6 +113,9 @@ interface LlmRequestBase {
   timeoutMs?: number;
   /** Retries after the first attempt on 408/429/5xx/network/timeout. Default 2. */
   maxRetries?: number;
+  /** Optional wall-clock cap across all attempts and backoff (for a caller with
+   * a hard upstream deadline). Unset = `timeoutMs` per attempt only. */
+  totalTimeoutMs?: number;
 }
 
 export interface LlmTextRequest extends LlmRequestBase {

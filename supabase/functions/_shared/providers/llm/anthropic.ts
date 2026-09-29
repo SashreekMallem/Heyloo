@@ -195,6 +195,7 @@ export function createAnthropicClient(config: AnthropicClientConfig): LlmClient 
       },
       timeoutMs: req.timeoutMs,
       maxRetries: req.maxRetries,
+      totalTimeoutMs: req.totalTimeoutMs,
       classify: classifyAnthropicError,
     });
     if (!res.ok) return { ok: false, error: res.error };

@@ -32,7 +32,7 @@ export const runtime = "nodejs";
  * SAME shape `offeringWriteSchema` (`../schema.ts`) already validates, so
  * a parsed row can go straight into the review form with no reshaping.
  */
-const ImageMediaTypeSchema = z.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+const ImageMediaTypeSchema = z.enum(["image/jpeg", "image/png", "image/webp"]);
 
 const UrlSourceSchema = z.object({
   kind: z.literal("url"),

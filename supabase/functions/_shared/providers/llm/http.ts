@@ -32,6 +32,9 @@ export interface JsonRequestOptions {
   body?: unknown;
   timeoutMs?: number | undefined;
   maxRetries?: number | undefined;
+  /** Overall wall-clock cap across ALL attempts and backoff sleeps: an attempt
+   * is shortened to the time left and no retry starts once it is spent. */
+  totalTimeoutMs?: number | undefined;
   /** `text` skips JSON parsing (for JSONL result downloads). Default `json`. */
   responseType?: "json" | "text";
   /** Turns a non-2xx response into a classified error. */
@@ -87,7 +90,12 @@ export async function requestJson(opts: JsonRequestOptions): Promise<JsonRequest
   const sleep = opts.transport.sleep ?? defaultSleep;
   const random = opts.transport.random ?? Math.random;
   const maxRetries = Math.max(0, opts.maxRetries ?? DEFAULT_MAX_RETRIES);
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const perAttemptMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const startedAt = Date.now();
+  const remainingMs = () =>
+    opts.totalTimeoutMs === undefined
+      ? Number.POSITIVE_INFINITY
+      : opts.totalTimeoutMs - (Date.now() - startedAt);
 
   let last: LlmError = {
     kind: "unavailable",
@@ -98,6 +106,7 @@ export async function requestJson(opts: JsonRequestOptions): Promise<JsonRequest
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     let waitHintMs: number | undefined;
+    const timeoutMs = Math.max(1, Math.min(perAttemptMs, remainingMs()));
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -144,7 +153,10 @@ export async function requestJson(opts: JsonRequestOptions): Promise<JsonRequest
 
     if (!last.retryable || attempt === maxRetries) break;
     const backoff = Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_CAP_MS);
-    await sleep(waitHintMs ?? backoff + Math.floor(random() * 250));
+    const waitMs = waitHintMs ?? backoff + Math.floor(random() * 250);
+    // No retry once the overall budget cannot cover the wait plus a real attempt.
+    if (remainingMs() <= waitMs) break;
+    await sleep(waitMs);
   }
 
   return { ok: false, error: last };

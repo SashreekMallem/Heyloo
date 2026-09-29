@@ -12,7 +12,7 @@ import { z } from "zod";
  * for when the client is upgraded to send an actual PDF/photo — both are
  * accepted so the already-shipped UI keeps working unchanged today.
  */
-const ImageMediaTypeSchema = z.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+const ImageMediaTypeSchema = z.enum(["image/jpeg", "image/png", "image/webp"]);
 
 const UrlSourceSchema = z.object({
   kind: z.literal("url"),
