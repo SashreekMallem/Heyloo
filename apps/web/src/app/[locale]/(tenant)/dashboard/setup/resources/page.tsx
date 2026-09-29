@@ -47,8 +47,9 @@ import { toast } from "sonner";
 import { z } from "zod";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
 import { type SaveResult, saveErrorMessage, sendJson } from "@/lib/settings/client";
+import { ReadOnlyNote } from "@/lib/settings/read-only-note";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
-import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
+import { useCanWriteSettings, useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
 const RESOURCE_TYPES = ["chair", "room", "table", "bay", "staff", "agent"] as const;
 
@@ -121,6 +122,7 @@ type ResourceFormValues = z.infer<typeof resourceFormSchema>;
 
 export default function ResourcesSetupPage() {
   const tenantId = useCurrentTenantId();
+  const canWrite = useCanWriteSettings();
   const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<ResourceRow | null>(null);
@@ -241,50 +243,53 @@ export default function ResourcesSetupPage() {
         title="Resources"
         description="The rooms, chairs, bays, tables, or staff lines your AI checks availability against and books onto."
         actions={
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="mr-1 size-4" /> Add resource
-          </Button>
+          canWrite ? (
+            <Button size="sm" onClick={openCreate}>
+              <Plus className="mr-1 size-4" /> Add resource
+            </Button>
+          ) : undefined
         }
       />
+      <ReadOnlyNote />
 
       <DataState
         query={query}
         empty={{
           title: "No resources yet",
           description: "Add at least one resource so your AI has something to book.",
-          action: { label: "Add resource", onClick: openCreate },
+          ...(canWrite ? { action: { label: "Add resource", onClick: openCreate } } : {}),
         }}
         render={(resources) => (
-          <div className="overflow-x-auto rounded-md border border-border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Room type</TableHead>
-                  <TableHead>Capacity</TableHead>
-                  <TableHead>Appointment length</TableHead>
-                  <TableHead>Buffer</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {resources.map((resource) => (
-                  <TableRow key={resource.id}>
-                    <TableCell className="font-medium">{resource.name}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className="capitalize">
-                        {resource.type}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>{resource.room_type ?? "—"}</TableCell>
-                    <TableCell>{resource.capacity}</TableCell>
-                    <TableCell>{slotLabel(resource)}</TableCell>
-                    <TableCell>
-                      {resource.buffer_minutes ? `${resource.buffer_minutes} min` : "None"}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="ghost" size="sm" onClick={() => openEdit(resource)}>
+          <>
+            {/* QA-1 F-11: below `md` a card per resource — the 7-column table
+                was wider than a phone with Edit/Remove scrolled off-screen
+                (same pattern as Setup → Offerings). */}
+            <ul className="flex flex-col gap-2 md:hidden" data-testid="resource-cards">
+              {resources.map((resource) => (
+                <li key={resource.id} className="rounded-lg border border-border p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{resource.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {resource.room_type ?? "No sub-type"} · capacity {resource.capacity}
+                      </p>
+                    </div>
+                    <Badge variant="outline" className="shrink-0 capitalize">
+                      {resource.type}
+                    </Badge>
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {slotLabel(resource)} · buffer{" "}
+                    {resource.buffer_minutes ? `${resource.buffer_minutes} min` : "none"}
+                  </p>
+                  {canWrite && (
+                    <div className="mt-2 flex justify-end gap-1 border-t border-border pt-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openEdit(resource)}
+                        aria-label={`Edit ${resource.name}`}
+                      >
                         Edit
                       </Button>
                       <Button
@@ -292,15 +297,65 @@ export default function ResourcesSetupPage() {
                         size="sm"
                         className="text-destructive"
                         onClick={() => setPendingDelete(resource)}
+                        aria-label={`Remove ${resource.name}`}
                       >
                         Remove
                       </Button>
-                    </TableCell>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+
+            <div className="hidden overflow-x-auto rounded-md border border-border md:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Room type</TableHead>
+                    <TableHead>Capacity</TableHead>
+                    <TableHead>Appointment length</TableHead>
+                    <TableHead>Buffer</TableHead>
+                    {canWrite && <TableHead className="text-right">Actions</TableHead>}
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+                </TableHeader>
+                <TableBody>
+                  {resources.map((resource) => (
+                    <TableRow key={resource.id}>
+                      <TableCell className="font-medium">{resource.name}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="capitalize">
+                          {resource.type}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>{resource.room_type ?? "—"}</TableCell>
+                      <TableCell>{resource.capacity}</TableCell>
+                      <TableCell>{slotLabel(resource)}</TableCell>
+                      <TableCell>
+                        {resource.buffer_minutes ? `${resource.buffer_minutes} min` : "None"}
+                      </TableCell>
+                      {canWrite && (
+                        <TableCell className="text-right">
+                          <Button variant="ghost" size="sm" onClick={() => openEdit(resource)}>
+                            Edit
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive"
+                            onClick={() => setPendingDelete(resource)}
+                          >
+                            Remove
+                          </Button>
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </>
         )}
       />
 

@@ -1,9 +1,22 @@
 import type { ComponentProps } from "react";
 import { cn } from "../lib/utils.js";
 
-export function Table({ className, ...props }: ComponentProps<"table">) {
+export interface TableProps extends ComponentProps<"table"> {
+  /**
+   * QA-1 MAP-15: when set, the horizontally scrolling wrapper becomes a
+   * focusable, labelled region so keyboard users can scroll a wide table
+   * (axe `scrollable-region-focusable`). Left off for tables that never
+   * overflow.
+   */
+  scrollLabel?: string;
+}
+
+export function Table({ className, scrollLabel, ...props }: TableProps) {
   return (
-    <div className="relative w-full overflow-x-auto">
+    <div
+      className="relative w-full overflow-x-auto"
+      {...(scrollLabel ? { role: "region", "aria-label": scrollLabel, tabIndex: 0 } : {})}
+    >
       <table className={cn("w-full caption-bottom text-sm", className)} {...props} />
     </div>
   );

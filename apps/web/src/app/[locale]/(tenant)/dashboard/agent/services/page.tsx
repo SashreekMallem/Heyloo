@@ -26,9 +26,10 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Link } from "@/i18n/navigation";
 import { SAVED_NEXT_CALL, saveErrorMessage, sendJson } from "@/lib/settings/client";
+import { ReadOnlyNote } from "@/lib/settings/read-only-note";
 import { serviceDialogSchema } from "@/lib/settings/schemas";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
-import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
+import { useCanWriteSettings, useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
 type FieldErrors = Partial<Record<"name" | "duration_minutes" | "price_cents", string>>;
 
@@ -42,6 +43,7 @@ type FieldErrors = Partial<Record<"name" | "duration_minutes" | "price_cents", s
  */
 export default function ServicesTabPage() {
   const tenantId = useCurrentTenantId();
+  const canWrite = useCanWriteSettings();
   const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<OfferingRowData | null>(null);
@@ -59,6 +61,10 @@ export default function ServicesTabPage() {
         .from("offerings")
         .select("id, name, duration_minutes, price_cents, active")
         .eq("tenant_id", tenantId as string)
+        // QA-1 F-14: a removed service is only deactivated; hide it like
+        // Setup → Offerings does (there is no restore action, so listing it
+        // as "Inactive" was a dead end and the two lists disagreed).
+        .eq("active", true)
         .order("created_at", { ascending: true });
       return (data ?? []).map((o) => ({
         id: o.id,
@@ -155,7 +161,9 @@ export default function ServicesTabPage() {
         </Link>
         .
       </p>
+      <ReadOnlyNote />
       <ServiceOfferingEditor
+        readOnly={!canWrite}
         offerings={query.data ?? []}
         onChange={(action, offering) => {
           if (action === "add") openDialog();

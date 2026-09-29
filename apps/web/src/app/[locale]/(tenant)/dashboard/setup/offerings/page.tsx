@@ -43,8 +43,9 @@ import { toast } from "sonner";
 import { z } from "zod";
 import { Link } from "@/i18n/navigation";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
+import { ReadOnlyNote } from "@/lib/settings/read-only-note";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
-import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
+import { useCanWriteSettings, useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
 interface OfferingRow {
   id: string;
@@ -86,6 +87,7 @@ function lineToAllergens(value: string): string[] {
 
 export default function OfferingsSetupPage() {
   const tenantId = useCurrentTenantId();
+  const canWrite = useCanWriteSettings();
   const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<OfferingRow | null>(null);
@@ -196,23 +198,26 @@ export default function OfferingsSetupPage() {
         title="Offerings & menu"
         description="Services, room types, or menu items — with prices, modifiers, and allergens — that your AI can quote, book, or take orders against."
         actions={
-          <>
-            <Button variant="outline" size="sm" asChild>
-              <Link href="/dashboard/setup/offerings/import">Import menu</Link>
-            </Button>
-            <Button size="sm" onClick={openCreate}>
-              <Plus className="mr-1 size-4" /> Add offering
-            </Button>
-          </>
+          canWrite ? (
+            <>
+              <Button variant="outline" size="sm" asChild>
+                <Link href="/dashboard/setup/offerings/import">Import menu</Link>
+              </Button>
+              <Button size="sm" onClick={openCreate}>
+                <Plus className="mr-1 size-4" /> Add offering
+              </Button>
+            </>
+          ) : undefined
         }
       />
+      <ReadOnlyNote />
 
       <DataState
         query={query}
         empty={{
           title: "No offerings yet",
           description: "Add at least one so your AI can quote a price or take an order.",
-          action: { label: "Add offering", onClick: openCreate },
+          ...(canWrite ? { action: { label: "Add offering", onClick: openCreate } } : {}),
         }}
         render={(offerings) => (
           <>
@@ -243,25 +248,27 @@ export default function OfferingsSetupPage() {
                       </Badge>
                     ))}
                   </div>
-                  <div className="mt-2 flex justify-end gap-1 border-t border-border pt-2">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => openEdit(offering)}
-                      aria-label={`Edit ${offering.name}`}
-                    >
-                      Edit
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-destructive"
-                      onClick={() => setPendingDelete(offering)}
-                      aria-label={`Remove ${offering.name}`}
-                    >
-                      Remove
-                    </Button>
-                  </div>
+                  {canWrite && (
+                    <div className="mt-2 flex justify-end gap-1 border-t border-border pt-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openEdit(offering)}
+                        aria-label={`Edit ${offering.name}`}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive"
+                        onClick={() => setPendingDelete(offering)}
+                        aria-label={`Remove ${offering.name}`}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -275,7 +282,9 @@ export default function OfferingsSetupPage() {
                     <TableHead>Price</TableHead>
                     <TableHead className="whitespace-nowrap">Duration</TableHead>
                     <TableHead>Allergens</TableHead>
-                    <TableHead className="whitespace-nowrap text-right">Actions</TableHead>
+                    {canWrite && (
+                      <TableHead className="whitespace-nowrap text-right">Actions</TableHead>
+                    )}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -302,25 +311,27 @@ export default function OfferingsSetupPage() {
                           "—"
                         )}
                       </TableCell>
-                      <TableCell className="whitespace-nowrap text-right">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => openEdit(offering)}
-                          aria-label={`Edit ${offering.name}`}
-                        >
-                          Edit
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-destructive"
-                          onClick={() => setPendingDelete(offering)}
-                          aria-label={`Remove ${offering.name}`}
-                        >
-                          Remove
-                        </Button>
-                      </TableCell>
+                      {canWrite && (
+                        <TableCell className="whitespace-nowrap text-right">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => openEdit(offering)}
+                            aria-label={`Edit ${offering.name}`}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive"
+                            onClick={() => setPendingDelete(offering)}
+                            aria-label={`Remove ${offering.name}`}
+                          >
+                            Remove
+                          </Button>
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                 </TableBody>

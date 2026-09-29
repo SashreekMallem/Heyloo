@@ -67,6 +67,16 @@ describe("Setup → Offerings dialog (QA-1 F-1)", () => {
     expect(routes.calls[0]?.body).toMatchObject({ duration_minutes: null, price_cents: null });
   });
 
+  it("QA-1 F-5: a member sees the menu read-only (no Add/Import/Edit/Remove), with an explanation", async () => {
+    renderWithTenant(<OfferingsSetupPage />, { canWrite: false });
+    expect(await screen.findByTestId("read-only-note")).toBeInTheDocument();
+    expect((await screen.findAllByText("Margherita")).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /Add offering/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Import menu/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Edit Margherita/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Remove Margherita/ })).not.toBeInTheDocument();
+  });
+
   it("a new offering omits an empty price/duration (create schema has no null)", async () => {
     const routes = stubRoutes({
       "/api/tenant/offerings": () => ({ body: { ok: true, id: "o2" } }),
