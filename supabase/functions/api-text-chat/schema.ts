@@ -35,6 +35,7 @@ export interface TextChatResponse {
     | "human_handoff"
     | "a2p_not_verified"
     | "opted_out"
+    | "text_agent_disabled"
     | "rate_limited"
     | "closed"
     | "engine_error"

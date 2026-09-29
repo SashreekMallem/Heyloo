@@ -75,5 +75,5 @@ export function applyIssues(
 }
 
 export const SAVED_NEXT_CALL = "Saved — your AI uses this from the next call.";
+export const SAVED_NEXT_TEXT = "Saved — your text agent uses this from the next message.";
 export const SAVED_NEEDS_PUBLISH = "Saved — click “Publish changes” to update your live agent.";
-export const SAVED_NOT_LIVE = "Saved. Your AI doesn't use this yet — see the note on this page.";

@@ -130,6 +130,36 @@ export function computeUpcomingWeekdayDates(now: Date, timeZone: string): string
   return entries.join(", ");
 }
 
+/**
+ * SETTINGS-2 (docs/BUILD_NOTES.md): is the business open at `now`? Same
+ * window/exception resolution as `computeGreetingHoursContext` (an exception
+ * with `closed: true` closes the day; an exception's own `hours` replace the
+ * weekly ones; a `[]` weekday is closed) — used by `agent-settings.ts` to
+ * decide, at call time, which transfer number (if any) the call may use.
+ * A business with NO hours configured at all is treated as always open, so
+ * "only during business hours" never silently turns transfers off for a
+ * tenant that never entered hours.
+ */
+export function isOpenAt(
+  now: Date,
+  timeZone: string,
+  businessHours: WeeklyBusinessHours,
+  exceptions: HoursException[] = [],
+): boolean {
+  const configured = DOW_KEYS.some((key) => (businessHours[key] ?? []).length > 0);
+  const { dow, dateStr, minutes } = localParts(now, timeZone);
+  const exception = exceptions.find((e) => e.date === dateStr);
+  if (!configured && !exception) return true;
+  let windows: HoursWindow[];
+  if (exception?.closed) windows = [];
+  else if (exception?.hours) windows = exception.hours;
+  else windows = businessHours[dow] ?? [];
+  return windows.some(
+    (window) =>
+      minutes >= timeStrToMinutes(window.open) && minutes < timeStrToMinutes(window.close),
+  );
+}
+
 export function computeGreetingHoursContext(
   now: Date,
   timeZone: string,

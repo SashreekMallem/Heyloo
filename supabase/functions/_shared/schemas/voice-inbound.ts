@@ -76,6 +76,16 @@ export const VoiceInboundDynamicVariablesSchema = z.object({
   // unresolved placeholder in the compiled prompt that now references it.
   caller_recent_context: z.string(),
   disclosure_line: z.string(),
+  // SETTINGS-2 (docs/BUILD_NOTES.md): the owner settings the compiled agent's
+  // owner-info block references — ALWAYS strings (Retell dynamic variables are
+  // strings only; blank/"(none)" text when unset), resolved by
+  // `_shared/agent-settings.ts#buildAgentSettingsVariables`. `special_instructions`
+  // and `transfer_number` (above) come from the same builder.
+  transfer_policy_text: z.string(),
+  faq_text: z.string(),
+  business_facts: z.string(),
+  voicemail_message: z.string(),
+  booking_mode_text: z.string(),
   // GAP_REGISTER §1.3 — per-vertical `{{token}}`s every compiled prompt may
   // reference (packages/templates/src/red-team/prompt-lint.ts's
   // ALLOWED_DYNAMIC_VARIABLES), always resolved with a safe default by

@@ -33,7 +33,15 @@ import type { LlmCreateParams } from "retell-sdk/resources/llm";
 import { describe, expect, it } from "vitest";
 import { compileConversationFlow as compileNodeConversationFlow } from "./conversation-flow.js";
 import { compileMultiPrompt as compileNodeMultiPrompt } from "./multi-prompt.js";
-import { buildOpeningLine as buildNodeOpeningLine } from "./opening.js";
+import {
+  buildOpeningLine as buildNodeOpeningLine,
+  COMPILER_DEFAULT_DYNAMIC_VARIABLES as NODE_DEFAULT_DYNAMIC_VARIABLES,
+} from "./opening.js";
+import {
+  AGENT_COMPILER_VERSION as NODE_AGENT_COMPILER_VERSION,
+  OWNER_INFO_INSTRUCTIONS as NODE_OWNER_INFO_INSTRUCTIONS,
+} from "./owner-info.js";
+import { compileSinglePrompt as compileNodeSinglePrompt } from "./single-prompt.js";
 
 const DENO_TEMPLATE_COMPILER_URL = new URL(
   "../../../../../supabase/functions/_shared/compiler/template-compiler.ts",
@@ -415,5 +423,42 @@ describe("DISCLOSE-1: the live (Deno) compiler's new shapes match retell-sdk's o
     expect({ begin_message: nodeLlm.begin_message, start_speaker: nodeLlm.start_speaker }).toEqual(
       opening,
     );
+  });
+});
+
+describe("Deno <-> Node parity: SETTINGS-2 owner-info block and compiler version", () => {
+  it("both compilers carry the byte-identical owner-info block, version stamp and defaults", async () => {
+    const deno = (await loadDenoCompiler()) as DenoCompilerModule & {
+      OWNER_INFO_INSTRUCTIONS: string;
+      AGENT_COMPILER_VERSION: number;
+    };
+    expect(NODE_OWNER_INFO_INSTRUCTIONS).toBe(deno.OWNER_INFO_INSTRUCTIONS);
+    expect(NODE_AGENT_COMPILER_VERSION).toBe(deno.AGENT_COMPILER_VERSION);
+
+    // The same settings defaults reach the Deno flow body.
+    const denoBody = deno.compileTemplate(PARITY_TEMPLATE, TOOL_WEBHOOK_URL).flow.body;
+    for (const [key, value] of Object.entries(NODE_DEFAULT_DYNAMIC_VARIABLES)) {
+      if (key === "caller_greeting" || key === "transfer_number") continue;
+      expect(denoBody.default_dynamic_variables?.[key], key).toBe(value);
+    }
+  });
+
+  it("every compile target of both compilers puts the owner-info block in the global prompt", async () => {
+    const deno = await loadDenoCompiler();
+    for (const target of ["conversation_flow", "multi_prompt", "single_prompt"] as const) {
+      const template = { ...PARITY_TEMPLATE, compile_target: target };
+      const denoFlow = deno.compileTemplate(template, TOOL_WEBHOOK_URL).flow as unknown as {
+        body: { global_prompt?: string; general_prompt?: string };
+      };
+      const denoPrompt = denoFlow.body.global_prompt ?? denoFlow.body.general_prompt ?? "";
+      expect(denoPrompt, `deno ${target}`).toContain("[[BEGIN OWNER INFO]]");
+      const node =
+        target === "conversation_flow"
+          ? compileNodeConversationFlow(template, TOOL_WEBHOOK_URL).global_prompt
+          : target === "multi_prompt"
+            ? compileNodeMultiPrompt(template, TOOL_WEBHOOK_URL).general_prompt
+            : compileNodeSinglePrompt(template, TOOL_WEBHOOK_URL).general_prompt;
+      expect(node, `node ${target}`).toContain(NODE_OWNER_INFO_INSTRUCTIONS);
+    }
   });
 });

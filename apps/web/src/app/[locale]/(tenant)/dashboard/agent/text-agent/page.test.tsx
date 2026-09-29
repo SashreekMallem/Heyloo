@@ -36,6 +36,13 @@ vi.mock("@/lib/supabase/browser", () => ({
 }));
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("@/i18n/navigation", () => ({
+  Link: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
+  ),
+}));
 
 import { TenantIdProvider } from "@/lib/tenant/tenant-context";
 import TextAgentTabPage from "./page";
@@ -119,8 +126,11 @@ describe("TextAgentTabPage", () => {
     renderPage();
     expect(await screen.findByRole("switch", { name: "Enable quiet hours" })).toBeChecked();
     expect(screen.getByLabelText("Starts at")).toHaveValue("21:00");
-    // The master toggle is labeled honestly — replies are not gated by it yet.
-    expect(screen.getByText(/isn.t enforced yet/)).toBeInTheDocument();
+    // SETTINGS-2: the switch and persona are read by the text engine now — no "not used" labels,
+    // and the copy says what on/off really does.
+    expect(screen.getByText(/your AI does not reply on its own/)).toBeInTheDocument();
+    expect(screen.queryByText("Not used on calls yet")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Saved, but not used yet/)).not.toBeInTheDocument();
   });
 
   it("SETTINGS-1: saves quiet hours as whole hours (the only precision the reminder job reads)", async () => {

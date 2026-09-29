@@ -113,7 +113,26 @@ describe("compileTemplate — conversation_flow", () => {
       language: "en",
       business_name: "Riverside Auto",
       assistant_name: "Nova",
+      // SETTINGS-2: the owner-info block's variables, "nothing set" safe values.
+      special_instructions: "",
+      faq_text: expect.stringContaining("no FAQ"),
+      business_facts: expect.stringContaining("nothing extra"),
+      voicemail_message: "",
+      booking_mode_text: expect.stringContaining("Normal"),
+      transfer_policy_text: expect.stringContaining("No live transfer"),
+      cancellation_policy_text: expect.any(String),
     });
+    for (const token of [
+      "{{special_instructions}}",
+      "{{faq_text}}",
+      "{{business_facts}}",
+      "{{voicemail_message}}",
+      "{{booking_mode_text}}",
+      "{{transfer_policy_text}}",
+      "{{cancellation_policy_text}}",
+    ]) {
+      expect(global_prompt).toContain(token);
+    }
   });
 
   it("gives every emitted tool a tool_id (CALL-1 gap fix: required by a live 400, docs.retellai.com/api-references/create-conversation-flow)", () => {

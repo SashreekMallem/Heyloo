@@ -32,6 +32,7 @@
 // api-admin-run-agent-tests/handler.ts's own pre-CALL-9 import of this exact
 // module, CALL-7's own doc comment there).
 import { resolveVerticalDynamicVariables } from "../voice-inbound/dynamic-variables.ts";
+import { buildAgentSettingsVariables } from "./agent-settings.ts";
 import {
   computeCurrentDateContext,
   computeGreetingHoursContext,
@@ -272,6 +273,24 @@ export async function buildInboundDynamicVariables(params: {
   const currentDateContext = computeCurrentDateContext(now, config.timezone);
   const upcomingWeekdayDates = computeUpcomingWeekdayDates(now, config.timezone);
 
+  // SETTINGS-2 (docs/BUILD_NOTES.md): every owner setting the portal saves,
+  // resolved at call time as plain strings (Retell dynamic variables are
+  // strings only): `special_instructions`, `faq_text`, `business_facts`,
+  // `voicemail_message`, `booking_mode_text` (Manual Mode) and the call-
+  // routing-aware `transfer_number` / `transfer_policy_text`. See
+  // `_shared/agent-settings.ts` for the sanitizing/bounds and the routing rules.
+  const settings = buildAgentSettingsVariables({
+    specialInstructions: config.specialInstructions,
+    overrides,
+    manualMode: config.manualMode,
+    transferNumber: config.transferNumber,
+    vertical: config.vertical,
+    timezone: config.timezone,
+    businessHours: config.businessHours,
+    hoursExceptions: config.hoursExceptions,
+    now,
+  });
+
   const verticalTokens = await resolveVerticalDynamicVariables({
     sql,
     tenantId: config.tenantId,
@@ -288,7 +307,7 @@ export async function buildInboundDynamicVariables(params: {
     current_date: currentDateContext.date,
     current_weekday: currentDateContext.weekday,
     upcoming_weekday_dates: upcomingWeekdayDates,
-    special_instructions: config.specialInstructions ?? "",
+    special_instructions: settings.special_instructions,
     is_manual_mode: config.manualMode,
     language: config.languagePrimary,
     disclosure_line: config.disclosureLine,
@@ -303,7 +322,16 @@ export async function buildInboundDynamicVariables(params: {
     // instead (the exact anti-pattern `resolveCallerRecentContext`'s own
     // doc comment above already documents and avoids for
     // `caller_recent_context`).
-    transfer_number: config.transferNumber ?? "",
+    //
+    // SETTINGS-2: now the call-routing-aware value (still tenant config only,
+    // G6): the transfer number, the owner's after-hours number while closed,
+    // or "" — see `resolveCallRouting`.
+    transfer_number: settings.transfer_number,
+    transfer_policy_text: settings.transfer_policy_text,
+    faq_text: settings.faq_text,
+    business_facts: settings.business_facts,
+    voicemail_message: settings.voicemail_message,
+    booking_mode_text: settings.booking_mode_text,
     ...verticalTokens,
     ...(typeof overrides["manager_name"] === "string"
       ? { manager_name: overrides["manager_name"] as string }

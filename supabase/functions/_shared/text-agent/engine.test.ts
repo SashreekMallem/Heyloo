@@ -52,6 +52,12 @@ const TENANT_CONTEXT: TenantTextContext = {
   disclosureLine: "Thanks for calling Acme Dental...",
   cancellationPolicyText: "24 hours notice please",
   dynamicVariableOverrides: {},
+  textAgentEnabled: true,
+  textAgentPersona: {},
+  specialInstructions: null,
+  manualMode: false,
+  businessHours: {},
+  hoursExceptions: [],
   priceVersion: "v2",
 };
 

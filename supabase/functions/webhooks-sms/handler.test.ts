@@ -162,6 +162,8 @@ describe("processInboundSms", () => {
             transfer_number: null,
             dynamic_variable_overrides: {},
             disclosure_line: "disclosure",
+            // SETTINGS-2: the owner's "Text agent enabled" switch now gates SMS replies.
+            text_agent_enabled: true,
           },
         ],
         ...overrides,

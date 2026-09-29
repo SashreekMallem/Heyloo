@@ -14,13 +14,23 @@ function chain(result: unknown) {
   return obj;
 }
 
+let a2pStatus = "verified";
+
+vi.mock("@/i18n/navigation", () => ({
+  Link: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
+  ),
+}));
+
 vi.mock("@/lib/supabase/browser", () => ({
   supabaseBrowserClient: {
     from: vi.fn((table: string) => {
       if (table === "agent_configs") {
         return chain({ data: { dynamic_variable_overrides: {} }, error: null });
       }
-      if (table === "tenants") return chain({ data: { a2p_status: "verified" }, error: null });
+      if (table === "tenants") return chain({ data: { a2p_status: a2pStatus }, error: null });
       return chain({ data: null, error: null });
     }),
   },
@@ -42,6 +52,23 @@ function renderPage() {
 describe("DeliveryPage", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    a2pStatus = "verified";
+  });
+
+  it("SETTINGS-2: pending carrier verification says about 1–2 weeks and links to Text messaging", async () => {
+    a2pStatus = "pending_verification";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ status: "disconnected" })),
+    );
+    renderPage();
+    const callout = await screen.findByText(/Carrier approval usually takes about 1–2 weeks/);
+    expect(callout).toBeInTheDocument();
+    expect(screen.queryByText(/1–5 business days/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Text messaging" })).toHaveAttribute(
+      "href",
+      "/dashboard/texting",
+    );
   });
 
   it("never crashes when the Airtable status response has no sync_log array", async () => {

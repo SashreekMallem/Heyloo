@@ -31,12 +31,14 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("InstructionsTabPage (SETTINGS-1)", () => {
-  it("loads saved values, marks unread fields honestly", async () => {
+  it("loads saved values and no longer labels the settings the AI now reads as unused (SETTINGS-2)", async () => {
     vi.stubGlobal("fetch", stubRoutes({}).fetchMock);
     renderWithTenant(<InstructionsTabPage />);
     expect(await screen.findByLabelText("Transfer number")).toHaveValue("(610) 555-0122");
     expect(screen.getByLabelText("Payment types you accept")).toHaveValue("Cash, Card");
-    expect(screen.getAllByText("Not used on calls yet").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Not used on calls yet")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Saved, but not used yet/)).not.toBeInTheDocument();
+    expect(screen.getByText(/uses your after-hours number/i)).toBeInTheDocument();
   });
 
   it("can REMOVE a saved transfer number (blank is posted, not rejected)", async () => {

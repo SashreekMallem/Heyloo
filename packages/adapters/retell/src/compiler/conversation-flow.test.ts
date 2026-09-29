@@ -2,6 +2,8 @@ import type { CanonicalTool } from "@heyloo/canonical-types";
 import { describe, expect, it } from "vitest";
 import { AUTO_CONVERSATION_FLOW_TEMPLATE } from "../fixtures/templates.js";
 import { compileConversationFlow } from "./conversation-flow.js";
+import { COMPILER_DEFAULT_DYNAMIC_VARIABLES } from "./opening.js";
+import { OWNER_INFO_INSTRUCTIONS } from "./owner-info.js";
 
 const TOOL_WEBHOOK_URL = "https://example.supabase.co/functions/v1/voice-tools";
 
@@ -22,7 +24,11 @@ describe("compileConversationFlow", () => {
         text: `${AUTO_CONVERSATION_FLOW_TEMPLATE.disclosure_line} {{caller_greeting}} How can I help you today?`,
       });
     }
-    expect(flow.default_dynamic_variables).toEqual({ caller_greeting: "", transfer_number: "" });
+    expect(flow.default_dynamic_variables).toEqual(COMPILER_DEFAULT_DYNAMIC_VARIABLES);
+    expect(flow.default_dynamic_variables).toMatchObject({
+      caller_greeting: "",
+      transfer_number: "",
+    });
   });
 
   it("DISCLOSE-1: the opening copies the first declared state's edges and falls through else_edge to it; that state is told its greeting was already spoken", () => {
@@ -94,7 +100,10 @@ describe("compileConversationFlow", () => {
 
   it("carries system_prompt through as global_prompt", () => {
     const flow = compileConversationFlow(AUTO_CONVERSATION_FLOW_TEMPLATE, TOOL_WEBHOOK_URL);
-    expect(flow.global_prompt).toBe(AUTO_CONVERSATION_FLOW_TEMPLATE.system_prompt);
+    // SETTINGS-2: the compiler-owned owner-info block follows the template's own prompt.
+    expect(flow.global_prompt).toBe(
+      `${AUTO_CONVERSATION_FLOW_TEMPLATE.system_prompt}\n\n${OWNER_INFO_INSTRUCTIONS}`,
+    );
   });
 
   it("compiles a single-tool, non-start state to a SubagentNode with a one-entry tool_ids (CALL-4)", () => {

@@ -1,5 +1,13 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { computePublishStatus, languageChangedAt, publishStatusQueryKey } from "./publish-status";
+import {
+  CURRENT_AGENT_COMPILER_VERSION,
+  computePublishStatus,
+  languageChangedAt,
+  PUBLISH_REASON_TEXT,
+  publishStatusQueryKey,
+} from "./publish-status";
 
 const CURRENT_AGENT = {
   nodes: [
@@ -146,5 +154,73 @@ describe("languageChangedAt", () => {
 describe("publishStatusQueryKey", () => {
   it("lives under the agent_configs prefix every agent-settings save invalidates", () => {
     expect(publishStatusQueryKey("t1").slice(0, 3)).toEqual(["tenant", "t1", "agent_configs"]);
+  });
+});
+
+describe("SETTINGS-2: compiler-version stamp", () => {
+  const base = {
+    publishedAt: "2026-09-29T00:00:00Z",
+    compiledConfig: CURRENT_AGENT,
+    transferNumber: null,
+    languageConfig: { primary: "en" },
+  };
+
+  it("flags an agent that was never stamped (compiled before the stamp existed)", () => {
+    const status = computePublishStatus({ ...base, compiledWithVersion: null });
+    expect(status.pending).toBe(true);
+    expect(status.reasons).toEqual(["compiler_outdated"]);
+    expect(PUBLISH_REASON_TEXT.compiler_outdated).toMatch(/published before recent improvements/);
+  });
+
+  it("flags an agent compiled with an older compiler version", () => {
+    const status = computePublishStatus({
+      ...base,
+      compiledWithVersion: CURRENT_AGENT_COMPILER_VERSION - 1,
+    });
+    expect(status.reasons).toEqual(["compiler_outdated"]);
+  });
+
+  it("is not pending for an agent compiled with the current version", () => {
+    const status = computePublishStatus({
+      ...base,
+      compiledWithVersion: CURRENT_AGENT_COMPILER_VERSION,
+    });
+    expect(status).toEqual({ publishedAt: base.publishedAt, pending: false, reasons: [] });
+  });
+
+  it("does not flag when the database has no stamp column yet (undefined = unknown)", () => {
+    expect(computePublishStatus({ ...base }).pending).toBe(false);
+    expect(computePublishStatus({ ...base, compiledWithVersion: undefined }).pending).toBe(false);
+  });
+
+  it("says 'published before recent improvements' once, not twice, when the token check already fired", () => {
+    const status = computePublishStatus({
+      ...base,
+      compiledConfig: { prompt: "no tokens" },
+      compiledWithVersion: null,
+    });
+    expect(status.reasons).toEqual(["platform_update"]);
+  });
+
+  it("a never-published agent stays never_published only", () => {
+    const status = computePublishStatus({
+      publishedAt: null,
+      compiledConfig: null,
+      transferNumber: null,
+      languageConfig: null,
+      compiledWithVersion: null,
+    });
+    expect(status.reasons).toEqual(["never_published"]);
+  });
+
+  it("the portal's expected version equals the compiler's AGENT_COMPILER_VERSION (drift guard)", () => {
+    // Vitest runs with the app (apps/web) as cwd.
+    const compilerSource = readFileSync(
+      resolve(process.cwd(), "../../supabase/functions/_shared/compiler/template-compiler.ts"),
+      "utf8",
+    );
+    const match = /export const AGENT_COMPILER_VERSION = (\d+);/.exec(compilerSource);
+    expect(match, "AGENT_COMPILER_VERSION not found in template-compiler.ts").not.toBeNull();
+    expect(Number(match?.[1])).toBe(CURRENT_AGENT_COMPILER_VERSION);
   });
 });

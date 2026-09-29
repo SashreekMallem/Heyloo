@@ -20,7 +20,8 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
-import { NotLiveBadge, NotLiveNote } from "@/components/tenant/settings/not-live-note";
+import { Link } from "@/i18n/navigation";
+import { SAVED_NEXT_TEXT } from "@/lib/settings/client";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
@@ -76,15 +77,11 @@ function deriveForm(row: TenantTextAgentRow): TextAgentForm {
 /**
  * Text agent settings (BACKEND_SPEC.md §13.2's `tenants.text_agent_enabled`
  * / `text_agent_persona` / `quiet_hours` columns — BUILD_PLAN Cluster W).
- * `text_agent_persona`'s shape is explicitly "owned by the text-agent
- * runtime" per that migration's own comment; as of this task, the engine
- * (`_shared/text-agent/system-prompt.ts`'s `buildTextSystemPrompt`) composes
- * its system prompt from the per-VERTICAL template only and does not yet
- * read either `text_agent_persona` or `quiet_hours` at all — this page is
- * the tenant self-service surface for a reasonable, forward-looking shape
- * ({tone, signOff}) that a follow-up engine change can wire in without a
- * schema change; flagged in docs/BUILD_NOTES.md so it isn't mistaken for
- * a wired-up feature.
+ * SETTINGS-2: the text engine (`_shared/text-agent/engine.ts`) now reads the
+ * on/off switch (SMS replies) and the persona (`{tone, signOff}`) on every
+ * turn. Quiet hours still gate only proactive texts such as reminders, never a
+ * reply to a customer who just texted (CHANNELS-2's ratified decision), and the
+ * card says so.
  */
 export default function TextAgentTabPage() {
   const tenantId = useCurrentTenantId();
@@ -140,7 +137,7 @@ function TextAgentSettingsCard({
       toast.error("Couldn't save — please try again.");
       return;
     }
-    toast.success("Saved");
+    toast.success(SAVED_NEXT_TEXT);
     void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "tenants"] });
   }
 
@@ -172,23 +169,26 @@ function TextAgentSettingsCard({
               aria-label="Text agent enabled"
             />
           </div>
-          <NotLiveNote>
-            This switch isn&apos;t enforced yet: your AI currently replies to every inbound text
-            whether it&apos;s on or off (website chat follows the Website widget switch). Your
-            choice is saved and applies automatically once it ships.
-          </NotLiveNote>
+          <p className="text-xs text-muted-foreground">
+            Off: texts to your business number still arrive in your inbox, but your AI does not
+            reply on its own. On: it replies to each new text. Takes effect from the next message.
+            Website chat follows the Website widget switch, not this one. Replies also need your
+            carrier approval to finish — see{" "}
+            <Link href="/dashboard/texting" className="underline">
+              Text messaging
+            </Link>
+            .
+          </p>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <div className="flex flex-wrap items-center gap-2">
-            <CardTitle>Persona</CardTitle>
-            <NotLiveBadge />
-          </div>
+          <CardTitle>Persona</CardTitle>
           <CardDescription>
-            How your text agent sounds. Saved for when text replies start using it — replies
-            don&apos;t read these yet.
+            How your text agent sounds. Used from the next text. The sign-off ends the last reply of
+            a conversation, not every message; the AI notice at the start of a chat can&apos;t be
+            changed.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -213,6 +213,7 @@ function TextAgentSettingsCard({
               value={form.signOff}
               onChange={(e) => setForm({ ...form, signOff: e.target.value })}
               rows={2}
+              maxLength={120}
             />
           </div>
           <Button type="button" disabled={saving} onClick={() => void save(form)}>

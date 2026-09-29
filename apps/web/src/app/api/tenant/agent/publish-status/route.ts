@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { readAgentConfigForPublish } from "@/lib/settings/publish-config";
 import { computePublishStatus, type PublishStatus } from "@/lib/settings/publish-status";
 import { requireTenantMember } from "@/lib/settings/route-auth";
 
@@ -16,23 +17,21 @@ export async function GET() {
   const auth = await requireTenantMember();
   if (!auth.ok) return auth.response;
 
-  const [configRes, tenantRes] = await Promise.all([
-    auth.supabase
-      .from("agent_configs")
-      .select("published_at, compiled_config, transfer_number")
-      .eq("tenant_id", auth.tenantId)
-      .maybeSingle(),
+  const [configRead, tenantRes] = await Promise.all([
+    readAgentConfigForPublish(auth.supabase, auth.tenantId),
     auth.supabase.from("tenants").select("language_config").eq("id", auth.tenantId).maybeSingle(),
   ]);
-  if (configRes.error || tenantRes.error) {
+  if (!configRead.ok || tenantRes.error) {
     return NextResponse.json({ error: "read_failed" }, { status: 500 });
   }
+  const config = configRead.row;
 
   const status: PublishStatusResponse = computePublishStatus({
-    publishedAt: configRes.data?.published_at ?? null,
-    compiledConfig: configRes.data?.compiled_config ?? null,
-    transferNumber: configRes.data?.transfer_number ?? null,
+    publishedAt: config?.published_at ?? null,
+    compiledConfig: config?.compiled_config ?? null,
+    transferNumber: config?.transfer_number ?? null,
     languageConfig: tenantRes.data?.language_config ?? null,
+    compiledWithVersion: config?.compiled_with_version,
   });
   return NextResponse.json(status);
 }

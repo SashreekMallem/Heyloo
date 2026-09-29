@@ -57,6 +57,7 @@ import type { z } from "zod";
 import { compileConversationFlow } from "./conversation-flow.js";
 import { firstUtterance } from "./disclosure-gate.js";
 import { compileMultiPrompt } from "./multi-prompt.js";
+import { OWNER_INFO_INSTRUCTIONS } from "./owner-info.js";
 import { compileSinglePrompt } from "./single-prompt.js";
 import type { RetellFlowRequest } from "./types.js";
 
@@ -521,7 +522,12 @@ describe("single_prompt prompt-length/tool-count budget (SYSTEM_DESIGN §4.1)", 
 
     it(`${key}: general_prompt word count stays under the hard ceiling (soft budget reported, not enforced)`, () => {
       const compiled = compileSinglePrompt(template, TOOL_WEBHOOK_URL);
-      const wordCount = compiled.general_prompt.trim().split(/\s+/).length;
+      // SETTINGS-2: the budget governs TEMPLATE content; the fixed, compiler-owned
+      // owner-info block (same in every compile target) is not counted against it.
+      const wordCount = compiled.general_prompt
+        .replace(OWNER_INFO_INSTRUCTIONS, "")
+        .trim()
+        .split(/\s+/).length;
       if (wordCount > SINGLE_PROMPT_WORD_SOFT_BUDGET) {
         // eslint-disable-next-line no-console
         console.warn(

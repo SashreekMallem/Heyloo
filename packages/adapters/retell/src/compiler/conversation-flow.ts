@@ -120,6 +120,7 @@ import {
   openingAlreadySpokenInstruction,
   TRANSFER_ANNOUNCEMENT_INSTRUCTION,
 } from "./opening.js";
+import { OWNER_INFO_INSTRUCTIONS } from "./owner-info.js";
 import type {
   RetellConversationFlowNode,
   RetellConversationFlowRequest,
@@ -581,9 +582,10 @@ export function compileConversationFlow(
     tools,
     default_dynamic_variables: { ...COMPILER_DEFAULT_DYNAMIC_VARIABLES },
   };
-  if (template.system_prompt) {
-    flow.global_prompt = template.system_prompt;
-  }
+  // SETTINGS-2: the owner-info block is part of every compile target's global prompt.
+  flow.global_prompt = template.system_prompt
+    ? `${template.system_prompt}\n\n${OWNER_INFO_INSTRUCTIONS}`
+    : OWNER_INFO_INSTRUCTIONS;
   return flow;
 }
 

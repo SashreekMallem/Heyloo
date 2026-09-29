@@ -179,3 +179,81 @@ describe("defaultAssistantName (DISCLOSE-1)", () => {
     expect(defaultAssistantName("fr")).toBe("the AI assistant");
   });
 });
+
+/**
+ * SETTINGS-2: the shared builder now resolves every owner setting the portal
+ * saves as a plain string dynamic variable, at call time.
+ */
+describe("buildInboundDynamicVariables: SETTINGS-2 owner settings", () => {
+  const sql = (() => Promise.resolve([])) as unknown as SqlClient;
+  const build = (
+    config: Partial<InboundTenantConfig>,
+    now = new Date("2026-01-12T15:00:00.000Z"),
+  ) =>
+    buildInboundDynamicVariables({
+      sql,
+      logger: createLogger(),
+      now,
+      fromNumber: null,
+      config: { ...CONFIG, ...config },
+    });
+
+  it("always sends every settings variable as a string, even with nothing configured", async () => {
+    const vars = await build({});
+    for (const key of [
+      "special_instructions",
+      "faq_text",
+      "business_facts",
+      "voicemail_message",
+      "booking_mode_text",
+      "transfer_number",
+      "transfer_policy_text",
+    ] as const) {
+      expect(typeof vars[key], key).toBe("string");
+    }
+  });
+
+  it("carries FAQ, special instructions, facts and voicemail wording from the saved settings", async () => {
+    const vars = await build({
+      specialInstructions: "Ask whether the car is driveable.",
+      dynamicVariableOverrides: {
+        faq_items: [{ question: "Do you tow?", answer: "Yes, within 20 miles." }],
+        parking_info: "Free lot.",
+        voicemail_message: "We call back within a day.",
+      },
+    });
+    expect(vars.special_instructions).toBe("Ask whether the car is driveable.");
+    expect(vars.faq_text).toContain("Q: Do you tow?");
+    expect(vars.business_facts).toContain("Parking: Free lot.");
+    expect(vars.voicemail_message).toBe("We call back within a day.");
+  });
+
+  it("Manual Mode reaches the agent as an instruction to take messages", async () => {
+    const vars = await build({ manualMode: true });
+    expect(vars.booking_mode_text).toContain("MANUAL MODE IS ON");
+    expect(vars.is_manual_mode).toBe(true);
+  });
+
+  it("call routing decides transfer_number per call: closed + business-hours-only + after-hours number", async () => {
+    const vars = await build(
+      {
+        transferNumber: "+15551230001",
+        businessHours: { mon: [{ open: "08:00", close: "18:00" }] },
+        dynamicVariableOverrides: {
+          call_routing: {
+            transfer_window: "business_hours",
+            transfer_urgent: false,
+            after_hours_phone: "+15551230002",
+          },
+        },
+      },
+      new Date("2026-01-13T03:00:00.000Z"),
+    );
+    expect(vars.transfer_number).toBe("+15551230002");
+  });
+
+  it("without any routing rule the transfer number is passed through exactly as before", async () => {
+    expect((await build({ transferNumber: "+15551230001" })).transfer_number).toBe("+15551230001");
+    expect((await build({ transferNumber: null })).transfer_number).toBe("");
+  });
+});
