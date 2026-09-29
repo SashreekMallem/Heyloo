@@ -11,7 +11,7 @@ function baseCtx(overrides: Partial<AdminRequestContext> = {}): AdminRequestCont
   return {
     method: "GET",
     path: "/admin-tenants",
-    claims: { app_metadata: { platform_admin: true } },
+    claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
     body: undefined,
     adminUserId: "admin_1",
     ...overrides,
@@ -43,6 +43,36 @@ describe("routeAdminRequest — auth gate", () => {
       logger,
     );
     expect(result).toEqual({ status: 403, body: { error: "not_a_platform_admin" } });
+  });
+
+  it("SEC-01: rejects a platform_admin token at aal1 on EVERY route group (never reaches SQL)", async () => {
+    for (const path of [
+      "/admin-tenants",
+      "/admin-alerts",
+      "/admin-cockpit/waterfall",
+      "/admin-agent-regression",
+      "/admin-support-requests",
+    ]) {
+      const { sql, calls } = makeSql();
+      const result = await routeAdminRequest(
+        sql,
+        baseCtx({ path, claims: { app_metadata: { platform_admin: true }, aal: "aal1" } }),
+        logger,
+      );
+      expect(result, path).toEqual({ status: 403, body: { error: "aal2_required" } });
+      expect(calls, path).toHaveLength(0);
+    }
+  });
+
+  it("SEC-01: rejects a platform_admin token with no aal claim at all (fails closed)", async () => {
+    const { sql, calls } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ claims: { app_metadata: { platform_admin: true } } }),
+      logger,
+    );
+    expect(result).toEqual({ status: 403, body: { error: "aal2_required" } });
+    expect(calls).toHaveLength(0);
   });
 
   it("rejects a request with no claims at all", async () => {

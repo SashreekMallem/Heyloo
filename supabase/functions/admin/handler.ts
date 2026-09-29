@@ -1926,6 +1926,12 @@ export async function routeAdminRequest(
   if (!isPlatformAdmin(ctx.claims) && !isSelfServiceImpersonation) {
     return { status: 403, body: { error: "not_a_platform_admin" } };
   }
+  // SEC-01: every admin route needs an MFA-completed (aal2) session, not just
+  // the impersonation ones. The Custom Access Token Hook already withholds
+  // `platform_admin` below aal2; this is the independent second check.
+  if (isPlatformAdmin(ctx.claims) && !isAal2(ctx.claims) && !isSelfServiceImpersonation) {
+    return { status: 403, body: { error: "aal2_required" } };
+  }
 
   const [first] = segments(ctx.path);
   if (first === "admin-tenants") return handleTenants(sql, ctx, logger, deps);

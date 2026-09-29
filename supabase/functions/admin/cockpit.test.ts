@@ -34,7 +34,7 @@ function makeSql(fixtures: Record<string, unknown[]> = {}) {
 const adminCtx = (path: string, over: Record<string, unknown> = {}) => ({
   method: "GET",
   path,
-  claims: { app_metadata: { platform_admin: true } },
+  claims: { app_metadata: { platform_admin: true }, aal: "aal2" as const },
   body: undefined,
   adminUserId: "a1",
   ...over,

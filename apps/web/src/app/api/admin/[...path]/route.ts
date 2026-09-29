@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { claimsFromSupabaseClient, impersonatedByFromSupabaseClient } from "@/lib/auth/claims";
+import { impersonatedByFromSupabaseClient, sessionAssuranceFromSupabaseClient } from "@/lib/auth/claims";
 import { env } from "@/lib/env";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
@@ -57,13 +57,19 @@ async function handle(request: Request, path: string[]) {
   // only in the JWT itself, never in the User/session object's
   // app_metadata; claimsFromUser(user) always evaluated to {} for a real
   // tenant/admin/partner here.
-  const claims = await claimsFromSupabaseClient(supabase);
+  const { claims, aal } = await sessionAssuranceFromSupabaseClient(supabase);
   const isSelfServiceImpersonation =
     request.method === "POST" &&
     isImpersonationSelfServicePath(path) &&
     (await impersonatedByFromSupabaseClient(supabase)) !== null;
   if (!claims.platform_admin && !isSelfServiceImpersonation) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  // SEC-01: every admin route (not just impersonation) needs an aal2 session.
+  // The impersonated tenant-owner token that may reach the two self-service
+  // routes is not a platform-admin token, so it is exempt exactly as before.
+  if (claims.platform_admin && aal !== "aal2" && !isSelfServiceImpersonation) {
+    return NextResponse.json({ error: "aal2_required" }, { status: 403 });
   }
 
   const target = `${env.supabaseFunctionsUrl}/admin/${path.join("/")}${new URL(request.url).search}`;

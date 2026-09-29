@@ -337,6 +337,11 @@ jobs:
       - name: Run custom intake questions SQL test
         if: steps.migrations.outputs.count != '0'
         run: psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/agent_custom_questions.sql
+      # SEC-01: platform-admin authority requires an aal2 session (hook claim,
+      # fn_jwt_is_platform_admin and RLS), never a password-only token.
+      - name: Run platform-admin AAL2 SQL test
+        if: steps.migrations.outputs.count != '0'
+        run: psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/platform_admin_aal2.sql
       - name: Run owner privilege-escalation probe
         if: steps.migrations.outputs.count != '0'
         run: node --experimental-strip-types scripts/ci/owner-privilege-escalation-probe.ts

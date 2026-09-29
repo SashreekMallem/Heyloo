@@ -2,7 +2,7 @@ import "server-only";
 
 import type { SupabaseServiceRoleClient } from "@heyloo/supabase-client";
 import { NextResponse } from "next/server";
-import { claimsFromSupabaseClient } from "@/lib/auth/claims";
+import { sessionAssuranceFromSupabaseClient } from "@/lib/auth/claims";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-role";
 
@@ -46,9 +46,15 @@ export async function requireAdminApiSession(): Promise<
   // only in the JWT itself, never in the User/session object's
   // app_metadata; claimsFromUser(user) always evaluated to {} for a real
   // tenant/admin/partner here.
-  const claims = await claimsFromSupabaseClient(supabase);
+  const { claims, aal } = await sessionAssuranceFromSupabaseClient(supabase);
   if (!claims.platform_admin) {
     return { ok: false, response: NextResponse.json({ error: "forbidden" }, { status: 403 }) };
+  }
+  // SEC-01: platform-admin authority requires an MFA-completed (aal2)
+  // session. The token hook already withholds `platform_admin` below aal2;
+  // this is the independent in-code check (SYSTEM_DESIGN: "/admin/* (AAL2)").
+  if (aal !== "aal2") {
+    return { ok: false, response: NextResponse.json({ error: "aal2_required" }, { status: 403 }) };
   }
   return { ok: true, adminUserId: session.user.id };
 }
