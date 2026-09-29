@@ -6,6 +6,7 @@ import { timingSafeEqual } from "../_shared/crypto.ts";
 import { getSql } from "../_shared/deno/db.ts";
 import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
+import { createPhoneNumberRegistry } from "../_shared/providers/phone-numbers/registry.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { runOffboarding } from "./handler.ts";
 
@@ -22,6 +23,19 @@ const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
 // the whole run.
 const TWILIO_ACCOUNT_SID = optionalEnv("TWILIO_ACCOUNT_SID");
 const TWILIO_AUTH_TOKEN = optionalEnv("TWILIO_AUTH_TOKEN");
+// NUMBERS-1: agents a lifecycle job must never detach from a number. The
+// shared demo agent is the one such agent today; optional (the demo may be
+// unconfigured on a fresh project).
+const DEMO_AGENT_ID = optionalEnv("DEMO_AGENT_ID");
+
+const numbers = createPhoneNumberRegistry({
+  retellFetch: fetch,
+  retellApiKey: RETELL_API_KEY,
+  protectedAgentIds: DEMO_AGENT_ID ? [DEMO_AGENT_ID] : [],
+  twilioFetch: fetch,
+  twilioAccountSid: TWILIO_ACCOUNT_SID,
+  twilioAuthToken: TWILIO_AUTH_TOKEN,
+});
 
 Deno.serve(async (req: Request) => {
   const provided = req.headers.get("x-cron-secret");
@@ -30,14 +44,7 @@ Deno.serve(async (req: Request) => {
   }
 
   const sql = getSql();
-  const result = await runOffboarding(sql, new Date(), {
-    retellFetch: fetch,
-    retellApiKey: RETELL_API_KEY,
-    twilioFetch: fetch,
-    twilioAccountSid: TWILIO_ACCOUNT_SID,
-    twilioAuthToken: TWILIO_AUTH_TOKEN,
-    logger,
-  });
+  const result = await runOffboarding(sql, new Date(), { numbers, logger });
   logger.info("job_offboarding_complete", result);
   return jsonResponse(result);
 });

@@ -181,5 +181,6 @@ export const OWNER_ALERT_KINDS = [
   "new_order",
   "urgent_call",
   "missed_transfer",
+  "line_ready",
 ] as const;
 export type OwnerAlertKind = (typeof OWNER_ALERT_KINDS)[number];

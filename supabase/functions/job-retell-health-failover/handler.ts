@@ -1,9 +1,10 @@
-import type { RetellFetch } from "../_shared/providers/retell.ts";
-import type { TwilioFetch } from "../_shared/providers/twilio.ts";
 import {
-  getIncomingPhoneNumber,
-  updateIncomingPhoneNumberVoiceUrl,
-} from "../_shared/providers/twilio.ts";
+  raiseNumberOpsAlert,
+  resolveNumberOpsAlerts,
+} from "../_shared/providers/phone-numbers/ops-alert.ts";
+import type { PhoneNumberRegistry } from "../_shared/providers/phone-numbers/registry.ts";
+import type { NumberRecord } from "../_shared/providers/phone-numbers/types.ts";
+import type { RetellFetch } from "../_shared/providers/retell.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
@@ -33,14 +34,30 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
  * task's ownership excludes `supabase/migrations/**` — see
  * `restoreNumbers`, which now really flips `VoiceUrl` back on recovery
  * (previously a no-op log line) using that snapshot, idempotently.
+ *
+ * NUMBERS-1: failover is per number, through the phone-number port
+ * (`_shared/providers/phone-numbers`). Only Twilio-imported numbers can be
+ * diverted (we control their Twilio routing). A Retell-NATIVE number (bought
+ * through Retell, `twilio_sid` NULL or `retell-native:<e164>`) has no
+ * Twilio/SIP resource on our side and Retell exposes no call-routing
+ * override that works while Retell is down (docs.retellai.com
+ * update-phone-number: agent bindings, `inbound_webhook_url` — a per-call
+ * override Retell itself must call — and `fallback_number`, documented as
+ * the concurrency-overflow target only), so such numbers are SKIPPED with a
+ * logged reason and an open `retell_failover_not_applicable` ops alert per
+ * tenant (resolved when the incident ends) instead of erroring on a
+ * placeholder Twilio SID. The probe and the incident flag run regardless of
+ * whether Twilio is configured.
  */
 export interface FailoverDeps {
   retellFetch: RetellFetch;
   retellApiKey: string;
-  twilioFetch: TwilioFetch;
-  twilioAccountSid: string;
-  twilioAuthToken: string;
-  failoverVoiceUrl: string;
+  /** Per-number provider adapters (NUMBERS-1). Twilio credentials live in
+   * the registry's deps and are optional there. */
+  numbers: PhoneNumberRegistry;
+  /** Where a diverted number's calls go (forward-to-owner-cell + voicemail
+   * TwiML). Optional: without it no number can be diverted. */
+  failoverVoiceUrl: string | undefined;
   logger: Logger;
 }
 
@@ -163,27 +180,76 @@ export async function runHealthCheckCycle(
   return "failover_triggered";
 }
 
-async function failoverNumbers(sql: SqlClient, deps: FailoverDeps): Promise<void> {
-  const numbers = await sql<{ twilio_sid: string; tenant_id: string }>`
-    select twilio_sid, tenant_id from public.phone_numbers where released_at is null
+const NOT_APPLICABLE_ALERT_RULE = "retell_failover_not_applicable";
+
+interface ActiveNumberRow {
+  id: string;
+  tenant_id: string;
+  e164: string;
+  twilio_sid: string | null;
+}
+
+async function loadActiveNumbers(sql: SqlClient): Promise<ActiveNumberRow[]> {
+  return sql<ActiveNumberRow>`
+    select id, tenant_id, e164, twilio_sid from public.phone_numbers where released_at is null
   `;
+}
+
+function toRecord(n: ActiveNumberRow): NumberRecord {
+  return { id: n.id, tenantId: n.tenant_id, e164: n.e164, twilioSid: n.twilio_sid };
+}
+
+/** Why this number cannot be diverted right now, or null when it can. */
+function failoverBlocker(n: ActiveNumberRow, deps: FailoverDeps): string | null {
+  const support = deps.numbers.forNumber(toRecord(n)).failoverSupport();
+  if (!support.supported) return support.reason;
+  if (!deps.failoverVoiceUrl) return "failover_voice_url_not_configured";
+  return null;
+}
+
+async function failoverNumbers(sql: SqlClient, deps: FailoverDeps): Promise<void> {
+  const numbers = await loadActiveNumbers(sql);
   const snapshot = await getVoiceUrlSnapshot(sql);
   let snapshotChanged = false;
+  let diverted = 0;
+  let skipped = 0;
 
   for (const n of numbers) {
+    const provider = deps.numbers.forNumber(toRecord(n));
+    const blocker = failoverBlocker(n, deps);
+    if (blocker !== null || !deps.failoverVoiceUrl) {
+      const reason = blocker ?? "failover_voice_url_not_configured";
+      skipped += 1;
+      deps.logger.error("retell_health_failover_skipped", {
+        tenant_id: n.tenant_id,
+        phone_number_id: n.id,
+        provider: provider.id,
+        reason,
+      });
+      await raiseNumberOpsAlert(sql, {
+        rule: NOT_APPLICABLE_ALERT_RULE,
+        severity: "critical",
+        tenantId: n.tenant_id,
+        payload: {
+          phone_number_id: n.id,
+          e164: n.e164,
+          provider: provider.id,
+          reason,
+          note: "Retell is down and this number could not be diverted; its calls are not being answered.",
+        },
+      });
+      continue;
+    }
+
+    // twilio_sid is non-null for a Twilio-provider number (resolveNumberProviderId).
+    const key = n.twilio_sid ?? n.id;
     // Idempotent capture: never overwrite an already-captured original with
     // the failover URL itself (defends against this job somehow re-entering
     // failoverNumbers mid-incident, e.g. a future retry path).
-    if (!(n.twilio_sid in snapshot)) {
-      const current = await getIncomingPhoneNumber(
-        deps.twilioFetch,
-        deps.twilioAccountSid,
-        deps.twilioAuthToken,
-        n.twilio_sid,
-      );
-      const currentVoiceUrl = (current.body as { voice_url?: unknown } | undefined)?.voice_url;
-      if (current.ok && typeof currentVoiceUrl === "string" && currentVoiceUrl) {
-        snapshot[n.twilio_sid] = currentVoiceUrl;
+    if (!(key in snapshot)) {
+      const captured = await provider.captureRouting(toRecord(n));
+      if (captured.ok) {
+        snapshot[key] = captured.token;
         snapshotChanged = true;
       } else {
         // Never fabricate a "guessed" original VoiceUrl — an honest gap
@@ -193,18 +259,13 @@ async function failoverNumbers(sql: SqlClient, deps: FailoverDeps): Promise<void
         deps.logger.error("retell_health_failover_snapshot_failed", {
           twilio_sid: n.twilio_sid,
           tenant_id: n.tenant_id,
-          status: current.status,
+          status: captured.status,
         });
       }
     }
 
-    const result = await updateIncomingPhoneNumberVoiceUrl(
-      deps.twilioFetch,
-      deps.twilioAccountSid,
-      deps.twilioAuthToken,
-      n.twilio_sid,
-      deps.failoverVoiceUrl,
-    );
+    const result = await provider.divertRouting(toRecord(n), deps.failoverVoiceUrl);
+    if (result.ok) diverted += 1;
     deps.logger.error("retell_health_failover_number_updated", {
       twilio_sid: n.twilio_sid,
       tenant_id: n.tenant_id,
@@ -216,14 +277,18 @@ async function failoverNumbers(sql: SqlClient, deps: FailoverDeps): Promise<void
   if (snapshotChanged) {
     await setVoiceUrlSnapshot(sql, snapshot);
   }
-  deps.logger.error("retell_health_failover_triggered", { numbers_affected: numbers.length });
+  deps.logger.error("retell_health_failover_triggered", {
+    numbers_affected: numbers.length,
+    diverted,
+    skipped_not_applicable: skipped,
+  });
 }
 
 /**
- * H2 fix: real restore, not a log line. Flips every still-active number's
- * `VoiceUrl` back to the exact pre-failover value `failoverNumbers`
- * snapshotted (`VOICE_URL_SNAPSHOT_KEY`) — the same Twilio client call path
- * as the failover direction, just with the original URL. Idempotent: a
+ * H2 fix: real restore, not a log line. Flips every still-active DIVERTED
+ * number's `VoiceUrl` back to the exact pre-failover value `failoverNumbers`
+ * snapshotted (`VOICE_URL_SNAPSHOT_KEY`) — through the same provider call
+ * path as the failover direction, just with the original URL. Idempotent: a
  * number successfully restored is removed from the persisted snapshot, so a
  * second `restoreNumbers` invocation (e.g. a retried recovery cycle) finds
  * nothing left to do for it rather than re-issuing a redundant Twilio call
@@ -231,19 +296,22 @@ async function failoverNumbers(sql: SqlClient, deps: FailoverDeps): Promise<void
  * managed to snapshot (see `retell_health_failover_snapshot_failed` above)
  * is left alone and logged — never guessed — flagging it for manual
  * re-import, exactly as the module docstring's Retell-import caveat
- * describes.
+ * describes. Numbers that were never diverted (Retell-native, or Twilio
+ * unconfigured) are untouched. Ends the incident's open
+ * `retell_failover_not_applicable` alerts.
  */
 async function restoreNumbers(sql: SqlClient, deps: FailoverDeps): Promise<void> {
-  const numbers = await sql<{ twilio_sid: string; tenant_id: string }>`
-    select twilio_sid, tenant_id from public.phone_numbers where released_at is null
-  `;
+  const numbers = await loadActiveNumbers(sql);
   const snapshot = await getVoiceUrlSnapshot(sql);
   const remaining: Record<string, string> = {};
   let restored = 0;
 
   for (const n of numbers) {
-    const originalVoiceUrl = snapshot[n.twilio_sid];
-    if (!originalVoiceUrl) {
+    // Never diverted by this job (Retell-native, or Twilio unconfigured).
+    if (!deps.numbers.forNumber(toRecord(n)).failoverSupport().supported) continue;
+    const key = n.twilio_sid ?? n.id;
+    const original = snapshot[key];
+    if (!original) {
       deps.logger.warn("retell_health_restore_no_snapshot", {
         twilio_sid: n.twilio_sid,
         tenant_id: n.tenant_id,
@@ -251,24 +319,18 @@ async function restoreNumbers(sql: SqlClient, deps: FailoverDeps): Promise<void>
       continue;
     }
 
-    const result = await updateIncomingPhoneNumberVoiceUrl(
-      deps.twilioFetch,
-      deps.twilioAccountSid,
-      deps.twilioAuthToken,
-      n.twilio_sid,
-      originalVoiceUrl,
-    );
+    const result = await deps.numbers.forNumber(toRecord(n)).restoreRouting(toRecord(n), original);
     if (result.ok) {
       restored += 1;
       deps.logger.info("retell_health_restore_number_updated", {
         twilio_sid: n.twilio_sid,
         tenant_id: n.tenant_id,
-        to: originalVoiceUrl,
+        to: original,
       });
     } else {
       // Left in the snapshot for a future recovery cycle to retry — never
       // dropped silently on a failed Twilio call.
-      remaining[n.twilio_sid] = originalVoiceUrl;
+      remaining[key] = original;
       deps.logger.error("retell_health_restore_failed", {
         twilio_sid: n.twilio_sid,
         tenant_id: n.tenant_id,
@@ -278,6 +340,7 @@ async function restoreNumbers(sql: SqlClient, deps: FailoverDeps): Promise<void>
   }
 
   await setVoiceUrlSnapshot(sql, remaining);
+  await resolveNumberOpsAlerts(sql, NOT_APPLICABLE_ALERT_RULE);
   deps.logger.info("retell_health_recovery_detected", {
     numbers_affected: numbers.length,
     restored,
