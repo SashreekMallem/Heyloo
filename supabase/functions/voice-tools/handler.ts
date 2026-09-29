@@ -20,7 +20,12 @@ import type { Logger, SqlClient, ToolResultEnvelope } from "../_shared/types.ts"
 import { getMissingRequiredFields } from "../_shared/vertical-intake.ts";
 import type { CallContext } from "./context.ts";
 import { resolveCallContext } from "./context.ts";
-import { MANUAL_MODE_BOOKING_MESSAGE, MANUAL_MODE_ORDER_MESSAGE } from "./manual-mode.ts";
+import {
+  MANUAL_MODE_BOOKING_MESSAGE,
+  MANUAL_MODE_CANCEL_MESSAGE,
+  MANUAL_MODE_CHANGE_MESSAGE,
+  MANUAL_MODE_ORDER_MESSAGE,
+} from "./manual-mode.ts";
 import { cancelBooking } from "./tools/cancel_booking.ts";
 import { checkAvailability } from "./tools/check_availability.ts";
 import {
@@ -307,11 +312,25 @@ async function runTool(
     case "update_booking": {
       const parsed = UpdateBookingArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
+      if (ctx.manualMode) {
+        return toolEnvelope({
+          confirmed: false,
+          reason: "manual_mode",
+          message: MANUAL_MODE_CHANGE_MESSAGE,
+        });
+      }
       return toolEnvelope(await updateBooking(sql, ctx, parsed.data));
     }
     case "cancel_booking": {
       const parsed = CancelBookingArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
+      if (ctx.manualMode) {
+        return toolEnvelope({
+          cancelled: false,
+          reason: "manual_mode",
+          message: MANUAL_MODE_CANCEL_MESSAGE,
+        });
+      }
       return toolEnvelope(await cancelBooking(sql, ctx, parsed.data));
     }
     case "lookup_customer": {

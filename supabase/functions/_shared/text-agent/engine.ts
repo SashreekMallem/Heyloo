@@ -322,6 +322,7 @@ export async function handleInboundText(
             appBaseUrl: deps.appBaseUrl,
             ...(deps.paymentLink ? { paymentLink: deps.paymentLink } : {}),
             a2pVerified: tenantContext.a2pStatus === "verified",
+            manualMode: tenantContext.manualMode,
           },
           block.name,
           block.input,

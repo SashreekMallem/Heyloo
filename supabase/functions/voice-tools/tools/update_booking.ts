@@ -4,12 +4,14 @@ import { verifyBookingIdentity } from "../../_shared/identity-verification.ts";
 import type { UpdateBookingArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
+import { MANUAL_MODE_CHANGE_MESSAGE } from "../manual-mode.ts";
 
 type Args = z.infer<typeof UpdateBookingArgsSchema>;
 
 export type UpdateBookingResult =
   | { confirmed: true; start: string; end: string }
-  | { confirmed: false; reason: "slot_taken" | "not_found" | "identity_verification_failed" };
+  | { confirmed: false; reason: "slot_taken" | "not_found" | "identity_verification_failed" }
+  | { confirmed: false; reason: "manual_mode"; message: string };
 
 const EXCLUSION_VIOLATION = "23P01";
 
@@ -32,6 +34,11 @@ export async function updateBooking(
   ctx: CallContext,
   args: Args,
 ): Promise<UpdateBookingResult> {
+  // VOICE-ALERTS-1 review: Manual Mode also means no rescheduling. Refused
+  // before any SQL (the flag rode in on the call context).
+  if (ctx.manualMode) {
+    return { confirmed: false, reason: "manual_mode", message: MANUAL_MODE_CHANGE_MESSAGE };
+  }
   const bookingRows = await sql<{
     id: string;
     start_at: string;

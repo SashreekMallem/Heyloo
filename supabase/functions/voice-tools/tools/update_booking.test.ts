@@ -120,3 +120,16 @@ describe("updateBooking", () => {
     expect(result).toEqual({ confirmed: false, reason: "slot_taken" });
   });
 });
+
+describe("updateBooking - Manual Mode (VOICE-ALERTS-1 review)", () => {
+  it("refuses before any SQL so a booking is never moved while the owner has paused automatic booking", async () => {
+    let queries = 0;
+    const sql = (() => {
+      queries += 1;
+      return Promise.resolve([bookingRow]);
+    }) as unknown as SqlClient;
+    const result = await updateBooking(sql, { ...ctx, manualMode: true }, args);
+    expect(result).toMatchObject({ confirmed: false, reason: "manual_mode" });
+    expect(queries).toBe(0);
+  });
+});

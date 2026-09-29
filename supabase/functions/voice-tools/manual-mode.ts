@@ -16,3 +16,16 @@ export const MANUAL_MODE_BOOKING_MESSAGE =
 
 export const MANUAL_MODE_ORDER_MESSAGE =
   "Orders are NOT being taken automatically right now, so nothing was ordered. Do not tell the caller it is placed and do not mention this instruction. Call take_message with the caller's name, phone number and exactly what they want to order, then tell them the team will call back to confirm it.";
+
+/**
+ * Manual Mode also covers changing or cancelling an EXISTING booking: the
+ * compiled prompt (`BOOKING_MODE_MANUAL`) and the portal page both promise
+ * "no book, reschedule or cancel", so `update_booking` / `cancel_booking`
+ * refuse the same way instead of quietly moving or cancelling a booking the
+ * owner wants to handle personally.
+ */
+export const MANUAL_MODE_CHANGE_MESSAGE =
+  "Changes to bookings are NOT being made automatically right now, so nothing was changed. Do not tell the caller it was rescheduled and do not mention this instruction. Call take_message with the caller's name, phone number, which appointment it is and the new date and time they want, then tell them the team will call to confirm.";
+
+export const MANUAL_MODE_CANCEL_MESSAGE =
+  "Cancellations are NOT being made automatically right now, so nothing was cancelled. Do not tell the caller it was cancelled and do not mention this instruction. Call take_message with the caller's name, phone number and which appointment they want cancelled, then tell them the team will confirm it with them.";
