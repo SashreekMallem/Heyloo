@@ -1,6 +1,7 @@
 -- QA-1 portal-core database fixes (one migration, additive):
 --   Part 1 (F-02 / F-21)  usage_daily rollup: tenant-local buckets, hourly.
 --   Part 2 (F-04)         members may write their own notification watermark.
+--   Part 3 (F-05)         atomic customer-note append (fn_append_customer_note).
 --
 -- ===========================================================================
 -- Part 1 — F-02 / F-21: the Overview "Calls today / Bookings today /
@@ -146,3 +147,53 @@ create policy memberships_update_own_seen on public.memberships
   for update
   using (user_id = auth.uid() and tenant_id = public.fn_jwt_tenant_id())
   with check (user_id = auth.uid() and tenant_id = public.fn_jwt_tenant_id());
+
+-- ===========================================================================
+-- Part 3 — F-05: customer notes lost updates. The notes route read the whole
+-- customers.metadata JSON, appended in JS and wrote it back, so two concurrent
+-- notes (or a note racing another metadata writer) overwrote each other.
+-- fn_append_customer_note does the append in ONE UPDATE statement: Postgres
+-- re-evaluates the SET expression against the latest committed row version
+-- after a lock wait, so concurrent appends both survive. SECURITY INVOKER, so
+-- the caller's RLS and the column grant (UPDATE (metadata)) still apply, and
+-- the row is additionally pinned to the JWT tenant.
+-- ===========================================================================
+
+create or replace function public.fn_append_customer_note(p_customer_id uuid, p_body text)
+returns boolean
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  v_rows integer;
+begin
+  if p_body is null or btrim(p_body) = '' then
+    return false;
+  end if;
+
+  update public.customers
+     set metadata = jsonb_set(
+           coalesce(metadata, '{}'::jsonb),
+           '{notes}',
+           coalesce(metadata -> 'notes', '[]'::jsonb) || jsonb_build_array(
+             jsonb_build_object(
+               'body', p_body,
+               'created_at', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+               'author_id', auth.uid()
+             )
+           ),
+           true
+         )
+   where id = p_customer_id
+     and tenant_id = public.fn_jwt_tenant_id();
+  get diagnostics v_rows = row_count;
+  return v_rows > 0;
+end;
+$$;
+
+revoke all on function public.fn_append_customer_note(uuid, text) from public, anon;
+grant execute on function public.fn_append_customer_note(uuid, text) to authenticated;
+
+comment on function public.fn_append_customer_note(uuid, text) is
+  'QA-1 F-05: atomically appends {body, created_at, author_id} to customers.metadata.notes for a customer of the caller''s tenant. Returns whether a row was updated.';

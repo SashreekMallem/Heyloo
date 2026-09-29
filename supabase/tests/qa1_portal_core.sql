@@ -12,6 +12,8 @@
 --   2. F-04: a plain member may write their OWN
 --      memberships.last_seen_notifications_at, nobody else's row, and no other
 --      column.
+--   3. F-05: fn_append_customer_note appends atomically, keeps the rest of
+--      customers.metadata, and cannot touch another tenant's customer.
 
 begin;
 
@@ -129,6 +131,58 @@ begin
   end;
 
   reset role;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- 3. fn_append_customer_note appends atomically, only within the JWT tenant
+-- ---------------------------------------------------------------------
+insert into public.tenants (id, name, slug, vertical) values
+  ('a1c00000-0000-4000-8000-0000000001a2', 'QA-1 bystander', 'qa1-bystander', 'generic');
+insert into public.customers (id, tenant_id, phone_e164, metadata) values
+  ('a1c00000-0000-4000-8000-0000000001d1', 'a1c00000-0000-4000-8000-0000000001a1', '+15555550121', '{"pets": [{"name": "Rex"}]}'),
+  ('a1c00000-0000-4000-8000-0000000001d2', 'a1c00000-0000-4000-8000-0000000001a2', '+15555550122', '{}');
+
+select set_config('request.jwt.claims',
+  '{"sub":"a1c00000-0000-4000-8000-000000000101","role":"authenticated","app_metadata":{"tenant_id":"a1c00000-0000-4000-8000-0000000001a1","role":"owner"}}',
+  true);
+
+do $$
+declare
+  v_ok boolean;
+  v_meta jsonb;
+begin
+  set local role authenticated;
+
+  v_ok := public.fn_append_customer_note('a1c00000-0000-4000-8000-0000000001d1', 'first note');
+  if v_ok is distinct from true then
+    raise exception 'QA-1 FAIL: fn_append_customer_note returned % for an own-tenant customer', v_ok;
+  end if;
+  perform public.fn_append_customer_note('a1c00000-0000-4000-8000-0000000001d1', 'second note');
+
+  -- another tenant's customer is untouchable
+  v_ok := public.fn_append_customer_note('a1c00000-0000-4000-8000-0000000001d2', 'sneaky');
+  if v_ok is distinct from false then
+    raise exception 'QA-1 FAIL: fn_append_customer_note touched another tenant''s customer (%)', v_ok;
+  end if;
+
+  -- blank notes are rejected
+  if public.fn_append_customer_note('a1c00000-0000-4000-8000-0000000001d1', '   ') then
+    raise exception 'QA-1 FAIL: a blank note was appended';
+  end if;
+
+  reset role;
+
+  select metadata into v_meta from public.customers where id = 'a1c00000-0000-4000-8000-0000000001d1';
+  if jsonb_array_length(v_meta -> 'notes') <> 2
+     or v_meta -> 'notes' -> 0 ->> 'body' <> 'first note'
+     or v_meta -> 'notes' -> 1 ->> 'body' <> 'second note'
+     or v_meta -> 'notes' -> 0 ->> 'author_id' <> 'a1c00000-0000-4000-8000-000000000101'
+     or v_meta -> 'pets' -> 0 ->> 'name' <> 'Rex' then
+    raise exception 'QA-1 FAIL: unexpected customers.metadata after two appends: %', v_meta;
+  end if;
+  if (select metadata from public.customers where id = 'a1c00000-0000-4000-8000-0000000001d2') <> '{}'::jsonb then
+    raise exception 'QA-1 FAIL: the bystander customer''s metadata changed';
+  end if;
 end $$;
 
 rollback;

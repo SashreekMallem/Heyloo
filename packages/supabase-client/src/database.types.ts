@@ -922,6 +922,12 @@ export type Database = {
         Args: { p_message_id: string };
         Returns: undefined;
       };
+      // QA-1 F-05: atomic append to customers.metadata.notes (security
+      // invoker — RLS + the JWT tenant apply). true = a customer row was updated.
+      fn_append_customer_note: {
+        Args: { p_customer_id: string; p_body: string };
+        Returns: boolean;
+      };
       // ONBOARD-1: called by `apps/web/.../api/tenant/resources/route.ts`
       // (service-role, after a resource insert) so a newly created resource
       // has real `availability_slots` rows before the next nightly

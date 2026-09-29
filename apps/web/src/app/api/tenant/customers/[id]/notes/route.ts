@@ -11,7 +11,8 @@ export const runtime = "nodejs";
  * dedicated `customer_notes` table: no such table exists in the actual
  * schema (`supabase/migrations/*.sql` has no `customer_notes` migration —
  * flagged in docs/VERIFY.md). Stored as an appended entry in
- * `customers.metadata.notes[]` instead, which the same RLS write policy
+ * `customers.metadata.notes[]` instead (appended atomically by the
+ * `fn_append_customer_note` SQL function), which the same RLS write policy
  * already covers, rather than inventing a new table in a package outside
  * T5's exclusive paths.
  */
@@ -42,28 +43,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   });
   if (!parsed.success) return NextResponse.json({ error: "invalid_request" }, { status: 422 });
 
-  const { data: customer } = await supabase
-    .from("customers")
-    .select("metadata")
-    .eq("id", id)
-    .eq("tenant_id", claims.tenant_id)
-    .maybeSingle();
-  if (!customer) return NextResponse.json({ error: "not_found" }, { status: 404 });
-
-  const metadata = (customer.metadata ?? {}) as {
-    notes?: { body: string; created_at: string; author_id: string }[];
-  };
-  const notes = [
-    ...(metadata.notes ?? []),
-    { body: parsed.data.note, created_at: new Date().toISOString(), author_id: user.id },
-  ];
-
-  const { error } = await supabase
-    .from("customers")
-    .update({ metadata: { ...metadata, notes } })
-    .eq("id", id)
-    .eq("tenant_id", claims.tenant_id);
-
+  // One atomic SQL statement appends the note (fn_append_customer_note): the old
+  // read-modify-write of the whole metadata JSON lost concurrent notes and any
+  // concurrent metadata write (QA-1 F-05). The function runs with the caller's
+  // RLS and only touches the customer of the JWT's tenant.
+  const { data: appended, error } = await supabase.rpc("fn_append_customer_note", {
+    p_customer_id: id,
+    p_body: parsed.data.note,
+  });
   if (error) return NextResponse.json({ error: "update_failed" }, { status: 500 });
+  if (!appended) return NextResponse.json({ error: "not_found" }, { status: 404 });
   return NextResponse.json({ ok: true });
 }

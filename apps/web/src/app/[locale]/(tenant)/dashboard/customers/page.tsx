@@ -13,6 +13,7 @@ import {
 import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
 import { useRouter } from "@/i18n/navigation";
+import { buildCustomerSearchFilters } from "@/lib/customers/search";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
@@ -24,7 +25,14 @@ interface CustomerRow {
   segment: CustomerSegment;
   lifetime_value_cents: number;
   consent: { sms?: boolean; call?: boolean };
+  /** STOP / opt-out: takes precedence over any consent on file (QA-1 F-09). */
+  sms_opt_out: boolean;
+  last_seen_at?: string | null;
 }
+
+const CUSTOMER_COLUMNS =
+  "id, name, phone_e164, segment, lifetime_value_cents, consent, sms_opt_out, last_seen_at";
+const RESULT_LIMIT = 100;
 
 const columns: ColumnDef<CustomerRow, unknown>[] = [
   { accessorKey: "name", header: "Name", cell: ({ row }) => row.original.name ?? "Unknown" },
@@ -42,7 +50,9 @@ const columns: ColumnDef<CustomerRow, unknown>[] = [
     accessorKey: "consent",
     header: "Consent",
     cell: ({ row }) =>
-      row.original.consent?.sms || row.original.consent?.call ? (
+      row.original.sms_opt_out ? (
+        <Badge variant="destructive">Opted out</Badge>
+      ) : row.original.consent?.sms || row.original.consent?.call ? (
         <Badge variant="success">On file</Badge>
       ) : (
         <Badge variant="outline">None</Badge>
@@ -60,15 +70,37 @@ export default function CustomersPage() {
     "customers",
     [search],
     async () => {
-      let q = supabaseBrowserClient
-        .from("customers")
-        .select("id, name, phone_e164, segment, lifetime_value_cents, consent")
-        .eq("tenant_id", tenantId as string)
-        .order("last_seen_at", { ascending: false })
-        .limit(100);
-      if (search) q = q.or(`name.ilike.%${search}%,phone_e164.ilike.%${search}%`);
-      const { data } = await q;
-      return (data ?? []) as CustomerRow[];
+      const { namePattern, phonePattern } = buildCustomerSearchFilters(search);
+      const base = () =>
+        supabaseBrowserClient
+          .from("customers")
+          .select(CUSTOMER_COLUMNS)
+          .eq("tenant_id", tenantId as string)
+          .order("last_seen_at", { ascending: false })
+          .limit(RESULT_LIMIT);
+
+      if (!namePattern) {
+        const { data, error } = await base();
+        if (error) throw new Error(error.message);
+        return (data ?? []) as CustomerRow[];
+      }
+
+      // Two plain ilike filters merged client-side, never a hand-built `.or()`
+      // string: a comma / paren / % in the term used to break or inject into
+      // the PostgREST filter (QA-1 F-10 / SEC-15). Phones match on digits only.
+      const [byName, byPhone] = await Promise.all([
+        base().ilike("name", namePattern),
+        phonePattern ? base().ilike("phone_e164", phonePattern) : Promise.resolve(null),
+      ]);
+      const failure = byName.error ?? byPhone?.error;
+      if (failure) throw new Error(failure.message);
+      const merged = new Map<string, CustomerRow>();
+      for (const row of [...(byName.data ?? []), ...(byPhone?.data ?? [])]) {
+        merged.set(row.id, row as CustomerRow);
+      }
+      return [...merged.values()]
+        .sort((a, b) => ((a.last_seen_at ?? "") < (b.last_seen_at ?? "") ? 1 : -1))
+        .slice(0, RESULT_LIMIT);
     },
     { enabled: !!tenantId },
   );
@@ -88,10 +120,17 @@ export default function CustomersPage() {
       />
       <DataState
         query={query}
-        empty={{
-          title: "No customers yet",
-          description: "Customers appear here after their first call or booking.",
-        }}
+        empty={
+          search.trim()
+            ? {
+                title: `No customers match "${search.trim()}"`,
+                description: "Check the spelling, or search by part of the phone number.",
+              }
+            : {
+                title: "No customers yet",
+                description: "Customers appear here after their first call or booking.",
+              }
+        }
         render={(customers) => (
           <DataTable
             columns={columns}
@@ -105,8 +144,12 @@ export default function CustomersPage() {
                 </p>
                 <div className="mt-1 flex items-center gap-1.5">
                   <SegmentBadge segment={row.segment} />
-                  {(row.consent?.sms || row.consent?.call) && (
-                    <Badge variant="success">Consent</Badge>
+                  {row.sms_opt_out ? (
+                    <Badge variant="destructive">Opted out</Badge>
+                  ) : (
+                    (row.consent?.sms || row.consent?.call) && (
+                      <Badge variant="success">Consent</Badge>
+                    )
                   )}
                 </div>
               </div>
