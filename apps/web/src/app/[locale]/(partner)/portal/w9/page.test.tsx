@@ -14,7 +14,9 @@ describe("W9Page (PT-04)", () => {
     render(await W9Page());
     const link = screen.getByRole("link", { name: /email support to submit your w-9/i });
     expect(link.getAttribute("href")).toMatch(/^mailto:support@heyloo\.com\?subject=/);
-    expect(document.querySelector('a[href*="track1099"]')).toBeNull();
+    for (const anchor of screen.getAllByRole("link")) {
+      expect(anchor.getAttribute("href")).not.toContain("track1099");
+    }
   });
 
   it("shows a review message and no CTA once submitted", async () => {

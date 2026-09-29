@@ -24,7 +24,9 @@ vi.mock("next/headers", () => ({
   headers: async () => new Headers({ host: "heyloo.app", "x-forwarded-proto": "https" }),
 }));
 vi.mock("@/components/partner/copy-link-button", () => ({
-  CopyLinkButton: ({ link }: { link: string }) => <button type="button" data-link={link} />,
+  CopyLinkButton: ({ link }: { link: string }) => (
+    <button type="button" aria-label="Copy link" data-link={link} />
+  ),
 }));
 vi.mock("@heyloo/ui/charts", () => ({
   FunnelChart: ({ stages }: { stages: { label: string; count: number }[] }) => {
@@ -45,7 +47,7 @@ describe("PartnerDashboardPage (PT-06)", () => {
   it("shows the absolute referral URL, and copies that same URL", async () => {
     render(await PartnerDashboardPage());
     expect(screen.getByText("https://heyloo.app/signup?ref=ABCD2345")).toBeInTheDocument();
-    expect(document.querySelector("button[data-link]")?.getAttribute("data-link")).toBe(
+    expect(screen.getByRole("button", { name: "Copy link" }).getAttribute("data-link")).toBe(
       "https://heyloo.app/signup?ref=ABCD2345",
     );
   });
