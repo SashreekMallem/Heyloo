@@ -8367,3 +8367,105 @@ Restored through the UI and matching the snapshot, except for these:
 under dev-server load, green in isolation and on re-run; edge-functions 137
 files; every other package green), `check:server-barrels` OK. No edge
 function, migration or secret changes: deploy the web app only.
+
+## SEC-2 (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — owner writes locked to owner-editable columns
+
+**Finding (verified live, read-only):** `authenticated` holds table-wide
+INSERT/UPDATE/DELETE/TRUNCATE on every public table (Supabase default
+privileges) and the RLS policies on `tenants`, `agent_configs`,
+`referral_partners` (and others) only scope rows and role, never columns. An
+owner could PATCH their own `tenants.status` / `plan_code` / `price_version` /
+`stripe_*` / `vertical` / `is_test` / `usage_hard_cap_minutes` / `deleted_at`,
+`agent_configs.retell_agent_id` / `compiled_config` / `greeting_overrides`;
+a partner could raise their own `referral_partners.rate_bps` /
+`commission_base` / `duration_months` or clear `fraud_flags` / `w9_status`.
+(`tenants.status='paused'` escapes `job-billing-cycle`.) Reproduced against
+a local Postgres built from the migrations: before the fix every one of those
+PATCHes returned 200.
+
+**Fix:** `20260929160000_lock_owner_writes_to_editable_columns.sql` revokes
+INSERT/UPDATE/DELETE/TRUNCATE from `authenticated`/`anon` on `tenants`,
+`agent_configs`, `referral_partners`, `memberships`, `text_conversations`
+(and UPDATE/DELETE/TRUNCATE on `support_requests`), then grants column-level
+UPDATE only on the columns the portal writes:
+
+| table | writable by authenticated (RLS still picks the rows) |
+|---|---|
+| tenants | name, timezone, business_hours, hours_exceptions, language_config, owner_test_phone, manual_mode, manual_mode_enabled_at, voice_reminders_enabled, review_request_enabled, review_url, avg_transaction_value_cents, policies_reviewed_at, text_agent_enabled, text_agent_persona, quiet_hours, widget_enabled, widget_settings, widget_public_key, booking_min_notice_minutes, booking_horizon_days |
+| agent_configs | assistant_name, special_instructions, transfer_number, dynamic_variable_overrides |
+| referral_partners | paypal_email, payout_method, ftc_acknowledged_at, ftc_acknowledged_version |
+| memberships | last_seen_notifications_at |
+| text_conversations | status |
+| support_requests | (INSERT only) |
+
+Enumeration of user-scoped writes (apps/web; `packages/*` and edge functions
+have none, they use the secret key): `/api/tenant/settings/{business,hours,
+language,test-phone,reminders-review,booking-rules,notifications}`,
+`/api/tenant/agent/{instructions,faq,vertical-details}`, dashboard
+`agent/{greeting,text-agent,manual-mode}`, `website-widget`, messages thread
+(`text_conversations.status`, `text_conversation_messages` insert), support
+page/reply form (`support_requests`/`support_request_notes` insert), partner
+`portal/settings` and `/api/partner/disclosure` (`referral_partners`),
+`/api/tenant/{offerings,resources,waitlist,customers/[id]/notes,messaging}`.
+`/api/admin/*` and the tenant bookings/orders/messages/resources-create
+routes already use the service-role client.
+
+**Design notes / decisions**
+- Column grants, not triggers: a column added later is NOT writable until a
+  migration grants it (fail-safe). Any future portal write to a new `tenants` /
+  `agent_configs` / `referral_partners` column MUST add a `grant update (col)`
+  in its own migration and extend the allow-lists in
+  `supabase/tests/owner_column_grants.sql` and
+  `scripts/ci/owner-privilege-escalation-probe.ts`, or the write 403s.
+- Platform admins previously could also write via the user client (policies
+  allow `fn_jwt_is_platform_admin()`); they now get the same column
+  allow-list. No admin UI writes those tables with the user client (all
+  `/api/admin/*` use the service role), so nothing regresses.
+- `tenants.sms_provider`/`a2p_*` were already guarded by
+  `trg_tenants_guard_messaging_columns` (MESSAGING-1); the grants make that
+  redundant but it is left in place.
+- `memberships`: the `memberships_write` policy let an owner INSERT a
+  membership for an arbitrary `user_id` in their own tenant, which feeds
+  `custom_access_token_hook`'s tenant choice for that user. Nothing in the
+  portal writes memberships with the user client, so writes are revoked
+  except the notifications watermark.
+
+**Reviewed, deliberately NOT changed (follow-ups)**
+- `customers` (sms_opt_out/consent are compliance columns an owner/member can
+  flip): `fn_recompute_customer_segment`/`fn_touch_customer` are SECURITY
+  INVOKER triggers that update `customers` (segment, lifetime_*) as whoever
+  wrote the booking/call, so narrowing customers' UPDATE grants would break
+  user-scoped booking writes until those trigger functions are made SECURITY
+  DEFINER. Do that first, then apply the same column-grant pattern.
+- `bookings`, `orders`, `offerings`, `resources`, `waitlist_entries`,
+  `customer_addresses`, `api_tokens`, `support_request_notes`,
+  `push_subscriptions`: writable columns are tenant-owned business data;
+  RLS already pins tenant_id and (DB-H1) cross-tenant references. `is_test`
+  on bookings/orders is owner-settable (affects only that tenant's metrics).
+- `agent_configs.dynamic_variable_overrides` stays owner-editable (portal
+  writes FAQ/hours/delivery there); whatever the compiler merges from it is
+  therefore owner-influenced by design.
+- Platform-admin-only tables (agent_templates, platform_settings, leads,
+  campaigns, ...) and system tables still carry Supabase's default
+  table-wide grants for `authenticated`, guarded only by RLS
+  (`fn_jwt_is_platform_admin()`), and `authenticated`/`anon` still hold
+  TRUNCATE/REFERENCES/TRIGGER on every public table (not reachable through
+  PostgREST). Broad hardening of default privileges is out of scope here.
+- The live database lags the repo (e.g. `messaging_business_profiles`,
+  `tenants.sms_provider`, booking-rule columns are not there yet): apply this
+  migration together with the other pending ones, after `20260929140000` and
+  `20260929150000`, because it names columns that only exist from those.
+
+**Verification**
+- All 74 migrations (incl. this one) applied from zero on a local PG 16 with
+  Supabase-shaped stubs (roles, auth/vault/pgmq/pg_net/realtime/storage
+  shims); `supabase start` is unavailable here (no Docker daemon).
+- `supabase/tests/owner_column_grants.sql` (SQL, impersonates `authenticated`
+  with owner/partner/member claims, enumerates every column from the
+  catalog): fails on the pre-fix schema ("authenticated could UPDATE
+  tenants.id"), passes after.
+- `scripts/ci/owner-privilege-escalation-probe.ts` (HTTP; 111 assertions):
+  against a throwaway PostgREST/GoTrue stand-in backed by that local DB it
+  failed 78 assertions pre-fix and passes post-fix. NOT yet run against the
+  real `supabase start` stack; CI's `rls-probe` job now runs both new checks
+  after the cross-tenant probe.

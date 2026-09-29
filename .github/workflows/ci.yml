@@ -306,10 +306,22 @@ jobs:
             echo "SUPABASE_URL=$API_URL"
             echo "SUPABASE_ANON_KEY=$ANON_KEY"
             echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY"
+            echo "SUPABASE_DB_URL=$DB_URL"
           } >> "$GITHUB_ENV"
       - name: Run RLS cross-tenant probe
         if: steps.migrations.outputs.count != '0'
         run: node --experimental-strip-types scripts/ci/rls-cross-tenant-probe.ts
+      # SEC-2: same-tenant privilege escalation. An owner/partner JWT must
+      # not be able to write platform-managed columns of its own rows
+      # (tenants.status/plan_code/..., agent_configs.compiled_config/...,
+      # referral_partners.rate_bps/...) — first at the SQL level, then end to
+      # end through PostgREST.
+      - name: Run owner column-grant SQL test
+        if: steps.migrations.outputs.count != '0'
+        run: psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/owner_column_grants.sql
+      - name: Run owner privilege-escalation probe
+        if: steps.migrations.outputs.count != '0'
+        run: node --experimental-strip-types scripts/ci/owner-privilege-escalation-probe.ts
       - name: No migrations yet
         if: steps.migrations.outputs.count == '0'
         run: echo "::notice::No migrations in supabase/migrations/ yet (T1) — nothing to probe. Placeholder job, no-op."
