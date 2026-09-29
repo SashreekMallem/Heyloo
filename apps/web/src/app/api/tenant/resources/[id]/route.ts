@@ -1,6 +1,11 @@
+import type { ResourceRow, UpdateOf } from "@heyloo/supabase-client";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { claimsFromSupabaseClient } from "@/lib/auth/claims";
+import {
+  clearFutureResourceAvailability,
+  regenerateResourceAvailability,
+} from "@/lib/settings/availability";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -12,7 +17,20 @@ const resourceUpdateSchema = z.object({
   room_type: z.string().trim().min(1).max(100).nullish(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   active: z.boolean().optional(),
+  // SETTINGS-1 — see `../route.ts`. `slot_minutes: null` resets to the
+  // generator's default (30, motel 1440).
+  buffer_minutes: z.number().int().min(0).max(240).optional(),
+  slot_minutes: z.number().int().min(5).max(1440).nullish(),
 });
+
+/**
+ * SETTINGS-1: every PATCH that can change bookable times is applied to
+ * `availability_slots` right away — the resource is regenerated if it is
+ * (still) active, or its future generated slots are removed if it was just
+ * deactivated. Before, only CREATE regenerated (ONBOARD-1), so an edited
+ * slot length/buffer/capacity waited for the 04:00 UTC rollforward and a
+ * deactivated resource stayed bookable until its old slots passed.
+ */
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -44,19 +62,37 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
   const { data: existing } = await supabase
     .from("resources")
-    .select("id")
+    .select("id, metadata, active")
     .eq("id", id)
     .eq("tenant_id", claims.tenant_id)
     .maybeSingle();
   if (!existing) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
+  const { slot_minutes: slotMinutes, ...changes } = parsed.data;
+  const update: typeof changes = { ...changes };
+  if (slotMinutes !== undefined) {
+    const metadata = { ...(changes.metadata ?? existing.metadata ?? {}) } as Record<
+      string,
+      unknown
+    >;
+    if (slotMinutes === null) delete metadata["slot_minutes"];
+    else metadata["slot_minutes"] = slotMinutes;
+    update.metadata = metadata;
+  }
+
   const { error } = await supabase
     .from("resources")
-    .update(parsed.data)
+    // `buffer_minutes` — see `../route.ts` (real column, missing from `ResourceRow`).
+    .update(update as UpdateOf<ResourceRow>)
     .eq("id", id)
     .eq("tenant_id", claims.tenant_id);
   if (error) return NextResponse.json({ error: "update_failed" }, { status: 500 });
-  return NextResponse.json({ ok: true });
+
+  const nowActive = update.active ?? existing.active ?? true;
+  const slotsUpdated = nowActive
+    ? await regenerateResourceAvailability(claims.tenant_id, id)
+    : await clearFutureResourceAvailability(claims.tenant_id, id);
+  return NextResponse.json({ ok: true, slots_updated: slotsUpdated });
 }
 
 /** Soft delete only — a `resources` row is referenced by `bookings`/
@@ -91,5 +127,8 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
     .eq("id", id)
     .eq("tenant_id", claims.tenant_id);
   if (error) return NextResponse.json({ error: "update_failed" }, { status: 500 });
-  return NextResponse.json({ ok: true });
+
+  // SETTINGS-1: stop offering the removed resource's future times now.
+  const slotsUpdated = await clearFutureResourceAvailability(claims.tenant_id, id);
+  return NextResponse.json({ ok: true, slots_updated: slotsUpdated });
 }

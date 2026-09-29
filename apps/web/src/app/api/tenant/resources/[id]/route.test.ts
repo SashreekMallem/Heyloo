@@ -1,10 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 
+const updatePayloads: unknown[] = [];
+
 function chain(result: unknown) {
   const obj: Record<string, unknown> = {};
-  for (const method of ["select", "eq", "maybeSingle", "update"]) {
+  for (const method of ["select", "eq", "maybeSingle"]) {
     obj[method] = vi.fn(() => obj);
   }
+  obj["update"] = vi.fn((payload: unknown) => {
+    updatePayloads.push(payload);
+    return obj;
+  });
   // biome-ignore lint/suspicious/noThenProperty: intentional thenable mock of a Supabase query-builder chain.
   (obj as { then: unknown }).then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
     Promise.resolve(result).then(resolve, reject);
@@ -42,6 +48,15 @@ vi.mock("@/lib/supabase/server", () => ({
     },
     from: makeFrom(serverQueue),
   }),
+}));
+
+// SETTINGS-1: PATCH/DELETE now apply the change to availability_slots
+// immediately (service-role helpers, mocked here).
+const mockRegenerate = vi.fn(async () => true);
+const mockClear = vi.fn(async () => true);
+vi.mock("@/lib/settings/availability", () => ({
+  regenerateResourceAvailability: (...args: unknown[]) => mockRegenerate(...(args as [])),
+  clearFutureResourceAvailability: (...args: unknown[]) => mockClear(...(args as [])),
 }));
 
 const { PATCH, DELETE } = await import("./route");
@@ -90,7 +105,65 @@ describe("PATCH /api/tenant/resources/[id]", () => {
       params: Promise.resolve({ id: "r1" }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    expect(await res.json()).toEqual({ ok: true, slots_updated: true });
+  });
+
+  it("SETTINGS-1: merges slot_minutes into metadata, saves buffer_minutes, and regenerates the resource's slots", async () => {
+    serverQueue = {
+      resources: [
+        { data: { id: "r1", metadata: { color: "blue" }, active: true }, error: null },
+        { error: null },
+      ],
+    };
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    updatePayloads.length = 0;
+    mockRegenerate.mockClear();
+    const res = await PATCH(patchRequest({ slot_minutes: 45, buffer_minutes: 15 }), {
+      params: Promise.resolve({ id: "r1" }),
+    });
+    expect(res.status).toBe(200);
+    expect(updatePayloads[0]).toEqual({
+      buffer_minutes: 15,
+      metadata: { color: "blue", slot_minutes: 45 },
+    });
+    expect(mockRegenerate).toHaveBeenCalledWith("t1", "r1");
+  });
+
+  it("SETTINGS-1: slot_minutes null resets to the default (removes the key)", async () => {
+    serverQueue = {
+      resources: [
+        { data: { id: "r1", metadata: { slot_minutes: 60 }, active: true }, error: null },
+        { error: null },
+      ],
+    };
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    updatePayloads.length = 0;
+    await PATCH(patchRequest({ slot_minutes: null }), { params: Promise.resolve({ id: "r1" }) });
+    expect(updatePayloads[0]).toEqual({ metadata: {} });
+  });
+
+  it("SETTINGS-1: 422s on a slot length under 5 minutes", async () => {
+    serverQueue = {};
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    const res = await PATCH(patchRequest({ slot_minutes: 2 }), {
+      params: Promise.resolve({ id: "r1" }),
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it("SETTINGS-1: deactivating clears the resource's future slots instead of regenerating", async () => {
+    serverQueue = {
+      resources: [{ data: { id: "r1", metadata: {}, active: true }, error: null }, { error: null }],
+    };
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    mockRegenerate.mockClear();
+    mockClear.mockClear();
+    const res = await PATCH(patchRequest({ active: false }), {
+      params: Promise.resolve({ id: "r1" }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockClear).toHaveBeenCalledWith("t1", "r1");
+    expect(mockRegenerate).not.toHaveBeenCalled();
   });
 });
 
@@ -113,6 +186,7 @@ describe("DELETE /api/tenant/resources/[id]", () => {
       params: Promise.resolve({ id: "r1" }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    expect(await res.json()).toEqual({ ok: true, slots_updated: true });
+    expect(mockClear).toHaveBeenCalledWith("t1", "r1");
   });
 });

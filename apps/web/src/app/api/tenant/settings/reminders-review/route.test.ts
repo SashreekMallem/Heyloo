@@ -86,6 +86,22 @@ describe("POST /api/tenant/settings/reminders-review", () => {
     expect(res.status).toBe(422);
   });
 
+  it("SETTINGS-1: 422s when review requests are on but there is no review link", async () => {
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    const res = await POST(postRequest({ ...validPayload, review_url: "" }));
+    expect(res.status).toBe(422);
+  });
+
+  it("SETTINGS-1: a blank link clears review_url when review requests are off", async () => {
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    updateResult = { error: null };
+    const res = await POST(
+      postRequest({ ...validPayload, review_request_enabled: false, review_url: "" }),
+    );
+    expect(res.status).toBe(200);
+    expect(lastUpdatePayload).toMatchObject({ review_request_enabled: false, review_url: null });
+  });
+
   it("updates the tenants row scoped to the caller's own tenant_id", async () => {
     mockGetUser = async () => ({ data: { user: mockUser } });
     updateResult = { error: null };

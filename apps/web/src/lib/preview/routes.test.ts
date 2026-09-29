@@ -35,7 +35,9 @@ const APPS_WEB_SRC = path.resolve(import.meta.dirname, "../..");
  * preview viewer out of `/preview/**` into the real auth-gated route). See
  * `(preview)/preview/dashboard/agent/page.tsx`'s own comment.
  */
-const REDIRECT_ONLY_MIRRORS = new Set(["/preview/dashboard/agent"]);
+// SETTINGS-1: `/preview/dashboard/agent` left this set — the real agent
+// index page is now the Overview (content, not a redirect).
+const REDIRECT_ONLY_MIRRORS = new Set<string>([]);
 
 describe("PREVIEW_ROUTES — every registered route resolves a mirror component", () => {
   it("has a non-trivial number of registered routes", () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { reminderReviewSettingsSchema, verticalDetailsSchema } from "@heyloo/canonical-types";
+import { verticalDetailsSchema } from "@heyloo/canonical-types";
 import {
   BpsInput,
   Button,
@@ -18,16 +18,23 @@ import {
   FormLabel,
   FormMessage,
   Input,
+  PhoneInput,
   Separator,
   Switch,
   Textarea,
 } from "@heyloo/ui";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
+import { NotLiveBadge } from "@/components/tenant/settings/not-live-note";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
+import { SAVED_NEXT_CALL, saveErrorMessage, sendJson } from "@/lib/settings/client";
+import { isBlankOrValidPhone, PHONE_ERROR_MESSAGE } from "@/lib/settings/phone";
+import { parseRateTable, type RateEntry, rateTableToText } from "@/lib/settings/rate-table";
+import { type ReminderReviewFormValues, reminderReviewFormSchema } from "@/lib/settings/schemas";
+import { detailsRequestBody } from "@/lib/settings/vertical-details";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
@@ -43,24 +50,30 @@ function arrayToLines(value: string[] | undefined): string {
   return (value ?? []).join("\n");
 }
 
-/** One `room type: nightly rate in cents` per line editor for motel's `rate_table` (an array of `{room_type, nightly_rate_cents}` — matches `zMotelOverrides`/MASTER_SPEC §3.5; cents, never dollars, per CLAUDE.md Rule 2). */
-function rateTableToLines(
-  value: Array<{ room_type: string; nightly_rate_cents: number }> | undefined,
-): string {
-  return (value ?? []).map((entry) => `${entry.room_type}: ${entry.nightly_rate_cents}`).join("\n");
-}
-
-function linesToRateTable(value: string): Array<{ room_type: string; nightly_rate_cents: number }> {
-  const out: Array<{ room_type: string; nightly_rate_cents: number }> = [];
-  for (const line of value.split("\n")) {
-    const [roomType, rest] = line.split(":");
-    const cents = Number.parseInt((rest ?? "").trim(), 10);
-    if (roomType?.trim() && Number.isFinite(cents)) {
-      out.push({ room_type: roomType.trim(), nightly_rate_cents: cents });
+/**
+ * SETTINGS-1: client-side mirror of the route's contact rule
+ * (`zContactRequest`) — a vet emergency referral / auto tow partner needs
+ * both a name and a real phone, or neither.
+ */
+const detailsFormSchema = verticalDetailsSchema.superRefine((value, ctx) => {
+  for (const key of ["emergency_referral", "tow_partner"] as const) {
+    const contact = value[key];
+    if (!contact) continue;
+    const name = contact.name.trim();
+    const phone = contact.phone.trim();
+    if (!name && !phone) continue;
+    if (!phone || !isBlankOrValidPhone(phone)) {
+      ctx.addIssue({ code: "custom", message: PHONE_ERROR_MESSAGE, path: [key, "phone"] });
+    }
+    if (!name) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Add a name for this contact.",
+        path: [key, "name"],
+      });
     }
   }
-  return out;
-}
+});
 
 /**
  * Plain (unbranded) mirrors of `verticalDetailsSchema`/
@@ -92,13 +105,6 @@ interface VerticalDetailsFormValues {
   tax_rate_bps?: number;
   prep_time_minutes?: number;
   menu_text?: string;
-}
-
-interface ReminderReviewFormValues {
-  voice_reminders_enabled: boolean;
-  review_request_enabled: boolean;
-  review_url?: string;
-  avg_transaction_value_cents: number;
 }
 
 interface VerticalDetailsData {
@@ -136,7 +142,7 @@ export default function VerticalDetailsTabPage() {
         reminderReview: {
           voice_reminders_enabled: tenant?.voice_reminders_enabled ?? false,
           review_request_enabled: tenant?.review_request_enabled ?? false,
-          review_url: tenant?.review_url ?? undefined,
+          review_url: tenant?.review_url ?? "",
           avg_transaction_value_cents: tenant?.avg_transaction_value_cents ?? 0,
         },
       };
@@ -169,14 +175,14 @@ function VerticalDetailsForm({
   onSaved: () => void;
 }) {
   const detailsForm = useForm<VerticalDetailsFormValues>({
-    resolver: zodResolver(verticalDetailsSchema),
+    resolver: zodResolver(detailsFormSchema),
     defaultValues: {
       cancellation_policy: data.details.cancellation_policy ?? { window_hours: 24, text: "" },
     },
   });
 
   const reminderForm = useForm<ReminderReviewFormValues>({
-    resolver: zodResolver(reminderReviewSettingsSchema),
+    resolver: zodResolver(reminderReviewFormSchema),
     defaultValues: data.reminderReview,
   });
 
@@ -202,28 +208,46 @@ function VerticalDetailsForm({
     reminderForm.reset(data.reminderReview);
   }, [data, detailsForm, reminderForm]);
 
+  // Motel rate table is edited as dollar text; parse errors block the save.
+  const [rateTableText, setRateTableText] = useState(() =>
+    rateTableToText(data.details.rate_table as RateEntry[] | undefined),
+  );
+  const [rateTableError, setRateTableError] = useState<string | null>(null);
+
   async function saveDetails(values: VerticalDetailsFormValues) {
-    const res = await fetch("/api/tenant/agent/vertical-details", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(values),
-    });
-    if (!res.ok) {
-      toast.error("Couldn't save — please try again.");
+    if (rateTableError !== null) {
+      toast.error("Fix the rate table first.");
       return;
     }
-    toast.success("Saved — updating your AI, ~30s");
+    const result = await sendJson(
+      "/api/tenant/agent/vertical-details",
+      detailsRequestBody(data.vertical, { ...values }),
+    );
+    if (!result.ok) {
+      for (const issue of result.issues) {
+        detailsForm.setError(issue.path.join(".") as never, {
+          type: "server",
+          message: issue.message,
+        });
+      }
+      toast.error(saveErrorMessage(result));
+      return;
+    }
+    // Every field here is read by voice-inbound on each call — no publish needed.
+    toast.success(SAVED_NEXT_CALL);
     onSaved();
   }
 
   async function saveReminders(values: ReminderReviewFormValues) {
-    const res = await fetch("/api/tenant/settings/reminders-review", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(values),
-    });
-    if (!res.ok) {
-      toast.error("Couldn't save — please try again.");
+    const result = await sendJson("/api/tenant/settings/reminders-review", values);
+    if (!result.ok) {
+      for (const issue of result.issues) {
+        reminderForm.setError(issue.path.join(".") as never, {
+          type: "server",
+          message: issue.message,
+        });
+      }
+      toast.error(saveErrorMessage(result));
       return;
     }
     toast.success("Saved");
@@ -245,6 +269,14 @@ function VerticalDetailsForm({
               className="space-y-4"
               data-tenant-id={tenantId}
             >
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="font-medium">Cancellation window and late fee</span>
+                <NotLiveBadge />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Saved for reference — your AI doesn&apos;t enforce the window or charge the fee yet.
+                Callers hear the policy text below, so spell the rules out there.
+              </p>
               <div className="grid gap-4 sm:grid-cols-2">
                 <FormField
                   control={detailsForm.control}
@@ -287,7 +319,9 @@ function VerticalDetailsForm({
                       <Textarea {...field} value={field.value ?? ""} />
                     </FormControl>
                     <FormDescription>
-                      Stated at booking and again if the customer cancels.
+                      {vertical === "legal"
+                        ? "Saved, but not read to callers yet for law firms."
+                        : "Stated at booking and again if the customer cancels."}
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
@@ -300,7 +334,9 @@ function VerticalDetailsForm({
                   name="insurances_accepted"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Insurances accepted (one per line)</FormLabel>
+                      <FormLabel className="flex flex-wrap items-center gap-2">
+                        Insurances accepted (one per line) <NotLiveBadge />
+                      </FormLabel>
                       <FormControl>
                         <Textarea
                           value={arrayToLines(field.value)}
@@ -352,7 +388,7 @@ function VerticalDetailsForm({
                         <FormItem>
                           <FormLabel>Emergency referral — phone</FormLabel>
                           <FormControl>
-                            <Input {...field} value={field.value ?? ""} />
+                            <PhoneInput value={field.value ?? ""} onChange={field.onChange} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -385,7 +421,7 @@ function VerticalDetailsForm({
                         <FormItem>
                           <FormLabel>Tow partner — phone</FormLabel>
                           <FormControl>
-                            <Input {...field} value={field.value ?? ""} />
+                            <PhoneInput value={field.value ?? ""} onChange={field.onChange} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -517,18 +553,28 @@ function VerticalDetailsForm({
                     name="rate_table"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>
-                          Rate table — one `room type: nightly rate in cents` per line
-                        </FormLabel>
+                        <FormLabel>Nightly rates — one “Room type: $price” per line</FormLabel>
                         <FormControl>
                           <Textarea
-                            value={rateTableToLines(field.value)}
-                            onChange={(e) => field.onChange(linesToRateTable(e.target.value))}
+                            value={rateTableText}
+                            placeholder={"Standard: $89\nKing Suite: $129.50"}
+                            onChange={(e) => {
+                              setRateTableText(e.target.value);
+                              const parsed = parseRateTable(e.target.value);
+                              setRateTableError(parsed.errors[0] ?? null);
+                              field.onChange(parsed.entries);
+                            }}
                           />
                         </FormControl>
                         <FormDescription>
-                          e.g. `Standard: 8900` for an $89.00/night standard room.
+                          Your AI quotes only these rates. Use the same room type names as your
+                          rooms in Setup → Resources.
                         </FormDescription>
+                        {rateTableError && (
+                          <p className="text-sm text-destructive" role="alert">
+                            {rateTableError}
+                          </p>
+                        )}
                         <FormMessage />
                       </FormItem>
                     )}
@@ -605,7 +651,9 @@ function VerticalDetailsForm({
                       name="prep_time_minutes"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Typical prep time (minutes)</FormLabel>
+                          <FormLabel className="flex flex-wrap items-center gap-2">
+                            Typical prep time (minutes) <NotLiveBadge />
+                          </FormLabel>
                           <FormControl>
                             <Input
                               type="number"
@@ -660,9 +708,12 @@ function VerticalDetailsForm({
                 render={({ field }) => (
                   <FormItem className="flex items-center justify-between gap-4">
                     <div>
-                      <FormLabel>Voice appointment reminders</FormLabel>
+                      <FormLabel className="flex flex-wrap items-center gap-2">
+                        Voice appointment reminders <NotLiveBadge />
+                      </FormLabel>
                       <FormDescription>
-                        An outbound call with voicemail detection, ~24h before each booking.
+                        A reminder call ~24h before each booking — not available yet. Customers who
+                        agreed to texts already get a reminder text ~24h before.
                       </FormDescription>
                     </div>
                     <FormControl>
@@ -702,6 +753,7 @@ function VerticalDetailsForm({
                         value={field.value ?? ""}
                       />
                     </FormControl>
+                    <FormDescription>Required to send review requests.</FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}

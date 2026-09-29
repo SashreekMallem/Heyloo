@@ -1,7 +1,14 @@
 "use client";
 
-import { offeringSchema } from "@heyloo/canonical-types";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
   Button,
   CentsInput,
   Dialog,
@@ -17,17 +24,33 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
+import { Link } from "@/i18n/navigation";
+import { SAVED_NEXT_CALL, saveErrorMessage, sendJson } from "@/lib/settings/client";
+import { serviceDialogSchema } from "@/lib/settings/schemas";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
+type FieldErrors = Partial<Record<"name" | "duration_minutes" | "price_cents", string>>;
+
+/**
+ * Agent → Services. SETTINGS-1: writes now go through the same
+ * server-validated routes as Setup → Offerings (`POST /api/tenant/
+ * offerings`, `PATCH|DELETE /api/tenant/offerings/[id]`) instead of a
+ * direct browser insert with client-only checks; the dialog shows field
+ * errors inline; removing a service asks first and reports failures.
+ * Services are read by the AI live on every call (`list_offerings`).
+ */
 export default function ServicesTabPage() {
   const tenantId = useCurrentTenantId();
   const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<OfferingRowData | null>(null);
+  const [removing, setRemoving] = useState<OfferingRowData | null>(null);
   const [name, setName] = useState("");
-  const [duration, setDuration] = useState<number | undefined>(undefined);
+  const [duration, setDuration] = useState("");
   const [priceCents, setPriceCents] = useState<number | undefined>(undefined);
+  const [errors, setErrors] = useState<FieldErrors>({});
+  const [saving, setSaving] = useState(false);
 
   const query = useQuery({
     queryKey: ["tenant", tenantId, "offerings"],
@@ -48,57 +71,85 @@ export default function ServicesTabPage() {
     enabled: !!tenantId,
   });
 
+  function refresh() {
+    void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "offerings"] });
+    void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "settings_checklist"] });
+  }
+
   function openDialog(offering?: OfferingRowData) {
     setEditing(offering ?? null);
     setName(offering?.name ?? "");
-    setDuration(offering?.durationMinutes ?? undefined);
+    setDuration(offering?.durationMinutes ? String(offering.durationMinutes) : "");
     setPriceCents(offering?.priceCents ?? undefined);
+    setErrors({});
     setDialogOpen(true);
   }
 
   async function save() {
-    const parsed = offeringSchema.safeParse({
+    const parsed = serviceDialogSchema.safeParse({
       name,
-      duration_minutes: duration,
+      duration_minutes: duration.trim() === "" ? undefined : Number(duration),
       price_cents: priceCents,
     });
     if (!parsed.success) {
-      toast.error("Enter at least a service name.");
+      const next: FieldErrors = {};
+      for (const issue of parsed.error.issues) {
+        const key = issue.path[0] as keyof FieldErrors;
+        next[key] ??= issue.message;
+      }
+      setErrors(next);
       return;
     }
+    setErrors({});
+    setSaving(true);
     const payload = {
       name: parsed.data.name,
-      duration_minutes: duration ?? null,
-      price_cents: priceCents ?? null,
+      ...(parsed.data.duration_minutes !== undefined
+        ? { duration_minutes: parsed.data.duration_minutes }
+        : {}),
+      ...(parsed.data.price_cents !== undefined ? { price_cents: parsed.data.price_cents } : {}),
     };
     const result = editing
-      ? await supabaseBrowserClient.from("offerings").update(payload).eq("id", editing.id)
-      : await supabaseBrowserClient
-          .from("offerings")
-          .insert({ ...payload, tenant_id: tenantId as string });
-
-    if (result.error) {
-      toast.error("Couldn't save — please try again.");
+      ? await sendJson(`/api/tenant/offerings/${editing.id}`, payload, "PATCH")
+      : await sendJson("/api/tenant/offerings", payload);
+    setSaving(false);
+    if (!result.ok) {
+      toast.error(saveErrorMessage(result));
       return;
     }
-    toast.success("Saved");
+    toast.success(SAVED_NEXT_CALL);
     setDialogOpen(false);
-    void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "offerings"] });
+    refresh();
   }
 
-  async function remove(offering: OfferingRowData) {
-    await supabaseBrowserClient.from("offerings").update({ active: false }).eq("id", offering.id);
-    void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "offerings"] });
+  async function confirmRemove() {
+    const offering = removing;
+    setRemoving(null);
+    if (!offering) return;
+    const result = await sendJson(`/api/tenant/offerings/${offering.id}`, undefined, "DELETE");
+    if (!result.ok) {
+      toast.error(saveErrorMessage(result));
+      return;
+    }
+    toast.success(`Removed “${offering.name}” — your AI stops offering it from the next call.`);
+    refresh();
   }
 
   return (
-    <div>
+    <div className="space-y-3">
+      <p className="text-sm text-muted-foreground">
+        Your AI offers these on every call. For categories, modifiers, and allergens, use{" "}
+        <Link href="/dashboard/setup/offerings" className="underline">
+          Setup → Offerings
+        </Link>
+        .
+      </p>
       <ServiceOfferingEditor
         offerings={query.data ?? []}
         onChange={(action, offering) => {
           if (action === "add") openDialog();
           else if (action === "edit" && offering) openDialog(offering);
-          else if (action === "delete" && offering) void remove(offering);
+          else if (action === "delete" && offering) setRemoving(offering);
         }}
       />
 
@@ -109,27 +160,62 @@ export default function ServicesTabPage() {
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1">
-              <Label>Name</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} />
+              <Label htmlFor="service-name">Name</Label>
+              <Input
+                id="service-name"
+                value={name}
+                aria-invalid={!!errors.name}
+                onChange={(e) => setName(e.target.value)}
+              />
+              {errors.name && <p className="text-xs text-destructive">{errors.name}</p>}
             </div>
             <div className="space-y-1">
-              <Label>Duration (minutes)</Label>
+              <Label htmlFor="service-duration">Length (minutes)</Label>
               <Input
+                id="service-duration"
                 type="number"
-                value={duration ?? ""}
-                onChange={(e) => setDuration(e.target.value ? Number(e.target.value) : undefined)}
+                inputMode="numeric"
+                min={5}
+                max={1440}
+                step={5}
+                value={duration}
+                aria-invalid={!!errors.duration_minutes}
+                onChange={(e) => setDuration(e.target.value)}
               />
+              {errors.duration_minutes && (
+                <p className="text-xs text-destructive">{errors.duration_minutes}</p>
+              )}
             </div>
             <div className="space-y-1">
               <Label>Price</Label>
               <CentsInput value={priceCents} onChange={setPriceCents} />
+              {errors.price_cents && (
+                <p className="text-xs text-destructive">{errors.price_cents}</p>
+              )}
             </div>
           </div>
           <DialogFooter>
-            <Button onClick={save}>Save</Button>
+            <Button onClick={() => void save()} disabled={saving}>
+              {saving ? "Saving…" : "Save"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={removing !== null} onOpenChange={(open) => !open && setRemoving(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove “{removing?.name}”?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Your AI stops offering it on calls. Past bookings and orders keep it.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmRemove()}>Remove</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

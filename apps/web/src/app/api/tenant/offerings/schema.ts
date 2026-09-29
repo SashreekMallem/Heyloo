@@ -25,4 +25,18 @@ export const offeringWriteSchema = offeringSchema.omit({ resource_id: true }).ex
   metadata: offeringMetadataSchema.default({}),
 });
 
-export const offeringUpdateSchema = offeringWriteSchema.partial();
+/**
+ * SETTINGS-1: built WITHOUT the create defaults. `offeringWriteSchema.partial()`
+ * kept `active.default(true)` / `metadata.default({})` (zod 4 still applies
+ * a default inside `.partial()`), so a PATCH that only renamed a menu item
+ * re-activated it and wiped its modifiers/allergens.
+ */
+export const offeringUpdateSchema = offeringSchema
+  .omit({ resource_id: true })
+  .extend({
+    category: z.string().trim().min(1).max(200).nullish(),
+    resource_type_required: z.enum(["chair", "room", "table", "bay", "staff", "agent"]).nullish(),
+    active: z.boolean(),
+    metadata: offeringMetadataSchema,
+  })
+  .partial();

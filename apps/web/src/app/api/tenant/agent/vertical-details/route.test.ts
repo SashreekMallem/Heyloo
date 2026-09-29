@@ -111,6 +111,47 @@ describe("POST /api/tenant/agent/vertical-details", () => {
     expect(updatePayloads["tenants"]).toHaveProperty("policies_reviewed_at");
   });
 
+  it("SETTINGS-1: normalizes the tow partner phone to E.164 and deletes fields cleared with null", async () => {
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    const updatePayloads: Record<string, unknown> = {};
+    fromMock = makeFrom(
+      [
+        {
+          data: { dynamic_variable_overrides: { manager_name: "Sam", menu_text: "old menu" } },
+          error: null,
+        },
+        { error: null },
+        { error: null },
+      ],
+      (table, payload) => {
+        updatePayloads[table] = payload;
+      },
+    );
+    const res = await POST(
+      postRequest({
+        ...validPayload,
+        tow_partner: { name: "Ace Towing", phone: "(610) 555-0199" },
+        menu_text: null,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(updatePayloads["agent_configs"]).toEqual({
+      dynamic_variable_overrides: {
+        manager_name: "Sam",
+        cancellation_policy: validPayload.cancellation_policy,
+        tow_partner: { name: "Ace Towing", phone: "+16105550199" },
+      },
+    });
+  });
+
+  it("SETTINGS-1: 422s on a tow partner phone that isn't a real number", async () => {
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    const res = await POST(
+      postRequest({ ...validPayload, tow_partner: { name: "Ace", phone: "call us" } }),
+    );
+    expect(res.status).toBe(422);
+  });
+
   it("500s when the update fails", async () => {
     mockGetUser = async () => ({ data: { user: mockUser } });
     fromMock = makeFrom([

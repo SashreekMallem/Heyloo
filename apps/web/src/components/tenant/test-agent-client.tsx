@@ -8,9 +8,9 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
-  Input,
   Label,
   PageHeader,
+  PhoneInput,
   TranscriptViewer,
 } from "@heyloo/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -18,6 +18,8 @@ import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { scenariosFor } from "@/components/tenant/test-agent-scenarios";
 import { Link } from "@/i18n/navigation";
+import { saveErrorMessage, sendJson } from "@/lib/settings/client";
+import { isBlankOrValidPhone, PHONE_ERROR_MESSAGE } from "@/lib/settings/phone";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
 interface LatestTestCall {
@@ -50,6 +52,7 @@ export function TestAgentClient({
   const queryClient = useQueryClient();
   const [testPhone, setTestPhone] = useState("");
   const [savingPhone, setSavingPhone] = useState(false);
+  const [phoneError, setPhoneError] = useState<string | null>(null);
   const [waitingForCall, setWaitingForCall] = useState(false);
   const [webCallState, setWebCallState] = useState<
     "idle" | "starting" | "connecting" | "active" | "ended" | "error" | "unavailable"
@@ -69,18 +72,29 @@ export function TestAgentClient({
     },
   });
 
+  // SETTINGS-1: saved as E.164 through `POST /api/tenant/settings/test-phone`
+  // — `voice-events` compares it to the normalized caller ID, so a
+  // formatted "(555) 123-4567" never matched and test calls were billed.
   async function saveTestPhone() {
-    setSavingPhone(true);
-    const { error } = await supabaseBrowserClient
-      .from("tenants")
-      .update({ owner_test_phone: testPhone.trim() || null })
-      .eq("id", tenantId);
-    setSavingPhone(false);
-    if (error) {
-      toast.error("Couldn't save your test number — please try again.");
+    if (!isBlankOrValidPhone(testPhone)) {
+      setPhoneError(PHONE_ERROR_MESSAGE);
       return;
     }
-    toast.success("Test number saved");
+    setPhoneError(null);
+    setSavingPhone(true);
+    const result = await sendJson<{ owner_test_phone: string | null }>(
+      "/api/tenant/settings/test-phone",
+      { owner_test_phone: testPhone },
+    );
+    setSavingPhone(false);
+    if (!result.ok) {
+      setPhoneError(result.issues[0]?.message ?? null);
+      toast.error(saveErrorMessage(result));
+      return;
+    }
+    setTestPhone(result.body?.owner_test_phone ?? "");
+    toast.success("Test number saved — calls from it are marked as tests.");
+    void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "settings_checklist"] });
   }
 
   const latestCallQuery = useQuery({
@@ -239,16 +253,21 @@ export function TestAgentClient({
               Your phone number (so we recognize your test calls)
             </Label>
             <div className="flex gap-2">
-              <Input
+              <PhoneInput
                 id="owner-test-phone"
-                placeholder="+15551234567"
+                placeholder="(610) 555-0100"
                 value={testPhone}
-                onChange={(e) => setTestPhone(e.target.value)}
+                onChange={setTestPhone}
               />
-              <Button variant="outline" onClick={saveTestPhone} disabled={savingPhone}>
+              <Button variant="outline" onClick={() => void saveTestPhone()} disabled={savingPhone}>
                 Save
               </Button>
             </div>
+            {phoneError && (
+              <p className="text-xs text-destructive" role="alert">
+                {phoneError}
+              </p>
+            )}
           </div>
 
           {liveNumber ? (

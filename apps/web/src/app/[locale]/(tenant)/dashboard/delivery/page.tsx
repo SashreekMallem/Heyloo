@@ -1,78 +1,34 @@
 "use client";
 
-import {
-  Callout,
-  Card,
-  CardContent,
-  ConnectionLifecycleCard,
-  Input,
-  Label,
-  PageHeader,
-  Switch,
-} from "@heyloo/ui";
+import { Callout, ConnectionLifecycleCard, PageHeader } from "@heyloo/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { AirtableStatusResponse } from "@/app/api/tenant/delivery/airtable/status/route";
+import { OwnerAlertsCard } from "@/components/tenant/settings/owner-alerts-card";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
-
-interface DeliveryPrefs {
-  sms_enabled: boolean;
-  email_enabled: boolean;
-  notification_email: string;
-}
-
-const DEFAULT_PREFS: DeliveryPrefs = {
-  sms_enabled: true,
-  email_enabled: true,
-  notification_email: "",
-};
 
 export default function DeliveryPage() {
   const tenantId = useCurrentTenantId();
   const queryClient = useQueryClient();
-  const [prefs, setPrefs] = useState<DeliveryPrefs>(DEFAULT_PREFS);
   const [a2pStatus, setA2pStatus] = useState<string>("pending_verification");
   const [loaded, setLoaded] = useState(false);
 
   useQuery({
-    queryKey: ["tenant", tenantId, "agent_configs", "delivery"],
+    queryKey: ["tenant", tenantId, "tenants", "a2p_status"],
     queryFn: async () => {
-      const { data: config } = await supabaseBrowserClient
-        .from("agent_configs")
-        .select("dynamic_variable_overrides")
-        .eq("tenant_id", tenantId as string)
-        .maybeSingle();
       const { data: tenant } = await supabaseBrowserClient
         .from("tenants")
         .select("a2p_status")
         .eq("id", tenantId as string)
         .maybeSingle();
-      const overrides = (config?.dynamic_variable_overrides ?? {}) as { delivery?: DeliveryPrefs };
-      setPrefs(overrides.delivery ?? DEFAULT_PREFS);
       setA2pStatus(tenant?.a2p_status ?? "pending_verification");
       setLoaded(true);
       return null;
     },
     enabled: !!tenantId,
   });
-
-  async function save(next: DeliveryPrefs) {
-    setPrefs(next);
-    const { data: current } = await supabaseBrowserClient
-      .from("agent_configs")
-      .select("dynamic_variable_overrides")
-      .eq("tenant_id", tenantId as string)
-      .maybeSingle();
-    const overrides = (current?.dynamic_variable_overrides ?? {}) as Record<string, unknown>;
-    const { error } = await supabaseBrowserClient
-      .from("agent_configs")
-      .update({ dynamic_variable_overrides: { ...overrides, delivery: next } })
-      .eq("tenant_id", tenantId as string);
-    if (error) toast.error("Couldn't save — please try again.");
-    else void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "agent_configs"] });
-  }
 
   const airtableQuery = useQuery({
     queryKey: ["tenant", tenantId, "adapter_connections", "airtable"],
@@ -154,35 +110,7 @@ export default function DeliveryPage() {
         </Callout>
       )}
 
-      <Card>
-        <CardContent className="space-y-4 pt-6">
-          <div className="flex items-center justify-between">
-            <Label htmlFor="sms-enabled">SMS notifications</Label>
-            <Switch
-              id="sms-enabled"
-              checked={prefs.sms_enabled}
-              onCheckedChange={(checked) => void save({ ...prefs, sms_enabled: checked })}
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <Label htmlFor="email-enabled">Email notifications</Label>
-            <Switch
-              id="email-enabled"
-              checked={prefs.email_enabled}
-              onCheckedChange={(checked) => void save({ ...prefs, email_enabled: checked })}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="notification-email">Notification email</Label>
-            <Input
-              id="notification-email"
-              value={prefs.notification_email}
-              onChange={(e) => setPrefs({ ...prefs, notification_email: e.target.value })}
-              onBlur={() => void save(prefs)}
-            />
-          </div>
-        </CardContent>
-      </Card>
+      {tenantId && <OwnerAlertsCard tenantId={tenantId} />}
 
       <ConnectionLifecycleCard
         provider="Airtable"

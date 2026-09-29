@@ -1,6 +1,7 @@
-import { verticalDetailsSchema } from "@heyloo/canonical-types";
 import { NextResponse } from "next/server";
 import { claimsFromSupabaseClient } from "@/lib/auth/claims";
+import { mergeOverrides } from "@/lib/settings/route-auth";
+import { verticalDetailsRequestSchema } from "@/lib/settings/schemas";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -15,6 +16,11 @@ export const runtime = "nodejs";
  * the existing overrides object rather than replacing it — the AI
  * Instructions tab writes sibling keys (`manager_name`, `parking_info`,
  * etc.) into the same jsonb column.
+ *
+ * SETTINGS-1: validated against `verticalDetailsRequestSchema`
+ * (`lib/settings/schemas.ts`) — the canonical schema plus E.164 contact
+ * phones and `null`-to-clear for every optional field (merged with
+ * `mergeOverrides`, which deletes a key sent as `null`).
  */
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerComponentClient();
@@ -37,7 +43,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
 
-  const parsed = verticalDetailsSchema.safeParse(json);
+  const parsed = verticalDetailsRequestSchema.safeParse(json);
   if (!parsed.success) {
     return NextResponse.json(
       { error: "invalid_request", issues: parsed.error.issues },
@@ -51,11 +57,11 @@ export async function POST(request: Request) {
     .eq("tenant_id", claims.tenant_id)
     .maybeSingle();
 
-  const overrides = (existing?.dynamic_variable_overrides ?? {}) as Record<string, unknown>;
-
   const { error } = await supabase
     .from("agent_configs")
-    .update({ dynamic_variable_overrides: { ...overrides, ...parsed.data } })
+    .update({
+      dynamic_variable_overrides: mergeOverrides(existing?.dynamic_variable_overrides, parsed.data),
+    })
     .eq("tenant_id", claims.tenant_id);
 
   if (error) return NextResponse.json({ error: "update_failed" }, { status: 500 });

@@ -9,6 +9,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  Callout,
   Card,
   CardContent,
   ManualModeBanner,
@@ -20,6 +21,13 @@ import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
+/**
+ * Agent → Manual Mode. SETTINGS-1: the settings audit found `manual_mode`
+ * is sent to the call as `is_manual_mode` but no prompt, voice tool or text
+ * reply checks it — the AI keeps confirming bookings. The page used to
+ * promise the opposite; it now says plainly that the switch is saved but
+ * not enforced yet (backend follow-up in docs/BUILD_NOTES.md SETTINGS-1).
+ */
 export default function ManualModeTabPage() {
   const tenantId = useCurrentTenantId();
   const queryClient = useQueryClient();
@@ -50,7 +58,9 @@ export default function ManualModeTabPage() {
       toast.error("Couldn't save — please try again.");
       return;
     }
-    toast.success(enabled ? "Manual Mode turned on" : "Manual Mode turned off");
+    toast.success(
+      enabled ? "Saved — Manual Mode isn't enforced yet (see the note)." : "Manual Mode turned off",
+    );
     void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "tenants"] });
   }
 
@@ -58,6 +68,11 @@ export default function ManualModeTabPage() {
 
   return (
     <div className="space-y-4">
+      <Callout tone="warning" title="Not active yet">
+        Turning Manual Mode on today does <strong>not</strong> stop your AI from confirming bookings
+        and orders. Your choice is saved and takes effect automatically once Manual Mode ships.
+        Until then, to stop bookings, mark your days closed on the Hours tab.
+      </Callout>
       {enabled && query.data?.manual_mode_enabled_at && (
         <ManualModeBanner
           since={query.data.manual_mode_enabled_at}
@@ -69,8 +84,8 @@ export default function ManualModeTabPage() {
           <div>
             <p className="font-medium">Manual Mode</p>
             <p className="text-sm text-muted-foreground">
-              Stops the AI from confirming bookings automatically — new orders/bookings are sent to
-              you by SMS instead.
+              When it&apos;s available: your AI takes booking and order requests without confirming
+              them, and sends them to you to confirm.
             </p>
           </div>
           <Switch
@@ -89,8 +104,8 @@ export default function ManualModeTabPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Turn on Manual Mode?</AlertDialogTitle>
             <AlertDialogDescription>
-              Turning on Manual Mode stops the AI from confirming bookings automatically — new
-              orders/bookings will be sent to you by SMS instead.
+              Manual Mode isn&apos;t enforced yet — your AI will keep confirming bookings for now.
+              Your choice is saved and applies automatically once Manual Mode ships.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

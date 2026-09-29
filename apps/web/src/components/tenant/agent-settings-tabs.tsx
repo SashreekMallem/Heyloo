@@ -13,7 +13,12 @@ import type { ReactNode } from "react";
 import { AgentPublishStatus } from "@/components/tenant/agent-publish-status";
 import { Link, usePathname, useRouter } from "@/i18n/navigation";
 
+// SETTINGS-1: "overview" is the index route itself (`/dashboard/agent`,
+// the Settings checklist) and "business" is the new business name / time
+// zone tab.
 const TABS = [
+  { value: "overview", label: "Overview" },
+  { value: "business", label: "Business" },
   { value: "greeting", label: "Greeting & Persona" },
   { value: "hours", label: "Hours" },
   { value: "services", label: "Services" },
@@ -25,10 +30,16 @@ const TABS = [
   { value: "text-agent", label: "Text agent" },
 ];
 
+function tabHref(value: string): string {
+  return value === "overview" ? "/dashboard/agent" : `/dashboard/agent/${value}`;
+}
+
 export function AgentSettingsTabs({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const active = TABS.find((t) => pathname.endsWith(t.value))?.value ?? "greeting";
+  const active =
+    TABS.find((t) => t.value !== "overview" && pathname.endsWith(`/agent/${t.value}`))?.value ??
+    "overview";
 
   return (
     <div className="space-y-6">
@@ -46,7 +57,7 @@ export function AgentSettingsTabs({ children }: { children: ReactNode }) {
             return (
               <Link
                 key={tab.value}
-                href={`/dashboard/agent/${tab.value}`}
+                href={tabHref(tab.value)}
                 aria-current={isActive ? "page" : undefined}
                 className={cn(
                   "inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-3 py-1 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -62,7 +73,7 @@ export function AgentSettingsTabs({ children }: { children: ReactNode }) {
 
       {/* Mobile/tablet select switcher — stays active until the row above
           actually fits without clipping or overflow (FRONTEND_SPEC.md §6.6). */}
-      <Select value={active} onValueChange={(v) => router.push(`/dashboard/agent/${v}`)}>
+      <Select value={active} onValueChange={(v) => router.push(tabHref(v))}>
         <SelectTrigger className="w-full lg:hidden" aria-label="Agent settings section">
           <SelectValue />
         </SelectTrigger>

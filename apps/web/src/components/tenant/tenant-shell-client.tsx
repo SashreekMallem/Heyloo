@@ -40,6 +40,8 @@ const CONFIGURE_SECTION: NavSection = {
   items: [
     { label: "Setup", href: "/dashboard/setup", icon: NAV_ICONS.settings },
     { label: "Agent", href: "/dashboard/agent", icon: NAV_ICONS.agent },
+    // SETTINGS-1: the Test agent page existed but had no sidebar entry.
+    { label: "Test agent", href: "/dashboard/test-agent", icon: NAV_ICONS.calls },
     { label: "Phone setup", href: "/dashboard/phone-setup", icon: NAV_ICONS.phoneSetup },
     { label: "Website widget", href: "/dashboard/website-widget", icon: NAV_ICONS.websiteWidget },
     { label: "Delivery", href: "/dashboard/delivery", icon: NAV_ICONS.delivery },
@@ -84,7 +86,7 @@ function TopBarContent({ tenantId, tenantName }: { tenantId: string; tenantName:
       />
       <ThemeToggle />
       <Link
-        href="/dashboard/agent/greeting"
+        href="/dashboard/agent"
         aria-label="Agent settings"
         className="flex size-8 items-center justify-center rounded-full bg-secondary transition-colors duration-(--duration-fast) ease-(--ease-out) hover:bg-secondary/70"
       >

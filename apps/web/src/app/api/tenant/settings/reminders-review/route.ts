@@ -1,6 +1,6 @@
-import { reminderReviewSettingsSchema } from "@heyloo/canonical-types";
 import { NextResponse } from "next/server";
 import { claimsFromSupabaseClient } from "@/lib/auth/claims";
+import { reminderReviewRequestSchema } from "@/lib/settings/schemas";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -11,6 +11,9 @@ export const runtime = "nodejs";
  * server-side validated against `reminderReviewSettingsSchema` and written
  * to the real `tenants` columns (`voice_reminders_enabled`,
  * `review_request_enabled`, `review_url`, `avg_transaction_value_cents`).
+ *
+ * SETTINGS-1: `reminderReviewRequestSchema` (`lib/settings/schemas.ts`) —
+ * blank link clears it, http(s) only, and review requests need a link.
  */
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerComponentClient();
@@ -33,7 +36,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
 
-  const parsed = reminderReviewSettingsSchema.safeParse(json);
+  const parsed = reminderReviewRequestSchema.safeParse(json);
   if (!parsed.success) {
     return NextResponse.json(
       { error: "invalid_request", issues: parsed.error.issues },
@@ -46,7 +49,7 @@ export async function POST(request: Request) {
     .update({
       voice_reminders_enabled: parsed.data.voice_reminders_enabled,
       review_request_enabled: parsed.data.review_request_enabled,
-      review_url: parsed.data.review_url ?? null,
+      review_url: parsed.data.review_url,
       avg_transaction_value_cents: parsed.data.avg_transaction_value_cents,
     })
     .eq("id", claims.tenant_id);

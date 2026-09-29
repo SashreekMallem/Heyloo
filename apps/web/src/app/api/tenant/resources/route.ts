@@ -1,3 +1,4 @@
+import type { InsertOf, ResourceRow } from "@heyloo/supabase-client";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { claimsFromSupabaseClient } from "@/lib/auth/claims";
@@ -29,6 +30,11 @@ const resourceSchema = z.object({
   room_type: z.string().trim().min(1).max(100).nullish(),
   metadata: z.record(z.string(), z.unknown()).default({}),
   active: z.boolean().default(true),
+  // SETTINGS-1: both read by `fn_regenerate_availability_slots` —
+  // `resources.buffer_minutes` (a real column the API never exposed) and
+  // `metadata.slot_minutes` (default 30, motel 1440).
+  buffer_minutes: z.number().int().min(0).max(240).default(0),
+  slot_minutes: z.number().int().min(5).max(1440).nullish(),
 });
 
 export async function GET() {
@@ -46,7 +52,7 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("resources")
-    .select("id, type, name, capacity, active, metadata, room_type")
+    .select("id, type, name, capacity, active, metadata, room_type, buffer_minutes")
     .eq("tenant_id", claims.tenant_id)
     .order("type", { ascending: true })
     .order("name", { ascending: true });
@@ -81,9 +87,18 @@ export async function POST(request: Request) {
     );
   }
 
+  const { slot_minutes: slotMinutes, ...resource } = parsed.data;
+  const row = {
+    ...resource,
+    metadata: slotMinutes ? { ...resource.metadata, slot_minutes: slotMinutes } : resource.metadata,
+    tenant_id: claims.tenant_id,
+  };
   const { data, error } = await supabase
     .from("resources")
-    .insert({ ...parsed.data, tenant_id: claims.tenant_id })
+    // `buffer_minutes` is a real column (20260907130600_booking_core.sql)
+    // missing from the hand-maintained `ResourceRow` type
+    // (packages/supabase-client — outside SETTINGS-1's ownership).
+    .insert(row as InsertOf<ResourceRow>)
     .select("id")
     .single();
   if (error) return NextResponse.json({ error: "insert_failed" }, { status: 500 });

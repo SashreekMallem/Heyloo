@@ -16,8 +16,11 @@ import {
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
+import { Link } from "@/i18n/navigation";
+import { SAVED_NEXT_CALL } from "@/lib/settings/client";
+import { openingLinePreview } from "@/lib/settings/greeting";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
@@ -30,7 +33,7 @@ export default function GreetingTabPage() {
     queryFn: async () => {
       const { data: tenant } = await supabaseBrowserClient
         .from("tenants")
-        .select("name")
+        .select("name, language_config")
         .eq("id", tenantId as string)
         .maybeSingle();
       const { data: config } = await supabaseBrowserClient
@@ -41,6 +44,7 @@ export default function GreetingTabPage() {
       return {
         businessName: tenant?.name ?? "your business",
         assistantName: config?.assistant_name ?? "",
+        language: (tenant?.language_config as { primary?: string } | undefined)?.primary ?? "en",
       };
     },
     enabled: !!tenantId,
@@ -65,12 +69,18 @@ export default function GreetingTabPage() {
       toast.error("Couldn't save — please try again.");
       return;
     }
-    toast.success("Saved — updating your AI, ~30s");
+    // `{{assistant_name}}` is read by voice-inbound on every call — no
+    // publish needed (SETTINGS-1).
+    toast.success(SAVED_NEXT_CALL);
     void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "agent_configs"] });
   }
 
-  const businessName = query.data?.businessName ?? "your business";
-  const personaName = form.watch("persona_name") || "your AI assistant";
+  const personaName = useWatch({ control: form.control, name: "persona_name" });
+  const preview = openingLinePreview({
+    businessName: query.data?.businessName ?? "",
+    assistantName: personaName ?? "",
+    language: query.data?.language ?? "en",
+  });
 
   return (
     <Card>
@@ -92,10 +102,18 @@ export default function GreetingTabPage() {
             />
             <div className="rounded-md border border-border bg-muted/40 p-3 text-sm">
               <p className="mb-1 text-xs font-medium text-muted-foreground">
-                Greeting preview (read-only)
+                What callers hear first (word for word)
               </p>
-              &quot;Hi, this is {personaName}, the AI assistant for {businessName} — this call may
-              be recorded.&quot;
+              “{preview}”
+              <p className="mt-2 text-xs text-muted-foreground">
+                The AI and call-recording notice is required and can&apos;t be edited. Returning
+                callers may also be welcomed back by first name. To change the business name, use
+                the{" "}
+                <Link href="/dashboard/agent/business" className="underline">
+                  Business
+                </Link>{" "}
+                tab.
+              </p>
             </div>
             <Button type="submit">Save</Button>
           </form>

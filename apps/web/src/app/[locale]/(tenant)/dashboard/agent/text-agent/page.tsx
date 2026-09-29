@@ -20,6 +20,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
+import { NotLiveBadge, NotLiveNote } from "@/components/tenant/settings/not-live-note";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
@@ -34,14 +35,24 @@ interface TextAgentForm {
   quietEnd: string;
 }
 
+// Quiet hours default ON 21:00-09:00 — exactly what the reminder job
+// assumes when nothing is stored (`_shared/quiet-hours.ts`,
+// `resolveQuietHoursWindow`: `enabled !== false`). SETTINGS-1: the page
+// used to show "off" for a tenant the backend treats as "on".
 const DEFAULTS: TextAgentForm = {
   enabled: false,
   tone: "friendly",
   signOff: "",
-  quietHoursEnabled: false,
+  quietHoursEnabled: true,
   quietStart: "21:00",
   quietEnd: "09:00",
 };
+
+/** The reminder job only reads the HOUR of each bound — store what it honors. */
+function toWholeHour(value: string, fallback: string): string {
+  const match = /^(\d{2}):\d{2}$/.exec(value);
+  return match ? `${match[1]}:00` : fallback;
+}
 
 type TenantTextAgentRow = {
   text_agent_enabled: boolean | null;
@@ -56,7 +67,7 @@ function deriveForm(row: TenantTextAgentRow): TextAgentForm {
     enabled: row.text_agent_enabled ?? false,
     tone: persona.tone ?? DEFAULTS.tone,
     signOff: persona.signOff ?? "",
-    quietHoursEnabled: quiet.enabled ?? false,
+    quietHoursEnabled: quiet.enabled !== false,
     quietStart: quiet.start ?? DEFAULTS.quietStart,
     quietEnd: quiet.end ?? DEFAULTS.quietEnd,
   };
@@ -119,8 +130,8 @@ function TextAgentSettingsCard({
         text_agent_persona: { tone: next.tone, signOff: next.signOff || undefined },
         quiet_hours: {
           enabled: next.quietHoursEnabled,
-          start: next.quietStart,
-          end: next.quietEnd,
+          start: toWholeHour(next.quietStart, DEFAULTS.quietStart),
+          end: toWholeHour(next.quietEnd, DEFAULTS.quietEnd),
         },
       })
       .eq("id", tenantId);
@@ -143,30 +154,42 @@ function TextAgentSettingsCard({
             voice agent, which always keeps answering calls.
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-medium">Text agent enabled</p>
-            <p className="text-xs text-muted-foreground">
-              Turn off to stop AI replies to texts and chat — messages still arrive in your Messages
-              inbox.
-            </p>
+        <CardContent className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">Text agent enabled</p>
+              <p className="text-xs text-muted-foreground">
+                Messages always arrive in your Messages inbox either way.
+              </p>
+            </div>
+            <Switch
+              checked={form.enabled}
+              onCheckedChange={(checked) => {
+                const next = { ...form, enabled: checked };
+                setForm(next);
+                void save(next);
+              }}
+              aria-label="Text agent enabled"
+            />
           </div>
-          <Switch
-            checked={form.enabled}
-            onCheckedChange={(checked) => {
-              const next = { ...form, enabled: checked };
-              setForm(next);
-              void save(next);
-            }}
-            aria-label="Text agent enabled"
-          />
+          <NotLiveNote>
+            This switch isn&apos;t enforced yet: your AI currently replies to every inbound text
+            whether it&apos;s on or off (website chat follows the Website widget switch). Your
+            choice is saved and applies automatically once it ships.
+          </NotLiveNote>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Persona</CardTitle>
-          <CardDescription>How your text agent sounds.</CardDescription>
+          <div className="flex flex-wrap items-center gap-2">
+            <CardTitle>Persona</CardTitle>
+            <NotLiveBadge />
+          </div>
+          <CardDescription>
+            How your text agent sounds. Saved for when text replies start using it — replies
+            don&apos;t read these yet.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
@@ -202,8 +225,8 @@ function TextAgentSettingsCard({
         <CardHeader>
           <CardTitle>Quiet hours</CardTitle>
           <CardDescription>
-            The text agent stays silent overnight even though your business (and voice agent) may
-            still take calls after hours.
+            Appointment reminder texts wait until quiet hours end (on by default, 9 PM – 9 AM your
+            time). Whole hours only. Replies to a customer who just texted you are not delayed.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -221,6 +244,7 @@ function TextAgentSettingsCard({
               <Input
                 id="quiet-start"
                 type="time"
+                step={3600}
                 value={form.quietStart}
                 onChange={(e) => setForm({ ...form, quietStart: e.target.value })}
               />
@@ -230,6 +254,7 @@ function TextAgentSettingsCard({
               <Input
                 id="quiet-end"
                 type="time"
+                step={3600}
                 value={form.quietEnd}
                 onChange={(e) => setForm({ ...form, quietEnd: e.target.value })}
               />

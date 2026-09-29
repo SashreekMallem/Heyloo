@@ -19,6 +19,7 @@ import {
   DialogTitle,
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -57,6 +58,37 @@ interface ResourceRow {
   capacity: number;
   active: boolean;
   room_type: string | null;
+  metadata: Record<string, unknown> | null;
+  buffer_minutes: number | null;
+}
+
+/**
+ * SETTINGS-1: appointment length (`resources.metadata.slot_minutes`) and
+ * buffer (`resources.buffer_minutes`) — both read by
+ * `fn_regenerate_availability_slots` but never exposed. The API now
+ * rebuilds this resource's bookable times as soon as either changes.
+ */
+const SLOT_OPTIONS = [
+  { value: "default", label: "Default (30 min; full night for rooms at a motel)" },
+  { value: "15", label: "15 minutes" },
+  { value: "20", label: "20 minutes" },
+  { value: "30", label: "30 minutes" },
+  { value: "45", label: "45 minutes" },
+  { value: "60", label: "1 hour" },
+  { value: "90", label: "1½ hours" },
+  { value: "120", label: "2 hours" },
+  { value: "180", label: "3 hours" },
+  { value: "240", label: "4 hours" },
+  { value: "480", label: "8 hours" },
+  { value: "1440", label: "Whole day / night" },
+] as const;
+
+const BUFFER_OPTIONS = [0, 5, 10, 15, 20, 30, 45, 60, 90, 120] as const;
+
+function slotLabel(resource: ResourceRow): string {
+  const minutes = resource.metadata?.["slot_minutes"];
+  if (typeof minutes !== "number") return "Default";
+  return SLOT_OPTIONS.find((o) => o.value === String(minutes))?.label ?? `${minutes} min`;
 }
 
 const resourceFormSchema = z.object({
@@ -64,6 +96,8 @@ const resourceFormSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(200),
   capacity: z.number().int().positive("Must be at least 1").max(10_000),
   room_type: z.string().trim().max(100).optional(),
+  slot_minutes: z.string(),
+  buffer_minutes: z.number().int().min(0).max(240),
 });
 
 type ResourceFormValues = z.infer<typeof resourceFormSchema>;
@@ -86,7 +120,7 @@ export default function ResourcesSetupPage() {
       // FIX_REQUESTS.md) — cast immediately after the query.
       const { data } = await supabaseBrowserClient
         .from("resources")
-        .select("id, type, name, capacity, active, room_type")
+        .select("id, type, name, capacity, active, room_type, metadata, buffer_minutes")
         .eq("tenant_id", tenantId as string)
         .eq("active", true)
         .order("type", { ascending: true })
@@ -98,7 +132,14 @@ export default function ResourcesSetupPage() {
 
   const form = useForm<ResourceFormValues>({
     resolver: zodResolver(resourceFormSchema),
-    defaultValues: { type: "room", name: "", capacity: 1, room_type: "" },
+    defaultValues: {
+      type: "room",
+      name: "",
+      capacity: 1,
+      room_type: "",
+      slot_minutes: "default",
+      buffer_minutes: 0,
+    },
   });
 
   useEffect(() => {
@@ -110,8 +151,20 @@ export default function ResourcesSetupPage() {
               name: editing.name,
               capacity: editing.capacity,
               room_type: editing.room_type ?? "",
+              slot_minutes:
+                typeof editing.metadata?.["slot_minutes"] === "number"
+                  ? String(editing.metadata["slot_minutes"])
+                  : "default",
+              buffer_minutes: editing.buffer_minutes ?? 0,
             }
-          : { type: "room", name: "", capacity: 1, room_type: "" },
+          : {
+              type: "room",
+              name: "",
+              capacity: 1,
+              room_type: "",
+              slot_minutes: "default",
+              buffer_minutes: 0,
+            },
       );
     }
   }, [dialogOpen, editing, form]);
@@ -128,7 +181,11 @@ export default function ResourcesSetupPage() {
 
   async function submit(values: ResourceFormValues) {
     setSaving(true);
-    const payload = { ...values, room_type: values.room_type ? values.room_type : null };
+    const payload = {
+      ...values,
+      room_type: values.room_type ? values.room_type : null,
+      slot_minutes: values.slot_minutes === "default" ? null : Number(values.slot_minutes),
+    };
     const res = await fetch(
       editing ? `/api/tenant/resources/${editing.id}` : "/api/tenant/resources",
       {
@@ -142,7 +199,12 @@ export default function ResourcesSetupPage() {
       toast.error("Couldn't save — please try again.");
       return;
     }
-    toast.success("Saved");
+    const body = (await res.json().catch(() => ({}))) as { slots_updated?: boolean };
+    toast.success(
+      body.slots_updated === false
+        ? "Saved — bookable times finish updating overnight."
+        : "Saved — bookable times are updated.",
+    );
     setDialogOpen(false);
     if (tenantId)
       void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "resources"] });
@@ -155,7 +217,7 @@ export default function ResourcesSetupPage() {
       toast.error("Couldn't remove — please try again.");
       return;
     }
-    toast.success("Removed");
+    toast.success("Removed — your AI stops offering its times now.");
     setPendingDelete(null);
     void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "resources"] });
   }
@@ -188,6 +250,8 @@ export default function ResourcesSetupPage() {
                   <TableHead>Type</TableHead>
                   <TableHead>Room type</TableHead>
                   <TableHead>Capacity</TableHead>
+                  <TableHead>Appointment length</TableHead>
+                  <TableHead>Buffer</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -202,6 +266,10 @@ export default function ResourcesSetupPage() {
                     </TableCell>
                     <TableCell>{resource.room_type ?? "—"}</TableCell>
                     <TableCell>{resource.capacity}</TableCell>
+                    <TableCell>{slotLabel(resource)}</TableCell>
+                    <TableCell>
+                      {resource.buffer_minutes ? `${resource.buffer_minutes} min` : "None"}
+                    </TableCell>
                     <TableCell className="text-right">
                       <Button variant="ghost" size="sm" onClick={() => openEdit(resource)}>
                         Edit
@@ -298,6 +366,61 @@ export default function ResourcesSetupPage() {
                   </FormItem>
                 )}
               />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="slot_minutes"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Appointment length</FormLabel>
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {SLOT_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormDescription>Each bookable time is this long.</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="buffer_minutes"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Buffer between bookings</FormLabel>
+                      <Select
+                        value={String(field.value)}
+                        onValueChange={(v) => field.onChange(Number(v))}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {BUFFER_OPTIONS.map((minutes) => (
+                            <SelectItem key={minutes} value={String(minutes)}>
+                              {minutes === 0 ? "None" : `${minutes} minutes`}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormDescription>Kept free after each booking.</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
               <DialogFooter>
                 <Button type="submit" disabled={saving}>
                   Save

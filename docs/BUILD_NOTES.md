@@ -7771,6 +7771,136 @@ plus only this package's files: `pnpm lint` exit 0 (46 warnings, baseline),
 `pnpm typecheck` exit 0, `supabase/functions` `pnpm run test` 136 files /
 1518 tests green.
 
+## SETTINGS-1 (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — the owner portal made complete and honest: every setting an owner needs is settable, validated server-side, takes effect when the page says it does, and settings nothing reads yet are labeled as such
+
+**Task:** act on the settings audit (every setting that changes how the AI
+behaves or how the owner is notified). Scope: `apps/web/**`, one additive
+migration, this entry. No function deploys, no DDL applied.
+
+### What changed (all `apps/web` unless noted)
+
+- **New owner routes** (all: signed-in user, `claimsFromSupabaseClient`,
+  `tenant_id` from the JWT only, owner/admin role checked because RLS
+  silently filters a `member`'s write to zero rows, update confirmed with
+  `.select("id")`, zod on the boundary — shared in `lib/settings/route-auth.ts`):
+  `POST settings/business` (name + time zone), `POST settings/hours`,
+  `POST agent/instructions`, `POST settings/notifications`,
+  `POST settings/language`, `POST settings/test-phone`, `POST agent/faq`,
+  `GET|POST settings/booking-rules`, `GET agent/publish-status`,
+  `GET settings/checklist`. Pages that wrote straight through the browser
+  client now go through these.
+- **Hours** (`lib/settings/hours.ts`, new `WeeklyHoursEditor`): writes the one
+  shape every backend reader already expects — closed day = `[]`, exceptions
+  `{date, closed:true}` or `{date, closed:false, hours:[…]}` — and reads every
+  legacy shape. Fixes: the live SIGNUP-1 bug (the portal stored
+  `[{…, closed:true}]`, which `fn_regenerate_availability_slots` ignores, so
+  "closed" Sundays were bookable); `[]` days showing as open 9–5 with edits
+  dropped (`@heyloo/ui` `HoursEditor` maps over `[]`; replaced on this page
+  rather than edited, `packages/ui` is outside this task); blank exception
+  dates (`''::date` = 22007, would abort the nightly rollforward for every
+  tenant) are rejected and dropped on load; open < close, no overlaps, real
+  dates, unique dates; split shifts (≤3) and special-hours exceptions now
+  supported. The save rebuilds bookable times immediately via service role
+  (same narrow pattern as ONBOARD-1's resource create); motels skip it.
+- **Resources:** `buffer_minutes` and `metadata.slot_minutes` (both read by
+  the slot generator, neither exposed) are now on Setup → Resources and the
+  API; PATCH regenerates that resource's slots, deactivate/DELETE deletes its
+  future generated slots (`rangeGte` = PostgREST `nxl` = `&>`), so a removed
+  bay/room stops being offered now instead of when its old slots pass.
+- **Publish status:** "Changes pending" now comes from `publish-status`
+  (`lib/settings/publish-status.ts`): never published; language changed after
+  the last publish (the Language route stamps `language_config.changed_at`;
+  backend readers only read `->>'primary'`); or the published agent lacks the
+  `{{language}}` / (when a transfer number is set) `{{transfer_number}}`
+  tokens — `compiled_config` treated as opaque text, only Heyloo's own token
+  names searched. It no longer lights for next-call edits (assistant name,
+  transfer number, vertical details, FAQ), which bumped `updated_at`. Live
+  SIGNUP-1 correctly shows "published before recent improvements".
+- **Agent Overview:** `/dashboard/agent` is now a Settings checklist
+  (transfer number, hours, services, bookable resources, alert recipients,
+  published/up to date, optional test phone) plus a map of every section.
+  Deviation from FRONTEND_SPEC §6.6 ("redirects to /greeting"), made on
+  purpose by this task; the preview mirror now re-exports the page.
+  New **Business** tab (name, time zone with live local time, read-only
+  retention days). `/dashboard/settings` → `/dashboard/agent` and
+  `/dashboard/notifications` → `/dashboard/delivery` (were 404). Test agent
+  added to the sidebar.
+- **Transfer number:** E.164 server-side, friendly input, and CAN be removed
+  (blank used to fail the regex). All owner phones share `lib/settings/phone.ts`
+  (NANP-valid +1 or 8–15-digit international; letters/extensions rejected).
+  Vet emergency referral and auto tow partner phones are E.164-validated and
+  normalized (they were `z.string()`); owner test phone is stored E.164 so
+  caller-ID matching works (test calls were billed).
+- **Owner alerts** (Delivery → "Your alerts"): alert phone + alert email +
+  SMS/email switches in exactly MESSAGING-1's `overrides.delivery` shape
+  (blank recipients omitted = fall back), validated, explicit Save (was
+  save-on-blur, any string as email).
+- **Vertical details:** optional fields can be cleared (sent as `null`,
+  deleted by `mergeOverrides`; before, an emptied field kept its old value
+  live); motel rate table in dollars with per-line errors (was cents, bad
+  lines silently dropped); review requests need a review link, blank link
+  clears it, http(s) only.
+- **Language:** Spanish selectable (proven live in VERIFY-DEPLOY); save tells
+  the owner to publish and lights the badge.
+- **Quiet hours:** shows ON when unset (the reminder job's default), stores
+  whole hours (the only precision the job reads), copy says what it gates.
+- **Services tab:** goes through the server-validated offerings routes,
+  inline errors, confirm before remove. Also fixed
+  `api/tenant/offerings/schema.ts`: `offeringWriteSchema.partial()` kept the
+  create defaults (zod 4 applies `.default()` inside `.partial()`), so any
+  PATCH re-activated the item and wiped its modifiers/allergens.
+- **Honest labels** ("Not used on calls yet" / "Saved, but not used yet")
+  on everything the audit found stored-but-unread: FAQ, special instructions,
+  voicemail message, manager name/phone, parking, accessibility, payment
+  types, the new call-routing choices, cancellation window/fee, dental
+  insurances, restaurant prep time, voice reminders, text-agent on/off and
+  persona, Manual Mode (now a warning: it does NOT stop bookings), booking
+  window. Greeting preview now renders the real verbatim opening (EN/ES).
+  Toasts say what actually happens (next call / publish / bookable times
+  updated) instead of "~30s".
+- **Migration (NOT applied):** `20260929140000_tenant_booking_rules.sql` —
+  `tenants.booking_min_notice_minutes` (0–10080) and `booking_horizon_days`
+  (1–365), NULL = vertical default, CHECK-constrained. The booking-rules
+  route reports `available:false` / 503 `not_available_yet` on 42703 /
+  PGRST204 until it is applied, so the portal never breaks on it.
+
+### Rule 1 notes
+
+No provider API is called from anything in this task. Supabase/PostgREST
+behavior relied on, verified: `rangeGte` sends `nxl.<range>` (read in the
+installed `@supabase/postgrest-js` 2.116.0 source) and `nxl` = `&>`
+(checked live, read-only: a slot starting at `now` is matched, one
+straddling `now` is not — same boundary as the generator's own
+`lower(slot_range) >= now()` delete). PostgREST error JSON carries the
+Postgres SQLSTATE in `code` and `PGRST204` = column not found
+(docs.postgrest.org references/errors, read from the PostgREST repo's
+`docs/references/errors.rst`; the site itself returned 429). Citations kept
+here rather than in `docs/VERIFY.md`, which was outside this task's
+ownership while another workflow was editing it.
+
+### Left for the backend (not done here)
+
+- `fn_regenerate_availability_slots`: honor a per-window `closed` flag and
+  skip unparseable exception dates (existing rows keep the legacy shape until
+  the owner next saves hours); read `booking_horizon_days`; skip exceptions
+  for motels. `check_availability`: read `booking_min_notice_minutes`, and
+  ignore slots of inactive resources when no type filter is given.
+- Readers for the labeled fields: FAQ, special instructions, voicemail,
+  manager, parking/accessibility/payment types, call routing
+  (`overrides.call_routing`: transfer window, urgent transfer, after-hours
+  phone), Manual Mode (`is_manual_mode` is sent, never checked), text agent
+  on/off + persona + quiet hours for replies, voice reminders, cancellation
+  window/fee enforcement, dental insurances, prep time, legal cancellation
+  text. Remove the labels as each ships.
+- A compiler-version stamp on `agent_configs` so the pending badge can see
+  any compiler change (today it can only see the language/transfer tokens;
+  DISCLOSE-1-era staleness is invisible to it).
+- Not built: per-resource working hours, per-event alert choice, message
+  text / reminder on-off / weekly email opt-out, real-estate/generic vertical
+  fields, owner-editable retention, widget write validation, phone-setup
+  forwarding mode persistence, and the authenticated role's table-wide
+  UPDATE grant on `tenants`/`agent_configs` (audit security finding).
+
 ## MESSAGING-1 review (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — hostile review of 8991e31: HELP/START answered, E.164 at the send boundary, released-sender a2p sync
 
 Reviewed every file in 8991e31 against the review brief (raw-body signature

@@ -113,4 +113,31 @@ describe("TextAgentTabPage", () => {
       );
     });
   });
+
+  it("SETTINGS-1: shows quiet hours ON when nothing is stored (the reminder job's default)", async () => {
+    tenantRow = { text_agent_enabled: false, text_agent_persona: {}, quiet_hours: {} };
+    renderPage();
+    expect(await screen.findByRole("switch", { name: "Enable quiet hours" })).toBeChecked();
+    expect(screen.getByLabelText("Starts at")).toHaveValue("21:00");
+    // The master toggle is labeled honestly — replies are not gated by it yet.
+    expect(screen.getByText(/isn.t enforced yet/)).toBeInTheDocument();
+  });
+
+  it("SETTINGS-1: saves quiet hours as whole hours (the only precision the reminder job reads)", async () => {
+    tenantRow = {
+      text_agent_enabled: true,
+      text_agent_persona: {},
+      quiet_hours: { enabled: true, start: "21:30", end: "08:45" },
+    };
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Save quiet hours" }));
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          quiet_hours: { enabled: true, start: "21:00", end: "08:00" },
+        }),
+      );
+    });
+  });
 });
