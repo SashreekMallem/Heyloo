@@ -72,7 +72,8 @@ export async function hmacSha1Base64(secret: string, message: string): Promise<s
  * token or paste-key) that must never sit in cleartext where a logical
  * backup, read replica, or any `service_role`-level query could expose it.
  * `ADAPTER_TOKEN_ENCRYPTION_KEY` is a base64-encoded 32-byte key (any env
- * that reads it should generate one with e.g. `openssl rand -base64 32`).
+ * that reads it should generate one with e.g. `openssl rand -base64 32`);
+ * a 64-char hex key is accepted too (see `decodeEncryptionKey`).
  *
  * Versioned `v1:<base64 iv>:<base64 ciphertext+tag>` format: the prefix
  * lets a future key-rotation/algorithm change coexist with old rows, and
@@ -85,18 +86,67 @@ export async function hmacSha1Base64(secret: string, message: string): Promise<s
 const AES_GCM_IV_BYTES = 12;
 const ENCRYPTED_VALUE_PREFIX = "v1:";
 
-async function importAesGcmKey(keyB64: string): Promise<CryptoKey> {
-  const raw = fromBase64(keyB64);
+const HEX_KEY_RE = /^[0-9a-fA-F]{64}$/;
+const DEFAULT_KEY_LABEL = "adapter_token_encryption_key";
+
+/**
+ * Decode an AES-256 key from env text. Two shapes are accepted, both exactly
+ * 32 raw bytes: base64 (`openssl rand -base64 32`, 44 chars, the documented
+ * form) and 64 hex chars (`openssl rand -hex 32`). QA-1 (BE-02/F-05): the
+ * production secrets were generated as hex, and a 64-char hex string is ALSO
+ * syntactically valid base64 (decoding to 48 bytes), so before this the
+ * intake POST and every integration-token write failed closed with
+ * `..._invalid_length`. The two shapes cannot be confused: a 32-byte base64
+ * value is always 44 characters. Anything else still fails closed.
+ */
+function decodeEncryptionKey(key: string, label: string): Uint8Array<ArrayBuffer> {
+  const trimmed = key.trim();
+  if (HEX_KEY_RE.test(trimmed)) {
+    const bytes = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) bytes[i] = Number.parseInt(trimmed.slice(i * 2, i * 2 + 2), 16);
+    return bytes;
+  }
+  let raw: Uint8Array<ArrayBuffer>;
+  try {
+    raw = fromBase64(trimmed);
+  } catch {
+    throw new Error(`${label}_invalid_format`);
+  }
   if (raw.byteLength !== 32) {
     // Fail closed (CLAUDE.md Rule 2) — never silently encrypt/decrypt with
     // a key of the wrong length.
-    throw new Error("adapter_token_encryption_key_invalid_length");
+    throw new Error(`${label}_invalid_length`);
   }
+  return raw;
+}
+
+/** Non-throwing key-shape check for deploy/boot-time validation: `null`
+ * when usable, else the error code naming which key is misconfigured. The
+ * key value itself is never included. */
+export function checkEncryptionKey(
+  key: string | undefined,
+  label: string = DEFAULT_KEY_LABEL,
+): string | null {
+  if (!key) return `${label}_missing`;
+  try {
+    decodeEncryptionKey(key, label);
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : `${label}_invalid`;
+  }
+}
+
+async function importAesGcmKey(keyText: string, label: string): Promise<CryptoKey> {
+  const raw = decodeEncryptionKey(keyText, label);
   return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
 
-export async function encryptSecret(plaintext: string, keyB64: string): Promise<string> {
-  const key = await importAesGcmKey(keyB64);
+export async function encryptSecret(
+  plaintext: string,
+  keyB64: string,
+  keyLabel: string = DEFAULT_KEY_LABEL,
+): Promise<string> {
+  const key = await importAesGcmKey(keyB64, keyLabel);
   const iv = crypto.getRandomValues(new Uint8Array(AES_GCM_IV_BYTES));
   const ciphertext = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv },
@@ -106,7 +156,11 @@ export async function encryptSecret(plaintext: string, keyB64: string): Promise<
   return `${ENCRYPTED_VALUE_PREFIX}${toBase64(iv.buffer)}:${toBase64(ciphertext)}`;
 }
 
-export async function decryptSecret(value: string, keyB64: string): Promise<string> {
+export async function decryptSecret(
+  value: string,
+  keyB64: string,
+  keyLabel: string = DEFAULT_KEY_LABEL,
+): Promise<string> {
   if (!value.startsWith(ENCRYPTED_VALUE_PREFIX)) {
     // Legacy plaintext row (pre-encryption) — return as-is.
     return value;
@@ -116,7 +170,7 @@ export async function decryptSecret(value: string, keyB64: string): Promise<stri
   if (sepIndex === -1) {
     throw new Error("adapter_token_ciphertext_malformed");
   }
-  const key = await importAesGcmKey(keyB64);
+  const key = await importAesGcmKey(keyB64, keyLabel);
   const iv = fromBase64(rest.slice(0, sepIndex));
   const ciphertext = fromBase64(rest.slice(sepIndex + 1));
   const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);

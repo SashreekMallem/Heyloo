@@ -229,6 +229,43 @@ describe("submitIntake (POST /api-intake/{token}) — always HTTP 200, ok flag c
     expect(await decryptSecret(values[6] as string, KEY)).toBe("GRP456");
   });
 
+  it("QA-1 BE-02: submits with the production-shaped 64-hex key; a bad key throws BEFORE the token is claimed", async () => {
+    const hexKey = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    const rows = {
+      "from public.intake_tokens": [
+        {
+          id: "tok1",
+          tenant_id: "t1",
+          booking_id: "b1",
+          used_at: null,
+          expires_at: "2026-09-20T00:00:00Z",
+        },
+      ],
+      "update public.intake_tokens set used_at": [{ id: "tok1" }],
+    };
+    const ok = makeSql(rows);
+    const result = await submitIntake(
+      ok.sql,
+      "tok",
+      baseSubmit(),
+      { intakeEncryptionKey: hexKey, logger },
+      NOW,
+    );
+    expect(result).toEqual({ status: 200, body: { ok: true } });
+
+    const bad = makeSql(rows);
+    await expect(
+      submitIntake(
+        bad.sql,
+        "tok",
+        baseSubmit(),
+        { intakeEncryptionKey: btoa("short"), logger },
+        NOW,
+      ),
+    ).rejects.toThrow("intake_encryption_key_invalid_length");
+    expect(bad.calls.some((c) => c.text.includes("update public.intake_tokens"))).toBe(false);
+  });
+
   it("stores null for an omitted optional insurance field rather than an encrypted empty string", async () => {
     const { sql, calls } = makeSql({
       "from public.intake_tokens": [

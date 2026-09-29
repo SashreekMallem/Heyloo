@@ -17,9 +17,9 @@
 // tagged-template literal SQL string, postgres.js's native (and only) query
 // style.
 import postgres from "postgres";
-import { buildConnectionOptions, type ConnectionProfile } from "../db-options.ts";
+import { buildConnectionOptions, type ConnectionProfile, selectDbUrl } from "../db-options.ts";
 import type { SqlClient } from "../types.ts";
-import { requireEnv } from "./env.ts";
+import { optionalEnv, requireEnv } from "./env.ts";
 
 let client: ReturnType<typeof postgres> | undefined;
 
@@ -89,10 +89,18 @@ export function getSql(
   factory: typeof postgres = postgres,
 ): SqlClient {
   if (!client) {
-    // Direct connection: prepared statements persist for the connection's
-    // lifetime (no transaction-mode pooler in the path).
-    client = factory(requireEnv("SUPABASE_DB_URL"), {
-      ...buildConnectionOptions(opts),
+    // QA-1 BE-14: non-hot-path functions use the Supavisor transaction pooler
+    // when SUPABASE_POOLER_URL is set (a Micro compute has only 60 direct
+    // connections and cron bursts exhausted them); otherwise the direct URL
+    // exactly as before (prepared statements persist for the connection's
+    // lifetime, no pooler in the path). The hot path never uses the pooler.
+    const target = selectDbUrl(opts?.profile, {
+      direct: optionalEnv("SUPABASE_DB_URL"),
+      pooler: optionalEnv("SUPABASE_POOLER_URL"),
+    });
+    const url = target.url ?? requireEnv("SUPABASE_DB_URL");
+    client = factory(url, {
+      ...buildConnectionOptions({ ...opts, pooled: target.pooled }),
       onclose: () => {
         connectionOpen = false;
       },

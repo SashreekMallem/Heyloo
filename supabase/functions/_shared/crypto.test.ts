@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  checkEncryptionKey,
   decryptSecret,
   encryptSecret,
   hmacSha1Base64,
@@ -92,6 +93,34 @@ describe("encryptSecret / decryptSecret (DB-H2 adapter_connections token encrypt
     await expect(encryptSecret("value", btoa("too-short-key"))).rejects.toThrow(
       "adapter_token_encryption_key_invalid_length",
     );
+  });
+
+  it("accepts a 64-char hex key (the shape `openssl rand -hex 32` produces) and round-trips", async () => {
+    // QA-1 BE-02/F-05: production keys were generated as hex; a 64-char hex
+    // string base64-decodes to 48 bytes, so this used to fail closed.
+    const hexKey = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    const ciphertext = await encryptSecret("dob:1990-05-12", hexKey, "intake_encryption_key");
+    expect(await decryptSecret(ciphertext, hexKey, "intake_encryption_key")).toBe("dob:1990-05-12");
+    // Uppercase hex and surrounding whitespace decode to the same key.
+    expect(await decryptSecret(ciphertext, `${hexKey.toUpperCase()}\n`)).toBe("dob:1990-05-12");
+  });
+
+  it("names the misconfigured key in the error when a label is given", async () => {
+    await expect(encryptSecret("v", btoa("short"), "intake_encryption_key")).rejects.toThrow(
+      "intake_encryption_key_invalid_length",
+    );
+    await expect(encryptSecret("v", "%%%not-base64%%%", "intake_encryption_key")).rejects.toThrow(
+      "intake_encryption_key_invalid_format",
+    );
+  });
+
+  it("checkEncryptionKey reports the shape problem without ever echoing the key", () => {
+    expect(checkEncryptionKey(TEST_KEY_B64, "k")).toBeNull();
+    expect(checkEncryptionKey("a".repeat(64), "k")).toBeNull();
+    expect(checkEncryptionKey(undefined, "k")).toBe("k_missing");
+    expect(checkEncryptionKey("", "k")).toBe("k_missing");
+    expect(checkEncryptionKey("g".repeat(64), "k")).toBe("k_invalid_length");
+    expect(checkEncryptionKey(btoa("short"), "k")).toBe("k_invalid_length");
   });
 
   it("throws on a malformed v1-prefixed value instead of silently returning garbage", async () => {

@@ -153,8 +153,19 @@ export const HOT_PATH_MAX_CONNECTIONS = 1;
 export function buildConnectionOptions(opts?: {
   statementTimeoutMs?: number;
   profile?: ConnectionProfile;
+  /** QA-1 BE-14: the URL is a Supavisor TRANSACTION-mode pooler (port 6543),
+   * not the direct connection: no prepared statements (Supabase: transaction
+   * mode does not support them), one connection per isolate (the pooler
+   * multiplexes; every extra isolate connection just eats the compute's
+   * 60-connection budget) and no startup `statement_timeout` parameter
+   * (poolers can reject unknown startup params; only `voice-tools` sets one
+   * and it stays on the direct connection). */
+  pooled?: boolean;
 }): PostgresConnectOptions {
   const hotPath = opts?.profile === "hot_path";
+  if (opts?.pooled && !hotPath) {
+    return { prepare: false, max: 1, idle_timeout: 20, connect_timeout: 5 };
+  }
   const base: PostgresConnectOptions = {
     prepare: true,
     max: hotPath ? HOT_PATH_MAX_CONNECTIONS : 5,
@@ -169,4 +180,18 @@ export function buildConnectionOptions(opts?: {
     ...base,
     connection: { statement_timeout: opts.statementTimeoutMs },
   };
+}
+
+/** QA-1 BE-14: which connection string a profile uses. The hot path
+ * (`voice-tools`) ALWAYS stays on the direct `SUPABASE_DB_URL` (prepared
+ * statements, one warm connection, no pooler hop on the p95 < 500 ms budget).
+ * Every other function uses `SUPABASE_POOLER_URL` (Supavisor transaction
+ * mode, port 6543) when the operator has set it, else falls back to the direct
+ * URL so nothing changes until the secret exists. */
+export function selectDbUrl(
+  profile: ConnectionProfile | undefined,
+  env: { direct: string | undefined; pooler: string | undefined },
+): { url: string | undefined; pooled: boolean } {
+  if (profile !== "hot_path" && env.pooler) return { url: env.pooler, pooled: true };
+  return { url: env.direct, pooled: false };
 }
