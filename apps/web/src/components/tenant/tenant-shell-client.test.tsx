@@ -50,6 +50,16 @@ beforeAll(() => {
   };
 });
 
+describe("TenantShellClient — nav (QA-1 F-24)", () => {
+  it("hides 'Refer & earn' while referral attribution is not live, keeping Billing and Support", () => {
+    useImpersonationBanner.mockReturnValue(null);
+    renderShell();
+    expect(screen.queryByText("Refer & earn")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Billing").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Support").length).toBeGreaterThan(0);
+  });
+});
+
 describe("TenantShellClient — notification bell (QA-1 F-04)", () => {
   it("marks notifications read when the bell opens and opens the item's target when clicked", async () => {
     notificationsData = {

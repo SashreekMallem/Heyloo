@@ -26,6 +26,7 @@ import {
 } from "@/lib/hooks/use-tenant-notifications";
 import { useImpersonationBanner } from "@/lib/impersonation/use-impersonation-banner";
 import { useTenantRealtimeStatus } from "@/lib/realtime/tenant-realtime-provider";
+import { isReferralAttributionLive } from "@/lib/referrals/attribution";
 import { TenantIdProvider } from "@/lib/tenant/tenant-context";
 
 const OPERATE_SECTION: NavSection = {
@@ -60,7 +61,11 @@ const GROW_SECTION: NavSection = {
   label: "Account",
   items: [
     { label: "Billing", href: "/dashboard/billing", icon: NAV_ICONS.billing },
-    { label: "Refer & earn", href: "/dashboard/refer", icon: NAV_ICONS.refer },
+    // Hidden until referral attribution works end to end (QA-1 F-24) — see
+    // lib/referrals/attribution.ts.
+    ...(isReferralAttributionLive()
+      ? [{ label: "Refer & earn", href: "/dashboard/refer", icon: NAV_ICONS.refer }]
+      : []),
     { label: "Support", href: "/dashboard/support", icon: NAV_ICONS.support },
   ],
 };

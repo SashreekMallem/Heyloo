@@ -234,15 +234,21 @@ describe("PATCH /api/tenant/bookings/[id]", () => {
     "409s an action on a %s booking (only scheduled/confirmed bookings are actionable) (QA-1 F-07)",
     async (status) => {
       serverQueue = {
-        bookings: [{ data: { id: "b1", customer_id: "c1", resource_id: "r1", status }, error: null }],
+        bookings: [
+          { data: { id: "b1", customer_id: "c1", resource_id: "r1", status }, error: null },
+        ],
       };
       serviceQueue = { bookings: [{ error: null }] };
       mockGetUser = async () => ({ data: { user: mockUser } });
       for (const action of ["cancel", "confirm"]) {
         serverQueue = {
-          bookings: [{ data: { id: "b1", customer_id: "c1", resource_id: "r1", status }, error: null }],
+          bookings: [
+            { data: { id: "b1", customer_id: "c1", resource_id: "r1", status }, error: null },
+          ],
         };
-        const res = await PATCH(patchRequest({ action }), { params: Promise.resolve({ id: "b1" }) });
+        const res = await PATCH(patchRequest({ action }), {
+          params: Promise.resolve({ id: "b1" }),
+        });
         expect(res.status).toBe(409);
         expect((await res.json()).error).toBe("invalid_status");
       }
