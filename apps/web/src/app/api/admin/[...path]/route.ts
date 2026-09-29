@@ -46,7 +46,28 @@ function isImpersonationSelfServicePath(path: string[]): boolean {
   );
 }
 
+/**
+ * SEC-12: `path` arrives percent-DECODED from Next, so `..%2fforwarding-verify`
+ * shows up here as the single segment `../forwarding-verify` and, joined
+ * verbatim, walked out of `/admin/` into a sibling edge function while
+ * carrying the admin's bearer token. Every segment must be a plain
+ * identifier (route names, uuids, verticals, slugs); anything else is
+ * refused before the session is even read. (Not exported: a Next route file
+ * may only export HTTP verbs and config.)
+ */
+const SAFE_SEGMENT = /^[A-Za-z0-9_.-]+$/;
+
+function hasUnsafePathSegment(path: string[]): boolean {
+  return (
+    path.length === 0 ||
+    path.some((segment) => !SAFE_SEGMENT.test(segment) || /^\.+$/.test(segment))
+  );
+}
+
 async function handle(request: Request, path: string[]) {
+  if (hasUnsafePathSegment(path)) {
+    return NextResponse.json({ error: "invalid_path" }, { status: 400 });
+  }
   const supabase = await createSupabaseServerComponentClient();
   const {
     data: { session },
@@ -66,7 +87,7 @@ async function handle(request: Request, path: string[]) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const target = `${env.supabaseFunctionsUrl}/admin/${path.join("/")}${new URL(request.url).search}`;
+  const target = `${env.supabaseFunctionsUrl}/admin/${path.map(encodeURIComponent).join("/")}${new URL(request.url).search}`;
   const init: RequestInit = {
     method: request.method,
     headers: {
@@ -74,7 +95,7 @@ async function handle(request: Request, path: string[]) {
       authorization: `Bearer ${session.access_token}`,
     },
   };
-  if (request.method !== "GET" && request.method !== "HEAD") {
+  if (request.method !== "GET" && request.method !== "HEAD" && request.method !== "DELETE") {
     init.body = await request.text();
   }
 
@@ -93,5 +114,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ pat
   return handle(request, (await params).path);
 }
 export async function PATCH(request: Request, { params }: { params: Promise<{ path: string[] }> }) {
+  return handle(request, (await params).path);
+}
+// F24: alert rules are deleted with `DELETE admin-alerts/rules/:id`.
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ path: string[] }> },
+) {
   return handle(request, (await params).path);
 }

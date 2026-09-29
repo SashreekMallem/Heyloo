@@ -36,7 +36,7 @@ vi.mock("@/lib/env", () => ({
   },
 }));
 
-const { GET, POST } = await import("./route");
+const { DELETE, GET, POST } = await import("./route");
 
 function getRequest(pathSuffix: string) {
   return new Request(`http://localhost/api/admin/${pathSuffix}`, { method: "GET" });
@@ -194,6 +194,89 @@ describe("GET /api/admin/[...path]", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
 
     mockClaimsOverride = undefined;
+    vi.unstubAllGlobals();
+  });
+});
+
+// SEC-12: a decoded `../` segment must never leave `/admin/`.
+describe("path-segment validation (SEC-12)", () => {
+  const unsafe: string[][] = [
+    ["../forwarding-verify"],
+    ["admin-tenants", "../../forwarding-verify"],
+    ["..", "api-demo-agent"],
+    [".."],
+    ["."],
+    ["admin-tenants", "a\\b"],
+    ["admin-tenants", "x\u0000y"],
+    ["admin-tenants", "x y"],
+    ["admin-tenants", ""],
+    [],
+  ];
+  it.each(unsafe)("400s %j without forwarding the admin's token", async (...path) => {
+    mockSession = { user: mockUser, access_token: "token-123" };
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await GET(getRequest("x"), { params: Promise.resolve({ path }) });
+    expect(res.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("still forwards ordinary ids and slugs", async () => {
+    mockSession = { user: mockUser, access_token: "token-123" };
+    let capturedUrl: string | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        capturedUrl = url;
+        return new Response("{}", { status: 200 });
+      }),
+    );
+    await GET(getRequest("x"), {
+      params: Promise.resolve({
+        path: ["admin-templates", "real_estate", "3f2a9c1e-0000-4000-8000-000000000001"],
+      }),
+    });
+    expect(capturedUrl).toBe(
+      "https://project.supabase.co/functions/v1/admin/admin-templates/real_estate/3f2a9c1e-0000-4000-8000-000000000001",
+    );
+    vi.unstubAllGlobals();
+  });
+});
+
+// COCKPIT-F24: the edge function's `DELETE rules/:id` was unreachable (the proxy 405'd it).
+describe("DELETE /api/admin/[...path]", () => {
+  it("forwards DELETE with the admin bearer token", async () => {
+    mockSession = { user: mockUser, access_token: "token-123" };
+    let captured: { url: string; init: RequestInit | undefined } | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        captured = { url, init };
+        return new Response(JSON.stringify({ deleted: true }), { status: 200 });
+      }),
+    );
+    const res = await DELETE(new Request("http://localhost/api/admin/x", { method: "DELETE" }), {
+      params: Promise.resolve({ path: ["admin-alerts", "rules", "r1"] }),
+    });
+    expect(res.status).toBe(200);
+    expect(captured?.url).toBe(
+      "https://project.supabase.co/functions/v1/admin/admin-alerts/rules/r1",
+    );
+    expect(captured?.init?.method).toBe("DELETE");
+    expect(captured?.init?.body).toBeUndefined();
+    vi.unstubAllGlobals();
+  });
+
+  it("403s a non-admin DELETE", async () => {
+    mockSession = { user: { id: "u2", app_metadata: {} }, access_token: "t" };
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await DELETE(new Request("http://localhost/api/admin/x", { method: "DELETE" }), {
+      params: Promise.resolve({ path: ["admin-alerts", "rules", "r1"] }),
+    });
+    expect(res.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 });
