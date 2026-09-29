@@ -7770,3 +7770,95 @@ In an isolated worktree of `origin` (rebased onto RETELLCFG, 6b992bb)
 plus only this package's files: `pnpm lint` exit 0 (46 warnings, baseline),
 `pnpm typecheck` exit 0, `supabase/functions` `pnpm run test` 136 files /
 1518 tests green.
+
+## MESSAGING-1 review (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — hostile review of 8991e31: HELP/START answered, E.164 at the send boundary, released-sender a2p sync
+
+Reviewed every file in 8991e31 against the review brief (raw-body signature
+first + fail closed, `webhook_events` dedup, E.164, provider isolation,
+OPS-8 park/dead-letter, retries, preferences, cross-tenant email content,
+STOP/HELP) and re-fetched the provider docs the design doc cites
+(docs/VERIFY.md "MESSAGING-1 review"). Verdict: no blocker; safe to deploy
+**after** the migration is applied (unchanged deploy order: migration first,
+then the 7 functions).
+
+Held up under attack (no change needed):
+- Signatures: Telnyx Ed25519 over `"{timestamp}|{raw body}"`, 5-minute
+  window, missing key -> 503, missing/bad header -> 401; Twilio HMAC over
+  the public URL (+ raw query) and sorted raw-body params. Both run before
+  any DB write. `webhook_events` insert (`<provider>_sms` / `_sms_status`,
+  Telnyx `data.id` — the id Telnyx says to dedupe on) precedes all work.
+- Tenant resolution is by the number texted only (unique active
+  `messaging_senders.e164`, then `phone_numbers`); every later query is
+  `tenant_id`-scoped. Every email recipient is derived from the row's own
+  tenant (owner sign-in email / `notification_email` / producer-written
+  owner address); tenants cannot insert `messages_outbound` (select-only
+  RLS). No cross-tenant path found.
+- Provider field names appear only under `_shared/providers/**` (the one
+  exception is writing the legacy `twilio_message_sid` column for Twilio
+  rows — kept for compat).
+- OPS-8's not-configured sweep is byte-identical; per-message parking
+  re-enqueues with a delay (fresh `read_ct`) and dead-letters by row age.
+- Owner-alert fan-out is idempotent (partial unique index on
+  `(parent_message_id, channel)`), Resend gets `messages_outbound.id` as
+  `Idempotency-Key`.
+
+Fixed (tests fail on 8991e31, pass now):
+1. **Major — HELP went unanswered on Telnyx.** The pipeline skipped OUR
+   reply whenever `autoresponse_type` was set, reading it as "Telnyx
+   replied". Telnyx sets it on any keyword MATCH; its developer docs say no
+   auto-reply is sent unless configured, and neither Telnyx page documents
+   a default HELP reply. Now HELP and START are always answered; only our
+   STOP confirmation is skipped when Telnyx matched STOP (its block rule
+   would reject it with 40300). `webhooks-sms/handler.ts`; 3 new tests
+   incl. a signed end-to-end Telnyx `autoresponse_type: "HELP"` webhook.
+2. Minor — the worker's opt-out check dropped the HELP answer to an
+   opted-out customer (the pre-MESSAGING-1 TwiML path always answered).
+   HELP joins the STOP confirmation as opt-out-exempt; provider block rules
+   still apply. Non-compliance replies (AI text) stay blocked (test).
+3. Minor — E.164 was not enforced at the outbound provider boundary, and
+   the opt-out lookup used the raw recipient (a non-normalized recipient
+   could miss `customers.phone_e164`'s opt-out). The worker now normalizes
+   the recipient before the opt-out check and both numbers before
+   `sendSms`; unparseable -> `failed` `invalid_recipient_phone`, no call.
+   Live: 0 of 267 SMS rows are non-E.164, so no current exposure.
+4. Minor — `chat_phone_verification` codes were rerouted to the owner's
+   email while texting is unapproved ("Here's what they would have
+   received: Your verification code is ..."). One-time codes now fail with
+   `sms_pending_verification` instead (pre-existing, carried into the new
+   copy).
+5. Minor — migration `20260929150000` (not applied, so edited in place):
+   `fn_sync_tenant_a2p_status_from_senders` left `a2p_status='verified'`
+   after a tenant's senders were all released, sending the worker down the
+   legacy path (primary Retell voice number -> permanent 40305 failures
+   instead of the owner email copy), and ignored the old tenant when a
+   sender row moved. Now: all released -> `pending_verification`; both
+   tenants recomputed; a tenant with no sender rows at all is still never
+   touched. Re-applied to a throwaway Postgres 16 with the earlier stub:
+   submitted->pending, verified->verified, released->pending,
+   failed->failed, move A->B recomputes both, hard delete of the only row
+   leaves it untouched, owner guard still raises 42501.
+
+Not fixed (minor, recorded):
+- Stranded-row sweep takes no lock: two worker invocations sweeping in the
+  same instant could enqueue one row twice and double-send. Only
+  `worker-tick` is on cron (1/min, sweep takes ms); a manual
+  `worker-messages-outbound` invoke at the same moment is the only trigger.
+  Fix if manual invokes become routine: `pg_try_advisory_xact_lock` gate.
+- Provider `fetch` calls have no timeout and Telnyx has no idempotency key:
+  a send hanging past the 30 s visibility timeout can be read and sent
+  again (same as the old Twilio path).
+- A delivery receipt that beats the worker's `sent` update is dropped
+  (`not_found`), and the worker's success update is unconditional, so an
+  early `delivered` can be overwritten by `sent`.
+- Telnyx inbound processing runs after the ack; if the isolate dies the
+  message is lost (event row stays unprocessed; no replay job).
+- Owner alerts fall back to email even with email toggled off when SMS is
+  impossible (documented design in `deliveryPreferencesSchema`); customer
+  reroutes honor the toggle.
+- Group MMS: the adapter takes `to[0]` as our number.
+- /dashboard/texting keeps `website_url` optional; Telnyx toll-free
+  verification requires it. A third-party source reports privacy/terms URL
+  requirements for toll-free submissions after 2026-09-15 (VERIFY).
+- Ops: configure the Telnyx messaging profile's STOP auto-response
+  (Advanced Opt-In/Out) so 10DLC numbers confirm opt-outs; toll-free gets
+  the network's "NETWORK MSG".

@@ -154,8 +154,9 @@ async function queueReply(
  * Business logic for one inbound text (MASTER_SPEC §3.3): resolve the
  * tenant by the number texted (a dedicated SMS sender first, then the
  * tenant's voice numbers), waitlist YES auto-book, STOP/START/HELP
- * (opt-out state is always recorded; no duplicate reply when the provider
- * already handled the keyword itself), archive to `messages_inbound`, and
+ * (opt-out state is always recorded; HELP and START are always answered;
+ * the STOP confirmation is skipped only when the provider already blocked
+ * the number itself), archive to `messages_inbound`, and
  * route everything else to the text-agent engine.
  */
 export async function processInboundSms(
@@ -210,11 +211,18 @@ export async function processInboundSms(
     // standard CTIA opt-in keyword).
   }
 
-  // A provider that acted on a keyword itself (Telnyx `autoresponse_type`,
-  // including its intent classifier on free text) is authoritative: record
-  // the same opt-out state, but don't send a second confirmation.
+  // A provider that matched a keyword itself (Telnyx `autoresponse_type`,
+  // including its intent classifier on free text) is authoritative for the
+  // opt-out STATE. It is NOT a signal that the provider replied: Telnyx
+  // sets the field whenever a keyword matches, and its developer docs say
+  // no auto-reply is sent unless one is configured (docs/VERIFY.md
+  // MESSAGING-1 review). So only the STOP confirmation is left to the
+  // provider — its block rule is already in place, so ours could never be
+  // delivered (Telnyx rejects it with 40300) and the provider / toll-free
+  // network sends its own. START and HELP are always answered here: an
+  // unanswered HELP breaks carrier rules; a duplicate is harmless.
   const classification = sms.providerHandledKeyword ?? classifyInboundSms(sms.body);
-  const providerReplied = sms.providerHandledKeyword !== null;
+  const providerBlockedAfterStop = sms.providerHandledKeyword === "stop";
 
   if (classification === "stop") {
     await sql`
@@ -222,7 +230,7 @@ export async function processInboundSms(
       set sms_opt_out = true, consent = consent || '{"sms": false}'::jsonb
       where tenant_id = ${tenantId} and phone_e164 = ${fromNumber}
     `;
-    return providerReplied ? {} : reply("stop", SMS_STATIC_REPLIES.stop);
+    return providerBlockedAfterStop ? {} : reply("stop", SMS_STATIC_REPLIES.stop);
   }
 
   if (classification === "start") {
@@ -231,11 +239,11 @@ export async function processInboundSms(
       set sms_opt_out = false
       where tenant_id = ${tenantId} and phone_e164 = ${fromNumber}
     `;
-    return providerReplied ? {} : reply("start", SMS_STATIC_REPLIES.start);
+    return reply("start", SMS_STATIC_REPLIES.start);
   }
 
   if (classification === "help") {
-    return providerReplied ? {} : reply("help", SMS_STATIC_REPLIES.help);
+    return reply("help", SMS_STATIC_REPLIES.help);
   }
 
   // Ordinary inbound message: store + surface in the dashboard thread (the

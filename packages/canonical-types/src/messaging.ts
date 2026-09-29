@@ -86,8 +86,10 @@ export type SendResult = z.infer<typeof zSendResult>;
 // Inbound + delivery status (webhooks)
 // ---------------------------------------------------------------------------
 
-/** Compliance keyword a provider says it already acted on (blocked the
- * sender and/or auto-replied) — core must not send its own duplicate reply. */
+/** Compliance keyword a provider says it matched and acted on (block rule
+ * added/removed). It does NOT mean the provider replied: core records the
+ * opt-out state, skips only its own STOP confirmation (the provider's block
+ * would reject it), and still answers HELP and START itself. */
 export const INBOUND_KEYWORD_CLASSES = ["stop", "start", "help"] as const;
 export type InboundKeywordClass = (typeof INBOUND_KEYWORD_CLASSES)[number];
 

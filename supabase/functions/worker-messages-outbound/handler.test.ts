@@ -365,6 +365,77 @@ describe("processOutboundMessage — customer SMS", () => {
     expect(await processOutboundMessage(sql, "msg_1", deps)).toBe("sent");
   });
 
+  it("answers HELP even when the customer is opted out (as the TwiML path always did)", async () => {
+    const telnyx = fakeSms("telnyx");
+    const { sql } = makeSql({
+      [MESSAGE]: [
+        {
+          ...BASE_MESSAGE,
+          template_key: "sms_reply",
+          payload: { body: "Heyloo AI assistant. Reply STOP to unsubscribe.", compliance: "help" },
+        },
+      ],
+      [CUSTOMERS]: [{ sms_opt_out: true }],
+      [ROUTE]: [VERIFIED_TELNYX_SENDER],
+    });
+    const deps = makeDeps({ sms: { telnyx: { configured: true, provider: telnyx.provider } } });
+    expect(await processOutboundMessage(sql, "msg_1", deps)).toBe("sent");
+    expect(telnyx.sendSms).toHaveBeenCalledTimes(1);
+  });
+
+  it("still blocks a non-compliance reply (AI text) to an opted-out customer", async () => {
+    const telnyx = fakeSms("telnyx");
+    const { sql } = makeSql({
+      [MESSAGE]: [{ ...BASE_MESSAGE, template_key: "text_agent_reply", payload: { body: "Hi" } }],
+      [CUSTOMERS]: [{ sms_opt_out: true }],
+      [ROUTE]: [VERIFIED_TELNYX_SENDER],
+    });
+    const deps = makeDeps({ sms: { telnyx: { configured: true, provider: telnyx.provider } } });
+    expect(await processOutboundMessage(sql, "msg_1", deps)).toBe("skipped_opt_out");
+    expect(telnyx.sendSms).not.toHaveBeenCalled();
+  });
+
+  it("normalizes a non-E.164 recipient before the opt-out lookup and the provider call", async () => {
+    const telnyx = fakeSms("telnyx");
+    const { sql, calls } = makeSql({
+      [MESSAGE]: [{ ...BASE_MESSAGE, recipient: "(555) 123-4567" }],
+      [ROUTE]: [VERIFIED_TELNYX_SENDER],
+    });
+    const deps = makeDeps({ sms: { telnyx: { configured: true, provider: telnyx.provider } } });
+    expect(await processOutboundMessage(sql, "msg_1", deps)).toBe("sent");
+    const optOut = calls.find((c) => c.text.includes(CUSTOMERS));
+    expect(optOut?.values).toContain("+15551234567");
+    expect(telnyx.sendSms.mock.calls[0]?.[0].to).toBe("+15551234567");
+    expect(telnyx.sendSms.mock.calls[0]?.[0].from).toBe("+18885550100");
+  });
+
+  it("fails (never sends) when the recipient can't be normalized to E.164", async () => {
+    const telnyx = fakeSms("telnyx");
+    const { sql, calls } = makeSql({
+      [MESSAGE]: [{ ...BASE_MESSAGE, recipient: "not-a-phone" }],
+      [ROUTE]: [VERIFIED_TELNYX_SENDER],
+    });
+    const deps = makeDeps({ sms: { telnyx: { configured: true, provider: telnyx.provider } } });
+    expect(await processOutboundMessage(sql, "msg_1", deps)).toBe("failed");
+    expect(telnyx.sendSms).not.toHaveBeenCalled();
+    expect(calls.some((c) => c.values.includes("invalid_recipient_phone"))).toBe(true);
+  });
+
+  it("never reroutes a one-time verification code to the owner's email", async () => {
+    const email = fakeEmail();
+    const { sql, calls } = makeSql({
+      [MESSAGE]: [
+        { ...BASE_MESSAGE, template_key: "chat_phone_verification", payload: { code: "123456" } },
+      ],
+      [ROUTE]: [PENDING_LEGACY],
+      [CONTACT]: [OWNER],
+    });
+    const deps = makeDeps({ email: { resend: { configured: true, provider: email.provider } } });
+    expect(await processOutboundMessage(sql, "msg_1", deps)).toBe("failed");
+    expect(email.sendEmail).not.toHaveBeenCalled();
+    expect(calls.some((c) => c.values.includes("sms_pending_verification"))).toBe(true);
+  });
+
   it("keeps Twilio's request shape unchanged when Twilio is the provider", async () => {
     const fetchImpl = vi.fn(
       async (_url: string, _init?: RequestInit) =>

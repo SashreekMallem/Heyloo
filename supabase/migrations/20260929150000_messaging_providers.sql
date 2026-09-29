@@ -79,8 +79,13 @@ create policy messaging_senders_select on public.messaging_senders for select
 -- registration status is driven by the platform (service_role) only.
 
 -- tenants.a2p_status compat: derived from the tenant's active senders
--- whenever they change (never touched when a tenant has no sender rows, so
--- the legacy Twilio api-a2p-register flow keeps working unchanged).
+-- whenever they change (never touched when a tenant has no sender rows at
+-- all, so the legacy Twilio api-a2p-register flow keeps working unchanged).
+-- A tenant whose senders were all RELEASED drops back to
+-- 'pending_verification': otherwise a stale 'verified' would send the
+-- worker down the legacy path (primary voice number, usually Retell-owned)
+-- and every text would fail instead of being copied to the owner by email.
+-- Both the old and the new tenant are recomputed when a row moves.
 create or replace function public.fn_sync_tenant_a2p_status_from_senders()
 returns trigger
 language plpgsql
@@ -88,23 +93,33 @@ security definer
 set search_path = public
 as $$
 declare
-  v_tenant uuid := coalesce(new.tenant_id, old.tenant_id);
+  v_tenant uuid;
   v_status text;
 begin
-  select case
-      when bool_or(registration_status = 'verified') then 'verified'
-      when bool_or(registration_status <> 'failed') then 'pending_verification'
-      when count(*) > 0 then 'failed'
-    end
-    into v_status
-  from public.messaging_senders
-  where tenant_id = v_tenant and released_at is null;
+  for v_tenant in
+    select distinct x.tenant_id
+    from (values (old.tenant_id), (new.tenant_id)) as x(tenant_id)
+    where x.tenant_id is not null
+  loop
+    select case
+        when count(*) filter (where released_at is null) = 0 then
+          case when count(*) > 0 then 'pending_verification' end
+        when bool_or(registration_status = 'verified') filter (where released_at is null)
+          then 'verified'
+        when bool_or(registration_status <> 'failed') filter (where released_at is null)
+          then 'pending_verification'
+        else 'failed'
+      end
+      into v_status
+    from public.messaging_senders
+    where tenant_id = v_tenant;
 
-  if v_status is not null then
-    update public.tenants
-    set a2p_status = v_status
-    where id = v_tenant and a2p_status is distinct from v_status;
-  end if;
+    if v_status is not null then
+      update public.tenants
+      set a2p_status = v_status
+      where id = v_tenant and a2p_status is distinct from v_status;
+    end if;
+  end loop;
   return null;
 end;
 $$;

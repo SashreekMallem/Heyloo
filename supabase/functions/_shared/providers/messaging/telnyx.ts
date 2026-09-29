@@ -36,8 +36,11 @@ import { failure } from "./types.ts";
  *   delivery_unconfirmed`); Ed25519 signature in `telnyx-signature-ed25519`
  *   over `"{telnyx-timestamp}|{raw body}"`, base64 public key from the
  *   portal, reject timestamps older than 5 minutes, 2xx within 2 s.
- * - .../advanced-opt-in-out — inbound payload carries `autoresponse_type`
- *   (STOP/START/HELP) when Telnyx handled the keyword; sends to an
+ * - .../advanced-opt-in-out — "When a user sends an opt-in, opt-out, or
+ *   help keyword, the inbound message webhook includes an
+ *   `autoresponse_type` field" (STOP/START/HELP). That marks a keyword
+ *   MATCH (block rule added/removed), not a reply: the same page says
+ *   Telnyx sends no auto-reply unless one is configured. Sends to an
  *   opted-out number fail with 40300.
  * - .../error-codes — API-time 403xx codes used in `PERMANENT_CODES`.
  */

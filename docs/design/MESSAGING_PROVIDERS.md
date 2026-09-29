@@ -124,11 +124,15 @@ dead-letters after 24 hours). With email alone configured, the leg runs.
   texting is on and the sender is approved, plus an idempotent email copy
   (`parent_message_id`) when email is on too. If SMS can't go out yet, the
   alert goes by email instead: never silently dropped.
-- **Customer SMS**: opt-out check, then the tenant's sender. Not approved
-  yet → the owner gets an email: "Text to +1... not sent yet — copy for
-  you" (the BACKEND_SPEC §10.1 A2P fallback, now readable). Replies to an
-  inbound text (`sms_reply`, `text_agent_reply`) are exempt from that
-  reroute; the STOP confirmation is exempt from the opt-out check.
+- **Customer SMS**: recipient normalized to E.164 (unparseable → `failed`,
+  `invalid_recipient_phone`, never sent), opt-out check on the normalized
+  number, then the tenant's sender. Not approved yet → the owner gets an
+  email: "Text to +1... not sent yet — copy for you" (the BACKEND_SPEC
+  §10.1 A2P fallback, now readable). Replies to an inbound text
+  (`sms_reply`, `text_agent_reply`) are exempt from that reroute; the STOP
+  confirmation and the HELP answer are exempt from the opt-out check (the
+  provider's own block rule still applies). A one-time code
+  (`chat_phone_verification`) is never rerouted to the owner.
 - **Email**: to the row's recipient, HTML-escaped body,
   `messages_outbound.id` as the Resend `Idempotency-Key`.
 - An unknown template (renders to an empty body) fails at once with
@@ -188,9 +192,16 @@ ack.
 - **Telnyx**: must get a 2xx within 2 seconds, so it is acked immediately
   and processed with `EdgeRuntime.waitUntil`; any reply becomes a queued
   `messages_outbound` send.
-- **STOP/START/HELP**: opt-out state is always recorded. When the provider
-  already handled the keyword (Telnyx `autoresponse_type`, including its
-  opt-out intent classifier), we do not send a second confirmation.
+- **STOP/START/HELP**: opt-out state is always recorded, including when the
+  provider matched the keyword itself (Telnyx `autoresponse_type`, also set
+  by its opt-out intent classifier). That field marks a keyword **match**,
+  not a reply: Telnyx's developer docs say it sends no auto-reply unless
+  one is configured, and neither Telnyx source documents a default HELP
+  reply. So HELP and START are always answered by us; only our STOP
+  confirmation is skipped when Telnyx matched STOP, because its block rule
+  would reject it (`40300`) and the provider / toll-free network sends its
+  own. Configure the messaging profile's STOP auto-response in Telnyx
+  (Advanced Opt-In/Out) so 10DLC numbers also confirm opt-outs.
 - The number texted resolves the tenant: `messaging_senders.e164` first,
   then `phone_numbers.e164`.
 - Receipts only change terminal state: `delivered` sets `delivered_at`;
@@ -261,7 +272,14 @@ These are **carrier rules**; every provider must enforce them.
   mandatory for new submissions since 2026-02-17.
 - So onboarding must collect each tenant's exact IRS legal name, EIN (or
   sole-proprietor status), address, website and opt-in wording for **any**
-  SMS path. That is the /dashboard/texting form.
+  SMS path. That is the /dashboard/texting form. Telnyx's toll-free page
+  lists the corporate website as required; the form keeps it optional, so
+  ops must ask for it before submitting.
+- Reported (third-party, not yet confirmed on a carrier or Telnyx page):
+  toll-free submissions after 2026-09-15 also need a live privacy-policy
+  URL (no sharing of consumer data for marketing) and terms URL with an SMS
+  disclosure. Ours are the platform's `A2P_PRIVACY_POLICY_URL` /
+  `A2P_TERMS_URL` pages; confirm they meet that wording.
 
 What varies by provider: fees, review queues, APIs, account KYC, and how a
 *pending* toll-free number is treated (Twilio hard-blocks it; Telnyx says

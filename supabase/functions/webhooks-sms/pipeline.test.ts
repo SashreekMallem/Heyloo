@@ -92,6 +92,48 @@ describe("processInboundSms — provider-neutral behavior", () => {
     expect(calls.some((c) => c.text.includes("sms_opt_out = true"))).toBe(true);
     expect(calls.some((c) => c.text.includes("insert into public.messages_outbound"))).toBe(false);
   });
+
+  // Telnyx sets `autoresponse_type` whenever a keyword MATCHES, and its
+  // developer docs say it sends no auto-reply unless one is configured —
+  // so a provider-matched HELP/START must still be answered by us.
+  it("still answers HELP when the provider matched the keyword (no documented default HELP reply)", async () => {
+    const { sql, calls } = makeSql({
+      ...TENANT_NUMBER,
+      "insert into public.messages_outbound": [{ id: "reply-2" }],
+    });
+    const result = await processInboundSms(
+      sql,
+      { ...TELNYX_SMS, body: "HELP", providerHandledKeyword: "help" },
+      undefined,
+      { replyMode: "queued" },
+    );
+    expect(result.replyKind).toBe("help");
+    const queued = calls.find((c) => c.text.includes("insert into public.messages_outbound"));
+    expect(queued?.values).toContainEqual({
+      body: expect.stringContaining("Reply STOP"),
+      compliance: "help",
+    });
+  });
+
+  it("records the opt-in AND confirms START when the provider matched the keyword", async () => {
+    const { sql, calls } = makeSql({
+      ...TENANT_NUMBER,
+      "insert into public.messages_outbound": [{ id: "reply-3" }],
+    });
+    const result = await processInboundSms(
+      sql,
+      { ...TELNYX_SMS, body: "START", providerHandledKeyword: "start" },
+      undefined,
+      { replyMode: "queued" },
+    );
+    expect(result.replyKind).toBe("start");
+    expect(calls.some((c) => c.text.includes("set sms_opt_out = false"))).toBe(true);
+    const queued = calls.find((c) => c.text.includes("insert into public.messages_outbound"));
+    expect(queued?.values).toContainEqual({
+      body: expect.stringContaining("resubscribed"),
+      compliance: "start",
+    });
+  });
 });
 
 describe("applyDeliveryStatus", () => {
@@ -334,5 +376,64 @@ describe("handleSmsWebhook", () => {
       compliance: "help",
     });
     expect(calls.some((c) => c.text.includes("set processed_at = now()"))).toBe(true);
+  });
+
+  it("Telnyx: a keyword Telnyx matched (autoresponse_type HELP) still gets our HELP answer", async () => {
+    const keys = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, [
+      "sign",
+      "verify",
+    ])) as CryptoKeyPair;
+    const publicKey = toBase64(await crypto.subtle.exportKey("raw", keys.publicKey));
+    const nowMs = Date.parse("2026-09-29T12:00:00Z");
+    const telnyx = createTelnyxSmsProvider({
+      fetchImpl: vi.fn(),
+      apiKey: "KEY",
+      publicKey,
+      now: () => nowMs,
+    });
+    // Shape per developers.telnyx.com advanced-opt-in-out: uppercase value.
+    const rawBody = JSON.stringify({
+      data: {
+        id: "evt-43",
+        event_type: "message.received",
+        payload: {
+          id: "msg-43",
+          from: { phone_number: "+15551234567" },
+          to: [{ phone_number: "+18885550100" }],
+          text: "help",
+          autoresponse_type: "HELP",
+        },
+      },
+    });
+    const timestamp = String(Math.floor(nowMs / 1000));
+    const signature = toBase64(
+      await crypto.subtle.sign(
+        { name: "Ed25519" },
+        keys.privateKey,
+        new TextEncoder().encode(`${timestamp}|${rawBody}`),
+      ),
+    );
+    const headers: Record<string, string> = {
+      "telnyx-signature-ed25519": signature,
+      "telnyx-timestamp": timestamp,
+    };
+    const { sql, calls } = makeSql({
+      ...NEW_EVENT,
+      "from public.messaging_senders": [{ tenant_id: "t1", id: null }],
+      "insert into public.messages_outbound": [{ id: "reply-10" }],
+    });
+    const tasks: Array<() => Promise<void>> = [];
+    const response = await handleSmsWebhook(
+      { sql, logger: silentLogger, runInBackground: (task) => tasks.push(task) },
+      ok(telnyx),
+      { rawBody, url: "https://ignored", header: (name) => headers[name.toLowerCase()] ?? null },
+    );
+    expect(response.status).toBe(200);
+    await tasks[0]?.();
+    const queued = calls.find((c) => c.text.includes("insert into public.messages_outbound"));
+    expect(queued?.values).toContainEqual({
+      body: expect.stringContaining("Reply STOP"),
+      compliance: "help",
+    });
   });
 });

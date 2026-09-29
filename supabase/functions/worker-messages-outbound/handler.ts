@@ -1,6 +1,7 @@
 import { textToEmailHtml } from "../_shared/email-body.ts";
 import type { OwnerAlertContact } from "../_shared/owner-alerts.ts";
 import { isOwnerAlertTemplate, loadOwnerAlertContact } from "../_shared/owner-alerts.ts";
+import { normalizeE164 } from "../_shared/phone.ts";
 import type { MessagingRegistry } from "../_shared/providers/messaging/registry.ts";
 import type { SendResult, SmsProvider } from "../_shared/providers/messaging/types.ts";
 import type { MessagesOutboundQueueMsg, PgmqMessageRow } from "../_shared/queue.ts";
@@ -31,7 +32,10 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
  *   `tenants.a2p_status`). Not carrier-approved yet -> rerouted to the
  *   owner's email (the BACKEND_SPEC §10.1 A2P fallback), never silently
  *   dropped. Inbound replies (`sms_reply`/`text_agent_reply`) are exempt
- *   from the reroute: they answer a text the customer just sent us.
+ *   from the reroute: they answer a text the customer just sent us. The
+ *   STOP confirmation and HELP answer are exempt from the opt-out check;
+ *   one-time codes are never rerouted. Both numbers are normalized to
+ *   E.164 before the opt-out lookup and the provider call.
  * - Email: to the row's recipient (owner-facing rows) via the email
  *   provider, body HTML-escaped, `messages_outbound.id` as idempotency key.
  *
@@ -99,6 +103,16 @@ export const PROVIDER_NOT_CONFIGURED_RECHECK_SECONDS = 15 * 60;
 /** Templates that answer an inbound text (queued by `webhooks-sms` for
  * providers without a synchronous reply channel). */
 const INBOUND_REPLY_TEMPLATES = new Set(["sms_reply", "text_agent_reply"]);
+
+/** Compliance replies sent even to an opted-out number: the STOP
+ * confirmation itself, and HELP (answered regardless of opt-out state, as
+ * the pre-MESSAGING-1 TwiML path always did). The provider's own block
+ * rule, if any, still has the final say (Telnyx 40300 / Twilio 21610). */
+const OPT_OUT_EXEMPT_COMPLIANCE = new Set(["stop", "help"]);
+
+/** One-time codes must only ever reach the phone they verify — never
+ * rerouted to the owner's inbox while texting isn't approved. */
+const NEVER_REROUTE_TEMPLATES = new Set(["chat_phone_verification"]);
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -189,13 +203,19 @@ async function sendSmsFor(
   deps: OutboundDeps,
 ): Promise<ProcessOutcome> {
   const provider = route.provider;
+  // CLAUDE.md Rule 2: E.164 at every boundary — the port's contract
+  // (`SmsSendRequest`) is enforced here, never left to the vendor.
+  const toE164 = normalizeE164(to);
+  const fromE164 = normalizeE164(route.from);
+  if (!toE164) return markFailed(sql, message.id, "invalid_recipient_phone");
+  if (!fromE164) return markFailed(sql, message.id, "invalid_sender_phone");
   const statusCallbackUrl =
     deps.statusWebhookBaseUrl && provider.capabilities.deliveryReceipts
       ? `${deps.statusWebhookBaseUrl.replace(/\/+$/, "")}/${provider.id}/status`
       : undefined;
   const result = await provider.sendSms({
-    to,
-    from: route.from,
+    to: toE164,
+    from: fromE164,
     body,
     idempotencyKey: message.id,
     ...(statusCallbackUrl ? { statusCallbackUrl } : {}),
@@ -204,7 +224,7 @@ async function sendSmsFor(
     await sql`
       update public.messages_outbound
       set status = 'sent', provider_message_id = ${result.providerMessageId},
-          provider = ${provider.id}, sent_via = 'sms', recipient = ${to}, sent_at = now(), error = null
+          provider = ${provider.id}, sent_via = 'sms', recipient = ${toE164}, sent_at = now(), error = null
       where id = ${message.id}
     `;
     return "sent";
@@ -306,7 +326,8 @@ async function processOwnerAlert(
 ): Promise<ProcessOutcome> {
   const contact: OwnerAlertContact = await loadOwnerAlertContact(sql, message.tenant_id);
   const emailContent = { subject: rendered.subject ?? DEFAULT_SUBJECT, text: rendered.body };
-  const alertPhone = contact.alertPhone ?? (message.channel === "sms" ? message.recipient : null);
+  const alertPhone =
+    contact.alertPhone ?? (message.channel === "sms" ? normalizeE164(message.recipient) : null);
   const wantSms = contact.smsEnabled && !!alertPhone;
   const wantEmail = contact.emailEnabled && !!contact.email;
 
@@ -395,9 +416,16 @@ export async function processOutboundMessage(
   }
 
   if (message.channel === "sms") {
-    const isStopConfirmation =
-      message.template_key === "sms_reply" && message.payload?.["compliance"] === "stop";
-    if (!isStopConfirmation && (await isOptedOut(sql, message.tenant_id, message.recipient))) {
+    // Normalized before the opt-out lookup too: `customers.phone_e164` is
+    // E.164, so a raw recipient could otherwise miss an opt-out.
+    const recipient = normalizeE164(message.recipient);
+    if (!recipient) return markFailed(sql, message.id, "invalid_recipient_phone");
+    const compliance = message.payload?.["compliance"];
+    const optOutExempt =
+      message.template_key === "sms_reply" &&
+      typeof compliance === "string" &&
+      OPT_OUT_EXEMPT_COMPLIANCE.has(compliance);
+    if (!optOutExempt && (await isOptedOut(sql, message.tenant_id, recipient))) {
       await sql`update public.messages_outbound set status = 'failed', error = 'sms_opt_out' where id = ${message.id}`;
       return "skipped_opt_out";
     }
@@ -407,7 +435,7 @@ export async function processOutboundMessage(
       requireVerified: !isInboundReply,
     });
     if (route.ok) {
-      return sendSmsFor(sql, message, route, message.recipient, rendered.body, deps);
+      return sendSmsFor(sql, message, route, recipient, rendered.body, deps);
     }
     if (route.reason === "no_sending_number") return markFailed(sql, message.id, route.reason);
     if (route.reason === "provider_not_configured") {
@@ -422,7 +450,10 @@ export async function processOutboundMessage(
     }
     // sender_not_verified: A2P fallback (BACKEND_SPEC §10.1) — the owner
     // gets a copy by email, never a silent drop. Honors the owner's email
-    // toggle.
+    // toggle. A one-time code is never copied to anyone but its phone.
+    if (NEVER_REROUTE_TEMPLATES.has(message.template_key)) {
+      return markFailed(sql, message.id, "sms_pending_verification");
+    }
     const contact = await loadOwnerAlertContact(sql, message.tenant_id);
     if (!contact.emailEnabled) return markFailed(sql, message.id, "sms_pending_verification");
     return sendEmailFor(
