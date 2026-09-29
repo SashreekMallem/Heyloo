@@ -83,6 +83,15 @@ describe("templates stay in step with supabase/templates/*.html", () => {
     expect(normalize(rendered.html)).toBe(normalize(template));
   });
 
+  it("wires reauthentication.html into config.toml relative to the project root", () => {
+    const toml = read("supabase/config.toml");
+    // Supabase resolves content_path from the project root (see the other templates).
+    expect(toml).toMatch(
+      /\[auth\.email\.template\.reauthentication\][^[]*content_path = "\.\/supabase\/templates\/reauthentication\.html"/,
+    );
+    expect(read("supabase/templates/reauthentication.html")).toContain("{{ .Token }}");
+  });
+
   it("uses the same subjects as supabase/config.toml", () => {
     const toml = read("supabase/config.toml");
     const pairs: Array<[string, ContentKey]> = [
