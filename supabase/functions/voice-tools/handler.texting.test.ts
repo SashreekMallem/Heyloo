@@ -76,7 +76,10 @@ function registry(configured: boolean) {
 /** `configured`: a provider with secrets; `unconfigured`: the sender's provider has none; `absent`: no registry wired at all. */
 function setup(
   sender: SenderRow | null,
-  options: { registry?: "configured" | "unconfigured" | "absent" } = {},
+  options: {
+    registry?: "configured" | "unconfigured" | "absent";
+    senderLookupFails?: boolean;
+  } = {},
 ) {
   const statements: string[] = [];
   const inserted: string[] = [];
@@ -87,7 +90,11 @@ function setup(
     if (text.includes("from public.call_logs") && text.includes("retell_call_id")) {
       return Promise.resolve([CONTEXT_ROW]);
     }
-    if (text.includes("messaging_senders")) return Promise.resolve(sender ? [sender] : []);
+    if (text.includes("messaging_senders")) {
+      return options.senderLookupFails
+        ? Promise.reject(new Error("connection terminated"))
+        : Promise.resolve(sender ? [sender] : []);
+    }
     if (text.includes("insert into public.messages_outbound"))
       return Promise.resolve([{ id: "msg_1" }]);
     if (text.includes("insert into public.customers")) return Promise.resolve([{ id: "cust_1" }]);
@@ -182,6 +189,28 @@ describe("send_sms_confirmation", () => {
       date_range: { start: "2026-01-01T00:00:00Z", end: "2026-01-02T00:00:00Z" },
     });
     expect(senderStatements(other.statements)).toBe(0);
+  });
+});
+
+describe("a failed sender lookup reads as 'texting unavailable', never as a failed tool", () => {
+  it("send_sms_confirmation and send_payment_link answer unavailable and queue nothing", async () => {
+    const { deps, inserted, fetchImpl } = setup(VERIFIED_TELNYX, { senderLookupFails: true });
+    const confirmation = await dispatchTool(deps, CALL_ID, "send_sms_confirmation", CONFIRMATION);
+    expect(confirmation.result).toMatchObject({ queued: false, reason: "sms_unavailable" });
+    const payment = await dispatchTool(deps, CALL_ID, "send_payment_link", PAYMENT);
+    expect(payment.result).toMatchObject({ queued: false, reason: "sms_unavailable" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(inserted).toHaveLength(0);
+  });
+
+  it("join_waitlist keeps the entry it wrote and tells the model not to promise a text", async () => {
+    const { deps } = setup(VERIFIED_TELNYX, { senderLookupFails: true });
+    const { result } = await dispatchTool(deps, CALL_ID, "join_waitlist", WAITLIST);
+    expect(result).toMatchObject({
+      joined: true,
+      waitlist_entry_id: "wl_1",
+      texting_available: false,
+    });
   });
 });
 

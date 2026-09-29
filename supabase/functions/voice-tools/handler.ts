@@ -297,8 +297,17 @@ async function runTool(
   // once per tool call), never on the other tools' path.
   let smsAvailability: Promise<boolean> | undefined;
   const smsAvailable = (): Promise<boolean> => {
+    // A failed lookup reads as "no texting", never as a failed tool: the tool then
+    // answers "texting unavailable" (a booking or waitlist entry it already wrote
+    // must not turn into an error, and no text may be promised on a guess).
     smsAvailability ??= deps.sms
-      ? isSmsAvailable(sql, ctx.tenantId, deps.sms.registry)
+      ? isSmsAvailable(sql, ctx.tenantId, deps.sms.registry).catch((err: unknown) => {
+          logger.warn("voice_tools_sms_availability_failed", {
+            tenant_id: ctx.tenantId,
+            error: String(err),
+          });
+          return false;
+        })
       : Promise.resolve(false);
     return smsAvailability;
   };
