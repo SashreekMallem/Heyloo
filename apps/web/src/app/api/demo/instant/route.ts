@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { DEFAULT_DEMO_VERTICAL, DEMO_VERTICAL_IDS } from "@/components/demo/demo-verticals";
 import { demoInstantGlobalLimiter, demoInstantIpLimiter } from "@/lib/demo/rate-limit";
 import { callEdgeFunction } from "@/lib/edge-functions";
 import { clientIpFromRequest } from "@/lib/widget/rate-limit";
@@ -13,7 +14,8 @@ export const runtime = "nodejs";
  */
 const instantDemoResponseSchema = z.object({
   retell_call_token: z.string().min(1),
-  demo_phone_e164: z.string().min(1),
+  /** The shared demo line; absent when none is configured. */
+  demo_phone_e164: z.string().min(1).optional(),
   max_call_ms: z.number().int().positive(),
   /** Transport, call id and ICE servers the browser SDK needs to join (optional: older edge builds omit it). */
   retell_web_call: z
@@ -33,17 +35,28 @@ const instantDemoResponseSchema = z.object({
     .optional(),
 });
 
+/**
+ * The request body: the business type to talk to, from a strict allowlist
+ * (the same one `api-demo-agent` enforces). An empty body means the default
+ * (auto repair), what builds before the picker sent implicitly.
+ */
+const instantDemoRequestSchema = z.object({
+  vertical: z.enum(DEMO_VERTICAL_IDS).default(DEFAULT_DEMO_VERTICAL),
+});
+
 const RETRY_AFTER_SECONDS = 600;
 /** Minting a token is one Retell call; past this the visitor is better served by the phone fallback. */
 const EDGE_TIMEOUT_MS = 8_000;
 
 /**
- * `POST /api/demo/instant`: the home page's "Talk to Heyloo" button. Mints a
- * web-call token for the shared demo agent (sample shop, no scrape) through
- * the `api-demo-agent` edge function, so the Retell secret never reaches the
- * browser. Public, so it is guarded three ways: same-origin only, a per-IP
- * sliding window, and a global hourly ceiling. The call itself is capped by
- * Retell's `max_call_duration_ms` (set in the edge function).
+ * `POST /api/demo/instant`: the "Talk to Heyloo" button. Mints a web-call
+ * token for the demo agent of the business type the visitor picked
+ * (`{ vertical }`, a strict allowlist; no scrape) through the `api-demo-agent`
+ * edge function, so the Retell secret never reaches the browser. Public, so it
+ * is guarded three ways: same-origin only, a per-IP sliding window, and a
+ * global hourly ceiling. The 30 second call limit is enforced by the browser
+ * (it hangs up at 28 s) with Retell's `max_call_duration_ms` (60 s, its
+ * minimum) as the backstop, both set up by the edge function.
  */
 export async function POST(request: Request): Promise<NextResponse> {
   const origin = request.headers.get("origin");
@@ -58,6 +71,22 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (!host || originHost !== host) {
       return NextResponse.json({ error: "forbidden_origin" }, { status: 403 });
     }
+  }
+
+  // A malformed or off-allowlist request is refused before it can touch the
+  // limiters or the edge function (it costs nothing to refuse).
+  let rawBody: unknown = {};
+  const text = await request.text();
+  if (text.trim() !== "") {
+    try {
+      rawBody = JSON.parse(text);
+    } catch {
+      return NextResponse.json({ error: "invalid_request" }, { status: 400 });
+    }
+  }
+  const requested = instantDemoRequestSchema.safeParse(rawBody);
+  if (!requested.success) {
+    return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   }
 
   // The per-IP window first, so a flood from one address can never eat the
@@ -75,19 +104,29 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     ({ status, body } = await callEdgeFunction<unknown>("api-demo-agent", {
       method: "POST",
-      body: { instant: true },
+      body: { instant: true, vertical: requested.data.vertical },
       timeoutMs: EDGE_TIMEOUT_MS,
     }));
   } catch {
+    return NextResponse.json({ error: "demo_error" }, { status: 503 });
+  }
+  // The edge function answers 503 `demo_unavailable` when the picked business
+  // type has no live demo agent yet: pass that through so the page can say so.
+  if (
+    status === 503 &&
+    typeof body === "object" &&
+    body !== null &&
+    (body as Record<string, unknown>)["error"] === "demo_unavailable"
+  ) {
     return NextResponse.json({ error: "demo_unavailable" }, { status: 503 });
   }
   if (status !== 200) {
-    return NextResponse.json({ error: "demo_unavailable" }, { status: 502 });
+    return NextResponse.json({ error: "demo_error" }, { status: 502 });
   }
 
   const parsed = instantDemoResponseSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ error: "demo_unavailable" }, { status: 502 });
+    return NextResponse.json({ error: "demo_error" }, { status: 502 });
   }
   return NextResponse.json(parsed.data, { headers: { "cache-control": "no-store" } });
 }

@@ -702,3 +702,229 @@ html.rm .mk *::after {
   -webkit-backdrop-filter: blur(20px) saturate(1.15);
   backdrop-filter: blur(20px) saturate(1.15);
 }
+
+/* ---- SITE-3 / DEMO-2: live demo ("Talk to Heyloo now") and small additions. Shared by the home page and /demo, so it lives here, not in home.css. ---- */
+.mk .tk-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 40px var(--gap);
+  align-items: center;
+}
+.mk .tk-copy {
+  display: grid;
+  gap: 20px;
+  align-content: center;
+}
+@media (min-width: 900px) {
+  .mk .tk-grid {
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  }
+}
+.mk .talk {
+  display: grid;
+  gap: 20px;
+  width: 100%;
+  max-width: 640px;
+  padding: 20px 22px 18px;
+  justify-self: end;
+  align-self: center;
+}
+.mk .tk-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mk .tk-main {
+  display: grid;
+  gap: 16px;
+}
+.mk .tk-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--ink);
+  font-size: 1.0625rem;
+  font-weight: 430;
+  line-height: 1.35;
+  min-height: 2.7em;
+}
+.mk .tk-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  transition: background-color 300ms var(--ease-out);
+  flex: none;
+  background: transparent;
+  box-shadow: 0 0 0 1px var(--ink);
+}
+.mk .talk[data-phase="live"] .tk-dot {
+  background: var(--ink);
+}
+.mk .talk[data-phase="live"] .tk-dot[data-on] {
+  box-shadow:
+    0 0 0 1px var(--ink),
+    0 0 0 5px color-mix(in oklab, var(--ink) 22%, transparent);
+}
+.mk .tk-clock {
+  color: var(--ink);
+  font-size: 0.9375rem;
+}
+.mk .tk-log {
+  display: grid;
+  gap: 10px;
+  max-height: 14rem;
+  overflow: auto;
+  padding: 12px 0;
+  border-block: 1px solid var(--rule);
+  font-size: 0.9375rem;
+  line-height: 1.4;
+  overscroll-behavior: contain;
+}
+.mk .tk-log li {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+.mk .tk-log .tk-wait {
+  display: block;
+}
+.mk .tk-log .who {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.75rem;
+  color: var(--ink-2);
+}
+.mk .tk-log li[data-role="agent"] .who,
+.mk .tk-log li[data-role="agent"] span:last-child {
+  color: var(--ink);
+}
+.mk .tk-log li[data-role="user"] span:last-child {
+  color: var(--ink-2);
+}
+.mk .tk-fine {
+  display: grid;
+  gap: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
+.mk .tk-disc {
+  color: var(--ink);
+  padding: 12px 0;
+  border-block: 1px solid var(--rule);
+}
+.mk .tk-fine a,
+.mk .lnk-inline {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 5px;
+  text-decoration-thickness: 1px;
+}
+.mk .tk-fine a:hover,
+.mk .lnk-inline:hover {
+  text-decoration-color: var(--ink);
+}
+.mk .lnk-inline {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  justify-self: start;
+}
+.mk .btn {
+  cursor: pointer;
+}
+.mk .btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+@media (max-width: 899px) {
+  .mk .talk {
+    justify-self: stretch;
+    max-width: none;
+  }
+}
+@media (max-width: 640px) {
+  .mk .tk-log li {
+    grid-template-columns: 3.75rem minmax(0, 1fr);
+  }
+  .mk .tk-status {
+    font-size: 1rem;
+  }
+}
+/* The business-type selector: a segmented set of native radios (arrow keys and the group semantics come for free). */
+.mk .tk-pick {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.mk .tk-pick legend {
+  padding: 0;
+  margin-bottom: 10px;
+}
+.mk .tk-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mk .tk-seg label {
+  position: relative;
+  display: inline-flex;
+}
+.mk .tk-seg input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.mk .tk-seg span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink-2);
+  font-size: 0.9375rem;
+  font-weight: 450;
+  line-height: 1.2;
+  white-space: nowrap;
+  transition:
+    background-color 200ms var(--ease-out),
+    border-color 200ms var(--ease-out),
+    color 200ms var(--ease-out);
+}
+.mk .tk-seg input:checked + span {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--ground);
+}
+.mk .tk-seg input:focus-visible + span {
+  outline: 2px solid var(--ember);
+  outline-offset: 2px;
+}
+.mk .tk-seg input:disabled {
+  cursor: default;
+}
+.mk .tk-seg input:disabled + span {
+  opacity: 0.55;
+}
+@media (hover: hover) {
+  .mk .tk-seg input:not(:checked):not(:disabled) + span:hover {
+    border-color: var(--ink);
+    color: var(--ink);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mk .tk-seg span,
+  .mk .tk-dot {
+    transition: none;
+  }
+}

@@ -73,7 +73,7 @@ describe("TalkLive: before the call", () => {
     const card = screen.getByTestId("talk-live");
     expect(within(card).getByText(/talking to an AI assistant/)).toHaveTextContent("recorded");
     expect(within(card).getByText(/microphone/)).toBeInTheDocument();
-    expect(within(card).getByText(/2 minutes/)).toBeInTheDocument();
+    expect(within(card).getByText("Calls end on their own after 30 seconds.")).toBeInTheDocument();
     expect(within(card).getByRole("button", { name: /Talk to Heyloo/ })).toBeEnabled();
     expect(within(card).getByText("Ready when you are.")).toBeInTheDocument();
   });
@@ -100,7 +100,7 @@ describe("TalkLive: a call", () => {
 
     await screen.findByText("Listening. Go ahead and talk.");
     expect(screen.getByText("Live")).toBeInTheDocument();
-    expect(screen.getByTestId("talk-clock")).toHaveTextContent(/^1:5\d left$/);
+    expect(screen.getByTestId("talk-clock")).toHaveTextContent(/^0:(30|29) left$/);
     expect(client.startCall).toHaveBeenCalledWith({ accessToken: "tok_1" });
 
     client.emit("update", {
@@ -127,16 +127,16 @@ describe("TalkLive: a call", () => {
     expect(screen.getByRole("log")).toBeInTheDocument();
   });
 
-  it("shows the time limit message when the hard limit hangs up", async () => {
+  it("shows the time limit message when the browser hangs up at 28 seconds", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderTalk();
     await user.click(screen.getByRole("button", { name: /Talk to Heyloo/ }));
     await screen.findByText("Listening. Go ahead and talk.");
     await act(async () => {
-      vi.advanceTimersByTime(117_000);
+      vi.advanceTimersByTime(28_500);
     });
-    expect(await screen.findByText(/2 minute limit/)).toBeInTheDocument();
+    expect(await screen.findByText(/30 second limit/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Talk again" })).toBeInTheDocument();
   });
 
@@ -216,5 +216,106 @@ describe("TalkLive: when it cannot start", () => {
     await screen.findByText("Listening. Go ahead and talk.");
     client.emit("error", "Error starting call");
     expect(await screen.findByText(/didn’t connect/)).toBeInTheDocument();
+  });
+});
+
+const LABELS = [
+  "Auto repair",
+  "Dental",
+  "Veterinary",
+  "Legal",
+  "Real estate",
+  "Motel",
+  "Restaurant",
+  "Local services",
+];
+
+describe("TalkLive: picking a business", () => {
+  it("offers the eight business types as one radio group, Auto repair first and selected", () => {
+    renderTalk();
+    const group = screen.getByRole("group", { name: "Pick a business" });
+    const radios = within(group).getAllByRole("radio");
+    expect(radios.map((r) => r.parentElement?.textContent)).toEqual(LABELS);
+    expect(within(group).getByRole("radio", { name: "Auto repair" })).toBeChecked();
+    expect(radios.filter((r) => (r as HTMLInputElement).checked)).toHaveLength(1);
+  });
+
+  it("keeps the AI + recording disclosure and the Talk button visible with the selector", () => {
+    renderTalk();
+    const card = screen.getByTestId("talk-live");
+    expect(within(card).getByText(/talking to an AI assistant/)).toHaveTextContent("recorded");
+    expect(within(card).getByRole("button", { name: "Talk to Heyloo" })).toBeEnabled();
+  });
+
+  it("starts with the type the page asked for", () => {
+    renderTalk({ initialVertical: "vet" });
+    expect(screen.getByRole("radio", { name: "Veterinary" })).toBeChecked();
+    expect(screen.getByText("Demo line · Veterinary")).toBeInTheDocument();
+  });
+
+  it("asks for a call with the selected type, and only that one", async () => {
+    const user = userEvent.setup();
+    const fetchGrant = vi.fn(async () => ({ token: "tok_dental" }));
+    renderTalk({ fetchGrant });
+    await user.click(screen.getByRole("radio", { name: "Dental" }));
+    expect(screen.getByRole("radio", { name: "Dental" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Auto repair" })).not.toBeChecked();
+    expect(screen.getByText("Demo line · Dental")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Talk to Heyloo/ }));
+    await screen.findByText("Listening. Go ahead and talk.");
+    expect(fetchGrant).toHaveBeenCalledTimes(1);
+    expect(fetchGrant).toHaveBeenCalledWith("dental");
+    expect(client.startCall).toHaveBeenCalledWith({ accessToken: "tok_dental" });
+  });
+
+  it.each([
+    ["Auto repair", "auto"],
+    ["Dental", "dental"],
+    ["Veterinary", "vet"],
+    ["Legal", "legal"],
+    ["Real estate", "real_estate"],
+    ["Motel", "motel"],
+    ["Restaurant", "restaurant"],
+    ["Local services", "generic"],
+  ])("%s sends vertical %s", async (label, id) => {
+    const user = userEvent.setup();
+    const fetchGrant = vi.fn(async () => ({ token: "t" }));
+    renderTalk({ fetchGrant });
+    await user.click(screen.getByRole("radio", { name: label }));
+    await user.click(screen.getByRole("button", { name: /Talk to Heyloo/ }));
+    await screen.findByText("Listening. Go ahead and talk.");
+    expect(fetchGrant).toHaveBeenCalledWith(id);
+  });
+
+  it("locks the selector while live, and frees it after the call", async () => {
+    const user = userEvent.setup();
+    renderTalk();
+    await user.click(screen.getByRole("button", { name: /Talk to Heyloo/ }));
+    await screen.findByText("Listening. Go ahead and talk.");
+    expect(screen.getByRole("radio", { name: "Legal" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "End call" }));
+    expect(screen.getByRole("radio", { name: "Legal" })).toBeEnabled();
+    await user.click(screen.getByRole("radio", { name: "Legal" }));
+    expect(screen.getByRole("button", { name: "Talk again" })).toBeEnabled();
+  });
+
+  it("says that business is not available right now when it has no demo agent yet", async () => {
+    const user = userEvent.setup();
+    renderTalk({
+      fetchGrant: async () => {
+        throw new DemoCallGrantError("business-unavailable");
+      },
+    });
+    await user.click(screen.getByRole("radio", { name: "Motel" }));
+    await user.click(screen.getByRole("button", { name: /Talk to Heyloo/ }));
+    expect(await screen.findByText(/The Motel demo isn’t available right now/)).toBeInTheDocument();
+    expect(screen.getByText("Not connected")).toBeInTheDocument();
+
+    // moving the selector afterwards does not rename the business that failed
+    await user.click(screen.getByRole("radio", { name: "Dental" }));
+    expect(screen.getByText(/The Motel demo isn’t available right now/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Talk again" })).toBeEnabled();
   });
 });

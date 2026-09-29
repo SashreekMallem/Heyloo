@@ -1,9 +1,15 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { TALK } from "@/content/marketing/talk";
 import { Link } from "@/i18n/navigation";
 import { formatPhoneDisplay } from "@/lib/settings/format";
+import {
+  DEFAULT_DEMO_VERTICAL,
+  DEMO_VERTICALS,
+  type DemoVerticalId,
+  demoVerticalLabel,
+} from "./demo-verticals";
 import { fetchInstantDemoGrant } from "./fetch-instant-grant";
 import {
   type DemoCallErrorReason,
@@ -13,7 +19,7 @@ import {
   useDemoCall,
 } from "./use-demo-call";
 
-const ERROR_COPY: Record<DemoCallErrorReason, string> = {
+const ERROR_COPY: Record<Exclude<DemoCallErrorReason, "business-unavailable">, string> = {
   "mic-blocked":
     "Microphone access is blocked. Allow it in your browser’s site settings and try again, or call the demo line.",
   "no-mic": "No microphone was found. Plug one in and try again, or call the demo line.",
@@ -25,7 +31,14 @@ const ERROR_COPY: Record<DemoCallErrorReason, string> = {
   failed: "The call didn’t connect. Try again, call the demo line, or use the demo page.",
 };
 
-function statusLine(view: DemoCallView): string {
+function errorLine(reason: DemoCallErrorReason | null, businessLabel: string): string {
+  if (reason === "business-unavailable") {
+    return `The ${businessLabel} demo isn’t available right now. Pick another kind of business, or try again later.`;
+  }
+  return reason ? ERROR_COPY[reason] : ERROR_COPY.failed;
+}
+
+function statusLine(view: DemoCallView, businessLabel: string): string {
   switch (view.phase) {
     case "idle":
       return "Ready when you are.";
@@ -37,10 +50,10 @@ function statusLine(view: DemoCallView): string {
       return view.agentTalking ? "Heyloo is speaking." : "Listening. Go ahead and talk.";
     case "ended":
       return view.endReason === "time-limit"
-        ? "That’s the 2 minute limit. Thanks for talking to Heyloo."
+        ? "That’s the 30 second limit. Thanks for talking to Heyloo."
         : "Call ended. Thanks for talking to Heyloo.";
     case "error":
-      return view.errorReason ? ERROR_COPY[view.errorReason] : ERROR_COPY.failed;
+      return errorLine(view.errorReason, businessLabel);
   }
 }
 
@@ -85,24 +98,39 @@ function MicIcon() {
 export interface TalkLiveProps {
   /** The shared demo phone number (E.164), when one is configured. */
   demoPhone?: string | undefined;
+  /** The business type selected first (default: auto repair). */
+  initialVertical?: DemoVerticalId | undefined;
   /** Test seams. */
-  fetchGrant?: () => Promise<DemoCallGrant>;
+  fetchGrant?: (vertical: DemoVerticalId) => Promise<DemoCallGrant>;
   loadClient?: () => Promise<DemoWebClient>;
 }
 
 /**
- * "Talk to Heyloo now": starts a real browser voice call with the shared demo
- * agent. The AI + recording disclosure and the time limit are printed above
+ * "Talk to Heyloo now": the visitor picks a kind of business and starts a real
+ * browser voice call with that business's demo receptionist, for at most 30
+ * seconds. The AI + recording disclosure and the time limit are printed above
  * the button, so they are read before the microphone prompt appears. Any
- * failure (no mic, blocked, rate limit, no network) lands on a state that
- * still offers the phone line and the `/demo` page.
+ * failure (no mic, blocked, rate limit, no network, a business with no agent
+ * yet) lands on a state that still offers the phone line and the `/demo` page.
  */
-export function TalkLive({ demoPhone, fetchGrant, loadClient }: TalkLiveProps) {
+export function TalkLive({ demoPhone, initialVertical, fetchGrant, loadClient }: TalkLiveProps) {
+  const [vertical, setVertical] = useState<DemoVerticalId>(
+    initialVertical ?? DEFAULT_DEMO_VERTICAL,
+  );
+  // The type the current or last call was started with, so an error keeps
+  // naming it if the visitor moves the selector afterwards.
+  const [attempted, setAttempted] = useState<DemoVerticalId>(vertical);
+  const groupName = useId();
+  const grantFor = fetchGrant ?? fetchInstantDemoGrant;
   const view = useDemoCall({
-    fetchGrant: fetchGrant ?? fetchInstantDemoGrant,
+    fetchGrant: () => grantFor(vertical),
     ...(loadClient ? { loadClient } : {}),
   });
-  const { phase, transcript, remainingMs, start, stop } = view;
+  const { phase, transcript, remainingMs, stop } = view;
+  const begin = () => {
+    setAttempted(vertical);
+    view.start();
+  };
   const logRef = useRef<HTMLOListElement | null>(null);
   const lineCount = transcript.length;
 
@@ -117,26 +145,46 @@ export function TalkLive({ demoPhone, fetchGrant, loadClient }: TalkLiveProps) {
     phase === "idle" ||
     phase === "ended" ||
     (phase === "error" && view.errorReason !== "unsupported");
+  // The business type is locked while a call is being set up or is live.
+  const locked = busy || phase === "live";
   const phoneDisplay = demoPhone ? formatPhoneDisplay(demoPhone) : "";
   const showLog = phase === "live" || (phase === "ended" && lineCount > 0);
 
   return (
     <div className="talk panel" data-phase={phase} data-testid="talk-live">
       <div className="tk-top">
-        <p className="lbl">Demo line · Riverside Auto Repair</p>
+        <p className="lbl">Demo line · {demoVerticalLabel(vertical)}</p>
         <span className="chip tk-chip">{CHIP[phase]}</span>
       </div>
 
       <p className="data tk-disc">{TALK.disclosure}</p>
 
       <div className="tk-main">
+        <fieldset className="tk-pick" disabled={locked}>
+          <legend className="lbl">{TALK.pick}</legend>
+          <div className="tk-seg">
+            {DEMO_VERTICALS.map((option) => (
+              <label key={option.id}>
+                <input
+                  type="radio"
+                  name={groupName}
+                  value={option.id}
+                  checked={vertical === option.id}
+                  onChange={() => setVertical(option.id)}
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
         <p className="tk-status" role="status" aria-live="polite">
           <i
             className="dot tk-dot"
             data-on={view.agentTalking ? "" : undefined}
             aria-hidden="true"
           />
-          <span>{statusLine(view)}</span>
+          <span>{statusLine(view, demoVerticalLabel(attempted))}</span>
         </p>
 
         {phase === "live" ? (
@@ -169,7 +217,7 @@ export function TalkLive({ demoPhone, fetchGrant, loadClient }: TalkLiveProps) {
 
         <div className="ctas">
           {canStart ? (
-            <button type="button" className="btn btn-p" onClick={start}>
+            <button type="button" className="btn btn-p" onClick={begin}>
               <MicIcon />
               {phase === "idle" ? TALK.start : TALK.again}
             </button>

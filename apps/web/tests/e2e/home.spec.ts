@@ -23,6 +23,27 @@ test.describe("home page", () => {
     const talk = page.locator("#talk");
     await expect(talk.getByText(/talking to an AI assistant/)).toBeAttached();
     await expect(talk.getByText(/recorded/).first()).toBeAttached();
+    await expect(talk.getByText("Calls end on their own after 30 seconds.")).toBeAttached();
+  });
+
+  test("the live demo offers the eight business types, Auto repair selected first", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const picker = page.locator("#talk").getByRole("group", { name: "Pick a business" });
+    await expect(picker.getByRole("radio")).toHaveCount(8);
+    await expect(picker.getByRole("radio", { name: "Auto repair" })).toBeChecked();
+    for (const label of [
+      "Dental",
+      "Veterinary",
+      "Legal",
+      "Real estate",
+      "Motel",
+      "Restaurant",
+      "Local services",
+    ]) {
+      await expect(picker.getByRole("radio", { name: label })).toBeAttached();
+    }
   });
 
   test.describe("without JavaScript", () => {
@@ -46,5 +67,14 @@ test.describe("home page", () => {
     const response = await page.goto("/demo");
     expect(response?.status()).toBeLessThan(400);
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  });
+
+  test("the /demo page carries the same business picker, honoring ?vertical=", async ({ page }) => {
+    await page.goto("/demo?vertical=dental");
+    const picker = page.getByRole("group", { name: "Pick a business" });
+    await expect(picker.getByRole("radio")).toHaveCount(8);
+    await expect(picker.getByRole("radio", { name: "Dental" })).toBeChecked();
+    await expect(page.getByText(/talking to an AI assistant/)).toBeAttached();
+    await expect(page.getByText("Calls end on their own after 30 seconds.")).toBeAttached();
   });
 });
