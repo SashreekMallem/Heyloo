@@ -62,6 +62,18 @@ describe("DISCLOSE-1: every vertical x every compile target opens with a STATIC 
           expect(first.text.startsWith(compiled.openingLine.disclosureLiteral)).toBe(true);
           expect(first.text).toContain(CALLER_GREETING_TOKEN);
           expect(compiled.disclosureVerified).toBe(true);
+          // DISCLOSE-1 review: a conversation-flow caller cannot cut the
+          // line off before its recording clause (Retell's "Block
+          // Interruptions" for a disclaimer node); a retell-llm
+          // begin_message has no such switch, so its start prompt carries
+          // the cut-off recovery rule instead.
+          if (target === "conversation_flow") {
+            expect(first.blocksInterruptions).toBe(true);
+          } else {
+            expect(JSON.stringify(compiled.flow.body)).toContain(
+              "it was cut off before the AI and call-recording notice was finished",
+            );
+          }
 
           // The literal carries BOTH halves of the disclosure (AI + recording).
           if (compiled.openingLine.language === "en") {

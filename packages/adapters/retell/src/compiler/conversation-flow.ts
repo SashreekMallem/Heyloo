@@ -116,6 +116,7 @@ import {
   buildOpeningLine,
   COMPILER_DEFAULT_DYNAMIC_VARIABLES,
   NO_TRANSFER_FALLBACK_INSTRUCTION,
+  OPENING_INTERRUPTION_SENSITIVITY,
   openingAlreadySpokenInstruction,
   TRANSFER_ANNOUNCEMENT_INSTRUCTION,
 } from "./opening.js";
@@ -297,7 +298,8 @@ function buildTransferOnlyNodes(
             prompt:
               "you have already clearly told the caller you can't connect them to anyone right " +
               "now (restating any emergency referral) and offered to take a message at least " +
-              "once — end here even if the caller keeps repeating the same request",
+              "once, or told them their message is already with the team — end here even if " +
+              "the caller keeps repeating the same request",
           },
         },
       ]
@@ -499,6 +501,9 @@ export function compileConversationFlow(
     type: "conversation",
     name: "Opening — AI and recording disclosure",
     instruction: { type: "static_text", text: opening.text },
+    // DISCLOSE-1 review (mirrors template-compiler.ts): the caller cannot cut
+    // the disclosure off — Retell's documented recording-disclaimer setup.
+    interruption_sensitivity: OPENING_INTERRUPTION_SENSITIVITY,
     edges:
       startNode && (startNode.type === "conversation" || startNode.type === "subagent")
         ? (startNode.edges ?? []).map((edge) => ({ ...edge, id: `opening_${edge.id}` }))

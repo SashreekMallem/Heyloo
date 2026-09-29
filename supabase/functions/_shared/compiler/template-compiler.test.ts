@@ -297,8 +297,57 @@ describe("compileTemplate — conversation_flow", () => {
     expect(firstUtterance(flow)).toEqual({
       isStatic: false,
       text: `${DISCLOSURE} Greet the caller.`,
+      blocksInterruptions: false,
     });
     expect(verifyDisclosureGate(flow, DISCLOSURE)).toBe(false);
+  });
+
+  it("DISCLOSE-1 review: the static opening node blocks interruptions (Retell's recording-disclaimer setup), and the gate FAILS a static opening the caller could cut off", () => {
+    const compiled = compileTemplate(baseTemplate(), "https://example.com/voice-tools");
+    if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
+    const opening = compiled.flow.body.nodes.find((n) => n.id === "__opening");
+    expect(
+      opening && "interruption_sensitivity" in opening
+        ? opening.interruption_sensitivity
+        : "missing",
+    ).toBe(0);
+    expect(firstUtterance(compiled.flow).blocksInterruptions).toBe(true);
+    expect(compiled.disclosureVerified).toBe(true);
+    // Only the opening node overrides barge-in; every other node keeps the agent default.
+    for (const node of compiled.flow.body.nodes) {
+      if (node.id === "__opening") continue;
+      expect("interruption_sensitivity" in node, `node '${node.id}'`).toBe(false);
+    }
+
+    // The same static opening WITHOUT the override (the pre-review shape) fails the gate.
+    const interruptible = {
+      ...compiled.flow,
+      body: {
+        ...compiled.flow.body,
+        nodes: compiled.flow.body.nodes.map((n) => {
+          if (n.id !== "__opening" || !("interruption_sensitivity" in n)) return n;
+          const { interruption_sensitivity: _dropped, ...rest } = n;
+          return rest as typeof n;
+        }),
+      },
+    };
+    expect(firstUtterance(interruptible).isStatic).toBe(true);
+    expect(firstUtterance(interruptible).blocksInterruptions).toBe(false);
+    expect(verifyDisclosureGate(interruptible, compiled.openingLine.disclosureLiteral)).toBe(false);
+  });
+
+  it("DISCLOSE-1 review: the start state may restate the AI + recording notice ONLY when the caller cut the opening off (every compile target)", () => {
+    for (const compile_target of ["conversation_flow", "multi_prompt", "single_prompt"] as const) {
+      const compiled = compileTemplate(
+        baseTemplate({ compile_target }),
+        "https://example.com/voice-tools",
+      );
+      const text = JSON.stringify(compiled.flow.body);
+      expect(text, compile_target).toContain("Do not greet the caller again");
+      expect(text, compile_target).toContain(
+        "if the caller spoke over that line and it was cut off before the AI and call-recording notice was finished, begin your reply with one short sentence saying you are an AI assistant and that this call may be recorded",
+      );
+    }
   });
 });
 
@@ -416,6 +465,11 @@ describe("compileTemplate — conversation_flow — transfer_call (CALL-4, PUBLI
     expect(text).toMatch(/already on the line/);
     expect(text).toMatch(/restate the emergency referral/);
     expect(text).toMatch(/call take_message/);
+    // DISCLOSE-1 review: a message already taken earlier in the call (vet's
+    // emergency_referral, legal's transfer_to_human) is never taken twice.
+    expect(text).toContain(
+      "If take_message was already called earlier in this call, do not offer or take another message",
+    );
     expect(text).not.toMatch(/\{\{transfer_number\}\}/);
     const destinations = fallback?.edges?.map((e) => e.destination_node_id) ?? [];
     expect(destinations).toContain("transfer_to_human__end");

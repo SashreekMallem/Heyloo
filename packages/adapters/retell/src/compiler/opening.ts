@@ -61,15 +61,37 @@ export function buildOpeningLine(
   };
 }
 
+/**
+ * DISCLOSE-1 review (mirrors template-compiler.ts `OPENING_CUT_OFF_RECOVERY`):
+ * a retell-llm `begin_message` has no per-message "block interruptions"
+ * switch, so a caller who talks over it can cut the recording clause off —
+ * the one case where the model must say it again.
+ */
+const OPENING_CUT_OFF_RECOVERY =
+  "The one exception: if the caller spoke over that line and it was cut off before the AI and " +
+  "call-recording notice was finished, begin your reply with one short sentence saying you are " +
+  "an AI assistant and that this call may be recorded, then answer them.";
+
+/**
+ * DISCLOSE-1 review (mirrors template-compiler.ts): the conversation-flow
+ * opening node's node-level `interruption_sensitivity` — Retell's documented
+ * recording-disclaimer setup is a static-text start node with "Block
+ * Interruptions" on "so the user can't cut it off" (docs.retellai.com/
+ * accounts/privacy-disable, 2026-09-29); `0` = "agent would never be
+ * interrupted" (retell-sdk `interruption_sensitivity`), for this node only.
+ */
+export const OPENING_INTERRUPTION_SENSITIVITY = 0;
+
 /** Prepended to the start state's own instruction — the start state no longer speaks first, so it must not greet again. */
 export function openingAlreadySpokenInstruction(opening: OpeningLine): string {
   return (
     `Your first turn in this call has ALREADY been spoken, word for word: "${opening.text}" — ` +
     "it greeted the caller (welcoming a recognized returning caller back by name) and gave the " +
     "AI and call-recording disclosure. Do not greet the caller again, re-introduce yourself, or " +
-    "repeat that line; respond directly to what the caller just said. If they ask whether they " +
-    "are talking to a real person, say plainly that you are an AI assistant and that the call " +
-    "may be recorded."
+    "repeat that line; respond directly to what the caller just said. " +
+    OPENING_CUT_OFF_RECOVERY +
+    " If they ask whether they are talking to a real person, say plainly that you are an AI " +
+    "assistant and that the call may be recorded."
   );
 }
 
@@ -86,6 +108,12 @@ const NEVER_CLAIM_A_TRANSFER_RULE =
   "already on the line, or that the team is aware of this call right now — none of that is " +
   "happening, and saying it could leave a caller waiting for help that is not coming.";
 
+/** DISCLOSE-1 review (mirrors template-compiler.ts): never a second take_message on one call. */
+const NO_DUPLICATE_MESSAGE_RULE =
+  "If take_message was already called earlier in this call, do not offer or take another " +
+  "message — tell them their message is already with the team and someone will call back, then " +
+  "the call is done.";
+
 export const NO_TRANSFER_FALLBACK_INSTRUCTION =
   `${NEVER_CLAIM_A_TRANSFER_RULE} If the caller has described an emergency, first restate the ` +
   "emergency referral in this same turn — exactly where to go or whom to call right now — and " +
@@ -94,10 +122,11 @@ export const NO_TRANSFER_FALLBACK_INSTRUCTION =
   "right now and offer to take down their name, phone number, and a short message so the team " +
   "can call them back — never repeat that same apology/offer a third time. If they give a " +
   "callback number, call take_message with it (fold in whatever they've already told you) and " +
-  "let them know someone will call back as soon as possible, then the call is done. If they keep " +
-  "insisting on a transfer or won't give a number after you've offered twice, don't keep " +
-  "repeating yourself: calmly acknowledge you can't do more right now and that's the end of " +
-  "what you can help with today — the call is done either way.";
+  "let them know someone will call back as soon as possible, then the call is done. " +
+  NO_DUPLICATE_MESSAGE_RULE +
+  " If they keep insisting on a transfer or won't give a number after you've offered twice, " +
+  "don't keep repeating yourself: calmly acknowledge you can't do more right now and that's the " +
+  "end of what you can help with today — the call is done either way.";
 
 export const TRANSFER_ANNOUNCEMENT_INSTRUCTION =
   "In one short, warm sentence, tell the caller you're connecting them to a member of the team " +

@@ -241,6 +241,15 @@ describe("Deno (live) vs. Node (packages/adapters/retell) conversation_flow comp
     expect(nodeOpening?.type === "conversation" ? nodeOpening.instruction : undefined).toEqual(
       denoOpening?.instruction,
     );
+    // DISCLOSE-1 review: both block interruptions on the opening node only.
+    expect(
+      nodeOpening?.type === "conversation" ? nodeOpening.interruption_sensitivity : undefined,
+    ).toBe(0);
+    expect(
+      denoOpening && "interruption_sensitivity" in denoOpening
+        ? denoOpening.interruption_sensitivity
+        : undefined,
+    ).toBe(0);
     expect(denoOpening?.instruction?.type).toBe("static_text");
     for (const language of ["en", "es", "fr"]) {
       for (const line of [PARITY_TEMPLATE.disclosure_line, SHIPPED_DISCLOSURE_LINE]) {
@@ -300,6 +309,10 @@ describe("DISCLOSE-1: the live (Deno) compiler's new shapes match retell-sdk's o
       type: "conversation",
       name: "Opening — AI and recording disclosure",
       instruction: { type: "static_text", text: OPENING_TEXT },
+      // DISCLOSE-1 review: Retell's "Block Interruptions" for the disclaimer
+      // node (docs.retellai.com/accounts/privacy-disable) — typed against the
+      // SDK's own node-level override field.
+      interruption_sensitivity: 0,
       edges: [
         {
           id: "opening_edge_greeting_check_time_0",

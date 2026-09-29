@@ -135,7 +135,11 @@ describe("compileAndCreateAgent — static opening line + default dynamic variab
 
     const flow = requests.find((r) => r.url.includes("/create-conversation-flow"))?.body as {
       start_node_id: string;
-      nodes: Array<{ id: string; instruction?: { type: string; text: string } }>;
+      nodes: Array<{
+        id: string;
+        instruction?: { type: string; text: string };
+        interruption_sensitivity?: number;
+      }>;
       default_dynamic_variables: Record<string, string>;
     };
     const start = flow.nodes.find((n) => n.id === flow.start_node_id);
@@ -143,6 +147,12 @@ describe("compileAndCreateAgent — static opening line + default dynamic variab
       type: "static_text",
       text: `${STANDARD_DISCLOSURE} {{caller_greeting}} How can I help you today?`,
     });
+    // DISCLOSE-1 review: the real request body blocks interruptions on the
+    // opening node only (Retell's recording-disclaimer setup).
+    expect(start?.interruption_sensitivity).toBe(0);
+    expect(
+      flow.nodes.filter((n) => n.interruption_sensitivity !== undefined).map((n) => n.id),
+    ).toEqual([flow.start_node_id]);
     expect(flow.default_dynamic_variables).toMatchObject({
       business_name: "Riverside Auto Repair",
       assistant_name: "Nova",

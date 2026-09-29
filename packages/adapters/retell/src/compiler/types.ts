@@ -216,6 +216,8 @@ export interface RetellConversationNode {
   type: "conversation";
   name: string;
   instruction: RetellNodeInstruction;
+  /** DISCLOSE-1 review: node-level override of the agent's barge-in (retell-sdk `ConversationNode.interruption_sensitivity`, 0..1; 0 = never interrupted). Only the static opening node sets it (`0`). */
+  interruption_sensitivity?: number;
   edges: RetellFlowEdge[];
   else_edge?: RetellElseEdge;
   global_node_setting?: RetellGlobalNodeSetting;

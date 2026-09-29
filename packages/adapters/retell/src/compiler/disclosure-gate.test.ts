@@ -7,6 +7,8 @@ const DISCLOSURE = "This call may be recorded.";
 function conversationFlowFixture(
   startText: string,
   instructionType: "prompt" | "static_text" = "static_text",
+  /** `null` omits the field (the pre-review opening node shape). */
+  interruptionSensitivity: number | null = 0,
 ): RetellFlowRequest {
   return {
     kind: "conversation_flow",
@@ -19,6 +21,9 @@ function conversationFlowFixture(
           type: "conversation",
           name: "Start",
           instruction: { type: instructionType, text: startText },
+          ...(interruptionSensitivity !== null
+            ? { interruption_sensitivity: interruptionSensitivity }
+            : {}),
           edges: [],
         },
       ],
@@ -58,6 +63,7 @@ describe("firstUtterance (DISCLOSE-1)", () => {
     expect(firstUtterance(conversationFlowFixture(`${DISCLOSURE} Hello!`))).toEqual({
       isStatic: true,
       text: `${DISCLOSURE} Hello!`,
+      blocksInterruptions: true,
     });
   });
 
@@ -71,6 +77,7 @@ describe("firstUtterance (DISCLOSE-1)", () => {
     expect(firstUtterance(multiPromptFixture(`${DISCLOSURE} Hi there.`))).toEqual({
       isStatic: true,
       text: `${DISCLOSURE} Hi there.`,
+      blocksInterruptions: false,
     });
     expect(firstTurnText(singlePromptFixture(`${DISCLOSURE} Hi.`))).toBe(`${DISCLOSURE} Hi.`);
   });
@@ -82,7 +89,7 @@ describe("firstUtterance (DISCLOSE-1)", () => {
   it("returns a non-static empty utterance when the conversation_flow start node id doesn't resolve", () => {
     const flow = conversationFlowFixture("whatever");
     if (flow.kind === "conversation_flow") flow.body.start_node_id = "nonexistent";
-    expect(firstUtterance(flow)).toEqual({ isStatic: false, text: "" });
+    expect(firstUtterance(flow)).toEqual({ isStatic: false, text: "", blocksInterruptions: false });
   });
 });
 
@@ -105,6 +112,14 @@ describe("verifyDisclosureGate", () => {
     // with no begin_message the first utterance is model-generated.
     expect(verifyDisclosureGate(multiPromptFixture(""), DISCLOSURE)).toBe(false);
     expect(verifyDisclosureGate(singlePromptFixture(""), DISCLOSURE)).toBe(false);
+  });
+
+  it("DISCLOSE-1 review: FAILS a conversation_flow whose static opening the caller can cut off (the recording clause is at its end)", () => {
+    for (const sensitivity of [null, 1, 0.5]) {
+      const flow = conversationFlowFixture(`${DISCLOSURE} Hello!`, "static_text", sensitivity);
+      expect(firstUtterance(flow).blocksInterruptions).toBe(false);
+      expect(verifyDisclosureGate(flow, DISCLOSURE)).toBe(false);
+    }
   });
 
   it("FAILS the gate when the disclosure line is entirely absent (the case it exists to catch)", () => {

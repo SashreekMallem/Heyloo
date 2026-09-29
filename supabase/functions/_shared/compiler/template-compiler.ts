@@ -213,6 +213,39 @@ export function buildOpeningLine(
 }
 
 /**
+ * DISCLOSE-1 review (docs/BUILD_NOTES.md): the one exception to "do not
+ * repeat the opening line". A retell-llm `begin_message` cannot be made
+ * uninterruptible on its own (Retell's only switch is the agent-wide
+ * `interruption_sensitivity`), so a caller who talks over the opening can cut
+ * it off before "this call may be recorded" — and without this clause the
+ * model was told never to say it again. The conversation-flow opening node
+ * blocks interruptions outright (`OPENING_INTERRUPTION_SENSITIVITY`), so
+ * there this clause never has anything to recover.
+ */
+const OPENING_CUT_OFF_RECOVERY =
+  "The one exception: if the caller spoke over that line and it was cut off before the AI and " +
+  "call-recording notice was finished, begin your reply with one short sentence saying you are " +
+  "an AI assistant and that this call may be recorded, then answer them.";
+
+/**
+ * DISCLOSE-1 review (docs/BUILD_NOTES.md): the conversation-flow opening
+ * node's node-level `interruption_sensitivity` override. RETELL-VERIFIED
+ * (docs.retellai.com/accounts/privacy-disable "Announce a recording
+ * disclaimer", 2026-09-29): for a conversation-flow agent Retell's own
+ * guidance is a static-text start node with "Block Interruptions" enabled
+ * "so the user can't cut it off"; the API form of that switch is the node's
+ * `interruption_sensitivity` ("Override the agent-level speech settings for
+ * this node only — interruption sensitivity (0–1)", docs.retellai.com/build/
+ * conversation-flow/conversation-node; retell-sdk `ConversationNode.
+ * interruption_sensitivity`, agent-level doc: "When this is set to 0, agent
+ * would never be interrupted"). Without it a caller who starts talking after
+ * "Thanks for calling ..." cut the line off before the recording clause,
+ * which is at its END — the exact clause VERIFY-DEPLOY heard go missing.
+ * Scoped to this one node: every other node keeps the agent's normal barge-in.
+ */
+const OPENING_INTERRUPTION_SENSITIVITY = 0;
+
+/**
  * DISCLOSE-1: prepended to the START state/node's own instruction on every
  * compile target. The start state is no longer what speaks first (the
  * static opening line is), so without this the start state's own authored
@@ -223,9 +256,10 @@ function openingAlreadySpokenInstruction(opening: OpeningLine): string {
     `Your first turn in this call has ALREADY been spoken, word for word: "${opening.text}" — ` +
     "it greeted the caller (welcoming a recognized returning caller back by name) and gave the " +
     "AI and call-recording disclosure. Do not greet the caller again, re-introduce yourself, or " +
-    "repeat that line; respond directly to what the caller just said. If they ask whether they " +
-    "are talking to a real person, say plainly that you are an AI assistant and that the call " +
-    "may be recorded."
+    "repeat that line; respond directly to what the caller just said. " +
+    OPENING_CUT_OFF_RECOVERY +
+    " If they ask whether they are talking to a real person, say plainly that you are an AI " +
+    "assistant and that the call may be recorded."
   );
 }
 
@@ -466,6 +500,8 @@ interface OpeningNode {
   type: "conversation";
   name: string;
   instruction: { type: "static_text"; text: string };
+  /** DISCLOSE-1 review: always `0` — Retell's "Block Interruptions" for this node only (see `OPENING_INTERRUPTION_SENSITIVITY`). */
+  interruption_sensitivity: number;
   edges: PromptEdge[];
   else_edge: PromptEdge;
 }
@@ -668,6 +704,20 @@ const NEVER_CLAIM_A_TRANSFER_RULE =
   "happening, and saying it could leave a caller waiting for help that is not coming.";
 
 /**
+ * DISCLOSE-1 review (docs/BUILD_NOTES.md): DISCLOSE-1 made more states take
+ * a message before a transfer is ever attempted (vet `emergency_referral`
+ * now calls take_message itself when no live line exists; legal's
+ * `transfer_to_human` always records the intake before
+ * `transfer_to_human_connect`). A caller who then still asks to be put
+ * through lands on the no-transfer fallback, which offered to take a message
+ * again — a second `messages` row and a second owner alert for one call.
+ */
+const NO_DUPLICATE_MESSAGE_RULE =
+  "If take_message was already called earlier in this call, do not offer or take another " +
+  "message — tell them their message is already with the team and someone will call back, then " +
+  "the call is done.";
+
+/**
  * DISCLOSE-1: emergency-aware core of every no-live-transfer branch —
  * restating the emergency referral comes BEFORE the message offer, so a
  * callback is never presented as a substitute for emergency care (QA-HOT's
@@ -681,10 +731,11 @@ const NO_TRANSFER_FALLBACK_INSTRUCTION =
   "right now and offer to take down their name, phone number, and a short message so the team " +
   "can call them back — never repeat that same apology/offer a third time. If they give a " +
   "callback number, call take_message with it (fold in whatever they've already told you) and " +
-  "let them know someone will call back as soon as possible, then the call is done. If they keep " +
-  "insisting on a transfer or won't give a number after you've offered twice, don't keep " +
-  "repeating yourself: calmly acknowledge you can't do more right now and that's the end of " +
-  "what you can help with today — the call is done either way.";
+  "let them know someone will call back as soon as possible, then the call is done. " +
+  NO_DUPLICATE_MESSAGE_RULE +
+  " If they keep insisting on a transfer or won't give a number after you've offered twice, " +
+  "don't keep repeating yourself: calmly acknowledge you can't do more right now and that's the " +
+  "end of what you can help with today — the call is done either way.";
 
 /**
  * DISCLOSE-1: what the ONE node/tool that actually transfers says while it
@@ -870,7 +921,8 @@ function compileConversationFlow(
                   prompt:
                     "you have already clearly told the caller you can't connect them to anyone " +
                     "right now (restating any emergency referral) and offered to take a message " +
-                    "at least once — end here even if the caller keeps repeating the same request",
+                    "at least once, or told them their message is already with the team — end " +
+                    "here even if the caller keeps repeating the same request",
                 },
               },
             ]
@@ -999,6 +1051,9 @@ function compileConversationFlow(
     type: "conversation",
     name: "Opening — AI and recording disclosure",
     instruction: { type: "static_text", text: opening.text },
+    // DISCLOSE-1 review: the caller cannot cut the disclosure off (Retell's
+    // documented recording-disclaimer setup; see the constant's doc comment).
+    interruption_sensitivity: OPENING_INTERRUPTION_SENSITIVITY,
     edges:
       startNode && startNode.type !== "branch"
         ? startNode.edges.map((edge) => ({ ...edge, id: `opening_${edge.id}` }))
@@ -1506,6 +1561,14 @@ export interface FirstUtterance {
   /** True only when Retell speaks `text` verbatim (a conversation-flow `static_text` start node, or a retell-llm `begin_message`) — never model-generated. */
   isStatic: boolean;
   text: string;
+  /**
+   * DISCLOSE-1 review: true when the caller cannot cut the line off — a
+   * conversation-flow start node with `interruption_sensitivity: 0`
+   * (Retell's documented recording-disclaimer setup). Always false for a
+   * retell-llm `begin_message`, which has no per-message switch (its
+   * cut-off case is covered in the prompt, `OPENING_CUT_OFF_RECOVERY`).
+   */
+  blocksInterruptions: boolean;
 }
 
 /**
@@ -1520,11 +1583,13 @@ export function firstUtterance(flow: CompiledFlowRequest): FirstUtterance {
     case "conversation_flow": {
       const startNode = flow.body.nodes.find((n) => n.id === flow.body.start_node_id);
       if (!startNode || !("instruction" in startNode) || !startNode.instruction) {
-        return { isStatic: false, text: "" };
+        return { isStatic: false, text: "", blocksInterruptions: false };
       }
       return {
         isStatic: startNode.type === "conversation" && startNode.instruction.type === "static_text",
         text: startNode.instruction.text,
+        blocksInterruptions:
+          "interruption_sensitivity" in startNode && startNode.interruption_sensitivity === 0,
       };
     }
     case "multi_prompt":
@@ -1534,8 +1599,8 @@ export function firstUtterance(flow: CompiledFlowRequest): FirstUtterance {
       // user — neither speaks a disclosure verbatim.
       const beginMessage = flow.body.begin_message;
       return beginMessage && flow.body.start_speaker === "agent"
-        ? { isStatic: true, text: beginMessage }
-        : { isStatic: false, text: "" };
+        ? { isStatic: true, text: beginMessage, blocksInterruptions: false }
+        : { isStatic: false, text: "", blocksInterruptions: false };
     }
   }
 }
@@ -1543,13 +1608,16 @@ export function firstUtterance(flow: CompiledFlowRequest): FirstUtterance {
 /** The G1/G2 disclosure publish gate: refuses to consider a compile
  * "verified" unless the agent's first utterance is STATIC (spoken verbatim,
  * never model-generated — DISCLOSE-1) and contains `disclosureLine`
- * verbatim. Pure and non-throwing (matches T2's `verifyDisclosureGate`) —
+ * verbatim — and, for a conversation flow, cannot be cut off by the caller
+ * (DISCLOSE-1 review: the recording clause sits at the END of the line).
+ * Pure and non-throwing (matches T2's `verifyDisclosureGate`) —
  * the HARD refusal to call Retell lives at the caller (admin/handler.ts,
  * `_shared/provisioning/compile-and-publish.ts`), which must check
  * `disclosureVerified` before ever invoking a provider. */
 export function verifyDisclosureGate(flow: CompiledFlowRequest, disclosureLine: string): boolean {
   if (disclosureLine.length === 0) return false;
   const first = firstUtterance(flow);
+  if (flow.kind === "conversation_flow" && !first.blocksInterruptions) return false;
   return first.isStatic && first.text.includes(disclosureLine);
 }
 

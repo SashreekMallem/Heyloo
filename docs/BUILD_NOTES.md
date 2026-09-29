@@ -8106,3 +8106,141 @@ and a `Deno` shim (no Deno binary here).
 Same list as RETELLCFG (behavior change: `api-admin-attach-retell-number`
 only; `_shared/providers/retell.ts` is untouched by this review). No
 migration, no new required secret (`DEMO_AGENT_ID` is read if present).
+
+## DISCLOSE-1-REVIEW (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — hostile review of DISCLOSE-1 (5638d5b): one major found and fixed (the recording notice could still be cut off), one minor fixed (a second message on one call); safe to deploy with the canary order below
+
+**Scope:** the "compiler" package only (`_shared/compiler/**`, the Node
+mirror in `packages/adapters/retell/src/compiler/**`, plus their tests and
+`compile-and-publish.test.ts`). Code + tests + docs; no deploy, no DDL, no
+Retell calls. Citations: `docs/VERIFY.md` DISCLOSE-1-REVIEW.
+
+### What was checked and holds
+
+- Every vertical x all three compile targets x en/es still opens with a
+  static line that starts with the disclosure literal and carries
+  `{{caller_greeting}}` (48 registry cases, now also asserting the new
+  interruption rule below).
+- Retell payloads against the current docs and `retell-sdk` 5.64.0 and
+  6.0.1: `static_text` conversation node with `else_edge` ("Else"), `branch`
+  node (`else_edge` required, `global_node_setting` allowed), equation edge
+  `{{transfer_number}} contains "+"` (`contains` is a case-insensitive
+  substring test; empty left side is false), `TransferCallNode`
+  `speak_during_execution`/`instruction`, `begin_message` + `start_speaker`
+  + `default_dynamic_variables` on `create-retell-llm` (`start_speaker` is on
+  `LlmCreateParams`), transfer tool `execution_message_type`.
+- A caller whose first words are an emergency or "get me a human" still
+  reaches that global node from `__opening`: Retell evaluates global-node
+  conditions together with prompt edges, before the else edge (live docs).
+- No false transfer claim on any path with `transfer_number` blank: the
+  router is silent, the only announcing node/tool is reached only with a real
+  number, every transfer-only state's fallback carries the never-claim rule,
+  vet `emergency_referral` offers a connection only for a real number.
+- `voice-inbound`'s builder still runs exactly one `customers` query (no new
+  round trip on call setup), never throws on odd names, and is scoped to the
+  caller's own number. `compile-and-publish.ts`' new read is tenant-scoped,
+  text columns only (`agent_configs.tenant_id` is unique, `tenants.name` is
+  never null live).
+- Deploying the functions before republishing is backward compatible: old
+  agents ignore the three new dynamic variables.
+
+### Major — fixed: the caller could still cut the recording notice off
+
+**Defect:** the opening is one static sentence with the recording clause at
+its END ("... their AI assistant — this call may be recorded."). The
+`__opening` node kept the agent's default barge-in (interruption sensitivity
+1), so a caller who starts talking after "Thanks for calling Riverside Auto
+Repair" stops the line before the clause — exactly the clause VERIFY-DEPLOY
+heard go missing. Worse, DISCLOSE-1 told every start state "Do not ...
+repeat that line", so the model would never give the notice afterwards
+either. Retell's own recipe for a recording disclaimer on a conversation
+flow is a static-text start node with **Block Interruptions** on "so the
+user can't cut it off" (docs.retellai.com/accounts/privacy-disable); the
+gate reported "verified" without it.
+
+**Fix (both compilers, parity kept):**
+- The `__opening` node now sends `interruption_sensitivity: 0` (the API form
+  of Block Interruptions, node-level only; no other node gets the field).
+- `verifyDisclosureGate`/`firstUtterance` gained `blocksInterruptions`; a
+  conversation flow whose static opening can be interrupted now FAILS the
+  gate (compile-and-publish then refuses to call Retell).
+- A retell-llm `begin_message` has no per-message switch (only the
+  agent-wide setting), so the start-state instruction on every target now
+  carries one exception: if the caller cut the opening off before the
+  AI/recording notice finished, say it in one short sentence first.
+
+**Tests:** `template-compiler.test.ts` (+2: opening blocks interruptions,
+no other node carries the field, the same opening without it fails the gate;
+cut-off recovery rule on all three targets), `vertical-seeds.test.ts` (every
+vertical/target/language: conversation flows block interruptions, LLM
+targets carry the recovery rule), `compile-and-publish.test.ts` (the real
+`create-conversation-flow` body has `interruption_sensitivity: 0` on the
+start node and nowhere else), Node `disclosure-gate.test.ts` (+1:
+interruptible static opening fails for `null`/1/0.5), `parity.test.ts` (the
+typed `ConversationFlowCreateParams.ConversationNode` literal now includes
+the field; both compilers emit 0), three Node snapshots updated (the only
+diffs are the new field and the new sentence).
+
+**Trade-off for the owner:** callers cannot talk over the opening line (several seconds)
+any more (Retell's documented setup for a disclaimer). A shorter
+`disclosure_line` shortens that window.
+
+### Minor — fixed: a second message and owner alert on one call
+
+DISCLOSE-1 made more states record a message before a transfer is ever
+tried (vet `emergency_referral` now calls take_message itself when no line
+exists; legal's `transfer_to_human` always records intake first). A caller
+who still asks to be put through then lands on the no-transfer fallback,
+which offered to take a message again: a second `messages` row and a second
+owner alert. `NO_TRANSFER_FALLBACK_INSTRUCTION` (both compilers; it is also
+inside the retell-llm transfer instruction) now says: if take_message was
+already called this call, don't take another, tell them it is with the team,
+and the call is done; the fallback's end edge accepts that as done too.
+Test: `template-compiler.test.ts` fallback case asserts the rule.
+
+### Not fixed (reported, owner or live check)
+
+- **Docs conflict on transfer speech** (VERIFY.md DISCLOSE-1-REVIEW item 4):
+  the API reference and SDK 6.0.1 document `TransferCallNode.
+  speak_during_execution`, but Retell's call-transfer-node guide says the
+  agent does not speak in that node. Worst case a real transfer is silent
+  before hold music (never a false claim). Check with one `transfer_request`
+  on a tenant WITH a number; if silent, put a skip-response announce node in
+  front of `${id}__transfer`.
+- **Wording (owner, SYSTEM_DESIGN §4.5):** with `assistant_name` unset every
+  call now hears "This is the AI assistant, their AI assistant — this call
+  may be recorded." verbatim; every test tenant live has `assistant_name`
+  null. Setting a name or changing `disclosure_line` fixes it. Spanish
+  wording still needs sign-off.
+- An `es` tenant whose template `disclosure_line` has no vetted translation
+  gets an English opening followed by a Spanish `caller_greeting` (only with
+  a non-shipped line; every shipped template has the translation).
+- Items DISCLOSE-1 already listed stay open: the Node router is a
+  `conversation` node (needs the one-line `sdk-contract.test.ts` change),
+  `packages/templates/src/shared/utility-states.ts` wording, web-call paths
+  send only `disclosure_line`, `_shared/schemas/voice-inbound.ts` does not
+  list the three new variables.
+
+### Deploy verdict
+
+**Safe to deploy** the six functions DISCLOSE-1 listed (`admin`,
+`api-admin-provision-test-tenant`, `api-admin-run-agent-tests`,
+`api-provision`, `api-tenant-agent-publish`, `voice-inbound`) with this
+commit, in this order: deploy, then immediately republish ONE
+conversation-flow test tenant (`test-vet-lakeside`, `force_recompile` +
+`cleanup_superseded_agent`) and require HTTP 200 before anything else. That
+single call is the live proof that Retell accepts the `branch` global router
+and the node-level `interruption_sensitivity: 0`; if it returns
+`retell_flow_create_failed`, read Retell's error body from
+`compile_and_publish_flow_create_failed` and roll the functions back (until
+then `api-provision` would fail new conversation-flow signups the same way;
+existing agents are untouched because publish creates a new agent and only
+cleans up the old one after success). Then continue with DISCLOSE-1's owner
+actions unchanged.
+
+### Gates
+
+Isolated worktree of `origin/claude/voice-ai-agent-architecture-dcw0n8`
+(rebased onto 4da0aa1) plus only this package's files: `pnpm lint` exit 0 (46 warnings,
+baseline), `pnpm typecheck` 21/21, `supabase/functions` `pnpm run
+test` 137 files / 1544 tests, `@heyloo/adapter-retell` 20 files / 229
+tests, `@heyloo/templates` 8 files / 373 tests.

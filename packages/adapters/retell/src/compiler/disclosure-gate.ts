@@ -30,24 +30,29 @@ import type { RetellFlowRequest } from "./types.js";
 export interface FirstUtterance {
   isStatic: boolean;
   text: string;
+  /** DISCLOSE-1 review: the caller cannot cut it off — a conversation-flow start node with `interruption_sensitivity: 0`. Always false for a retell-llm `begin_message` (no per-message switch exists). */
+  blocksInterruptions: boolean;
 }
 
 export function firstUtterance(flowRequest: RetellFlowRequest): FirstUtterance {
   switch (flowRequest.kind) {
     case "conversation_flow": {
       const startNode = flowRequest.body.nodes.find((n) => n.id === flowRequest.body.start_node_id);
-      if (startNode?.type !== "conversation") return { isStatic: false, text: "" };
+      if (startNode?.type !== "conversation") {
+        return { isStatic: false, text: "", blocksInterruptions: false };
+      }
       return {
         isStatic: startNode.instruction.type === "static_text",
         text: startNode.instruction.text,
+        blocksInterruptions: startNode.interruption_sensitivity === 0,
       };
     }
     case "multi_prompt":
     case "single_prompt": {
       const { begin_message: beginMessage, start_speaker: startSpeaker } = flowRequest.body;
       return beginMessage && startSpeaker === "agent"
-        ? { isStatic: true, text: beginMessage }
-        : { isStatic: false, text: "" };
+        ? { isStatic: true, text: beginMessage, blocksInterruptions: false }
+        : { isStatic: false, text: "", blocksInterruptions: false };
     }
   }
 }
@@ -57,12 +62,13 @@ export function firstTurnText(flowRequest: RetellFlowRequest): string {
   return firstUtterance(flowRequest).text;
 }
 
-/** The G1/G2 gate: passes only when the first utterance is STATIC and carries `disclosureLine` verbatim. */
+/** The G1/G2 gate: passes only when the first utterance is STATIC and carries `disclosureLine` verbatim — and, for a conversation flow, cannot be cut off by the caller (DISCLOSE-1 review, mirrors template-compiler.ts). */
 export function verifyDisclosureGate(
   flowRequest: RetellFlowRequest,
   disclosureLine: string,
 ): boolean {
   if (disclosureLine.length === 0) return false;
   const first = firstUtterance(flowRequest);
+  if (flowRequest.kind === "conversation_flow" && !first.blocksInterruptions) return false;
   return first.isStatic && first.text.includes(disclosureLine);
 }
