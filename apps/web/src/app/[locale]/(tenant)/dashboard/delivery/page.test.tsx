@@ -14,6 +14,14 @@ function chain(result: unknown) {
   return obj;
 }
 
+// jsdom has no ResizeObserver; Radix's Switch (in the owner-alerts card) needs one
+// once the page has fully rendered.
+globalThis.ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};
+
 let a2pStatus = "verified";
 
 vi.mock("@/i18n/navigation", () => ({
@@ -127,5 +135,28 @@ describe("DeliveryPage", () => {
     );
     renderPage();
     expect(await screen.findByText(/show sync log \(1\)/i)).toBeInTheDocument();
+  });
+
+  it("reserves the Airtable card's height with a skeleton until the status loads, then swaps in the real card (QA-1 MAP-07)", async () => {
+    let resolveStatus: (r: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) =>
+        String(input).includes("/delivery/airtable/status")
+          ? new Promise<Response>((resolve) => {
+              resolveStatus = resolve;
+            })
+          : Promise.resolve(Response.json({ status: "disconnected" })),
+      ),
+    );
+    renderPage();
+    const skeleton = await screen.findByTestId("airtable-card-skeleton");
+    expect(skeleton.className).toContain("h-36");
+    // no "Not connected" flash before the real status is known
+    expect(screen.queryByText("Not connected")).not.toBeInTheDocument();
+
+    resolveStatus(Response.json({ status: "disconnected" }));
+    expect(await screen.findByText("Not connected")).toBeInTheDocument();
+    expect(screen.queryByTestId("airtable-card-skeleton")).not.toBeInTheDocument();
   });
 });
