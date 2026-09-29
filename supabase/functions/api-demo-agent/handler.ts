@@ -137,8 +137,10 @@ export type ConfirmDemoResult =
       body: {
         demo_session_id: string;
         retell_call_token: string;
+        retell_web_call?: RetellWebCallInfo;
         demo_phone_e164: string;
         agent_summary: AgentSummary;
+        max_call_ms: number;
       };
     }
   | { status: 404; body: { error: string } }
@@ -174,26 +176,13 @@ export async function handleConfirmDemo(
     services_detected: req.edits?.services_detected ?? stored.services_detected ?? [],
   };
 
-  const callResult = await createWebCall(deps.retellFetch, deps.retellApiKey, {
-    agent_id: deps.demoAgentId,
-    retell_llm_dynamic_variables: {
-      business_name: summary.business_name,
-      greeting_hours_context: summary.hours_detected,
-      services_detected: summary.services_detected.join(", "),
-    },
-  });
-  const callBody = callResult.body as { access_token?: string };
-  if (!callResult.ok || !callBody.access_token) {
-    deps.logger.error("demo_agent_web_call_failed", {
-      status: callResult.status,
-      demo_session_id: session.id,
-    });
-    return { status: 502, body: { error: "call_token_unavailable" } };
-  }
+  const minted = await mintDemoCallToken(summary, deps, session.id);
+  if (!minted) return { status: 502, body: { error: "call_token_unavailable" } };
+  const { token, webCall } = minted;
 
   await sql`
     update public.demo_sessions
-    set retell_call_token = ${callBody.access_token}, demo_phone_e164 = ${deps.demoPhoneE164},
+    set retell_call_token = ${token}, demo_phone_e164 = ${deps.demoPhoneE164},
         agent_config_snapshot = ${summary}::jsonb
     where id = ${session.id}
   `;
@@ -202,9 +191,165 @@ export async function handleConfirmDemo(
     status: 200,
     body: {
       demo_session_id: session.id,
-      retell_call_token: callBody.access_token,
+      retell_call_token: token,
+      ...(webCall ? { retell_web_call: webCall } : {}),
       demo_phone_e164: deps.demoPhoneE164,
       agent_summary: summary,
+      max_call_ms: DEMO_MAX_CALL_MS,
+    },
+  };
+}
+
+/**
+ * The hard ceiling on any public demo call, enforced by Retell itself through
+ * `agent_override.agent.max_call_duration_ms` (see `_shared/providers/retell.ts`).
+ * The marketing site mirrors it as `DEMO_CALL_MAX_MS` in
+ * `apps/web/src/components/demo/demo-call-limits.ts` and ends the call
+ * client-side a little sooner, so a visitor sees a countdown, not a cut-off.
+ */
+export const DEMO_MAX_CALL_MS = 120_000;
+
+/**
+ * What the browser SDK needs besides the token. docs.retellai.com/api-references/create-web-call
+ * (fetched 2026-09-29) returns `transport` ("gateway"), `call_id` and
+ * `ice_servers` next to `access_token`; the SDK's gateway transport requires
+ * the call id. Picked field by field, so nothing else from Retell's answer is
+ * ever forwarded to a public page.
+ */
+export interface RetellWebCallInfo {
+  call_id?: string;
+  transport?: "gateway" | "livekit";
+  ice_servers?: { urls: string | string[]; username?: string; credential?: string }[];
+}
+
+function pickWebCallInfo(body: {
+  call_id?: unknown;
+  transport?: unknown;
+  ice_servers?: unknown;
+}): RetellWebCallInfo | undefined {
+  const info: RetellWebCallInfo = {};
+  if (typeof body.call_id === "string" && body.call_id !== "") info.call_id = body.call_id;
+  if (body.transport === "gateway" || body.transport === "livekit") info.transport = body.transport;
+  if (Array.isArray(body.ice_servers)) {
+    const servers: NonNullable<RetellWebCallInfo["ice_servers"]> = [];
+    for (const raw of body.ice_servers as unknown[]) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const entry = raw as Record<string, unknown>;
+      const urls = entry["urls"];
+      const ok =
+        typeof urls === "string" ||
+        (Array.isArray(urls) && urls.every((u) => typeof u === "string"));
+      if (!ok) continue;
+      const server: NonNullable<RetellWebCallInfo["ice_servers"]>[number] = {
+        urls: urls as string | string[],
+      };
+      if (typeof entry["username"] === "string") server.username = entry["username"];
+      if (typeof entry["credential"] === "string") server.credential = entry["credential"];
+      servers.push(server);
+    }
+    if (servers.length > 0) info.ice_servers = servers;
+  }
+  return Object.keys(info).length > 0 ? info : undefined;
+}
+
+/** Mints the Retell web-call token for the demo agent, or `null` (and logs) when Retell refuses. */
+async function mintDemoCallToken(
+  summary: AgentSummary,
+  deps: DemoAgentDeps,
+  demoSessionId: string | null,
+): Promise<{ token: string; webCall: RetellWebCallInfo | undefined } | null> {
+  const callResult = await createWebCall(deps.retellFetch, deps.retellApiKey, {
+    agent_id: deps.demoAgentId,
+    retell_llm_dynamic_variables: {
+      business_name: summary.business_name,
+      greeting_hours_context: summary.hours_detected,
+      services_detected: summary.services_detected.join(", "),
+    },
+    agent_override: { agent: { max_call_duration_ms: DEMO_MAX_CALL_MS } },
+  });
+  const callBody = callResult.body as {
+    access_token?: string;
+    call_id?: unknown;
+    transport?: unknown;
+    ice_servers?: unknown;
+  };
+  if (!callResult.ok || !callBody.access_token) {
+    deps.logger.error("demo_agent_web_call_failed", {
+      status: callResult.status,
+      demo_session_id: demoSessionId,
+    });
+    return null;
+  }
+  return { token: callBody.access_token, webCall: pickWebCallInfo(callBody) };
+}
+
+/**
+ * The sample business the home page's one-click demo answers for. It is the
+ * same fictional shop the page's example call uses, so what a visitor hears
+ * matches what they just read.
+ */
+export const INSTANT_DEMO_SUMMARY: AgentSummary = {
+  business_name: "Riverside Auto Repair",
+  hours_detected: "Monday to Friday, 8 a.m. to 6 p.m.",
+  services_detected: ["Check engine diagnostics", "Brakes", "Tires", "Oil changes"],
+};
+
+export type InstantDemoResult =
+  | {
+      status: 200;
+      body: {
+        demo_session_id: string | null;
+        retell_call_token: string;
+        retell_web_call?: RetellWebCallInfo;
+        demo_phone_e164: string;
+        agent_summary: AgentSummary;
+        max_call_ms: number;
+      };
+    }
+  | { status: 502; body: { error: string } };
+
+/**
+ * One-click demo (SITE-3): no scrape, no confirmation card. Mints a token for
+ * the demo agent with the sample business and records a `demo_sessions` row
+ * (24 h expiry, swept nightly) so demo traffic stays countable. The public web
+ * layer owns rate limiting (see the header of `index.ts`).
+ */
+export async function handleInstantDemo(
+  sql: SqlClient,
+  deps: DemoAgentDeps,
+): Promise<InstantDemoResult> {
+  const minted = await mintDemoCallToken(INSTANT_DEMO_SUMMARY, deps, null);
+  if (!minted) return { status: 502, body: { error: "call_token_unavailable" } };
+  const { token, webCall } = minted;
+
+  const now = deps.now ?? new Date();
+  const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+  let demoSessionId: string | null = null;
+  try {
+    const rows = await sql<{ id: string }>`
+      insert into public.demo_sessions
+        (business_name, vertical, scraped_summary, sanitized, agent_config_snapshot,
+         retell_call_token, demo_phone_e164, expires_at)
+      values (${INSTANT_DEMO_SUMMARY.business_name}, 'auto', ${INSTANT_DEMO_SUMMARY}::jsonb, true,
+              ${INSTANT_DEMO_SUMMARY}::jsonb, ${token}, ${deps.demoPhoneE164}, ${expiresAt})
+      returning id
+    `;
+    demoSessionId = rows[0]?.id ?? null;
+  } catch (error) {
+    // The token is already minted and the caller is waiting: a bookkeeping
+    // row must never cost them the demo.
+    deps.logger.error("demo_agent_instant_session_insert_failed", { error: String(error) });
+  }
+
+  return {
+    status: 200,
+    body: {
+      demo_session_id: demoSessionId,
+      retell_call_token: token,
+      ...(webCall ? { retell_web_call: webCall } : {}),
+      demo_phone_e164: deps.demoPhoneE164,
+      agent_summary: INSTANT_DEMO_SUMMARY,
+      max_call_ms: DEMO_MAX_CALL_MS,
     },
   };
 }

@@ -1,6 +1,8 @@
 // Deno entrypoint (excluded from ../tsconfig.json). verify_jwt false —
 // public marketing-site flow (BACKEND_SPEC §7.8); rate-limiting/CAPTCHA is
-// the marketing-site layer's job per spec, not this function's.
+// the marketing-site layer's job per spec, not this function's (apps/web's
+// `/api/demo/*` routes call it with per-IP limits). Three request shapes:
+// create (scrape), confirm (mint a token), instant (home page, sample shop).
 import { getSql } from "../_shared/deno/db.ts";
 import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
@@ -8,8 +10,9 @@ import { jsonResponse } from "../_shared/responses.ts";
 import {
   ConfirmDemoRequestSchema,
   CreateDemoRequestSchema,
+  InstantDemoRequestSchema,
 } from "../_shared/schemas/demo-agent.ts";
-import { handleConfirmDemo, handleCreateDemo } from "./handler.ts";
+import { handleConfirmDemo, handleCreateDemo, handleInstantDemo } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-demo-agent" });
 const ANTHROPIC_API_KEY = requireEnv("ANTHROPIC_API_KEY");
@@ -61,6 +64,11 @@ Deno.serve(async (req: Request) => {
   const confirmParsed = ConfirmDemoRequestSchema.safeParse(body);
   if (confirmParsed.success) {
     const result = await handleConfirmDemo(sql, confirmParsed.data, deps);
+    return jsonResponse(result.body, { status: result.status });
+  }
+
+  if (InstantDemoRequestSchema.safeParse(body).success) {
+    const result = await handleInstantDemo(sql, deps);
     return jsonResponse(result.body, { status: result.status });
   }
 

@@ -337,7 +337,17 @@ export async function createPhoneCall(
 export async function createWebCall(
   fetchImpl: RetellFetch,
   apiKey: string,
-  payload: { agent_id: string; retell_llm_dynamic_variables?: Record<string, unknown> },
+  payload: {
+    agent_id: string;
+    retell_llm_dynamic_variables?: Record<string, unknown>;
+    /**
+     * SITE-3: docs.retellai.com/api-references/create-web-call (fetched
+     * 2026-09-29) puts `max_call_duration_ms` inside `agent_override.agent`
+     * ("will force end the call if reached", 60_000 to 7_200_000). The public
+     * demo sets it so a stuck browser tab can't hold a call open.
+     */
+    agent_override?: { agent?: { max_call_duration_ms?: number } };
+  },
 ) {
   return retellRequest(fetchImpl, apiKey, "/v2/create-web-call", {
     method: "POST",

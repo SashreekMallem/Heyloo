@@ -21,6 +21,15 @@ export const env = {
   get appBaseUrl(): string {
     return process.env.APP_BASE_URL ?? "http://localhost:3000";
   },
+  /**
+   * Server-only, optional. The shared demo phone number, the same secret name
+   * the `api-demo-agent` edge function reads. When set, the home page's live
+   * demo shows it as the phone fallback. Home is statically rendered, so the
+   * value is read at build time.
+   */
+  get demoPhoneE164(): string | undefined {
+    return process.env.DEMO_PHONE_E164 || undefined;
+  },
   get supabaseFunctionsUrl(): string {
     // Supabase Edge Functions live at `${SUPABASE_URL}/functions/v1/...`.
     return `${process.env.SUPABASE_URL}/functions/v1`;

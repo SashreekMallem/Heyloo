@@ -2,7 +2,6 @@ import { VerticalIcon } from "@heyloo/ui/icons";
 import { Container } from "@heyloo/ui/layout/container";
 import { Section } from "@heyloo/ui/layout/section";
 import { ENTRANCE_STAGGER_MS, MOTION_DURATIONS_MS } from "@heyloo/ui/motion-tokens";
-import { Button } from "@heyloo/ui/primitives/button";
 import { Check } from "lucide-react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
@@ -47,19 +46,15 @@ export default async function VerticalPage({
           <span className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-secondary">
             <VerticalIcon vertical={content.vertical} className="size-7 text-foreground" />
           </span>
-          <h1 className="mt-5 font-display text-display font-semibold text-balance">
-            Heyloo for {content.displayName}
-          </h1>
-          <p className="mx-auto mt-4 max-w-xl text-body text-pretty text-muted-foreground">
-            {content.heroStat}
-          </p>
-          <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <Button size="lg" asChild className="w-full sm:w-auto">
-              <Link href={`/demo?vertical=${content.slug}`}>Try a live demo</Link>
-            </Button>
-            <Button size="lg" variant="outline" asChild className="w-full sm:w-auto">
-              <Link href={`/signup?vertical=${content.slug}`}>Get started</Link>
-            </Button>
+          <h1 className="d2s kx mt-5">Heyloo for {content.displayName}</h1>
+          <p className="lede mx-auto mt-5">{content.heroStat}</p>
+          <div className="ctas mt-8 justify-center">
+            <Link className="btn btn-p" href={`/demo?vertical=${content.slug}`} prefetch={false}>
+              Try a live demo
+            </Link>
+            <Link className="btn btn-s" href={`/signup?vertical=${content.slug}`} prefetch={false}>
+              Get started
+            </Link>
           </div>
         </Container>
       </Section>
@@ -90,9 +85,7 @@ export default async function VerticalPage({
         <Container size="content">
           <div className="grid gap-10 sm:grid-cols-2">
             <div>
-              <h2 className="text-h2 font-display font-semibold">
-                What your AI receptionist handles
-              </h2>
+              <h2 className="d2s kx">What your AI receptionist handles</h2>
               <ul className="mt-5 space-y-3">
                 {content.intakeSummary.map((item, index) => (
                   <Reveal
@@ -148,13 +141,13 @@ export default async function VerticalPage({
           <p className="mt-1 text-body font-medium">
             Plans start at $299/mo — see your real price at signup.
           </p>
-          <div className="mt-8 flex flex-wrap justify-center gap-3">
-            <Button size="lg" asChild>
-              <Link href={`/demo?vertical=${content.slug}`}>Try a live demo</Link>
-            </Button>
-            <Button size="lg" variant="outline" asChild>
-              <Link href={`/signup?vertical=${content.slug}`}>Get started</Link>
-            </Button>
+          <div className="ctas mt-8 justify-center">
+            <Link className="btn btn-p" href={`/demo?vertical=${content.slug}`} prefetch={false}>
+              Try a live demo
+            </Link>
+            <Link className="btn btn-s" href={`/signup?vertical=${content.slug}`} prefetch={false}>
+              Get started
+            </Link>
           </div>
         </Container>
       </Section>

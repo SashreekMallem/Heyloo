@@ -30,10 +30,8 @@ export default async function DemoPage({
     <Section spacing="spacious" className="pt-12 pb-24 md:pt-16">
       <Container size="wide">
         <div className="mx-auto max-w-2xl text-center">
-          <h1 className="font-display text-display font-semibold text-balance">
-            Hear your AI receptionist in under a minute
-          </h1>
-          <p className="mt-3 text-body text-pretty text-muted-foreground">
+          <h1 className="d2s kx">Hear your AI receptionist in under a minute</h1>
+          <p className="lede mx-auto mt-4">
             No signup, no call script — just your business, answered the way it actually should be.
           </p>
         </div>

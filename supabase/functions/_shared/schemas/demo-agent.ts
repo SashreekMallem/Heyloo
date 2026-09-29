@@ -22,6 +22,14 @@ export const ConfirmDemoRequestSchema = z.object({
     .optional(),
 });
 
-export const DemoAgentRequestSchema = z.union([ConfirmDemoRequestSchema, CreateDemoRequestSchema]);
+/** SITE-3: the marketing home page's one-click "Talk to Heyloo" demo. No scrape and no confirmation card: the sample business in `handler.ts` is used as is. */
+export const InstantDemoRequestSchema = z.object({ instant: z.literal(true) });
+
+export const DemoAgentRequestSchema = z.union([
+  ConfirmDemoRequestSchema,
+  InstantDemoRequestSchema,
+  CreateDemoRequestSchema,
+]);
+export type InstantDemoRequest = z.infer<typeof InstantDemoRequestSchema>;
 export type CreateDemoRequest = z.infer<typeof CreateDemoRequestSchema>;
 export type ConfirmDemoRequest = z.infer<typeof ConfirmDemoRequestSchema>;

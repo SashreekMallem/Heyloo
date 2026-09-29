@@ -26,6 +26,8 @@ import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { Link } from "@/i18n/navigation";
+import { useDemoCall } from "./use-demo-call";
+import { type DemoWebCall, parseWebCall } from "./web-call";
 
 type AgentSummary = { business_name: string; hours_detected: string; services_detected: string[] };
 
@@ -38,11 +40,10 @@ type Step =
       name: "active";
       demoSessionId: string;
       callToken: string;
+      webCall: DemoWebCall | undefined;
       demoPhone: string;
       summary: AgentSummary;
     };
-
-type CallState = "idle" | "requesting-mic" | "connecting" | "active" | "ended" | "error";
 
 /** Multi-step client state machine hosting the whole `/demo` flow inside one route (FRONTEND_SPEC.md §3.4). */
 export function DemoFlow({ initialVertical }: { initialVertical?: string | undefined }) {
@@ -141,11 +142,12 @@ export function DemoFlow({ initialVertical }: { initialVertical?: string | undef
       <ConfirmStep
         demoSessionId={step.demoSessionId}
         summary={step.summary}
-        onActivate={(callToken, demoPhone, summary) =>
+        onActivate={(callToken, demoPhone, summary, webCall) =>
           setStep({
             name: "active",
             demoSessionId: step.demoSessionId,
             callToken,
+            webCall,
             demoPhone,
             summary,
           })
@@ -158,6 +160,7 @@ export function DemoFlow({ initialVertical }: { initialVertical?: string | undef
     <ActiveStep
       demoSessionId={step.demoSessionId}
       callToken={step.callToken}
+      webCall={step.webCall}
       demoPhone={step.demoPhone}
       summary={step.summary}
     />
@@ -171,7 +174,12 @@ function ConfirmStep({
 }: {
   demoSessionId: string;
   summary: AgentSummary;
-  onActivate: (callToken: string, demoPhone: string, summary: AgentSummary) => void;
+  onActivate: (
+    callToken: string,
+    demoPhone: string,
+    summary: AgentSummary,
+    webCall: DemoWebCall | undefined,
+  ) => void;
 }) {
   const [businessName, setBusinessName] = useState(summary.business_name);
   const [hours, setHours] = useState(summary.hours_detected);
@@ -198,6 +206,7 @@ function ConfirmStep({
       });
       const body = (await res.json()) as {
         retell_call_token?: string;
+        retell_web_call?: unknown;
         demo_phone_e164?: string;
         agent_summary?: AgentSummary;
       };
@@ -206,7 +215,12 @@ function ConfirmStep({
         setActivating(false);
         return;
       }
-      onActivate(body.retell_call_token, body.demo_phone_e164, body.agent_summary ?? edits);
+      onActivate(
+        body.retell_call_token,
+        body.demo_phone_e164,
+        body.agent_summary ?? edits,
+        parseWebCall(body.retell_web_call),
+      );
     } catch {
       toast.error("We couldn't activate your demo — please try again.");
       setActivating(false);
@@ -262,39 +276,22 @@ function ConfirmStep({
 function ActiveStep({
   demoSessionId,
   callToken,
+  webCall,
   demoPhone,
   summary,
 }: {
   demoSessionId: string;
   callToken: string;
+  webCall: DemoWebCall | undefined;
   demoPhone: string;
   summary: AgentSummary;
 }) {
-  const [callState, setCallState] = useState<CallState>("idle");
-  const clientRef = useRef<import("retell-client-js-sdk").RetellWebClient | null>(null);
+  // The call itself (mic prompt, connect, live transcript, the hard time limit)
+  // is the same state machine the home page's "Talk to Heyloo" uses.
+  const call = useDemoCall({ fetchGrant: async () => ({ token: callToken, webCall }) });
+  const callState = call.phase;
   const [emailSent, setEmailSent] = useState(false);
   const [email, setEmail] = useState("");
-
-  async function startCall() {
-    setCallState("requesting-mic");
-    try {
-      const { RetellWebClient } = await import("retell-client-js-sdk");
-      const client = new RetellWebClient();
-      clientRef.current = client;
-      client.on("call_started", () => setCallState("active"));
-      client.on("call_ended", () => setCallState("ended"));
-      client.on("error", () => setCallState("error"));
-      setCallState("connecting");
-      await client.startCall({ accessToken: callToken });
-    } catch {
-      setCallState("error");
-    }
-  }
-
-  function endCall() {
-    clientRef.current?.stopCall();
-    setCallState("ended");
-  }
 
   async function submitEmail() {
     const parsed = demoEmailCaptureSchema.safeParse({ email });
@@ -325,11 +322,13 @@ function ActiveStep({
             <Button
               size="lg"
               className="flex-1"
-              onClick={startCall}
-              disabled={callState === "connecting" || callState === "active"}
+              onClick={call.start}
+              disabled={
+                callState === "requesting-mic" || callState === "connecting" || callState === "live"
+              }
             >
               <Mic className="size-4" />
-              {callState === "active" ? "Call in progress…" : "Talk to it now"}
+              {callState === "live" ? "Call in progress…" : "Talk to it now"}
             </Button>
             <Button size="lg" variant="outline" className="flex-1" asChild>
               <a href={`tel:${demoPhone}`}>
@@ -337,10 +336,31 @@ function ActiveStep({
               </a>
             </Button>
           </div>
-          {callState === "active" && (
-            <Button variant="ghost" onClick={endCall}>
+          {callState === "live" && (
+            <Button variant="ghost" onClick={call.stop}>
               End call
             </Button>
+          )}
+          {callState === "live" && call.transcript.length > 0 && (
+            <ol
+              className="max-h-48 space-y-1 overflow-auto rounded-md border border-border p-3 text-sm"
+              aria-label="Live transcript"
+            >
+              {call.transcript.map((line, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: an append-only transcript, lines never reorder
+                <li key={i} className={line.role === "agent" ? "" : "text-muted-foreground"}>
+                  <span className="font-medium">{line.role === "agent" ? "Agent" : "You"}: </span>
+                  {line.text}
+                </li>
+              ))}
+            </ol>
+          )}
+          {callState === "ended" && (
+            <p className="text-sm text-muted-foreground">
+              {call.endReason === "time-limit"
+                ? "That's the demo's time limit. Thanks for talking to it."
+                : "Call ended."}
+            </p>
           )}
           {callState === "error" && (
             <ErrorState message="We couldn't start the web call — try calling the demo number instead." />
