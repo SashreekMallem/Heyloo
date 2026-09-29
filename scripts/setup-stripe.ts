@@ -131,6 +131,9 @@ async function ensureMeter(): Promise<string> {
   const created = await stripeRequest("POST", "/billing/meters", {
     display_name: "Heyloo call minutes",
     event_name: STRIPE_METER_EVENT_NAME,
+    // Required by POST /v1/billing/meters (docs.stripe.com/api/billing/meter/create):
+    // job-billing-cycle reports minutes per event, so the meter sums them.
+    default_aggregation: { formula: "sum" },
     customer_mapping: { type: "by_id", event_payload_key: "stripe_customer_id" },
     value_settings: { event_payload_key: "value" },
   });

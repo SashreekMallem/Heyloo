@@ -150,6 +150,8 @@ export async function createMeter(
   return stripeRequest(fetchImpl, secretKey, "POST", "/billing/meters", {
     display_name: params.displayName,
     event_name: params.eventName,
+    // Required by POST /v1/billing/meters (docs.stripe.com/api/billing/meter/create, verified 2026-09-29).
+    default_aggregation: { formula: "sum" },
     customer_mapping: { type: "by_id", event_payload_key: "stripe_customer_id" },
     value_settings: { event_payload_key: "value" },
   });
