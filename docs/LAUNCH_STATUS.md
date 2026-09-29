@@ -35,14 +35,15 @@ this repo ever exchanged a GoTrue email-link token
 (`token_hash`/`type`) for a session, so a team invite, a signup
 confirmation, or a password reset could never actually complete for a
 real user clicking the real email link — added the standard
-`/auth/confirm` route Supabase's own docs specify. **Blocked, needs
-deploy authority this sandbox doesn't have**: the `admin` edge function
-redeploy and the FTC-disclosure migration `alter table` are both
-committed but could not be pushed to the live project (this
-environment's own "Production Deploy" classifier denies both DB DDL and
-Edge Function deploys from this sandbox — not routed around). Full
+`/auth/confirm` route Supabase's own docs specify. **Deployed
+2026-09-29 (owner-authorized, VERIFY-DEPLOY)**: the `admin` edge function
+is live (an unauthenticated `admin/admin-tenants` now returns 401 where it
+404'd before the routing fix — live-proven) and the FTC-disclosure
+migration is applied and recorded (`referral_partners.ftc_acknowledged_at`
+/ `ftc_acknowledged_version` exist live). Not re-proven after the deploy:
+an authenticated admin-cockpit and partner-portal click-through. Full
 detail, live proof transcripts, and the exact live route matrix:
-`docs/BUILD_NOTES.md` QA-PORTAL.
+`docs/BUILD_NOTES.md` QA-PORTAL and VERIFY-DEPLOY.
 
 **QA-BILL (2026-09-23)**: billing/lifecycle had never been exercised
 live before this task — it wasn't just unproven, `job-billing-cycle` and
@@ -76,8 +77,15 @@ platform-wide pruning deletes exactly the rows past each threshold and
 nothing else; `job-retention-sweep`'s per-tenant Storage-recording purge
 correctly refuses to null `call_logs.recording_url` when the Storage
 delete itself doesn't confirm (retry-safe, never silently drops a
-still-live recording's column). Full detail: `docs/BUILD_NOTES.md`
-QA-BILL.
+still-live recording's column). **Update 2026-09-29 (VERIFY-DEPLOY)**:
+`job-billing-cycle`/`job-offboarding` are deployed (both were the 500-on-
+every-invocation functions) and the `usage_events.is_billable` sync trigger
+is live-proven on a fresh call (test call -> `is_billable=false`); the one
+pre-existing mismatched row QA-BILL found (`usage_events`
+`57d66ef3-fee0-4314-bcf3-55954227b111`) is still `is_billable=true` and is
+the only mismatch in the table — a one-line repair for the owner is in
+BUILD_NOTES VERIFY-DEPLOY (the trigger is forward-only). Full detail:
+`docs/BUILD_NOTES.md` QA-BILL.
 
 **QA-HOT (2026-09-23)**: the `/voice-tools` hot path was well over its
 p95<500ms budget under concurrent load — live `tool_health` numbers
@@ -109,13 +117,48 @@ real batch-test transcript where the agent stopped repeating "go to the
 ER" after the caller asked a second time) and fixed. After-hours
 message-taking proven live twice against a tenant that was genuinely
 closed at the time (no override needed), both passes, no booking against
-a closed slot possible by construction. **All of the above is
-code-complete, unit-tested, and CI-green on `main`; live re-verification
-of the compiler/language/emergency-triage fixes needs a real Edge
-Function redeploy, which this sandbox's own "Production Deploy"
-classifier refused — the SAME block QA-PORTAL hit this same day.** Full
-detail, the live latency table, and the exact re-verification steps
-once deployed: `docs/BUILD_NOTES.md` QA-HOT.
+a closed slot possible by construction. **Live re-verification after the
+owner-authorized 2026-09-29 deploy (VERIFY-DEPLOY):** language is live-proven
+at the prompt/behavior level (Spanish `spanish_caller_booking` 3/3 pass on
+freshly republished agents — Spanish AI + recording disclosure, whole call
+in Spanish, booking rows with every required field; Retell's own
+agent-level `language` field could not be read back); the transfer-router
+prompt fix is live and the referral is restated on the re-ask in 6 of 7
+emergency transcripts, but emergency triage is still NOT reliable — with
+no transfer number configured the vet agent claims "the clinic team is
+already on the line" and, in one judged run, ended the call without
+restating the referral; dental `emergency_triage` always ends in Retell's
+own loop-abort (scenario persona never accepts the referral), so it has no
+judged pass. The latency work did NOT land: with the QA-HOT code live
+(confirmed via `pg_stat_statements`), p95 is still 1.0-1.5 s for every
+tool and `create_booking` timed out 5 of 5 batch calls and on the real
+PSTN call (booking committed, caller handed the fallback envelope
+anyway); the evidence points at per-isolate cold DB connection setup
+(direct connections, prepared statements, per-isolate pools of 5 against
+`max_connections` 60), not query time (DB execution is single-digit ms);
+recommended next step is Supabase's transaction-mode pooler with
+`prepare: false`, then re-measure. Full detail, the before/after
+latency table, and the profile: `docs/BUILD_NOTES.md` VERIFY-DEPLOY.
+
+**VERIFY-DEPLOY (2026-09-29)**: first live re-verification after the
+owner-authorized production deploy of 16 functions and migrations
+`20260923030000`/`20260923040000`. No 5xx after deploy. Live-proven on the
+republished test agents (new ids in BUILD_NOTES) and one real PSTN call
+into the republished `test-riverside-auto` agent: signed
+`call_started`/`call_analyzed`/`call_ended` webhooks all
+`signature_verified` and processed, transcript, `new_booking`
+classification, mono and stereo recordings fetched, booking with the auto
+vertical's required fields, `usage_events.is_billable=false` for the test
+call, and `voice-inbound` delivered `caller_recent_context` ("Devin has
+booked with us before.") — though on that one call the agent did not
+speak the returning-caller acknowledgement and re-asked name/phone, and
+its opening dropped the "this call may be recorded" clause (paraphrased
+from the compiled greeting; Rule 2 wants that deterministic). Also
+found: `check_availability` offers slots earlier than now (no `> now()`
+filter, 82 elapsed slots still `is_available`), and a stale Retell
+webhook still POSTs 8 times per call to the deleted legacy
+`retell-assistant` function (404). Retell agent-level `language` could
+not be read back (the `inspect` action does not return it).
 
 **PUBLISH-1 (2026-09-21)**: closes ONBOARD-1's own two remaining gaps
 below — a tenant's transfer number is now LIVE at call time (compiled

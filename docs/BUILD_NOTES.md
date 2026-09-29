@@ -6657,3 +6657,320 @@ that is a real remaining bug and needs a fresh look.
 
 `pnpm lint` 0 errors (46 biome warnings, same as baseline), `pnpm typecheck`
 clean, `cd supabase/functions && pnpm run test` 121 files / 1213 tests green.
+
+## VERIFY-DEPLOY (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — live re-verification after the owner-authorized production deploy: language, transfer-router and billing-sync fixes proven live; the hot-path latency fix did NOT move the numbers and the real cause is structural
+
+**Task:** the owner deployed 16 functions (`admin`, `api-admin-provision-test-tenant`,
+`api-admin-run-agent-tests`, `api-intake`, `api-provision`, `api-team-invite`,
+`api-tenant-agent-publish`, `api-text-chat`, `job-billing-cycle`,
+`job-offboarding`, `job-reconciliation`, `voice-events`, `voice-inbound`,
+`voice-tools`, `webhooks-stripe`, `webhooks-twilio-sms`) and applied migrations
+`20260923030000` (referral_partners FTC columns) and `20260923040000`
+(`usage_events` billable-sync trigger). This entry re-runs every check QA-HOT,
+QA-BILL and FOLLOWUP-1 could only unit-test. No code, function or DDL was
+changed by this task; the only production writes were the four test-agent
+republishes, the riverside number re-attach, the batch scenario runs (test
+tenants only) and one real PSTN self-call. All times UTC, window
+2026-09-29 00:24-00:42. Tenant ids below are `tenants.id` (not
+`agent_configs.id`).
+
+### Results table
+
+| # | Deliverable | Result | Evidence |
+|---|---|---|---|
+| 1 | Republish 4 test agents with `force_recompile` + `cleanup_superseded_agent` | **PASS** | 4x HTTP 200, new agent ids below; `agent_configs.compiled_config` for all four now contains the `Configured call language: {{language}}` instruction; riverside `flow_hash` changed (`4724...` -> `4d5c...`) |
+| 1b | Riverside number re-attach + `inspect` | **PASS** | `phone_e164` +12602354330 re-attached (200); `inspect`: `webhook_url=.../voice-events`, `webhook_timeout_ms=10000`, `is_published=true`, `response_engine_type=conversation-flow`, number `inbound_agents=[{agent_id: agent_143ba0af..., weight: 1}]`, `inbound_webhook_url=.../voice-inbound` |
+| 1c | Retell agent-level `language` read back via `inspect` | **NOT VERIFIABLE (gap)** | `inspect` (`api-admin-attach-retell-number`, not among the 16 redeployed) does not return `language` at all (`InspectedAgent` has no such field), and `RETELL_API_KEY` is not readable from this sandbox. Indirect evidence only: all four `create-agent` calls returned 200 with `language` in the body (Retell validates the enum, so `es-419` was accepted), and the compiled prompt carries the language instruction. Follow-up: add `language: string \| null` to `InspectedAgent` and redeploy that one function |
+| 2 | `spanish_caller_booking` x2 on `test-generic-anyservice` | **PASS 3/3** (2 required + 1 extra) | First turn quoted below; booking rows confirmed with all 5 required fields; language switch held for the whole call |
+| 3 | `emergency_triage` on vet and dental (x3 each, plus vet once inside the full suite) | **PARTIAL: referral restated on the re-ask in 6 of 7 transcripts; 1 real judged FAIL** | vet: 2 pass, 1 loop-abort error, 1 **fail** (inside the full suite: with no transfer number the agent claimed "the clinic team is already on the line with you" and ended the call without restating the referral). dental: 3/3 loop-abort error (Retell's own simulator abort `"Ending the conversation early as there might be a loop"`, not a judged fail; the agent restated the referral each time). The transfer-router prompt fix is live, but the false-transfer claim below is a real remaining bug |
+| 4 | Latency after (3 concurrent full suites) | **FAIL — unchanged** | p95 still 1.0-1.5 s for every tool; `create_booking` timed out 5/5. Table + profile below |
+| 5 | Billing sync trigger, row `03097a3c-...` | **Trigger live; the one legacy row is NOT repaired** | `is_test_call=true`, `usage_events.is_billable=true` still. Only mismatch in the whole table (1 row). Repair SQL below (not run) |
+| 6 | Real PSTN self-call on the republished riverside agent | **PASS with two agent-behavior caveats** | Signed webhooks, transcript, classification, recording, booking, `usage_events` all correct; see below |
+| — | Smoke: no 5xx after deploy | **PASS** | `function_edge_logs` 00:10-00:50: zero 500-class responses; only expected 401/404/503 (unauthenticated, sentinel keep-warm, not-configured providers) |
+
+### 1. New agent ids (old -> new)
+
+| tenant (`tenants.id`) | vertical | old agent | new agent |
+|---|---|---|---|
+| `test-generic-anyservice` (`07ae6c2d-8122-4674-ac4d-48b556ffb472`, `language_config.primary=es`) | generic (single_prompt, retell-llm) | `agent_9306404c21f278dc3dd8ea649a` | `agent_718917e565a470bb58c535cd40` |
+| `test-vet-lakeside` (`cad10349-475e-45fa-a02d-9c9275cd3931`) | vet (conversation_flow) | `agent_9472bd9328adeb7d89d7281fab` | `agent_47923586a947c9a87036fc404e` |
+| `test-bright-dental` (`b8419fe1-40ac-494b-a088-e7d33a87550d`) | dental (conversation_flow) | `agent_b959c11ee3a18a375c010ee06f` | `agent_fb1ccac1093e44c3ed5a8699dd` |
+| `test-riverside-auto` (`b2efae9d-8309-46d6-a950-31d683616cdc`) | auto (conversation_flow) | `agent_2792eaaef8de3409f590f6ed85` | `agent_143ba0af047c2182d17737d323` (bound to +12602354330) |
+
+Compiled-artifact check (DB, written at republish): the transfer router keeps
+its own prompt — the vet `emergency_warm_transfer` node's `instruction.text`
+now contains both the state's emergency-referral text and the generic
+transfer-router fallback (QA-HOT fix live), and the transfer node's number is
+the dynamic `{{transfer_number}}` (PUBLISH-1 shape) with a `Transfer failed`
+literal edge. `transfer_number` is empty for every test tenant, so the
+fallback branch is the path exercised.
+
+### 2. Spanish
+
+`test-generic-anyservice`, batch ids `test_batch_d5958924baa6`,
+`test_batch_e664f4c46fe9`, `test_batch_ccca72a0dc4a` — all `pass`.
+
+First agent turn, all three runs (AI + recording disclosure, in Spanish,
+compiled `{{disclosure_line}}` honoured):
+
+> "Gracias por llamar a Anyservice Co (TEST). Soy el asistente de inteligencia artificial, su asistente AI — esta llamada puede ser grabada. ¿En qué puedo ayudarle hoy?"
+
+The caller in run 2 asked to be served in Spanish; the agent answered "Claro, con gusto le atenderé en español" and stayed in Spanish through availability,
+confirmation, SMS consent and goodbye. Booking rows (both `confirmed`,
+`is_test=true`, `idempotency_key` set): `6d55a54e-3f88-413e-8017-91640967bd3f`
+(run 1) and `3a91e32c-ad9a-4784-8229-b104c98952bf` (run 2), customer
+`Elena Vargas` / `+15552010189`, `start_at`/`end_at` set,
+`structured_payload={"reason":"consulta general"}` — the scenario's own
+`field_capture` reports all five required fields captured, none missing, all
+three runs.
+
+### 3. Emergency triage
+
+Vet (`emergency_triage`), four post-deploy transcripts: run 1 pass, run 2
+error (loop abort), run 3 pass, and the copy inside the 3-suite latency run
+**fail**. Before the fix the recorded failure (QA-HOT) was: caller repeats
+"should I rush to the ER?" and the agent only promises a callback. After the
+fix, when the caller asks again the agent restated the referral in the three
+targeted runs:
+
+- run 1: "Yes, you should rush to the nearest emergency veterinary hospital right now. Your dog's condition is critical and needs immediate emergency care. Please do not wait."
+- run 2 (errored on loop abort after this point): "Jamie, this is urgent. You should rush to the nearest emergency animal hospital immediately..." (twice)
+- run 3: "You should rush to the nearest emergency veterinary hospital immediately for your dog's breathing trouble after being hit by a car."
+
+The fourth vet transcript (suite copy, judge `fail`: "the agent claims the
+clinic team is already on the line without evidence and ultimately ends the
+call instead of addressing the urgent transfer request") is the same defect
+as the "connecting you" claim below: the caller asked again, and instead of
+restating the referral the agent said "The clinic team is already on the line
+with you and aware of your dog's critical condition" and said goodbye. So the
+restated-referral behavior is now common but not reliable.
+
+Dental (first-ever runs, the scenario did not exist live before): 3/3 `error`
+(loop abort), but each transcript shows the agent telling the caller to hang
+up and call 911 / go to the ER five or more times ("Casey, I must insist you
+call 911 or go to the emergency room immediately"). The persona is written to
+keep insisting on a same-day slot, so Retell's own loop detector ends it
+before the judge can score it. This is a scenario-design limit, not an agent
+failure: **change the dental persona to accept the referral after being told
+twice** (as the vet persona does) if a judged `pass` is wanted. Also seen in
+all three dental runs: the agent asks for the patient name and runs
+`lookup_customer` twice (bouncing `safety_emergency` <-> `new_or_existing`
+whenever the caller re-asks for an appointment) before the referral settles;
+the first agent turn does already recommend the ER.
+
+Real defect surfaced by the vet transcripts (all 4 runs, not fixed here; the
+suite run is where it turned into a judged failure): with
+`transfer_number` empty the agent still says "I'm connecting you to a team
+member at Lakeside Veterinary Clinic now" and later "I have connected you to
+the clinic team" — a live-transfer claim that cannot be true. The
+`emergency_referral` state offers "connect you directly to our clinic"
+unconditionally and says "I can provide you with their number" without ever
+giving `{{emergency_referral_phone}}`. Neither the router-prompt fix nor the
+strengthened seed text stops the model from asserting a transfer that has no
+number behind it.
+
+### 4. Latency: BEFORE (QA-HOT, 2026-09-23) vs AFTER (2026-09-29 00:29:35-00:31:30, 3 concurrent full suites: riverside-auto, vet-lakeside, restaurant-trattoria — the same three tenants as BEFORE)
+
+`tool_health.latency_ms`, tenant-tagged rows only. Suites: auto 8 pass / 1 fail
+(`book_new_caller`: judge cites the `create_booking` fallback envelope followed
+by the agent telling the caller it was definitively booked, plus a UTC-vs-local
+slot inconsistency), vet 6 pass / 1 fail (`emergency_triage`, see section 3),
+restaurant 7/7 pass.
+
+| tool | BEFORE n / p50 / p95 / p99 (errors) | AFTER n / p50 / p95 / p99 (errors) |
+|---|---|---|
+| check_availability | 14 / 965.5 / 1027.6 / 1055.1 (0) | 6 / 1025.5 / 1161.3 / 1162.7 (0) |
+| lookup_customer | 8 / 1085.0 / 1244.9 / 1257.8 (0) | 7 / 1161.0 / 1193.0 / 1195.4 (0) |
+| create_booking | 6 / 1501.5 / 1505.0 / 1505.8 (4) | 5 / 1503.0 / 1508.6 / 1509.7 (**5**) |
+| update_booking | 3 / 1080.0 / 1092.6 / 1093.7 (0) | 3 / 1086.0 / 1181.4 / 1189.9 (0) |
+| take_message | 2 / 1025.0 / 1056.5 / 1059.3 (0) | 6 / 983.0 / 1038.3 / 1052.5 (0) |
+| send_sms_confirmation | 6 / 1073.5 / 1081.3 / 1081.9 (0) | 6 / 1075.5 / 1199.5 / 1225.5 (0) |
+| list_offerings | 3 / 954.0 / 966.6 / 967.7 (0) | 2 / 946.5 / 993.8 / 998.0 (0) |
+| cancel_booking | 2 / 832.0 / 869.8 / 873.2 (0) | 2 / 813.0 / 834.6 / 836.5 (0) |
+| join_waitlist / create_order | 2 / 1185 (0) / — | — / 1 / 976 (0) |
+| **all tools** | — | 38 / 1062.5 / 1503.0 / 1507.4 (5) |
+
+Small samples (n=1..7 per tool), so read the shape, not the decimals. A larger
+sample says the same thing: all-time `tool_health` p50 per day is 953, 977,
+990, 985, 992, 967, 992, 959, 968 ms for 2026-09-20..28 — flat across the
+QA-HOT code change, its deploy, and every day before it.
+
+What Retell actually waits for (edge gateway `execution_time_ms` for
+`/voice-tools`, 36 non-keep-warm requests in the same window): **p50 1253 /
+p95 2320 / p99 2581 / max 2708 ms; 9 of 36 above 1.5 s** — the 1.5 s hard
+abort in the handler does not bound what the caller experiences. On the real
+PSTN call (section 6) Retell's own transcript timestamps show
+`check_availability` 1.04 s, `create_booking` 1.69 s (fallback),
+`send_sms_confirmation` 1.21 s round trip.
+
+**Profile — the dominant cost is not the code QA-HOT fixed, and not the
+queries.** Evidence, all live and read-only:
+
+1. The QA-HOT code IS running: `pg_stat_statements` shows the new
+   `select id, tenant_id, caller_number, is_test_call from public.call_logs where retell_call_id = $1` fast-path lookup with 56 calls since the deploy.
+2. DB execution is negligible: mean 0.05 ms (that lookup), 0.06 ms (tenant),
+   0.11 ms (offerings), 0.27 ms (customers), 3.5-23 ms (availability). The
+   call_logs upsert averages 5.8 ms over 259 calls. Per tool call, database
+   execution is single-digit milliseconds of a ~1000 ms call.
+3. The bimodal shape gives it away. Of 3,021 historical tenant-tagged calls,
+   68 (2.3%) ran in under 400 ms (98-396 ms) and the rest sit at roughly
+   750-1500 ms (per-tool p10 750-900, p90 976-1502). The fast ones occur
+   almost only at the nightly 09:00 UTC regression bursts (plus a few
+   earlier manual test bursts), typically within a second or two of another
+   call (gap 0.01-4 s) — i.e. when they landed on an isolate that already
+   had an open DB connection. Same code, same queries: warm ~100-330
+   ms, cold ~950 ms. That puts the ~650-850 ms on **per-isolate cold-path
+   setup, not the tool logic**. Almost every real call is cold (Retell tool
+   calls in one phone call are seconds apart).
+4. The connections are direct, not pooled: `pg_stat_activity` shows
+   `application_name = 'postgres.js'` with AWS IPv6 client addresses (edge
+   isolates connecting straight to Postgres), no Supavisor hop.
+   `db-options.ts` also sets `prepare: true`, so every first-seen statement
+   on a fresh connection costs two round trips instead of one. During a
+   3-tenant burst I sampled up to **11 postgres.js connections from 8
+   isolates** at once (peak total connections 18) — postgres.js opens up to
+   `max: 5` connections per isolate when queries are issued concurrently on a
+   cold pool, so QA-HOT's `Promise.all` groups multiply handshakes on a cold
+   isolate rather than pipelining. `max_connections` is **60**.
+5. Isolate/boot vs DB split, from `job-keep-warm`'s own sentinel pings (every
+   3 minutes, gateway `execution_time_ms`): a voice-tools ping that touches no
+   DB has p50 261 ms (p10 212, p90 424); a voice-inbound ping that does one
+   real DB lookup has p50 572 ms (p10 436, p90 909). So a cold isolate is
+   ~260 ms before any work, and the first DB connection + first query adds
+   another ~310 ms at p50. That leaves roughly 400-500 ms of the ~960 ms
+   handler time that I could not attribute from outside without instrumented
+   code (sequential round trips at an apparent ~35 ms edge-to-DB round trip —
+   warm calls of 3 sequential queries take ~100-150 ms — plus first-use
+   statement preparation are the likely remainder, but that is inference, not
+   measurement).
+
+**What this means / recommended next step (not done here, hot-path changes were
+out of scope):** the fix is at the connection layer, not more query
+shaving. Supabase's own connection guide (supabase.com/docs/guides/database/connecting-to-postgres)
+says a serverless/edge function should use the **shared pooler in transaction
+mode (port 6543)**, that transaction mode **does not support prepared
+statements** (`prepare: false` for postgres.js), and that the shared pooler is
+IPv4-only. The repo currently does the opposite on all three points (direct
+connection, `prepare: true`, per-isolate pools of 5). Try
+`SUPABASE_DB_URL` -> pooler 6543 + `prepare: false` + `max: 1` on
+`voice-tools`/`voice-inbound` only, then re-run this same three-suite
+measurement. Add per-phase timing (`connect` / `context` / `tool`) to the
+`tool_health` row or logs first if the split above needs to be measured
+instead of inferred. Independent of the fix, the **1.5 s abort vs. what the
+write actually did is a correctness problem**: `create_booking` returns the
+fallback envelope ("I'll take your details and have someone confirm") after
+1.5 s while the booking is committed ~1.1-1.4 s in — in both Spanish runs and
+in the real PSTN call the row exists and the agent tells the caller it is
+booked. The BUILD_NOTES-documented judge failure for `book_new_caller` is the
+same thing.
+
+### 5. Billing sync trigger
+
+`trg_call_logs_sync_usage_billable` is present and enabled on
+`public.call_logs` (`AFTER UPDATE OF is_test_call ... WHEN (old.is_test_call
+IS DISTINCT FROM new.is_test_call)`); migrations `20260923030000` and
+`20260923040000` are both in `supabase_migrations.schema_migrations`, and
+`referral_partners.ftc_acknowledged_at` / `ftc_acknowledged_version` exist.
+The trigger is forward-only (it fires on future changes), so the pre-existing
+row is untouched: `call_logs.id = 03097a3c-2206-4699-a6b7-f42573f6fc39`
+(`test-riverside-auto`, `is_test_call=true`, 214 s) still has
+`usage_events.id = 57d66ef3-fee0-4314-bcf3-55954227b111`,
+`is_billable=true`, `minutes=3.5667`. It is the only row in the table where
+`is_billable is distinct from (not is_test_call)`. Nothing was modified. Exact
+one-line repair for the owner (idempotent, touches exactly that row):
+
+```sql
+update public.usage_events set is_billable = false where id = '57d66ef3-fee0-4314-bcf3-55954227b111' and is_billable = true;
+```
+
+(Table-wide equivalent, also idempotent: `update public.usage_events ue set
+is_billable = not cl.is_test_call from public.call_logs cl where cl.id =
+ue.call_id and ue.is_billable is distinct from (not cl.is_test_call);`.) The
+new write path is proven live on the self-call below: `is_test_call=true` and
+its `usage_events` row is `is_billable=false, minutes=3`. Running the repair
+through `update ... set is_test_call = is_test_call` would not fire the
+trigger (guarded by `old is distinct from new`), which is why it is a direct
+`usage_events` update.
+
+### 6. Real PSTN self-call (`scripts/e2e/self-call.ts`, once)
+
+`api-admin-self-call` placed the call from +16105383920 into +12602354330 at
+00:38:33; `caller_call_id=call_8c09ab8b1ae118611c8bd97abb5`, callee
+`retell_call_id=call_3c99ce2a711ec36720f287808b8`
+(`call_logs.id = 88db148f-07d4-47c4-9468-d1bd233dbd0c`), 180 s.
+
+- **Routing on the republished agent:** `call_started` payload `agent_id =
+  agent_143ba0af047c2182d17737d323` (the new one), `agent_version 0`.
+- **Signed webhooks:** `webhook_events` has `call_started`, `call_analyzed`,
+  `call_ended`, all `source=retell`, `signature_verified=true`, `processed_at`
+  set, `processing_error` null.
+- **Inbound webhook:** `voice-inbound` 200 (gateway 1604 ms — Retell holds
+  call setup for that response; worth watching on the latency work above).
+  `retell_llm_dynamic_variables` carried `language=en`,
+  `caller_recent_context="Devin has booked with us before."`,
+  `transfer_number=""`, `disclosure_line` (compiled text), tenant timezone
+  date/weekday, `vehicle_makes_serviced`.
+- **Transcript / classification:** `transcript` is a 41-entry jsonb array,
+  `classification=new_booking`, `call_successful=true`, `sentiment=positive`,
+  `cost_cents=34`.
+- **Recording:** `recording_url` and `stereo_recording_url` both set (the worker
+  fetched them after the script returned; the script itself printed "not yet
+  available").
+- **Booking:** `bookings.id = 6499050d-420b-4fd0-9bb3-7a4819b8dc7e`,
+  `confirmed`, `2026-09-29 16:00-16:30Z`, customer `Devon Ashworth`
+  `+16105383920` (same `customers.id 1fc04ee3-...` as the earlier SELFCALL
+  runs, `lifetime_bookings 4`), `structured_payload =
+  {vehicle_make: Honda, vehicle_year: 2019, vehicle_model: Civic,
+  drop_off_or_wait: wait, symptom_category: oil change}`,
+  `source_call_id` = this call. `is_test_call=true` (platform's own number).
+- **jsonb:** `transcript` array, `state_trace` array, `extracted_entities`
+  object, `structured_booking_payload` object (JSONB-2 follow-up: 0 rows in
+  `call_logs` have a string-typed `extracted_entities`; the one row created
+  after the deploy is well-formed).
+- **Tools on the real call:** `check_availability` 822 ms ok,
+  `create_booking` **1501 ms `tool_call_timeout` -> fallback envelope while the
+  booking row was written at 00:41:05.045**, `send_sms_confirmation` 984 ms ok.
+
+Two caveats from this one call, neither a pipeline failure:
+
+1. **Returning-caller line: delivered, not spoken.** The data path is proven
+   (`caller_recent_context` above was in the call's own dynamic variables),
+   but the agent's opening did not acknowledge the caller and it re-asked name
+   and phone ("Hello, thanks for calling Riverside Auto Repair. This is the AI
+   assistant. How can I help you today?..."), whereas the three earlier
+   SELFCALL runs did ("I see we've worked with you before. Devin."). One
+   sample of model variance, or a prompt-position effect of the newly
+   prepended language block; run it a few more times before concluding.
+2. **Recording disclosure was paraphrased away in the opening**: the compiled
+   greeting node carries "...their AI assistant — this call may be recorded"
+   verbatim, but the spoken line kept "This is the AI assistant" and dropped
+   the recording clause (same in the vet batch runs; the dental batch runs and
+   the Spanish generic agent kept it). CLAUDE.md Rule 2 requires every
+   greeting to include the compiled-in disclosure; a Retell begin message /
+   verbatim-speak node would make it deterministic instead of model-dependent.
+   Flagging for the owner, not changed.
+
+### Other findings (evidence, not fixed here)
+
+- **`check_availability` offers past slots.** No `lower(slot_range) > now()`
+  predicate and nothing marks elapsed slots unavailable:
+  `test-generic-anyservice` has 82 `is_available=true` slots older than now
+  (oldest 2026-09-21 13:00Z). In Spanish run 1 the agent offered "hoy lunes 28
+  de septiembre a las 10:30" at 20:25 tenant-local time and booked it (the
+  booking row exists at that past `start_at`).
+- **Stale Retell webhook target:** every call also POSTs to the deleted legacy
+  `/functions/v1/retell-assistant` (3 posts at call start, 5 at call end,
+  axios user agent) and gets a 404. Harmless noise but there is a Retell
+  account/agent-level webhook URL still pointing at the legacy function.
+- **Post-deploy smoke:** `admin/admin-tenants` unauthenticated now returns
+  401 (it returned 404 before QA-PORTAL's routing fix) — the route is reached;
+  `api-intake/<bad token>` 404 is the expected not-found. Authenticated admin
+  and partner-portal click-throughs were not re-run here.
+
+### Left running / cleaned up
+
+Nothing left running. Test data written: 9 targeted scenario runs and 3 full
+suites against test tenants (bookings on `test-generic-anyservice` as listed
+above, take_message rows on the vet tenant, bookings/orders/messages from the
+suites on the auto, vet and restaurant test tenants), 1 real self-call
+(booking + call_log on `test-riverside-auto`). Scratch scripts live only in the session scratchpad.
