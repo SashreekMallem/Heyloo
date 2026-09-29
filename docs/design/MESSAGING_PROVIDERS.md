@@ -32,6 +32,10 @@ supabase/functions/_shared/providers/messaging/
   twilio.ts       Twilio SMS adapter (send, TwiML, receipts, 10DLC registration)
   twilio-signature.ts   X-Twilio-Signature verifier (moved, unchanged)
   resend.ts       Resend email adapter (send, idempotency, error classes)
+  smtp.ts         SMTP email adapter: config validation, failure classes (MSG-3)
+  smtp-client.ts  minimal SMTP-over-implicit-TLS client (EHLO/AUTH/DATA), injected socket
+  smtp-message.ts RFC 5322 / MIME message builder (Message-ID, quoted-printable, RFC 2047)
+  smtp-fake-server.ts   scripted SMTP server used by the tests only
   canonical-parity.test.ts   Deno mirror == canonical package
 supabase/functions/_shared/owner-alerts.ts         owner alert kinds, preferences, producer helper
 supabase/functions/worker-messages-outbound/       queue worker (uses only the interface)
@@ -62,7 +66,7 @@ interface SmsProvider {
 }
 
 interface EmailProvider {
-  id: "resend";
+  id: "resend" | "smtp";
   capabilities: MessagingProviderCapabilities;
   sendEmail(req: EmailSendRequest): Promise<SendResult>;
 }
@@ -81,13 +85,13 @@ Canonical types (`packages/canonical-types/src/messaging.ts`):
 
 Capability flags:
 
-| Flag | Telnyx | Twilio | Resend | Used for |
-|---|---|---|---|---|
-| `syncWebhookReply` | no | yes (TwiML) | — | reply inline vs queue the reply |
-| `deliveryReceipts` | yes | yes | not consumed yet | ask for status callbacks |
-| `nativeOptOutHandling` | yes | yes | — | provider blocks sends after STOP |
-| `senderRegistrationApi` | no (portal for now) | yes (legacy 10DLC) | — | `api-a2p-register` |
-| `senderKinds` | toll_free, 10dlc | 10dlc, toll_free, short_code | — | documentation |
+| Flag | Telnyx | Twilio | Resend | SMTP | Used for |
+|---|---|---|---|---|---|
+| `syncWebhookReply` | no | yes (TwiML) | — | — | reply inline vs queue the reply |
+| `deliveryReceipts` | yes | yes | not consumed yet | no (acceptance only) | ask for status callbacks |
+| `nativeOptOutHandling` | yes | yes | — | — | provider blocks sends after STOP |
+| `senderRegistrationApi` | no (portal for now) | yes (legacy 10DLC) | — | — | `api-a2p-register` |
+| `senderKinds` | toll_free, 10dlc | 10dlc, toll_free, short_code | — | — | documentation |
 
 Failure classes: **permanent** (bad recipient, opted out, sender not
 allowed) marks the row `failed` at once; **transient** (5xx, 429, network)
@@ -104,8 +108,8 @@ Per message, most specific first:
 2. the tenant override, `tenants.sms_provider`;
 3. the platform default, `SMS_PROVIDER` env (default `telnyx`).
 
-Email: `EMAIL_PROVIDER` (default `resend`) plus `EMAIL_FROM_ADDRESS`
-(`RESEND_FROM_ADDRESS` still accepted).
+Email: `EMAIL_PROVIDER` (`resend` by default, `smtp` for the owner's own
+mailbox) plus `EMAIL_FROM_ADDRESS` (`RESEND_FROM_ADDRESS` still accepted).
 
 The registry **fails closed**. If the chosen provider has no secrets it
 resolves to `provider_not_configured`; it never silently falls back to a
@@ -134,7 +138,8 @@ dead-letters after 24 hours). With email alone configured, the leg runs.
   provider's own block rule still applies). A one-time code
   (`chat_phone_verification`) is never rerouted to the owner.
 - **Email**: to the row's recipient, HTML-escaped body,
-  `messages_outbound.id` as the Resend `Idempotency-Key`.
+  `messages_outbound.id` as the Resend `Idempotency-Key` (over SMTP, which has
+  no such key, as the stable `Message-ID`; see "Email over SMTP").
 - An unknown template (renders to an empty body) fails at once with
   `empty_rendered_body:<key>`; nothing empty is ever sent.
 - **Stranded rows**: every tick, rows 2 minutes to 24 hours old in
@@ -173,6 +178,62 @@ page / `POST /api/tenant/settings/notifications`):
 Both on = both channels. Both off = the alert is recorded as
 `owner_alerts_disabled` (still visible in the dashboard). SMS on but not
 possible yet = email.
+
+## Email over SMTP (MSG-3)
+
+Owner decision: email is sent from the owner's own domain mailbox, not a
+transactional-email API. `EMAIL_PROVIDER=smtp` selects the `smtp` adapter;
+owner steps are in `docs/SETUP_EMAIL.md`.
+
+| Variable | Meaning |
+|---|---|
+| `SMTP_HOST` | bare host name (`smtp.gmail.com`, `smtp.zoho.com`) |
+| `SMTP_PORT` | default `465`; **25 and 587 are rejected at configuration time** |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | the mailbox and its app password |
+| `EMAIL_FROM_ADDRESS` | the same mailbox (or an alias it may send as), ASCII |
+
+- **Why 465 only.** Supabase Edge Functions block outgoing ports 25 and 587
+  (supabase.com/docs/guides/functions/limits), so STARTTLS submission cannot
+  work. The client speaks implicit TLS (RFC 8314) and always verifies the
+  server certificate. An unusable `SMTP_PORT` makes the provider "not
+  configured" with `SMTP_PORT (outgoing ports 25 and 587 are blocked ...)`
+  in the registry's `missing()` list, rather than a connection that hangs.
+- **Why a hand-written client.** `npm:nodemailer` (Supabase's own example)
+  and `deno.land/x/denomailer` both run on the edge runtime, but neither can
+  be driven by a fake server under this package's Node/Vitest harness, and
+  denomailer is unversioned. `smtp-client.ts` is about 300 lines with no
+  dependency and takes its socket as an injected `SmtpConnector`; the only
+  runtime-specific line is `connectDenoTls` (`Deno.connectTls`, which both
+  libraries use underneath). It was also run unmodified under Deno 2.9.6
+  with `supabase/functions/deno.json` against a local TLS server
+  (docs/VERIFY.md MSG-3).
+- **Protocol.** Greeting, `EHLO`, `AUTH PLAIN` (initial response, 334
+  fallback) or `AUTH LOGIN`, `SIZE` check, `MAIL FROM`, `RCPT TO`, `DATA`
+  with CRLF normalization and dot-stuffing, `QUIT`. Timeouts: 10 s connect,
+  15 s per reply, 30 s for the whole conversation. One connection per
+  message; nothing is pooled.
+- **Message.** RFC 5322 headers (`Date`, `From`, `To`, `Reply-To`, `Subject`,
+  `Message-ID`, `MIME-Version`, `Auto-Submitted: auto-generated`),
+  `multipart/alternative` text then HTML, quoted-printable UTF-8 bodies,
+  RFC 2047 encoded subject and display name. Pure ASCII, so no SMTPUTF8 or
+  8BITMIME needed; CR/LF/control characters can never reach a header or an
+  SMTP command.
+- **No idempotency key in SMTP.** The `Message-ID` is derived from
+  `idempotencyKey` (`<messages_outbound.id@from-domain>`), so a retry after
+  an ambiguous failure (connection lost after `DATA`, before the `250`)
+  carries the same id and the receiving mailbox can discard the duplicate.
+- **Failure classes.** Credentials rejected (535/534/530/538 at `AUTH`):
+  **permanent**, `smtp_auth_failed`. 5xx at `MAIL FROM`/`RCPT TO`/`DATA`:
+  **permanent** (`smtp_550`, ...). Our own config problems (no PLAIN/LOGIN
+  offered, bad from address, empty body): **permanent**. 4xx (including 454
+  "temporary authentication failure" and 421): **transient**. Timeouts,
+  dropped connections, unparseable replies: **transient**. `550 5.4.5` /
+  "daily sending limit exceeded": **deferred**, one hour (the worker parks
+  the message instead of burning attempts).
+- **What it cannot do.** Delivery status: a `250` means the mailbox provider
+  accepted the message, not that it reached the inbox; bounces arrive in the
+  sending mailbox. Microsoft 365 (`smtp.office365.com`) is not usable: its SMTP
+  AUTH only offers 587/25. Google Workspace and Zoho both offer 465.
 
 ## Inbound texts and delivery receipts
 
@@ -232,7 +293,9 @@ ack.
    (base64 Ed25519 key from Mission Control → Keys & Credentials),
    optional `TELNYX_MESSAGING_PROFILE_ID`, `WEBHOOKS_SMS_BASE_URL`.
 7. Email now: `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` on a Resend-verified
-   domain. This alone turns on owner alerts by email.
+   domain, **or** (owner decision, MSG-3) `EMAIL_PROVIDER=smtp` with the
+   `SMTP_*` secrets for the owner's own mailbox (`docs/SETUP_EMAIL.md`).
+   Either alone turns on owner alerts by email.
 
 **Back to Twilio later:** set `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`, point
 the Twilio number's messaging webhook at `/webhooks-sms/twilio`, and either
@@ -248,15 +311,15 @@ parity test enforces they match) and its required env vars to
 
 ## What each provider needs from us
 
-| | Telnyx | Twilio | Resend |
-|---|---|---|---|
-| Account | Telnyx account, verification (Level 2 for some messaging) | usable Twilio account (currently blocked) | account + verified sending domain (DNS) |
-| Secrets | `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY` | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` |
-| Webhook | messaging profile → `/webhooks-sms/telnyx` | number/Messaging Service → `/webhooks-sms/twilio` | none consumed yet |
-| Sender | toll-free (verified) or 10DLC (brand + campaign) in our account | same, in our account | — |
-| Owner must give | legal name, EIN, address, contact, expected volume (the opt-in flow is ours: the AI asks consent on the call) | same | nothing |
-| Time to first text | toll-free: Telnyx says 1–2 weeks (help center: usually ≤5 business days) | toll-free ~3–5 business days; 10DLC vetting up to 5 business days + brand, 2–3+ weeks in backlogs | same day |
-| Price (per research, verify before quoting) | $0.0055/part TF, $0.004 10DLC, + carrier fees | $0.0083/segment + carrier fees; TF number $2.15/mo | free 3,000/mo (100/day); Pro $20/mo for 50k |
+| | Telnyx | Twilio | Resend | SMTP (owner mailbox) |
+|---|---|---|---|---|
+| Account | Telnyx account, verification (Level 2 for some messaging) | usable Twilio account (currently blocked) | account + verified sending domain (DNS) | a mailbox on Google Workspace or Zoho, an app password, SPF/DKIM/DMARC |
+| Secrets | `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY` | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` | `EMAIL_PROVIDER=smtp`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM_ADDRESS` |
+| Webhook | messaging profile → `/webhooks-sms/telnyx` | number/Messaging Service → `/webhooks-sms/twilio` | none consumed yet | none |
+| Sender | toll-free (verified) or 10DLC (brand + campaign) in our account | same, in our account | — | the mailbox itself (`alerts@<domain>`) |
+| Owner must give | legal name, EIN, address, contact, expected volume (the opt-in flow is ours: the AI asks consent on the call) | same | nothing | the mailbox, its app password, DNS access for SPF/DKIM/DMARC |
+| Time to first text | toll-free: Telnyx says 1–2 weeks (help center: usually ≤5 business days) | toll-free ~3–5 business days; 10DLC vetting up to 5 business days + brand, 2–3+ weeks in backlogs | same day | same day (DNS records can take up to 48 h to settle) |
+| Price (per research, verify before quoting) | $0.0055/part TF, $0.004 10DLC, + carrier fees | $0.0083/segment + carrier fees; TF number $2.15/mo | free 3,000/mo (100/day); Pro $20/mo for 50k | the mailbox seat; Google Workspace caps `smtp.gmail.com` at 2,000 messages/day |
 
 ## Carrier registration: the truth
 
