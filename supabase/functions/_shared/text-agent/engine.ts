@@ -54,6 +54,12 @@ export interface TextAgentDeps {
     successUrl: string;
     cancelUrl: string;
   };
+  /** MSG-3: can this tenant text a customer right now (a carrier-verified sender
+   * AND a configured provider, `_shared/sms-availability.ts#isSmsAvailable`)?
+   * Decides the "Text messages right now" line and whether `send_payment_link`,
+   * `verify_phone` and the waitlist notice may promise a text. Omitted or failing
+   * = NO texting (fail closed). */
+  smsAvailable?: (tenantId: string) => Promise<boolean>;
   turnTimeoutMs?: number;
   now?: () => Date;
 }
@@ -114,6 +120,20 @@ async function resolveOrCreateConversation(
   }
   const created = await createWebChatConversation(deps.sql, input.tenantId);
   return { conversation: created.conversation, widgetSessionToken: created.sessionToken };
+}
+
+/** One indexed statement per turn (`deps.smsAvailable`); any error reads as "no". */
+async function resolveTextingAvailable(deps: TextAgentDeps, tenantId: string): Promise<boolean> {
+  if (!deps.smsAvailable) return false;
+  try {
+    return await deps.smsAvailable(tenantId);
+  } catch (err) {
+    deps.logger.warn("text_agent_sms_availability_failed", {
+      tenant_id: tenantId,
+      error: String(err),
+    });
+    return false;
+  }
 }
 
 function noReply(
@@ -261,6 +281,7 @@ export async function handleInboundText(
     now,
   });
   const persona = resolveTextPersona(tenantContext.textAgentPersona);
+  const textingAvailable = await resolveTextingAvailable(deps, input.tenantId);
   const systemPrompt = interpolate(buildTextSystemPrompt(tenantContext.vertical), {
     cancellation_policy_text: tenantContext.cancellationPolicyText,
     business_name: tenantContext.businessName,
@@ -270,12 +291,11 @@ export async function handleInboundText(
     business_facts: settings.business_facts,
     voicemail_message: settings.voicemail_message,
     booking_mode_text: settings.booking_mode_text,
-    // MSG-3: an SMS conversation is texting by construction (the engine only
-    // runs it for a carrier-verified tenant); web chat can text (a payment
-    // link) only when the tenant is verified.
-    texting_policy_text: resolveTextAgentTexting(
-      input.channel === "sms" || tenantContext.a2pStatus === "verified",
-    ),
+    // MSG-3: the same definition as the voice agent's (verified sender AND a
+    // configured provider), not just `tenants.a2p_status`: a tenant carriers
+    // approved whose provider has no secrets yet still cannot deliver a payment
+    // link or a code.
+    texting_policy_text: resolveTextAgentTexting(textingAvailable),
     text_tone_text: TEXT_TONE_FRAGMENTS[persona.tone],
     text_sign_off: persona.signOff,
   });
@@ -346,7 +366,7 @@ export async function handleInboundText(
             vertical: tenantContext.vertical,
             appBaseUrl: deps.appBaseUrl,
             ...(deps.paymentLink ? { paymentLink: deps.paymentLink } : {}),
-            a2pVerified: tenantContext.a2pStatus === "verified",
+            smsAvailable: textingAvailable,
             manualMode: tenantContext.manualMode,
           },
           block.name,

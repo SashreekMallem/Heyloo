@@ -6,7 +6,9 @@
 import { getSql } from "../_shared/deno/db.ts";
 import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
+import { buildMessagingRegistryFromEnv } from "../_shared/providers/messaging/registry.ts";
 import { jsonResponse } from "../_shared/responses.ts";
+import { isSmsAvailable } from "../_shared/sms-availability.ts";
 import type { TextAgentDeps } from "../_shared/text-agent/engine.ts";
 import { handleTextChat } from "./handler.ts";
 import { TextChatRequestSchema } from "./schema.ts";
@@ -26,6 +28,8 @@ const PAYMENT_LINK_SUCCESS_URL =
 const PAYMENT_LINK_CANCEL_URL =
   optionalEnv("PAYMENT_LINK_CANCEL_URL") ?? "https://heyloo.app/pay/cancelled";
 const WIDGET_TOKEN_SECRET = requireEnv("WIDGET_TOKEN_SECRET");
+// MSG-3: built once per isolate, no network (`_shared/sms-availability.ts`).
+const MESSAGING = buildMessagingRegistryFromEnv((name) => Deno.env.get(name), fetch);
 
 const HARD_ABORT_MS = 12_000; // above the engine's own ~8s internal budget, below a typical browser fetch timeout
 
@@ -76,6 +80,8 @@ Deno.serve(async (req: Request) => {
   const sql = getSql();
   const deps: TextAgentDeps & { widgetTokenSecret: string } = {
     sql,
+    // MSG-3: promise a text (payment link, code) only when the tenant can send one.
+    smsAvailable: (tenantId) => isSmsAvailable(sql, tenantId, MESSAGING),
     logger,
     anthropicFetch: fetch,
     anthropicApiKey: ANTHROPIC_API_KEY,

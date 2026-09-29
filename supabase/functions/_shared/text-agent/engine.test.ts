@@ -416,10 +416,10 @@ describe("golden conversation: A2P pending", () => {
   });
 
   describe("MSG-3: the per-turn texting rule", () => {
-    async function systemPromptFor(
+    async function turn(
       channel: "sms" | "web_chat",
-      a2pStatus: string,
-    ): Promise<string> {
+      smsAvailable: NonNullable<TextAgentDeps["smsAvailable"]> | "absent",
+    ): Promise<{ system: string; toolDeps: unknown }> {
       if (channel === "sms") {
         vi.mocked(loadOrCreateSmsConversation).mockResolvedValue(
           conversation({ disclosureSent: true }),
@@ -429,30 +429,54 @@ describe("golden conversation: A2P pending", () => {
           conversation({ channel: "web_chat", phoneE164: null, disclosureSent: true }),
         );
       }
-      vi.mocked(resolveTenantTextContext).mockResolvedValue({ ...TENANT_CONTEXT, a2pStatus });
-      const { fetchImpl, calls } = fakeAnthropicFetch([textBlock("ok")]);
+      // a2p_status stays "verified": the rule is availability, not the a2p flag.
+      vi.mocked(resolveTenantTextContext).mockResolvedValue(TENANT_CONTEXT);
+      vi.mocked(dispatchTextTool).mockResolvedValue({ resultText: "{}", isError: false });
+      const { fetchImpl, calls } = fakeAnthropicFetch([
+        toolUseBlock("send_payment_link", { phone: "+15551234567", purpose: "deposit" }),
+        textBlock("ok"),
+      ]);
       await handleInboundText(
-        baseDeps(fetchImpl),
+        baseDeps(fetchImpl, smsAvailable === "absent" ? {} : { smsAvailable }),
         channel === "sms"
           ? { channel, tenantId: "t1", phoneE164: "+15551234567", message: "hi" }
           : { channel, tenantId: "t1", sessionToken: "tok_1", message: "hi" },
       );
-      return JSON.parse(calls[0]?.body as string).system as string;
+      return {
+        system: JSON.parse(calls[0]?.body as string).system as string,
+        toolDeps: vi.mocked(dispatchTextTool).mock.calls[0]?.[0],
+      };
     }
 
-    it("web chat for a tenant with no verified sender is told texting is NOT available", async () => {
-      const system = await systemPromptFor("web_chat", "pending_verification");
-      expect(system).toContain(`Text messages right now: ${TEXT_AGENT_TEXTING_OFF}`);
-      expect(system).not.toContain("{{texting_policy_text}}");
+    it("a tenant that cannot really text is told texting is NOT available, on either channel, even with a2p_status verified (no provider can send)", async () => {
+      for (const channel of ["web_chat", "sms"] as const) {
+        const { system, toolDeps } = await turn(channel, async () => false);
+        expect(system).toContain(`Text messages right now: ${TEXT_AGENT_TEXTING_OFF}`);
+        expect(system).not.toContain("{{texting_policy_text}}");
+        expect(toolDeps).toMatchObject({ smsAvailable: false });
+      }
     });
 
-    it("web chat for a verified tenant, and any SMS conversation, may text a payment link", async () => {
-      expect(await systemPromptFor("web_chat", "verified")).toContain(
-        `Text messages right now: ${TEXT_AGENT_TEXTING_ON}`,
-      );
-      expect(await systemPromptFor("sms", "verified")).toContain(
-        `Text messages right now: ${TEXT_AGENT_TEXTING_ON}`,
-      );
+    it("a tenant that can text, on either channel, may text a payment link", async () => {
+      const smsAvailable = vi.fn(async () => true);
+      for (const channel of ["web_chat", "sms"] as const) {
+        const { system, toolDeps } = await turn(channel, smsAvailable);
+        expect(system).toContain(`Text messages right now: ${TEXT_AGENT_TEXTING_ON}`);
+        expect(toolDeps).toMatchObject({ smsAvailable: true });
+      }
+      expect(smsAvailable).toHaveBeenCalledWith("t1");
+    });
+
+    it("fails closed: no availability check wired, or one that throws, means texting is OFF", async () => {
+      const absent = await turn("web_chat", "absent");
+      expect(absent.system).toContain(`Text messages right now: ${TEXT_AGENT_TEXTING_OFF}`);
+      expect(absent.toolDeps).toMatchObject({ smsAvailable: false });
+
+      const broken = await turn("web_chat", async () => {
+        throw new Error("db down");
+      });
+      expect(broken.system).toContain(`Text messages right now: ${TEXT_AGENT_TEXTING_OFF}`);
+      expect(broken.toolDeps).toMatchObject({ smsAvailable: false });
     });
   });
 });
