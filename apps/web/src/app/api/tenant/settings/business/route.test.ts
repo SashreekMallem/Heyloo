@@ -72,4 +72,61 @@ describe("POST /api/tenant/settings/business", () => {
     const res = await POST(jsonRequest(url, { name: "Acme", timezone: "America/Chicago" }));
     expect(res.status).toBe(404);
   });
+
+  it("SETTINGS-1 review: asks Postgres whether a NEW zone is known before storing it", async () => {
+    fake.signInAs(OWNER);
+    fake.queue(
+      "tenants:select",
+      { data: { timezone: "America/New_York" }, error: null },
+      { data: [], error: null },
+    );
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    const res = await POST(jsonRequest(url, { name: "Acme", timezone: "America/Chicago" }));
+    expect(res.status).toBe(200);
+    const probe = fake.callsTo("tenants", "select")[1];
+    expect(probe?.filters).toContainEqual(["eq", "id", "t1"]);
+    expect(probe?.filters).toContainEqual([
+      "lte",
+      "created_at",
+      "2999-12-31 00:00:00 America/Chicago",
+    ]);
+  });
+
+  it("SETTINGS-1 review: 422s, without writing, on a zone Node knows but Postgres doesn't (would abort the nightly roll-forward for every tenant)", async () => {
+    fake.signInAs(OWNER);
+    fake.queue(
+      "tenants:select",
+      { data: { timezone: "America/New_York" }, error: null },
+      {
+        data: null,
+        error: { code: "22023", message: 'time zone "america/coyhaique" not recognized' },
+      },
+    );
+    const res = await POST(jsonRequest(url, { name: "Acme", timezone: "America/Santiago" }));
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { issues: Array<{ path: string[]; message: string }> };
+    expect(body.issues[0]?.path).toEqual(["timezone"]);
+    expect(fake.callsTo("tenants", "update")).toHaveLength(0);
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it("SETTINGS-1 review: 500s (not 422) when the zone probe itself fails", async () => {
+    fake.signInAs(OWNER);
+    fake.queue(
+      "tenants:select",
+      { data: { timezone: "America/New_York" }, error: null },
+      { data: null, error: { code: "PGRST301", message: "JWT expired" } },
+    );
+    const res = await POST(jsonRequest(url, { name: "Acme", timezone: "America/Chicago" }));
+    expect(res.status).toBe(500);
+    expect(fake.callsTo("tenants", "update")).toHaveLength(0);
+  });
+
+  it("SETTINGS-1 review: a name-only save doesn't probe the (unchanged) zone", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:select", { data: { timezone: "America/Chicago" }, error: null });
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    await POST(jsonRequest(url, { name: "Renamed", timezone: "America/Chicago" }));
+    expect(fake.callsTo("tenants", "select")).toHaveLength(1);
+  });
 });

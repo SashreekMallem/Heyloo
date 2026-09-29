@@ -46,6 +46,7 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
+import { type SaveResult, saveErrorMessage, sendJson } from "@/lib/settings/client";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
@@ -89,6 +90,22 @@ function slotLabel(resource: ResourceRow): string {
   const minutes = resource.metadata?.["slot_minutes"];
   if (typeof minutes !== "number") return "Default";
   return SLOT_OPTIONS.find((o) => o.value === String(minutes))?.label ?? `${minutes} min`;
+}
+
+/**
+ * SETTINGS-1 review: say WHY a save/removal failed. A removal whose future
+ * times couldn't be taken off sale now changes nothing (the route 502s
+ * `slots_not_cleared`), so the resource stays listed and can be retried.
+ */
+function resourceErrorMessage(
+  result: Pick<SaveResult, "status" | "error">,
+  action: "save" | "remove" = "save",
+): string {
+  if (result.error === "slots_not_cleared") {
+    return "Couldn't remove it — its bookable times couldn't be cleared. Nothing changed; please try again.";
+  }
+  if (result.error === "owner_or_admin_required") return saveErrorMessage(result);
+  return action === "remove" ? "Couldn't remove — please try again." : saveErrorMessage(result);
 }
 
 const resourceFormSchema = z.object({
@@ -186,22 +203,18 @@ export default function ResourcesSetupPage() {
       room_type: values.room_type ? values.room_type : null,
       slot_minutes: values.slot_minutes === "default" ? null : Number(values.slot_minutes),
     };
-    const res = await fetch(
+    const result = await sendJson<{ slots_updated?: boolean }>(
       editing ? `/api/tenant/resources/${editing.id}` : "/api/tenant/resources",
-      {
-        method: editing ? "PATCH" : "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      },
+      payload,
+      editing ? "PATCH" : "POST",
     );
     setSaving(false);
-    if (!res.ok) {
-      toast.error("Couldn't save — please try again.");
+    if (!result.ok) {
+      toast.error(resourceErrorMessage(result));
       return;
     }
-    const body = (await res.json().catch(() => ({}))) as { slots_updated?: boolean };
     toast.success(
-      body.slots_updated === false
+      result.body?.slots_updated === false
         ? "Saved — bookable times finish updating overnight."
         : "Saved — bookable times are updated.",
     );
@@ -212,9 +225,9 @@ export default function ResourcesSetupPage() {
 
   async function confirmDelete() {
     if (!pendingDelete || !tenantId) return;
-    const res = await fetch(`/api/tenant/resources/${pendingDelete.id}`, { method: "DELETE" });
-    if (!res.ok) {
-      toast.error("Couldn't remove — please try again.");
+    const result = await sendJson(`/api/tenant/resources/${pendingDelete.id}`, undefined, "DELETE");
+    if (!result.ok) {
+      toast.error(resourceErrorMessage(result, "remove"));
       return;
     }
     toast.success("Removed — your AI stops offering its times now.");

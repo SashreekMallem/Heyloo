@@ -28,6 +28,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
+import { z } from "zod";
 import { NotLiveBadge } from "@/components/tenant/settings/not-live-note";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
 import { SAVED_NEXT_CALL, saveErrorMessage, sendJson } from "@/lib/settings/client";
@@ -55,25 +56,36 @@ function arrayToLines(value: string[] | undefined): string {
  * (`zContactRequest`) — a vet emergency referral / auto tow partner needs
  * both a name and a real phone, or neither.
  */
-const detailsFormSchema = verticalDetailsSchema.superRefine((value, ctx) => {
-  for (const key of ["emergency_referral", "tow_partner"] as const) {
-    const contact = value[key];
-    if (!contact) continue;
-    const name = contact.name.trim();
-    const phone = contact.phone.trim();
-    if (!name && !phone) continue;
-    if (!phone || !isBlankOrValidPhone(phone)) {
-      ctx.addIssue({ code: "custom", message: PHONE_ERROR_MESSAGE, path: [key, "phone"] });
+// SETTINGS-1 review: either half of a contact may be missing while the
+// owner fills it in (the other input was never touched, or the stored
+// contact was just cleared). The canonical schema requires both strings,
+// which surfaced zod's raw "Invalid input: expected string, received
+// undefined" instead of the real guidance below.
+const zContactFormValue = z
+  .object({ name: z.string().optional(), phone: z.string().optional() })
+  .optional();
+
+const detailsFormSchema = verticalDetailsSchema
+  .extend({ emergency_referral: zContactFormValue, tow_partner: zContactFormValue })
+  .superRefine((value, ctx) => {
+    for (const key of ["emergency_referral", "tow_partner"] as const) {
+      const contact = value[key];
+      if (!contact) continue;
+      const name = (contact.name ?? "").trim();
+      const phone = (contact.phone ?? "").trim();
+      if (!name && !phone) continue;
+      if (!phone || !isBlankOrValidPhone(phone)) {
+        ctx.addIssue({ code: "custom", message: PHONE_ERROR_MESSAGE, path: [key, "phone"] });
+      }
+      if (!name) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Add a name for this contact.",
+          path: [key, "name"],
+        });
+      }
     }
-    if (!name) {
-      ctx.addIssue({
-        code: "custom",
-        message: "Add a name for this contact.",
-        path: [key, "name"],
-      });
-    }
-  }
-});
+  });
 
 /**
  * Plain (unbranded) mirrors of `verticalDetailsSchema`/
@@ -87,8 +99,8 @@ interface VerticalDetailsFormValues {
   cancellation_policy: { window_hours: number; fee_cents?: number; text: string };
   insurances_accepted?: string[];
   species_treated?: string[];
-  emergency_referral?: { name: string; phone: string };
-  tow_partner?: { name: string; phone: string };
+  emergency_referral?: { name?: string; phone?: string };
+  tow_partner?: { name?: string; phone?: string };
   vehicle_makes_serviced?: string[];
   practice_areas?: string[];
   consult_fee_cents?: number;

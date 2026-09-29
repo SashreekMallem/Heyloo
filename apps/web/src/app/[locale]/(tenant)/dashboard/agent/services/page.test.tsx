@@ -69,4 +69,20 @@ describe("ServicesTabPage (SETTINGS-1)", () => {
     await waitFor(() => expect(routes.calls[0]?.method).toBe("DELETE"));
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
   });
+
+  it("SETTINGS-1 review: emptying the length and price on an edit clears them (null), not 'Saved' with the old values", async () => {
+    const routes = stubRoutes({ "/api/tenant/offerings/o1": () => ({ body: { ok: true } }) });
+    vi.stubGlobal("fetch", routes.fetchMock);
+    renderWithTenant(<ServicesTabPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Oil change" }));
+    expect(screen.getByLabelText("Price")).toHaveValue("49.99");
+    await userEvent.clear(screen.getByLabelText("Length (minutes)"));
+    await userEvent.clear(screen.getByLabelText("Price"));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(routes.calls).toHaveLength(1));
+    expect(routes.calls[0]).toMatchObject({
+      method: "PATCH",
+      body: { name: "Oil change", duration_minutes: null, price_cents: null },
+    });
+  });
 });

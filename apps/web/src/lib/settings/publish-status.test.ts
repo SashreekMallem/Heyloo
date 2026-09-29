@@ -92,6 +92,49 @@ describe("computePublishStatus", () => {
   });
 });
 
+describe("computePublishStatus — language revert (SETTINGS-1 review)", () => {
+  const compiled = { prompt: "Configured call language: {{language}}" };
+  const publishedAt = "2026-09-23T02:28:50Z";
+
+  it("is not pending after switching back to the language the live agent was published with", () => {
+    const status = computePublishStatus({
+      publishedAt,
+      compiledConfig: compiled,
+      transferNumber: null,
+      languageConfig: {
+        primary: "en",
+        changed_at: "2026-09-29T02:52:51Z",
+        published_primary: "en",
+      },
+    });
+    expect(status.pending).toBe(false);
+  });
+
+  it("is pending while the language differs from the published one", () => {
+    const status = computePublishStatus({
+      publishedAt,
+      compiledConfig: compiled,
+      transferNumber: null,
+      languageConfig: {
+        primary: "es",
+        changed_at: "2026-09-29T02:52:51Z",
+        published_primary: "en",
+      },
+    });
+    expect(status.reasons).toEqual(["language_changed"]);
+  });
+
+  it("stays conservative (pending) when the published language wasn't recorded", () => {
+    const status = computePublishStatus({
+      publishedAt,
+      compiledConfig: compiled,
+      transferNumber: null,
+      languageConfig: { primary: "en", changed_at: "2026-09-29T02:52:51Z" },
+    });
+    expect(status.reasons).toEqual(["language_changed"]);
+  });
+});
+
 describe("languageChangedAt", () => {
   it("reads only a parseable timestamp", () => {
     expect(languageChangedAt({ changed_at: "2026-09-29T01:00:00Z" })).toBe("2026-09-29T01:00:00Z");

@@ -8244,3 +8244,126 @@ Isolated worktree of `origin/claude/voice-ai-agent-architecture-dcw0n8`
 baseline), `pnpm typecheck` 21/21, `supabase/functions` `pnpm run
 test` 137 files / 1544 tests, `@heyloo/adapter-retell` 20 files / 229
 tests, `@heyloo/templates` 8 files / 373 tests.
+
+## SETTINGS-1-REVIEW (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — hostile review of SETTINGS-1 (9e490a6): one blocker and four majors found and fixed live, plus minors; safe to deploy with this commit
+
+Reviewed the whole diff, then drove every changed settings page in a real
+browser (local `next dev` against the live project, Playwright + Chromium,
+logged in as the ONBOARD-1 owner of `signup-1-auto` via GoTrue password
+login, no `auth.*` writes). Every setting was set through the UI, checked
+with the read-only SQL helper, and put back through the UI. Screenshots at
+1440x900 and 390x844: scratchpad `portal-settings/` (`before_*`, `after_*`,
+per-flow shots). Browser Supabase calls were relayed through Node's `fetch`
+(TLS verified against the session CA bundle) because the headless browser's
+own trust store doesn't have the session proxy CA.
+
+### Blocker (fixed)
+
+- **Vertical details couldn't be saved by any tenant without a tow partner
+  (auto) or emergency referral (vet).** react-hook-form holds an untouched
+  contact as `{name: undefined, phone: undefined}`; the page validated it
+  with the canonical schema (both strings required), so Save showed two raw
+  "Invalid input: expected string, received undefined" errors and sent
+  nothing. That covers every new auto/vet tenant, and it blocked the
+  cancellation policy callers hear. Reproduced live on 9e490a6's page code.
+  Fix: the page's form schema takes optional halves and keeps the plain
+  "Add a name" / phone messages. `detailsRequestBody` treats an
+  all-empty contact as `null`. `zContactRequest` treats `{}` as clear. Tests:
+  new `vertical-details/page.test.tsx` (both cases fail on 9e490a6),
+  `vertical-details.test.ts`, `schemas.test.ts`, route test.
+
+### Majors (fixed)
+
+1. **A time zone Node knows but Postgres doesn't could be saved, and it
+   would stop the nightly slot roll-forward for every tenant.** Live
+   check: `America/Coyhaique` is in Node/Chromium
+   `Intl.supportedValuesOf("timeZone")` (so the Business tab's full list
+   offers it) but not in `pg_timezone_names` (417 of Node's 418 zones match).
+   `fn_regenerate_availability_slots` raises 22023 for it, and
+   `fn_cron_availability_rollforward` loops over every tenant's resources in
+   one transaction with no exception handler. Fix: `POST
+   settings/business` checks a changed zone with Postgres before writing
+   (`lib/settings/timezone-db.ts`): a `timestamptz` filter carrying the
+   zone name on the caller's own tenant row. Unknown gives 422 with an inline
+   message, and nothing is written. Verified live through PostgREST (400
+   22023 for Coyhaique; 200 for Chicago, Buenos_Aires and Port-au-Prince)
+   and through the UI (422, row unchanged). Docs: postgresql.org/docs/current/datatype-datetime.html
+   §8.5.3 (names from the IANA data in `pg_timezone_names`).
+2. **Members could wipe a resource's future availability.**
+   `PATCH/DELETE /api/tenant/resources/[id]` had no owner/admin check. RLS
+   silently dropped a member's update, but the service-role slot clear still
+   ran. Fix: `requireTenantWriter`, and a write that touches zero rows now
+   returns 404. Both checks run before any service-role work.
+3. **A removed resource whose slots failed to clear stayed bookable for up
+   to 3 weeks, while the UI said "stops offering its times now".** The
+   nightly job skips inactive resources, `check_availability` doesn't filter
+   on `active`, and the removed row disappears from Setup, so it couldn't be
+   retried. Reproduced live: 200 `slots_updated:false` plus the success
+   toast. Fix: clear first. If that fails, return 502 `slots_not_cleared`,
+   leave the resource active, and show an error toast. Verified live: Bay 1
+   stayed active with 348 future slots.
+4. **Services tab: emptying a length or price was dropped and reported as
+   "Saved".** The AI kept quoting the old price. Reproduced live. Fix: an
+   edit sends `null`, and `offeringUpdateSchema` accepts `null` for
+   `duration_minutes`/`price_cents` (both columns are nullable). Verified
+   live (both null, still inactive).
+
+### Minors fixed
+
+- The Business toast said "rebuilt" even when regeneration failed. It now
+  says "overnight".
+- `POST /api/tenant/resources` now returns `slots_updated`, so the toast is
+  honest.
+- Switching the call language and then back to the published one still
+  showed "You changed the call language". The Language route now records
+  `published_primary` (the language the live agent was built with) on the
+  first unpublished change, and publish-status ignores a change back to it.
+  Other `language_config` keys are kept. Rows stamped before this (only
+  `signup-1-auto`, by this review) stay conservatively pending until the
+  next publish.
+- Removing the test phone said "saved — calls from it are marked as tests".
+- FAQ editor: the question and answer fields and the remove button now have
+  accessible names (the button had none). The Services dialog's Price
+  label is now linked to its input.
+
+### Not fixed (minor or pre-existing; follow-ups)
+
+- `agent/vertical-details`, `settings/reminders-review` and the Text agent
+  page still have no owner/admin check or zero-row detection, so a member
+  gets "Saved" for a no-op.
+- `PhoneInput` (packages/ui) turns an accidental 11th digit on a US number
+  into a "valid" international number (`+61055501223`), and
+  `normalizePhone` accepts any 8–15 digit non-+1 number. The display shows
+  the raw E.164, which is the only hint.
+- Picking "Whole day / night" (1440) or 8 hours as a non-motel resource's
+  appointment length yields zero or one slot a day inside business hours.
+  The label doesn't warn about this.
+- Pre-existing security item from SETTINGS-1 stands: `authenticated` has
+  table-wide UPDATE on `tenants` and `agent_configs` (column grants or a
+  trigger needed).
+- Local env's `SUPABASE_SECRET_KEY` is rejected ("Invalid API key"), so
+  on-save slot regeneration could not be exercised live. The honest
+  "overnight" fallbacks were exercised instead.
+
+### Live state after the run (signup-1-auto)
+
+Restored through the UI and matching the snapshot, except for these:
+
+- `business_hours` is now in the canonical shape, with Sunday `[]` (the
+  intended SIGNUP-1 fix). Its old Sunday slots disappear at the next 04:00
+  UTC roll-forward, because on-save regeneration couldn't run locally.
+- `language_config.changed_at` is set, so "language changed" shows until the
+  next publish, which the owner actions already require for this tenant.
+- `quiet_hours`/`text_agent_persona` and `overrides.call_routing`/`delivery`
+  now hold explicit default-equivalent values.
+- `policies_reviewed_at` was bumped.
+- Inactive residue rows: resource "QA Bay 3 (portal-settings)" (0 slots)
+  and offering "Tire Rotation (QA)".
+
+### Gates
+
+`pnpm lint` exit 0, `pnpm typecheck` exit 0, `pnpm test` (web 151 files /
+843 tests after one timeout-only flake of `dashboard/metadata.test.tsx`
+under dev-server load, green in isolation and on re-run; edge-functions 137
+files; every other package green), `check:server-barrels` OK. No edge
+function, migration or secret changes: deploy the web app only.

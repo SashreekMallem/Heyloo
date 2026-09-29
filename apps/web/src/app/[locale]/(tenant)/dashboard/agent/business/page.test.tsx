@@ -83,4 +83,41 @@ describe("BusinessTabPage (SETTINGS-1)", () => {
       timezone: "America/Boise",
     });
   });
+
+  it("SETTINGS-1 review: says 'overnight' when the slot rebuild failed", async () => {
+    const routes = stubRoutes({
+      "/api/tenant/settings/business": () => ({
+        body: { ok: true, timezone_changed: true, availability: { resources: 0, failed: 1 } },
+      }),
+    });
+    vi.stubGlobal("fetch", routes.fetchMock);
+    renderWithTenant(<BusinessTabPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /Show all time zones/ }));
+    await userEvent.selectOptions(screen.getByLabelText("Time zone"), "America/Boise");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        "Saved — your bookable times finish moving to the new time zone overnight.",
+      ),
+    );
+  });
+
+  it("SETTINGS-1 review: shows the server's 'zone not supported' error under the picker", async () => {
+    const routes = stubRoutes({
+      "/api/tenant/settings/business": () => ({
+        status: 422,
+        body: {
+          error: "invalid_request",
+          issues: [{ path: ["timezone"], message: "This time zone isn't supported yet." }],
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", routes.fetchMock);
+    renderWithTenant(<BusinessTabPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /Show all time zones/ }));
+    await userEvent.selectOptions(screen.getByLabelText("Time zone"), "America/Boise");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("This time zone isn't supported yet.")).toBeInTheDocument();
+    expect(toast.error).toHaveBeenCalledWith("Please fix the highlighted fields.");
+  });
 });

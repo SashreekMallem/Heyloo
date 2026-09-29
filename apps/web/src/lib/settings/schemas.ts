@@ -167,12 +167,14 @@ export type BookingRulesRequest = z.infer<typeof bookingRulesRequestSchema>;
  * `null` so the route clears the stored contact.
  */
 export const zContactRequest = z
-  .object({ name: z.string().trim().max(200), phone: z.string().max(40) })
+  // SETTINGS-1 review: a missing half is treated as blank (an untouched
+  // contact arrives as `{}`), so `{}` clears instead of 422ing the save.
+  .object({ name: z.string().trim().max(200).optional(), phone: z.string().max(40).optional() })
   .nullish()
   .transform((value, ctx) => {
     if (value === undefined) return undefined;
-    const name = value?.name.trim() ?? "";
-    const rawPhone = value?.phone.trim() ?? "";
+    const name = value?.name?.trim() ?? "";
+    const rawPhone = value?.phone?.trim() ?? "";
     if (name.length === 0 && rawPhone.length === 0) return null;
     const phone = zOptionalPhone.safeParse(rawPhone);
     if (!phone.success || phone.data === null) {

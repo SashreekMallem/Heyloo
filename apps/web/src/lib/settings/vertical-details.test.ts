@@ -33,4 +33,24 @@ describe("detailsRequestBody", () => {
       prep_time_minutes: null,
     });
   });
+
+  it("SETTINGS-1 review: an untouched contact ({name: undefined, phone: undefined}) is sent as null, not {}", () => {
+    expect(
+      detailsRequestBody("auto", {
+        cancellation_policy: { window_hours: 24, text: "x" },
+        tow_partner: { name: undefined, phone: undefined },
+        vehicle_makes_serviced: ["Ford"],
+      }),
+    ).toEqual({
+      cancellation_policy: { window_hours: 24, text: "x" },
+      tow_partner: null,
+      vehicle_makes_serviced: ["Ford"],
+    });
+    expect(
+      detailsRequestBody("vet", {
+        cancellation_policy: { window_hours: 24, text: "x" },
+        emergency_referral: { name: "City ER", phone: undefined },
+      })["emergency_referral"],
+    ).toEqual({ name: "City ER", phone: undefined });
+  });
 });

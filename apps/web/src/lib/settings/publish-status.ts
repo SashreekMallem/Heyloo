@@ -14,7 +14,9 @@
  * Reasons, each from data the tenant can already read under RLS:
  * - `never_published`: no `published_at`.
  * - `language_changed`: `tenants.language_config.changed_at` (stamped by
- *   `POST /api/tenant/settings/language`) is newer than `published_at`.
+ *   `POST /api/tenant/settings/language`) is newer than `published_at` AND
+ *   the language now differs from the one the published agent was built
+ *   with (`published_primary`, when known).
  * - `platform_update`: the published agent does not reference a live
  *   setting token (`{{language}}`, or `{{transfer_number}}` once a transfer
  *   number is set), so a setting the owner changes would not reach calls.
@@ -51,6 +53,35 @@ export function languageChangedAt(languageConfig: unknown): string | null {
   return typeof value === "string" && !Number.isNaN(Date.parse(value)) ? value : null;
 }
 
+function stringKey(languageConfig: unknown, key: string): string | null {
+  if (typeof languageConfig !== "object" || languageConfig === null) return null;
+  const value = (languageConfig as Record<string, unknown>)[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * SETTINGS-1 review: the language the PUBLISHED agent was built with, as
+ * recorded by the Language tab when the first unpublished change was made
+ * (`published_primary`). Lets "switched to Spanish, then back to English"
+ * stop showing "You changed the call language" — the live agent already
+ * speaks English. Absent on rows stamped before this key existed: unknown,
+ * so a newer `changed_at` still counts as a change (conservative).
+ */
+export function publishedLanguage(languageConfig: unknown): string | null {
+  return stringKey(languageConfig, "published_primary");
+}
+
+/** True when `changed_at` is newer than the last publish (or nothing was ever published). */
+export function languageChangePendingSince(
+  languageConfig: unknown,
+  publishedAt: string | null,
+): boolean {
+  const changedAt = languageChangedAt(languageConfig);
+  if (!changedAt) return false;
+  if (!publishedAt) return true;
+  return Date.parse(changedAt) > Date.parse(publishedAt);
+}
+
 function serialize(compiled: unknown): string {
   if (compiled == null) return "";
   if (typeof compiled === "string") return compiled;
@@ -68,9 +99,10 @@ export function computePublishStatus(input: PublishStatusInput): PublishStatus {
     return { publishedAt: null, pending: true, reasons };
   }
 
-  const changedAt = languageChangedAt(input.languageConfig);
-  if (changedAt && Date.parse(changedAt) > Date.parse(input.publishedAt)) {
-    reasons.push("language_changed");
+  if (languageChangePendingSince(input.languageConfig, input.publishedAt)) {
+    const live = publishedLanguage(input.languageConfig);
+    const current = stringKey(input.languageConfig, "primary");
+    if (!(live !== null && live === current)) reasons.push("language_changed");
   }
 
   const compiled = serialize(input.compiledConfig);

@@ -86,19 +86,22 @@ function BusinessForm({ tenantId, row }: { tenantId: string; row: BusinessRow })
   const localTime = currentTimeIn(timezone);
 
   async function onSubmit(values: BusinessProfileInput) {
-    const result = await sendJson<{ timezone_changed: boolean }>(
-      "/api/tenant/settings/business",
-      values,
-    );
+    const result = await sendJson<{
+      timezone_changed: boolean;
+      availability: { resources: number; failed: number } | null;
+    }>("/api/tenant/settings/business", values);
     if (!result.ok) {
       applyIssues(result.issues, form.setError);
       toast.error(saveErrorMessage(result));
       return;
     }
+    const rebuildFailed = (result.body?.availability?.failed ?? 0) > 0;
     toast.success(
-      result.body?.timezone_changed
-        ? "Saved — your bookable times were rebuilt in the new time zone."
-        : "Saved — your AI uses the new name from the next call.",
+      !result.body?.timezone_changed
+        ? "Saved — your AI uses the new name from the next call."
+        : rebuildFailed
+          ? "Saved — your bookable times finish moving to the new time zone overnight."
+          : "Saved — your bookable times were rebuilt in the new time zone.",
     );
     void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "tenants"] });
   }

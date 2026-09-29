@@ -92,8 +92,13 @@ export function TestAgentClient({
       toast.error(saveErrorMessage(result));
       return;
     }
-    setTestPhone(result.body?.owner_test_phone ?? "");
-    toast.success("Test number saved — calls from it are marked as tests.");
+    const saved = result.body?.owner_test_phone ?? null;
+    setTestPhone(saved ?? "");
+    toast.success(
+      saved
+        ? "Test number saved — calls from it are marked as tests."
+        : "Test number removed — calls are no longer marked as tests.",
+    );
     void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "settings_checklist"] });
   }
 

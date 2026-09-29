@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { languageChangePendingSince, publishedLanguage } from "@/lib/settings/publish-status";
 import { parseBody, requireTenantWriter, updateResult } from "@/lib/settings/route-auth";
 import { languageRequestSchema } from "@/lib/settings/schemas";
 
@@ -13,8 +14,16 @@ export const runtime = "nodejs";
  * "Publish changes". It lives on `tenants`, which PUBLISH-1's
  * `agent_configs.updated_at` badge could never see — this stamps
  * `language_config.changed_at` so `GET /api/tenant/agent/publish-status`
- * can. Backend readers only read `->>'primary'`, so the extra key is inert
- * to them. Saving the same language again does not re-stamp.
+ * can. Backend readers only read `->>'primary'`, so the extra keys are
+ * inert to them. Saving the same language again does not re-stamp.
+ *
+ * SETTINGS-1 review:
+ * - The first change after a publish also records `published_primary` —
+ *   the language the live agent was built with — so switching back to it
+ *   no longer shows "You changed the call language" (a revert needs no
+ *   publish). Later unpublished changes carry that value forward.
+ * - Other `language_config` keys are kept instead of the whole object
+ *   being replaced.
  */
 export async function POST(request: Request) {
   const auth = await requireTenantWriter();
@@ -22,28 +31,48 @@ export async function POST(request: Request) {
   const body = await parseBody(request, languageRequestSchema);
   if (!body.ok) return body.response;
 
-  const { data: current, error: readError } = await auth.supabase
-    .from("tenants")
-    .select("language_config")
-    .eq("id", auth.tenantId)
-    .maybeSingle();
-  if (readError) return NextResponse.json({ error: "read_failed" }, { status: 500 });
-  if (!current) return NextResponse.json({ error: "not_found" }, { status: 404 });
+  const [tenantRes, configRes] = await Promise.all([
+    auth.supabase.from("tenants").select("language_config").eq("id", auth.tenantId).maybeSingle(),
+    auth.supabase
+      .from("agent_configs")
+      .select("published_at")
+      .eq("tenant_id", auth.tenantId)
+      .maybeSingle(),
+  ]);
+  if (tenantRes.error || configRes.error) {
+    return NextResponse.json({ error: "read_failed" }, { status: 500 });
+  }
+  if (!tenantRes.data) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
-  const existing = (current.language_config ?? {}) as Record<string, unknown>;
+  const raw = tenantRes.data.language_config as unknown;
+  const existing =
+    typeof raw === "object" && raw !== null && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
   if (existing["primary"] === body.data.primary) {
     return NextResponse.json({ ok: true, changed: false });
   }
 
+  const publishedAt = configRes.data?.published_at ?? null;
+  const livePrimary = languageChangePendingSince(existing, publishedAt)
+    ? publishedLanguage(existing)
+    : typeof existing["primary"] === "string"
+      ? existing["primary"]
+      : null;
+
+  const rest = { ...existing };
+  delete rest["published_primary"];
   const languageConfig = {
+    ...rest,
     primary: body.data.primary,
-    bilingual: false,
+    bilingual: typeof existing["bilingual"] === "boolean" ? existing["bilingual"] : false,
     changed_at: new Date().toISOString(),
+    ...(livePrimary ? { published_primary: livePrimary } : {}),
   };
   const result = await auth.supabase
     .from("tenants")
-    // `changed_at` is not on the hand-maintained `TenantRow.language_config`
-    // type (packages/supabase-client, outside this task's ownership).
+    // `changed_at`/`published_primary` are not on the hand-maintained
+    // `TenantRow.language_config` type (packages/supabase-client).
     .update({ language_config: languageConfig as { primary: string; bilingual: boolean } })
     .eq("id", auth.tenantId)
     .select("id");

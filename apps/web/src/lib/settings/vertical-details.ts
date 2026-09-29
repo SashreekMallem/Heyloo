@@ -45,9 +45,11 @@ function isEmptyValue(value: unknown): boolean {
   if (typeof value === "string") return value.trim().length === 0;
   if (Array.isArray(value)) return value.length === 0;
   if (typeof value === "object") {
-    return Object.values(value as Record<string, unknown>).every(
-      (v) => typeof v === "string" && v.trim().length === 0,
-    );
+    // SETTINGS-1 review: an untouched contact is `{name: undefined, phone:
+    // undefined}` in react-hook-form (JSON drops both keys -> `{}`), which
+    // used to 422 and block the whole Vertical details save for every
+    // tenant without a tow partner / emergency referral.
+    return Object.values(value as Record<string, unknown>).every((v) => isEmptyValue(v));
   }
   return false;
 }

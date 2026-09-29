@@ -168,6 +168,10 @@ describe("zContactRequest", () => {
       phone: "+16105550199",
     });
     expect(zContactRequest.parse({ name: "", phone: "" })).toBeNull();
+    // SETTINGS-1 review: an untouched contact arrives as `{}` — clear, don't 422.
+    expect(zContactRequest.parse({})).toBeNull();
+    expect(zContactRequest.safeParse({ name: "Ace Towing" }).success).toBe(false);
+    expect(zContactRequest.safeParse({ phone: "6105550199" }).success).toBe(false);
     expect(zContactRequest.parse(undefined)).toBeUndefined();
     expect(zContactRequest.safeParse({ name: "Ace Towing", phone: "" }).success).toBe(false);
     expect(zContactRequest.safeParse({ name: "", phone: "6105550199" }).success).toBe(false);

@@ -141,5 +141,7 @@ export async function POST(request: Request) {
     });
   }
 
-  return NextResponse.json({ ok: true, id: data.id });
+  // SETTINGS-1 review: tell Setup → Resources whether the new resource's
+  // times are bookable now or only after the nightly roll-forward.
+  return NextResponse.json({ ok: true, id: data.id, slots_updated: !slotsError });
 }

@@ -30,10 +30,17 @@ export const offeringWriteSchema = offeringSchema.omit({ resource_id: true }).ex
  * kept `active.default(true)` / `metadata.default({})` (zod 4 still applies
  * a default inside `.partial()`), so a PATCH that only renamed a menu item
  * re-activated it and wiped its modifiers/allergens.
+ *
+ * SETTINGS-1 review: `duration_minutes`/`price_cents` accept `null` so an
+ * owner can REMOVE a length or price (both columns are nullable). Before,
+ * Agent → Services dropped an emptied field from the PATCH, reported
+ * "Saved", and the AI kept quoting the old price.
  */
 export const offeringUpdateSchema = offeringSchema
   .omit({ resource_id: true })
   .extend({
+    duration_minutes: offeringSchema.shape.duration_minutes.unwrap().nullable(),
+    price_cents: offeringSchema.shape.price_cents.unwrap().nullable(),
     category: z.string().trim().min(1).max(200).nullish(),
     resource_type_required: z.enum(["chair", "room", "table", "bay", "staff", "agent"]).nullish(),
     active: z.boolean(),

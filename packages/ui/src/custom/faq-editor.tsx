@@ -49,12 +49,14 @@ export function FAQEditor({ items, onChange }: FAQEditorProps) {
             <div className="flex items-start gap-2">
               <Input
                 placeholder="Question"
+                aria-label={`Question ${index + 1}`}
                 value={item.question}
                 onChange={(e) => updateItem(index, { question: e.target.value })}
               />
               <Button
                 size="icon"
                 variant="ghost"
+                aria-label={`Remove question ${index + 1}`}
                 onClick={() => onChange(items.filter((_, i) => i !== index))}
               >
                 <Trash2 className="size-4" />
@@ -62,6 +64,7 @@ export function FAQEditor({ items, onChange }: FAQEditorProps) {
             </div>
             <Textarea
               placeholder="Answer"
+              aria-label={`Answer to question ${index + 1}`}
               value={item.answer}
               onChange={(e) => updateItem(index, { answer: e.target.value })}
             />

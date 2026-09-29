@@ -144,6 +144,22 @@ describe("POST /api/tenant/agent/vertical-details", () => {
     });
   });
 
+  it("SETTINGS-1 review: an untouched (empty) tow partner arrives as {} — saves and clears instead of 422ing the whole form", async () => {
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    const updatePayloads: Record<string, unknown> = {};
+    fromMock = makeFrom(
+      [{ data: { dynamic_variable_overrides: {} }, error: null }, { error: null }, { error: null }],
+      (table, payload) => {
+        updatePayloads[table] = payload;
+      },
+    );
+    const res = await POST(postRequest({ ...validPayload, tow_partner: {} }));
+    expect(res.status).toBe(200);
+    expect(updatePayloads["agent_configs"]).toEqual({
+      dynamic_variable_overrides: { cancellation_policy: validPayload.cancellation_policy },
+    });
+  });
+
   it("SETTINGS-1: 422s on a tow partner phone that isn't a real number", async () => {
     mockGetUser = async () => ({ data: { user: mockUser } });
     const res = await POST(

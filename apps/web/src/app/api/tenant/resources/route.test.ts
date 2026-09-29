@@ -145,7 +145,7 @@ describe("POST /api/tenant/resources", () => {
       postRequest({ type: "room", name: "Room 1", capacity: 2, room_type: "queen" }),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, id: "r1" });
+    expect(await res.json()).toEqual({ ok: true, id: "r1", slots_updated: true });
     // ONBOARD-1: the new resource's own id + the caller's own (JWT-derived)
     // tenant_id are passed, never anything client-supplied.
     expect(mockRpc).toHaveBeenCalledWith("fn_regenerate_availability_slots", {
@@ -162,6 +162,6 @@ describe("POST /api/tenant/resources", () => {
     mockRpc.mockResolvedValueOnce({ data: null, error: { message: "boom" } });
     const res = await POST(postRequest({ type: "bay", name: "Bay 1" }));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, id: "r2" });
+    expect(await res.json()).toEqual({ ok: true, id: "r2", slots_updated: false });
   });
 });

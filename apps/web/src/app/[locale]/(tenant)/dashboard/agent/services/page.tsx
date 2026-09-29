@@ -102,13 +102,24 @@ export default function ServicesTabPage() {
     }
     setErrors({});
     setSaving(true);
-    const payload = {
-      name: parsed.data.name,
-      ...(parsed.data.duration_minutes !== undefined
-        ? { duration_minutes: parsed.data.duration_minutes }
-        : {}),
-      ...(parsed.data.price_cents !== undefined ? { price_cents: parsed.data.price_cents } : {}),
-    };
+    // A new service simply omits an empty length/price. An EDIT sends `null`
+    // so emptying the field really removes the stored value (SETTINGS-1
+    // review: it used to be dropped from the PATCH and the old price stayed live).
+    const payload = editing
+      ? {
+          name: parsed.data.name,
+          duration_minutes: parsed.data.duration_minutes ?? null,
+          price_cents: parsed.data.price_cents ?? null,
+        }
+      : {
+          name: parsed.data.name,
+          ...(parsed.data.duration_minutes !== undefined
+            ? { duration_minutes: parsed.data.duration_minutes }
+            : {}),
+          ...(parsed.data.price_cents !== undefined
+            ? { price_cents: parsed.data.price_cents }
+            : {}),
+        };
     const result = editing
       ? await sendJson(`/api/tenant/offerings/${editing.id}`, payload, "PATCH")
       : await sendJson("/api/tenant/offerings", payload);
@@ -187,8 +198,8 @@ export default function ServicesTabPage() {
               )}
             </div>
             <div className="space-y-1">
-              <Label>Price</Label>
-              <CentsInput value={priceCents} onChange={setPriceCents} />
+              <Label htmlFor="service-price">Price</Label>
+              <CentsInput id="service-price" value={priceCents} onChange={setPriceCents} />
               {errors.price_cents && (
                 <p className="text-xs text-destructive">{errors.price_cents}</p>
               )}

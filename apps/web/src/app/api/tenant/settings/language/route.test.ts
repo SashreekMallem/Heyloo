@@ -41,4 +41,81 @@ describe("POST /api/tenant/settings/language", () => {
     expect(await res.json()).toEqual({ ok: true, changed: false });
     expect(fake.callsTo("tenants", "update")).toHaveLength(0);
   });
+
+  it("SETTINGS-1 review: the first change after a publish records the published language and keeps other keys", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:select", {
+      data: { language_config: { primary: "en", bilingual: false, voice: "x" } },
+      error: null,
+    });
+    fake.queue("agent_configs:select", {
+      data: { published_at: "2026-09-23T02:28:50Z" },
+      error: null,
+    });
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    await POST(jsonRequest(url, { primary: "es" }));
+    const payload = fake.callsTo("tenants", "update")[0]?.payload as {
+      language_config: Record<string, unknown>;
+    };
+    expect(payload.language_config).toMatchObject({
+      primary: "es",
+      bilingual: false,
+      voice: "x",
+      published_primary: "en",
+    });
+    expect(fake.callsTo("agent_configs", "select")[0]?.filters).toContainEqual([
+      "eq",
+      "tenant_id",
+      "t1",
+    ]);
+  });
+
+  it("SETTINGS-1 review: a later unpublished change carries the published language forward (so a revert clears the badge)", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:select", {
+      data: {
+        language_config: {
+          primary: "es",
+          bilingual: false,
+          changed_at: "2026-09-29T01:00:00Z",
+          published_primary: "en",
+        },
+      },
+      error: null,
+    });
+    fake.queue("agent_configs:select", {
+      data: { published_at: "2026-09-23T02:28:50Z" },
+      error: null,
+    });
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    await POST(jsonRequest(url, { primary: "en" }));
+    const payload = fake.callsTo("tenants", "update")[0]?.payload as {
+      language_config: Record<string, unknown>;
+    };
+    expect(payload.language_config).toMatchObject({ primary: "en", published_primary: "en" });
+  });
+
+  it("SETTINGS-1 review: after a newer publish, the next change records the NEW published language", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:select", {
+      data: {
+        language_config: {
+          primary: "es",
+          changed_at: "2026-09-01T00:00:00Z",
+          published_primary: "en",
+        },
+      },
+      error: null,
+    });
+    fake.queue("agent_configs:select", {
+      data: { published_at: "2026-09-02T00:00:00Z" },
+      error: null,
+    });
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    await POST(jsonRequest(url, { primary: "en" }));
+    const payload = fake.callsTo("tenants", "update")[0]?.payload as {
+      language_config: Record<string, unknown>;
+    };
+    expect(payload.language_config).toMatchObject({ primary: "en", published_primary: "es" });
+  });
 });
