@@ -1,3 +1,4 @@
+import { createMicrosoftGraphEmailProvider, parseMsGraphEnv } from "./microsoft-graph.ts";
 import { createResendEmailProvider } from "./resend.ts";
 import { createSmtpEmailProvider, parseSmtpEnv } from "./smtp.ts";
 import { createTelnyxSmsProvider } from "./telnyx.ts";
@@ -23,7 +24,9 @@ export const EMAIL_FROM_ENV = "EMAIL_FROM_ADDRESS";
  *   2. the tenant override (`tenants.sms_provider`);
  *   3. the platform default (`SMS_PROVIDER` env, default `telnyx`).
  * Email: tenant override (none stored yet) then `EMAIL_PROVIDER` (default
- * `resend`; `smtp` sends from the owner's own mailbox, MSG-3).
+ * `resend`; `smtp` sends from the owner's own mailbox, MSG-3;
+ * `microsoft_graph` sends from the owner's Microsoft 365 mailbox over HTTPS,
+ * EMAIL-MSGRAPH).
  *
  * Fails CLOSED: a chosen provider whose secrets are missing resolves to
  * `provider_not_configured` (never a silent fallback to a different
@@ -163,6 +166,9 @@ export const PROVIDER_REQUIRED_ENV: Record<SmsProviderId | EmailProviderId, read
   resend: ["RESEND_API_KEY"],
   // SMTP_PORT is optional (default 465) but validated when set (`parseSmtpEnv`).
   smtp: ["SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD"],
+  // Validated in full (GUID shapes, mailbox address) by `parseMsGraphEnv`;
+  // the sending mailbox is the shared EMAIL_FROM_ADDRESS.
+  microsoft_graph: ["MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET"],
 };
 
 function slotFor<P>(
@@ -201,6 +207,7 @@ export function buildMessagingRegistryFromEnv(
     ),
   };
   const smtp = parseSmtpEnv(env);
+  const msGraph = parseMsGraphEnv(env);
   const email: MessagingRegistryConfig["email"] = {
     resend: slotFor(env, "resend", () =>
       createResendEmailProvider({ fetchImpl, apiKey: value("RESEND_API_KEY") }),
@@ -208,6 +215,12 @@ export function buildMessagingRegistryFromEnv(
     smtp: smtp.ok
       ? { configured: true, provider: createSmtpEmailProvider({ config: smtp.config }) }
       : { configured: false, missing: smtp.missing },
+    microsoft_graph: msGraph.ok
+      ? {
+          configured: true,
+          provider: createMicrosoftGraphEmailProvider({ fetchImpl, config: msGraph.config }),
+        }
+      : { configured: false, missing: msGraph.missing },
   };
   return createMessagingRegistry({
     smsDefault: env("SMS_PROVIDER") || "telnyx",
