@@ -9,31 +9,13 @@ import { Button, CarrierForwardingCard, Input, Label, WizardStepper } from "@hey
 import { useState } from "react";
 import { toast } from "sonner";
 import { useRouter } from "@/i18n/navigation";
+import { CARRIER_CODES, dialableNumber } from "./carrier-codes";
 
 const CARRIER_LABELS: Record<(typeof CARRIERS)[number], string> = {
   att: "AT&T",
   verizon: "Verizon",
   tmobile: "T-Mobile",
   other_landline: "Other / landline",
-};
-
-const CARRIER_CODES: Record<(typeof CARRIERS)[number], { label: string; code: string }[]> = {
-  att: [
-    { label: "Forward when busy/no answer", code: "*71{number}" },
-    { label: "Cancel forwarding", code: "*73" },
-  ],
-  verizon: [
-    { label: "Forward when unanswered", code: "*71{number}" },
-    { label: "Cancel forwarding", code: "*73" },
-  ],
-  tmobile: [
-    { label: "Forward when unanswered", code: "*004*{number}#" },
-    { label: "Cancel forwarding", code: "##004#" },
-  ],
-  other_landline: [
-    { label: "Conditional call forwarding", code: "*72{number}" },
-    { label: "Cancel forwarding", code: "*73" },
-  ],
 };
 
 type Stage = "carrier" | "verify" | "success" | "port_in";
@@ -152,12 +134,8 @@ export function PhoneSetupWizard({
 
           <CarrierForwardingCard
             carrier={CARRIER_LABELS[carrier]}
-            codes={CARRIER_CODES[carrier].map((c) =>
-              mode === "full" && c.label.toLowerCase().includes("conditional")
-                ? { ...c, label: "Forward all calls" }
-                : c,
-            )}
-            forwardingNumber={forwardingNumber}
+            codes={CARRIER_CODES[carrier][mode]}
+            forwardingNumber={dialableNumber(forwardingNumber)}
           />
 
           <div className="flex gap-3">

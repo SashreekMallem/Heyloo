@@ -24,6 +24,20 @@ describe("PhoneSetupWizard — never renders a code without a number (SIGNUP-BIL
   it("with a number renders the carrier codes containing that number", () => {
     render(<PhoneSetupWizard tenantId="t1" forwardingNumber="+15551230000" onboarding />);
     expect(screen.queryByTestId("number-not-ready")).not.toBeInTheDocument();
-    expect(screen.getByText("*71+15551230000")).toBeInTheDocument();
+    // QA-1 F-2: AT&T (the preselected carrier) gets its own GSM code and the
+    // 10-digit national number, never "+1".
+    expect(screen.getByText("*004*5551230000*11#")).toBeInTheDocument();
+    expect(screen.getByText("##004#")).toBeInTheDocument();
+    expect(screen.queryByText(/\+1/)).not.toBeInTheDocument();
+  });
+
+  it("switching carrier shows that carrier's codes", async () => {
+    const user = userEvent.setup();
+    render(<PhoneSetupWizard tenantId="t1" forwardingNumber="+15551230000" onboarding />);
+    await user.click(screen.getByRole("button", { name: "Verizon" }));
+    expect(screen.getByText("*715551230000")).toBeInTheDocument();
+    expect(screen.getByText("*73")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "T-Mobile" }));
+    expect(screen.getByText("**004*5551230000#")).toBeInTheDocument();
   });
 });

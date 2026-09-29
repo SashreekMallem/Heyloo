@@ -16,6 +16,15 @@ export interface CarrierForwardingCardProps {
 }
 
 /**
+ * `tel:` link for a dial code. `#` must be percent-encoded: in a URL a bare
+ * `#` starts the fragment, so `tel:*004*6105550100*11#` would dial without
+ * its terminating `#` and the carrier would never act on it.
+ */
+export function telHref(code: string): string {
+  return `tel:${code.replace(/[^\d*#+]/g, "").replaceAll("#", "%23")}`;
+}
+
+/**
  * Per-carrier forwarding codes + tap-to-dial (FRONTEND_SPEC.md §1.3/§6.7).
  * `*72`/`*73`-style codes: VERIFY against each carrier's current published
  * forwarding-code docs before shipping real values — the codes passed in
@@ -32,39 +41,36 @@ export function CarrierForwardingCard({
         <CardTitle className="text-base">{carrier} forwarding codes</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {codes.map((code) => (
-          <div
-            key={code.label}
-            className="flex items-center justify-between gap-2 rounded-md border border-border p-3"
-          >
-            <div>
-              <p className="text-sm font-medium">{code.label}</p>
-              <p className="font-mono text-sm text-muted-foreground">
-                {code.code.replace("{number}", forwardingNumber)}
-              </p>
-            </div>
-            <div className="flex gap-1">
-              <Button variant="outline" size="icon" asChild>
-                <a
-                  href={`tel:${code.code.replace("{number}", forwardingNumber).replace(/[^\d*#+]/g, "")}`}
+        {codes.map((template) => {
+          const code = { ...template, code: template.code.replace("{number}", forwardingNumber) };
+          return (
+            <div
+              key={code.label}
+              className="flex items-center justify-between gap-2 rounded-md border border-border p-3"
+            >
+              <div>
+                <p className="text-sm font-medium">{code.label}</p>
+                <p className="font-mono text-sm text-muted-foreground">{code.code}</p>
+              </div>
+              <div className="flex gap-1">
+                <Button variant="outline" size="icon" asChild>
+                  <a href={telHref(code.code)}>
+                    <Phone className="size-4" />
+                    <span className="sr-only">Dial {code.label}</span>
+                  </a>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => navigator.clipboard?.writeText(code.code)}
                 >
-                  <Phone className="size-4" />
-                  <span className="sr-only">Dial {code.label}</span>
-                </a>
-              </Button>
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={() =>
-                  navigator.clipboard?.writeText(code.code.replace("{number}", forwardingNumber))
-                }
-              >
-                <Copy className="size-4" />
-                <span className="sr-only">Copy {code.label}</span>
-              </Button>
+                  <Copy className="size-4" />
+                  <span className="sr-only">Copy {code.label}</span>
+                </Button>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </CardContent>
     </Card>
   );
