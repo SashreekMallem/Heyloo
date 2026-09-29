@@ -2,6 +2,7 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEMO_CALL_MARGIN_MS, DEMO_CALL_MAX_MS, demoCallLimitMs } from "./demo-call-limits";
 import {
+  type DemoCallGrant,
   DemoCallGrantError,
   type DemoWebClient,
   parseTranscriptUpdate,
@@ -32,12 +33,12 @@ function setMic(getUserMedia: (() => Promise<unknown>) | null) {
 
 const stream = { getTracks: () => [{ stop: vi.fn() }] };
 
-function setup(overrides: { grant?: () => Promise<{ token: string; maxCallMs?: number }> } = {}) {
+function setup(overrides: { grant?: () => Promise<DemoCallGrant> } = {}) {
   const client = new FakeClient();
   const fetchGrant = vi.fn(overrides.grant ?? (async () => ({ token: "tok_1" })));
   const loadClient = vi.fn(async () => client);
-  const hook = renderHook(() => useDemoCall({ fetchGrant, loadClient }));
-  return { client, fetchGrant, loadClient, ...hook };
+  const utils = renderHook(() => useDemoCall({ fetchGrant, loadClient }));
+  return { client, fetchGrant, loadClient, ...utils };
 }
 
 async function settle() {
@@ -56,6 +57,29 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("useDemoCall: joining a gateway call", () => {
+  it("hands the SDK the transport, call id and ICE servers the server forwarded", async () => {
+    const { result, client } = setup({
+      grant: async () => ({
+        token: "tok_gw",
+        webCall: {
+          callId: "call_1",
+          transport: "gateway",
+          iceServers: [{ urls: ["stun:s.example:3478"] }],
+        },
+      }),
+    });
+    act(() => result.current.start());
+    await settle();
+    expect(client.startCall).toHaveBeenCalledWith({
+      accessToken: "tok_gw",
+      transport: "gateway",
+      callId: "call_1",
+      iceServers: [{ urls: ["stun:s.example:3478"] }],
+    });
+  });
 });
 
 describe("useDemoCall: a normal call", () => {

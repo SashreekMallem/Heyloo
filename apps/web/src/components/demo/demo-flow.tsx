@@ -27,6 +27,7 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { Link } from "@/i18n/navigation";
 import { useDemoCall } from "./use-demo-call";
+import { type DemoWebCall, parseWebCall } from "./web-call";
 
 type AgentSummary = { business_name: string; hours_detected: string; services_detected: string[] };
 
@@ -39,6 +40,7 @@ type Step =
       name: "active";
       demoSessionId: string;
       callToken: string;
+      webCall: DemoWebCall | undefined;
       demoPhone: string;
       summary: AgentSummary;
     };
@@ -140,11 +142,12 @@ export function DemoFlow({ initialVertical }: { initialVertical?: string | undef
       <ConfirmStep
         demoSessionId={step.demoSessionId}
         summary={step.summary}
-        onActivate={(callToken, demoPhone, summary) =>
+        onActivate={(callToken, demoPhone, summary, webCall) =>
           setStep({
             name: "active",
             demoSessionId: step.demoSessionId,
             callToken,
+            webCall,
             demoPhone,
             summary,
           })
@@ -157,6 +160,7 @@ export function DemoFlow({ initialVertical }: { initialVertical?: string | undef
     <ActiveStep
       demoSessionId={step.demoSessionId}
       callToken={step.callToken}
+      webCall={step.webCall}
       demoPhone={step.demoPhone}
       summary={step.summary}
     />
@@ -170,7 +174,12 @@ function ConfirmStep({
 }: {
   demoSessionId: string;
   summary: AgentSummary;
-  onActivate: (callToken: string, demoPhone: string, summary: AgentSummary) => void;
+  onActivate: (
+    callToken: string,
+    demoPhone: string,
+    summary: AgentSummary,
+    webCall: DemoWebCall | undefined,
+  ) => void;
 }) {
   const [businessName, setBusinessName] = useState(summary.business_name);
   const [hours, setHours] = useState(summary.hours_detected);
@@ -197,6 +206,7 @@ function ConfirmStep({
       });
       const body = (await res.json()) as {
         retell_call_token?: string;
+        retell_web_call?: unknown;
         demo_phone_e164?: string;
         agent_summary?: AgentSummary;
       };
@@ -205,7 +215,12 @@ function ConfirmStep({
         setActivating(false);
         return;
       }
-      onActivate(body.retell_call_token, body.demo_phone_e164, body.agent_summary ?? edits);
+      onActivate(
+        body.retell_call_token,
+        body.demo_phone_e164,
+        body.agent_summary ?? edits,
+        parseWebCall(body.retell_web_call),
+      );
     } catch {
       toast.error("We couldn't activate your demo — please try again.");
       setActivating(false);
@@ -261,17 +276,19 @@ function ConfirmStep({
 function ActiveStep({
   demoSessionId,
   callToken,
+  webCall,
   demoPhone,
   summary,
 }: {
   demoSessionId: string;
   callToken: string;
+  webCall: DemoWebCall | undefined;
   demoPhone: string;
   summary: AgentSummary;
 }) {
   // The call itself (mic prompt, connect, live transcript, the hard time limit)
   // is the same state machine the home page's "Talk to Heyloo" uses.
-  const call = useDemoCall({ fetchGrant: async () => ({ token: callToken }) });
+  const call = useDemoCall({ fetchGrant: async () => ({ token: callToken, webCall }) });
   const callState = call.phase;
   const [emailSent, setEmailSent] = useState(false);
   const [email, setEmail] = useState("");

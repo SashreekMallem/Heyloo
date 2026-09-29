@@ -8,13 +8,29 @@ export const runtime = "nodejs";
 
 /**
  * What `api-demo-agent` answers to `{ instant: true }`. Validated at the
- * boundary (CLAUDE.md Rule 1.2): only the token, the phone and the call
- * ceiling ever reach the browser.
+ * boundary (CLAUDE.md Rule 1.2): only the token, how to join it, the phone
+ * and the call ceiling ever reach the browser.
  */
 const instantDemoResponseSchema = z.object({
   retell_call_token: z.string().min(1),
   demo_phone_e164: z.string().min(1),
   max_call_ms: z.number().int().positive(),
+  /** Transport, call id and ICE servers the browser SDK needs to join (optional: older edge builds omit it). */
+  retell_web_call: z
+    .object({
+      call_id: z.string().min(1).optional(),
+      transport: z.enum(["gateway", "livekit"]).optional(),
+      ice_servers: z
+        .array(
+          z.object({
+            urls: z.union([z.string(), z.array(z.string())]),
+            username: z.string().optional(),
+            credential: z.string().optional(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
 });
 
 const RETRY_AFTER_SECONDS = 600;

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -136,7 +136,7 @@ describe("TalkLive: a call", () => {
     await act(async () => {
       vi.advanceTimersByTime(117_000);
     });
-    await waitFor(() => expect(screen.getByText(/2 minute limit/)).toBeInTheDocument());
+    expect(await screen.findByText(/2 minute limit/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Talk again" })).toBeInTheDocument();
   });
 

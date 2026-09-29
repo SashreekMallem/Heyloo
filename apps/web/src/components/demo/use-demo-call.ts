@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { demoCallLimitMs } from "./demo-call-limits";
+import type { DemoWebCall } from "./web-call";
 
 /**
  * The browser side of a public demo call, shared by `/demo` (`DemoFlow`) and
@@ -11,9 +12,10 @@ import { demoCallLimitMs } from "./demo-call-limits";
  *
  * The Retell web SDK is loaded on demand (never in a page's initial JS) and
  * only from this component folder, the same place the dashboard's test-call
- * and the widget's voice bridge load it (`retell-client-js-sdk` 2.x,
- * `RetellWebClient`). The `update` event carries the live transcript; its
- * payload is checked below rather than trusted (docs/VERIFY.md SITE-3).
+ * and the widget's voice bridge load it (`retell-client-js-sdk` 3.x, whose
+ * `RetellWebClient` keeps the 2.x `startCall` / event API). The `update` event
+ * carries the live transcript; its payload is checked below rather than
+ * trusted (docs/VERIFY.md SITE-3).
  */
 
 export type DemoCallPhase = "idle" | "requesting-mic" | "connecting" | "live" | "ended" | "error";
@@ -38,6 +40,8 @@ export interface DemoCallGrant {
   token: string;
   maxCallMs?: number;
   demoPhone?: string;
+  /** Transport, call id and ICE servers create-web-call returned, when the server forwarded them. */
+  webCall?: DemoWebCall | undefined;
 }
 
 /** Thrown by `fetchGrant` to steer the error state. */
@@ -51,7 +55,12 @@ export class DemoCallGrantError extends Error {
 /** The slice of the SDK client this hook uses. */
 export interface DemoWebClient {
   on(event: string, listener: (payload?: unknown) => void): unknown;
-  startCall(config: { accessToken: string }): Promise<void>;
+  startCall(config: {
+    accessToken: string;
+    transport?: "gateway" | "livekit";
+    callId?: string;
+    iceServers?: NonNullable<DemoWebCall["iceServers"]>;
+  }): Promise<void>;
   stopCall(): void;
 }
 
@@ -250,7 +259,13 @@ export function useDemoCall({ fetchGrant, loadClient }: UseDemoCallOptions): Dem
         });
         client.on("agent_start_talking", () => aliveRef.current && setAgentTalking(true));
         client.on("agent_stop_talking", () => aliveRef.current && setAgentTalking(false));
-        await client.startCall({ accessToken: grant.token });
+        const web = grant.webCall;
+        await client.startCall({
+          accessToken: grant.token,
+          ...(web?.transport ? { transport: web.transport } : {}),
+          ...(web?.callId ? { callId: web.callId } : {}),
+          ...(web?.iceServers ? { iceServers: web.iceServers } : {}),
+        });
         // Hung up while the connection was still being made: drop it now.
         if (finishedRef.current) client.stopCall();
       } catch {

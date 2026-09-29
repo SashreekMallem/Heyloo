@@ -137,6 +137,7 @@ export type ConfirmDemoResult =
       body: {
         demo_session_id: string;
         retell_call_token: string;
+        retell_web_call?: RetellWebCallInfo;
         demo_phone_e164: string;
         agent_summary: AgentSummary;
         max_call_ms: number;
@@ -175,8 +176,9 @@ export async function handleConfirmDemo(
     services_detected: req.edits?.services_detected ?? stored.services_detected ?? [],
   };
 
-  const token = await mintDemoCallToken(summary, deps, session.id);
-  if (!token) return { status: 502, body: { error: "call_token_unavailable" } };
+  const minted = await mintDemoCallToken(summary, deps, session.id);
+  if (!minted) return { status: 502, body: { error: "call_token_unavailable" } };
+  const { token, webCall } = minted;
 
   await sql`
     update public.demo_sessions
@@ -190,6 +192,7 @@ export async function handleConfirmDemo(
     body: {
       demo_session_id: session.id,
       retell_call_token: token,
+      ...(webCall ? { retell_web_call: webCall } : {}),
       demo_phone_e164: deps.demoPhoneE164,
       agent_summary: summary,
       max_call_ms: DEMO_MAX_CALL_MS,
@@ -199,19 +202,62 @@ export async function handleConfirmDemo(
 
 /**
  * The hard ceiling on any public demo call, enforced by Retell itself through
- * `max_call_duration_ms` (RETELL-VERIFY, see `_shared/providers/retell.ts`).
+ * `agent_override.agent.max_call_duration_ms` (see `_shared/providers/retell.ts`).
  * The marketing site mirrors it as `DEMO_CALL_MAX_MS` in
  * `apps/web/src/components/demo/demo-call-limits.ts` and ends the call
  * client-side a little sooner, so a visitor sees a countdown, not a cut-off.
  */
 export const DEMO_MAX_CALL_MS = 120_000;
 
+/**
+ * What the browser SDK needs besides the token. docs.retellai.com/api-references/create-web-call
+ * (fetched 2026-09-29) returns `transport` ("gateway"), `call_id` and
+ * `ice_servers` next to `access_token`; the SDK's gateway transport requires
+ * the call id. Picked field by field, so nothing else from Retell's answer is
+ * ever forwarded to a public page.
+ */
+export interface RetellWebCallInfo {
+  call_id?: string;
+  transport?: "gateway" | "livekit";
+  ice_servers?: { urls: string | string[]; username?: string; credential?: string }[];
+}
+
+function pickWebCallInfo(body: {
+  call_id?: unknown;
+  transport?: unknown;
+  ice_servers?: unknown;
+}): RetellWebCallInfo | undefined {
+  const info: RetellWebCallInfo = {};
+  if (typeof body.call_id === "string" && body.call_id !== "") info.call_id = body.call_id;
+  if (body.transport === "gateway" || body.transport === "livekit") info.transport = body.transport;
+  if (Array.isArray(body.ice_servers)) {
+    const servers: NonNullable<RetellWebCallInfo["ice_servers"]> = [];
+    for (const raw of body.ice_servers as unknown[]) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const entry = raw as Record<string, unknown>;
+      const urls = entry["urls"];
+      const ok =
+        typeof urls === "string" ||
+        (Array.isArray(urls) && urls.every((u) => typeof u === "string"));
+      if (!ok) continue;
+      const server: NonNullable<RetellWebCallInfo["ice_servers"]>[number] = {
+        urls: urls as string | string[],
+      };
+      if (typeof entry["username"] === "string") server.username = entry["username"];
+      if (typeof entry["credential"] === "string") server.credential = entry["credential"];
+      servers.push(server);
+    }
+    if (servers.length > 0) info.ice_servers = servers;
+  }
+  return Object.keys(info).length > 0 ? info : undefined;
+}
+
 /** Mints the Retell web-call token for the demo agent, or `null` (and logs) when Retell refuses. */
 async function mintDemoCallToken(
   summary: AgentSummary,
   deps: DemoAgentDeps,
   demoSessionId: string | null,
-): Promise<string | null> {
+): Promise<{ token: string; webCall: RetellWebCallInfo | undefined } | null> {
   const callResult = await createWebCall(deps.retellFetch, deps.retellApiKey, {
     agent_id: deps.demoAgentId,
     retell_llm_dynamic_variables: {
@@ -219,9 +265,14 @@ async function mintDemoCallToken(
       greeting_hours_context: summary.hours_detected,
       services_detected: summary.services_detected.join(", "),
     },
-    max_call_duration_ms: DEMO_MAX_CALL_MS,
+    agent_override: { agent: { max_call_duration_ms: DEMO_MAX_CALL_MS } },
   });
-  const callBody = callResult.body as { access_token?: string };
+  const callBody = callResult.body as {
+    access_token?: string;
+    call_id?: unknown;
+    transport?: unknown;
+    ice_servers?: unknown;
+  };
   if (!callResult.ok || !callBody.access_token) {
     deps.logger.error("demo_agent_web_call_failed", {
       status: callResult.status,
@@ -229,7 +280,7 @@ async function mintDemoCallToken(
     });
     return null;
   }
-  return callBody.access_token;
+  return { token: callBody.access_token, webCall: pickWebCallInfo(callBody) };
 }
 
 /**
@@ -249,6 +300,7 @@ export type InstantDemoResult =
       body: {
         demo_session_id: string | null;
         retell_call_token: string;
+        retell_web_call?: RetellWebCallInfo;
         demo_phone_e164: string;
         agent_summary: AgentSummary;
         max_call_ms: number;
@@ -266,8 +318,9 @@ export async function handleInstantDemo(
   sql: SqlClient,
   deps: DemoAgentDeps,
 ): Promise<InstantDemoResult> {
-  const token = await mintDemoCallToken(INSTANT_DEMO_SUMMARY, deps, null);
-  if (!token) return { status: 502, body: { error: "call_token_unavailable" } };
+  const minted = await mintDemoCallToken(INSTANT_DEMO_SUMMARY, deps, null);
+  if (!minted) return { status: 502, body: { error: "call_token_unavailable" } };
+  const { token, webCall } = minted;
 
   const now = deps.now ?? new Date();
   const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
@@ -293,6 +346,7 @@ export async function handleInstantDemo(
     body: {
       demo_session_id: demoSessionId,
       retell_call_token: token,
+      ...(webCall ? { retell_web_call: webCall } : {}),
       demo_phone_e164: deps.demoPhoneE164,
       agent_summary: INSTANT_DEMO_SUMMARY,
       max_call_ms: DEMO_MAX_CALL_MS,
