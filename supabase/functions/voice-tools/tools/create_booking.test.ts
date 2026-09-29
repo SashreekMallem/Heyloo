@@ -8,6 +8,7 @@ import {
   findCommittedBooking,
   INVALID_TIME_MESSAGE,
   START_IN_PAST_MESSAGE,
+  TOO_SOON_MESSAGE,
 } from "./create_booking.ts";
 
 const ctx: CallContext = {
@@ -41,6 +42,7 @@ interface PreflightFixture {
   first_available_resource_id: string | null;
   offering_ok: boolean;
   start_in_past: boolean;
+  too_soon?: boolean;
   tz: string | null;
   deposit_overrides: Record<string, unknown> | null;
 }
@@ -84,7 +86,7 @@ const W = {
 } as const;
 
 /** Positions of the preflight statement's bound values (0-based). */
-const P = { exactResourceId: 2, lookupFirstAvailable: 5, isMotel: 17 } as const;
+const P = { exactResourceId: 2, lookupFirstAvailable: 5, isMotel: 20 } as const;
 
 type Reply = { rows?: unknown[]; throws?: unknown };
 
@@ -400,6 +402,28 @@ describe("createBooking — idempotency, races and errors", () => {
       reason: "invalid_time",
       message: INVALID_TIME_MESSAGE,
     });
+  });
+});
+
+describe("createBooking — owner minimum notice (VOICE-ALERTS-1 review)", () => {
+  it("refuses a start inside the owner-set minimum notice and never writes", async () => {
+    const { sql, calls } = makeSql(bookingRoutes({ preflight: { too_soon: true } }));
+    const result = await createBooking(sql, ctx, args);
+    expect(result).toEqual({
+      confirmed: false,
+      reason: "too_soon",
+      message: TOO_SOON_MESSAGE,
+    });
+    expect(calls.some((c) => c.text.includes(WRITE))).toBe(false);
+  });
+
+  it("computes the notice in the same preflight statement, from an optional column, only when the owner set one", async () => {
+    const { sql, textsMatching } = makeSql(bookingRoutes({}));
+    await createBooking(sql, ctx, args);
+    const text = textsMatching(PREFLIGHT)[0]?.text ?? "";
+    expect(text).toContain("to_jsonb(t) ->> 'booking_min_notice_minutes'");
+    expect(text).toContain("(select notice from tn) is null then false");
+    expect(text).not.toMatch(/t\.booking_min_notice_minutes/);
   });
 });
 

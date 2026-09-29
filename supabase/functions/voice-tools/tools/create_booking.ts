@@ -54,6 +54,7 @@ export type CreateBookingResult =
         | "resource_not_found"
         | "offering_not_found"
         | "start_in_past"
+        | "too_soon"
         | "invalid_time"
         | "manual_mode"
         | "not_completed";
@@ -64,6 +65,11 @@ export type CreateBookingResult =
 /** HOTPATH: the model-facing instruction for `reason: "start_in_past"`. */
 export const START_IN_PAST_MESSAGE =
   "That time has already passed, so it was NOT booked. Call check_availability again and offer the caller one of the upcoming times it returns.";
+
+/** VOICE-ALERTS-1 review: the model-facing instruction for `reason: "too_soon"`
+ * (the owner's minimum booking notice, `tenants.booking_min_notice_minutes`). */
+export const TOO_SOON_MESSAGE =
+  "That time is sooner than the business takes bookings for, so it was NOT booked. Call check_availability again and offer the caller one of the times it returns.";
 
 /** HOTPATH-REVIEW: the model-facing instruction for `reason: "invalid_time"`. */
 export const INVALID_TIME_MESSAGE =
@@ -224,6 +230,11 @@ interface PreflightRow {
    * (same statement, no extra round trip). */
   offering_name?: string | null;
   start_in_past: boolean;
+  /** VOICE-ALERTS-1 review: the start is inside the owner-set minimum notice
+   * (`tenants.booking_min_notice_minutes`; only when the owner set one, and
+   * never for a day-length night). `check_availability` already withholds
+   * such slots; this stops a caller-supplied time from skipping that. */
+  too_soon?: boolean;
   tz: string | null;
   deposit_overrides: Record<string, unknown> | null;
 }
@@ -249,7 +260,12 @@ async function preflight(
       where id = ${exactResourceId}::uuid and tenant_id = ${ctx.tenantId} and active
       limit 1
     ), tn as (
-      select timezone from public.tenants where id = ${ctx.tenantId}
+      -- The owner minimum notice is read via to_jsonb(t) ->> ..., not as a
+      -- column, so this keeps working on a database where
+      -- 20260929140000_tenant_booking_rules.sql is not applied yet (a plain
+      -- column reference would fail every booking with 42703 there).
+      select timezone, (to_jsonb(t) ->> 'booking_min_notice_minutes')::int as notice
+      from public.tenants t where t.id = ${ctx.tenantId}
     )
     select
       (select id from replay) as replay_id,
@@ -279,6 +295,11 @@ async function preflight(
           )
         else ${args.start}::timestamptz < now()
       end as start_in_past,
+      case
+        when (select notice from tn) is null then false
+        when ${args.end}::timestamptz - ${args.start}::timestamptz >= interval '23 hours' then false
+        else ${args.start}::timestamptz < now() + make_interval(mins => (select notice from tn))
+      end as too_soon,
       (select timezone from tn) as tz,
       case when ${isMotel} then (
         select dynamic_variable_overrides from public.agent_configs
@@ -436,6 +457,9 @@ export async function createBooking(
   }
   if (pre.start_in_past) {
     return { confirmed: false, reason: "start_in_past", message: START_IN_PAST_MESSAGE };
+  }
+  if (pre.too_soon) {
+    return { confirmed: false, reason: "too_soon", message: TOO_SOON_MESSAGE };
   }
   if (offeringId && !pre.offering_ok) {
     return { confirmed: false, reason: "offering_not_found" };
