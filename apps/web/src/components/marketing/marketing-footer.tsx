@@ -1,103 +1,93 @@
-import { VerticalIcon } from "@heyloo/ui/icons";
-import { Container } from "@heyloo/ui/layout/container";
-import { Phone } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { VERTICAL_CONTENT } from "@/content/marketing/verticals";
 import { Link } from "@/i18n/navigation";
 
+/**
+ * The marketing footer (SITE-3): the approved design's closing block, a
+ * blurb, the way back to the demo and sign-up, and the oversized wordmark
+ * (the home runtime widens it over the last stretch of the page). It keeps
+ * every link the old footer had: business types, product and legal pages.
+ * A Server Component: `useTranslations` here resolves on the server.
+ */
 export function MarketingFooter() {
   const t = useTranslations("Footer");
 
   return (
-    <footer className="border-t border-border">
-      <Container size="wide" className="py-12">
-        <div className="grid gap-10 sm:grid-cols-2 lg:grid-cols-[1.3fr_1fr_1fr_1fr]">
-          <div className="space-y-3">
-            <Link href="/" className="flex items-center gap-2">
-              <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-                <Phone className="size-3.5" aria-hidden="true" />
-              </span>
-              <span className="font-display text-h4 font-semibold">Heyloo</span>
-            </Link>
-            <p className="max-w-xs text-small text-muted-foreground">
-              An AI receptionist that answers every call, books real appointments, and always
-              discloses it&apos;s AI.
-            </p>
-          </div>
-
-          <div className="space-y-3">
-            <p className="text-small font-medium">Business types</p>
-            <ul className="space-y-2">
-              {VERTICAL_CONTENT.filter((v) => v.slug !== "generic")
-                .slice(0, 5)
-                .map((vertical) => (
-                  <li key={vertical.slug}>
-                    <Link
-                      href={`/${vertical.slug}`}
-                      className="flex items-center gap-2 text-small text-muted-foreground transition-colors hover:text-foreground"
-                    >
-                      <VerticalIcon vertical={vertical.vertical} className="size-3.5" />
-                      {vertical.displayName}
-                    </Link>
-                  </li>
-                ))}
+    <footer id="foot">
+      <div className="ft-in">
+        <p className="ft-text">{t("blurb")}</p>
+        <nav className="ft-links" aria-label="Footer">
+          <Link href="/#talk" prefetch={false}>
+            {t("demo")}
+          </Link>
+          <Link href="/signup" prefetch={false}>
+            {t("signup")}
+          </Link>
+          <Link href="/login" prefetch={false}>
+            {t("login")}
+          </Link>
+        </nav>
+        <div className="ft-cols">
+          <div>
+            <p className="lbl">{t("businessTypes")}</p>
+            <ul>
+              {VERTICAL_CONTENT.filter((v) => v.slug !== "generic").map((vertical) => (
+                <li key={vertical.slug}>
+                  <Link href={`/${vertical.slug}`} prefetch={false}>
+                    {vertical.displayName}
+                  </Link>
+                </li>
+              ))}
             </ul>
           </div>
-
-          <div className="space-y-3">
-            <p className="text-small font-medium">Product</p>
-            <ul className="space-y-2 text-small text-muted-foreground">
+          <div>
+            <p className="lbl">{t("product")}</p>
+            <ul>
               <li>
-                <Link href="/pricing" className="transition-colors hover:text-foreground">
-                  Pricing
+                <Link href="/pricing" prefetch={false}>
+                  {t("pricing")}
                 </Link>
               </li>
               <li>
-                <Link href="/demo" className="transition-colors hover:text-foreground">
-                  Live demo
+                <Link href="/demo" prefetch={false}>
+                  {t("buildDemo")}
                 </Link>
               </li>
               <li>
-                <Link href="/blog" className="transition-colors hover:text-foreground">
-                  Blog
-                </Link>
-              </li>
-              <li>
-                <Link href="/signup" className="transition-colors hover:text-foreground">
-                  Get started
+                <Link href="/blog" prefetch={false}>
+                  {t("blog")}
                 </Link>
               </li>
             </ul>
           </div>
-
-          <div className="space-y-3">
-            <p className="text-small font-medium">Legal</p>
-            <ul className="space-y-2 text-small text-muted-foreground">
+          <div>
+            <p className="lbl">{t("legal")}</p>
+            <ul>
               <li>
-                <Link href="/legal/terms" className="transition-colors hover:text-foreground">
+                <Link href="/legal/terms" prefetch={false}>
                   {t("terms")}
                 </Link>
               </li>
               <li>
-                <Link href="/legal/privacy" className="transition-colors hover:text-foreground">
+                <Link href="/legal/privacy" prefetch={false}>
                   {t("privacy")}
                 </Link>
               </li>
               <li>
-                <Link href="/legal/dpa" className="transition-colors hover:text-foreground">
+                <Link href="/legal/dpa" prefetch={false}>
                   {t("dpa")}
                 </Link>
               </li>
             </ul>
           </div>
         </div>
-
-        <div className="mt-10 border-t border-border pt-6">
-          <p className="text-small text-muted-foreground">
-            © {new Date().getFullYear()} Heyloo. {t("rights")}
-          </p>
-        </div>
-      </Container>
+        <p className="data ft-fine">
+          {t("examples")} © {new Date().getFullYear()} Heyloo. {t("rights")}
+        </p>
+      </div>
+      <p className="ft-mark kx" id="ft-mark" aria-hidden="true">
+        Heyloo
+      </p>
     </footer>
   );
 }

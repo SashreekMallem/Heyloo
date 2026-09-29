@@ -8,7 +8,6 @@ import {
   AccordionTrigger,
 } from "@heyloo/ui/primitives/accordion";
 import { Badge } from "@heyloo/ui/primitives/badge";
-import { Button } from "@heyloo/ui/primitives/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@heyloo/ui/primitives/card";
 import { Check } from "lucide-react";
 import type { Metadata } from "next";
@@ -65,10 +64,9 @@ export default async function PricingPage({ params }: { params: Promise<{ locale
     <>
       <Section spacing="spacious" className="pt-12 md:pt-16">
         <Container size="content" className="text-center">
-          <h1 className="font-display text-display font-semibold text-balance">
-            Starting at $299/mo
-          </h1>
-          <p className="mx-auto mt-4 max-w-xl text-body text-pretty text-muted-foreground">
+          <p className="lbl">Pricing</p>
+          <h1 className="d2s kx mt-4">Starting at $299/mo</h1>
+          <p className="lede mx-auto mt-5">
             Your exact price depends on your business type and call volume — see it in under a
             minute at signup, before you ever enter payment details.
           </p>
@@ -118,7 +116,7 @@ export default async function PricingPage({ params }: { params: Promise<{ locale
 
       <Section spacing="default" className="border-t border-border">
         <Container size="content">
-          <h2 className="text-h2 font-display font-semibold">Frequently asked questions</h2>
+          <h2 className="d2s kx">Frequently asked questions</h2>
           <Accordion type="single" collapsible className="mt-4">
             <AccordionItem value="billing">
               <AccordionTrigger>How does billing work?</AccordionTrigger>
@@ -156,10 +154,15 @@ export default async function PricingPage({ params }: { params: Promise<{ locale
       </Section>
 
       <Section spacing="default" className="pb-24">
-        <Container size="content" className="flex justify-center">
-          <Button size="lg" asChild>
-            <Link href="/signup">Get started</Link>
-          </Button>
+        <Container size="content">
+          <div className="ctas justify-center">
+            <Link className="btn btn-p" href="/signup" prefetch={false}>
+              Get started
+            </Link>
+            <Link className="btn btn-s" href="/#talk" prefetch={false}>
+              Hear a live demo
+            </Link>
+          </div>
         </Container>
       </Section>
     </>

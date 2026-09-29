@@ -1,4 +1,7 @@
+import "@/components/marketing/marketing.css";
+
 import type { Metadata } from "next";
+import { Geist_Mono, Mona_Sans } from "next/font/google";
 import { setRequestLocale } from "next-intl/server";
 import type { ReactNode } from "react";
 import { MarketingFooter } from "@/components/marketing/marketing-footer";
@@ -9,8 +12,33 @@ export const metadata: Metadata = {
 };
 
 /**
+ * The marketing type pairing (SITE-3, the approved premium design): Mona Sans
+ * as a variable font with its width axis (`wdth` 75 to 125, plus `wght`), which
+ * the kinetic headlines animate, and Geist Mono for labels, numbers and data.
+ * Both are self-hosted at build time by `next/font/google` and only preloaded
+ * on the marketing routes (this layout), never on the app or dashboard.
+ * `src/components/marketing/marketing.css` reads the two CSS variables and
+ * carries a size-adjusted local fallback face, so the swap never moves text.
+ */
+const monaSans = Mona_Sans({
+  subsets: ["latin"],
+  axes: ["wdth"],
+  variable: "--font-mona",
+  display: "swap",
+});
+
+const geistMono = Geist_Mono({
+  subsets: ["latin"],
+  variable: "--font-geist-mono",
+  display: "swap",
+});
+
+/**
  * (marketing) route group — no guard (FRONTEND_SPEC.md §0.1), header+footer
- * shell, no sidebar (§9.2).
+ * shell, no sidebar (§9.2). `.mk` is the shell class: it carries the new
+ * palette tokens (dark by default, light by system preference or an explicit
+ * `data-theme`), the two font variables, and remaps the app's semantic colour
+ * tokens so the pages that keep the app's components wear the same look.
  *
  * `setRequestLocale` must run here (not just in the parent `[locale]`
  * layout) because Next.js can render nested layouts/pages independently
@@ -35,9 +63,14 @@ export default async function MarketingLayout({
   setRequestLocale(locale);
 
   return (
-    <div className="flex min-h-svh flex-col">
+    <div className={`mk ${monaSans.variable} ${geistMono.variable} flex min-h-svh flex-col`}>
+      <a className="skip" href="#main">
+        Skip to content
+      </a>
       <MarketingHeader />
-      <main className="flex-1">{children}</main>
+      <main id="main" tabIndex={-1} className="flex-1">
+        {children}
+      </main>
       <MarketingFooter />
     </div>
   );

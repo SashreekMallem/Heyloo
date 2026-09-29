@@ -1,14 +1,30 @@
 {
   "Nav": {
+    "call": "How a call goes",
+    "dashboard": "Dashboard",
+    "businesses": "Businesses",
     "pricing": "Pricing",
-    "demo": "Try a live demo",
+    "demo": "Hear a live demo",
     "login": "Log in",
-    "signup": "Get started"
+    "signup": "Get started",
+    "openMenu": "Open menu",
+    "closeMenu": "Close menu"
   },
   "Footer": {
+    "blurb": "Heyloo is an AI phone receptionist for small businesses. On every call it tells the caller it’s an AI and that the call may be recorded.",
+    "businessTypes": "Business types",
+    "product": "Product",
+    "legal": "Legal",
+    "demo": "Hear a live demo",
+    "buildDemo": "Build a demo for your business",
+    "pricing": "Pricing",
+    "blog": "Blog",
+    "signup": "Get started",
+    "login": "Log in",
     "terms": "Terms",
     "privacy": "Privacy",
     "dpa": "Data Processing Addendum",
+    "examples": "Businesses, names and calls shown are examples.",
     "rights": "All rights reserved."
   }
 }
