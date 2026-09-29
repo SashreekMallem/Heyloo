@@ -752,6 +752,36 @@ describe("routeAdminRequest — cockpit group", () => {
     expect((result.body as { byTool: Record<string, unknown[]> }).byTool).toBeDefined();
   });
 
+  it("bottleneck tool summary carries the error rate and the most frequent failure reason (COCKPIT-F11)", async () => {
+    const { sql, calls } = makeSql({
+      "from public.tool_health th": [
+        {
+          tool_name: "create_booking",
+          calls: 10,
+          error_rate: "0.3",
+          p95_ms: 400,
+          top_error_type: "timeout",
+        },
+        { tool_name: "lookup_customer", calls: 4, error_rate: "0", p95_ms: 90 },
+      ],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-cockpit/bottleneck" }),
+      logger,
+    );
+    const tools = (result.body as { tools: Record<string, unknown>[] }).tools;
+    expect(tools[0]).toEqual({
+      tool_name: "create_booking",
+      calls: 10,
+      error_rate: 0.3,
+      p95_ms: 400,
+      top_error_type: "timeout",
+    });
+    expect(tools[1]).toMatchObject({ error_rate: 0, top_error_type: null });
+    expect(calls.some((c) => c.text.includes("f.error_type"))).toBe(true);
+  });
+
   it("returns 404 for an unknown cockpit page", async () => {
     const { sql } = makeSql();
     const result = await routeAdminRequest(
