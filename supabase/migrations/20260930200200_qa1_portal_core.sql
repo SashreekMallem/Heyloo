@@ -1,4 +1,9 @@
--- QA-1 portal-core F-02 / F-21: the Overview "Calls today / Bookings today /
+-- QA-1 portal-core database fixes (one migration, additive):
+--   Part 1 (F-02 / F-21)  usage_daily rollup: tenant-local buckets, hourly.
+--   Part 2 (F-04)         members may write their own notification watermark.
+--
+-- ===========================================================================
+-- Part 1 — F-02 / F-21: the Overview "Calls today / Bookings today /
 -- Minutes used" cards were stale by ~2 days for every tenant.
 --
 -- Root causes (both in the usage_daily writers, not the portal):
@@ -56,11 +61,13 @@ begin
        from public.call_logs cl
       where cl.tenant_id = p_tenant_id
         and not cl.is_test_call
+        and cl.channel in ('phone', 'web_voice')
         and cl.started_at >= v_start and cl.started_at < v_end),
     coalesce((select sum(cl.duration_seconds)
                 from public.call_logs cl
                where cl.tenant_id = p_tenant_id
                  and not cl.is_test_call
+                 and cl.channel in ('phone', 'web_voice')
                  and cl.started_at >= v_start and cl.started_at < v_end), 0) / 60.0,
     coalesce((select sum(ue.minutes)
                 from public.usage_events ue
@@ -70,7 +77,8 @@ begin
                  and exists (select 1 from public.call_logs cl
                               where cl.id = ue.call_id
                                 and cl.tenant_id = p_tenant_id
-                                and not cl.is_test_call)), 0),
+                                and not cl.is_test_call
+                                and cl.channel in ('phone', 'web_voice'))), 0),
     (select count(*) from public.bookings b
       where b.tenant_id = p_tenant_id and not b.is_test
         and b.created_at >= v_start and b.created_at < v_end),
@@ -123,3 +131,18 @@ begin
   end if;
 end;
 $$;
+
+-- ===========================================================================
+-- Part 2 — F-04: the notification bell never cleared its unread badge.
+-- 20260929160000 left `last_seen_notifications_at` as the only column
+-- `authenticated` may UPDATE on memberships, but the only UPDATE policy
+-- (memberships_write) is owner-only, so a non-owner member's write would
+-- silently touch 0 rows, and an owner could write ANY member's row. Add a
+-- self-scoped UPDATE policy: a member may update only their own membership row
+-- of the tenant in their JWT (the column grant still limits WHAT they can set).
+-- ===========================================================================
+
+create policy memberships_update_own_seen on public.memberships
+  for update
+  using (user_id = auth.uid() and tenant_id = public.fn_jwt_tenant_id())
+  with check (user_id = auth.uid() and tenant_id = public.fn_jwt_tenant_id());

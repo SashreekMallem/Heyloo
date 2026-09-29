@@ -1,7 +1,7 @@
 "use client";
 
 import { Bell } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { Badge } from "../primitives/badge.js";
 import { Button } from "../primitives/button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../primitives/popover.js";
@@ -20,7 +20,10 @@ export interface NotificationItem {
 export interface NotificationCenterProps {
   items: NotificationItem[];
   unreadCount: number;
+  /** Called when an item is clicked (the popover closes right after). */
   onOpen: (item: NotificationItem) => void;
+  /** Called whenever the popover opens or closes — the tenant shell marks everything read on open. */
+  onOpenChange?: (open: boolean) => void;
   renderItem?: (item: NotificationItem) => ReactNode;
 }
 
@@ -29,10 +32,16 @@ export function NotificationCenter({
   items,
   unreadCount,
   onOpen,
+  onOpenChange,
   renderItem,
 }: NotificationCenterProps) {
+  const [open, setOpen] = useState(false);
+  const handleOpenChange = (next: boolean) => {
+    setOpen(next);
+    onOpenChange?.(next);
+  };
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <Button variant="ghost" size="icon" className="relative">
           <Bell className="size-4" />
@@ -65,7 +74,10 @@ export function NotificationCenter({
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() => onOpen(item)}
+                    onClick={() => {
+                      onOpen(item);
+                      handleOpenChange(false);
+                    }}
                     className="flex flex-col gap-0.5 border-b border-border px-3 py-2 text-left text-sm hover:bg-secondary last:border-b-0"
                   >
                     <span className={item.read ? "text-muted-foreground" : "font-medium"}>

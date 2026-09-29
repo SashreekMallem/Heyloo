@@ -326,6 +326,13 @@ jobs:
         if: steps.migrations.outputs.count != '0'
         run: psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/sec2_review_hardening.sql
 
+      # QA-1 portal-core: the usage rollup writes tenant-local today/yesterday
+      # rows (no join fan-out, test rows excluded) and a plain member can write
+      # only their own notification watermark.
+      - name: Run QA-1 portal-core SQL test
+        if: steps.migrations.outputs.count != '0'
+        run: psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/qa1_portal_core.sql
+
       # VOICE-ALERTS-1: the slot generator honors closed days, survives bad
       # hours data, never duplicates on a rerun, and runs with or without the
       # optional booking_horizon_days column.
