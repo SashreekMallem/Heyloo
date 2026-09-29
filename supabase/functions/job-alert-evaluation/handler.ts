@@ -103,7 +103,26 @@ export async function evaluateToolFailureSpike(sql: SqlClient): Promise<Alert[]>
   }));
 }
 
+/**
+ * COCKPIT-F07: ONE open alert per rule + tenant (+ tool for
+ * `tool_failure_spike`). The old guard only looked at alerts younger than an
+ * hour, so a persistent condition inserted a fresh open row every hour (193
+ * `negative_margin` rows for one tenant). Now an existing open row is kept and
+ * its payload refreshed with the latest numbers; a new row is inserted only
+ * when none is open (acking or resolving an alert lets the condition fire
+ * again). `uq_alerts_open_rule_tenant` (migration 20260930200400) backs this up
+ * against a concurrent run, hence `on conflict do nothing`.
+ */
 export async function upsertAlert(sql: SqlClient, alert: Alert): Promise<void> {
+  const toolName = typeof alert.payload["tool_name"] === "string" ? alert.payload["tool_name"] : "";
+  await sql`
+    update public.alerts
+    set payload = ${alert.payload}::jsonb, severity = ${alert.severity}
+    where rule = ${alert.rule}
+      and status = 'open'
+      and coalesce(tenant_id::text, '') = coalesce(${alert.tenant_id}, '')
+      and coalesce(payload->>'tool_name', '') = ${toolName}
+  `;
   await sql`
     insert into public.alerts (rule, severity, tenant_id, payload, status)
     select ${alert.rule}, ${alert.severity}, ${alert.tenant_id}, ${alert.payload}::jsonb, 'open'
@@ -112,8 +131,9 @@ export async function upsertAlert(sql: SqlClient, alert: Alert): Promise<void> {
       where a.rule = ${alert.rule}
         and a.status = 'open'
         and coalesce(a.tenant_id::text, '') = coalesce(${alert.tenant_id}, '')
-        and a.created_at > now() - interval '1 hour'
+        and coalesce(a.payload->>'tool_name', '') = ${toolName}
     )
+    on conflict do nothing
   `;
 }
 

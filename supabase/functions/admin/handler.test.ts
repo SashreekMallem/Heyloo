@@ -1140,6 +1140,21 @@ describe("routeAdminRequest — templates group", () => {
 });
 
 describe("routeAdminRequest — alerts group", () => {
+  it("lists open alerts with the tenant name the cockpit shows (COCKPIT-F07)", async () => {
+    const { sql, calls } = makeSql({
+      "from public.alerts a": [
+        { id: ALERT1, rule: "negative_margin", severity: "warning", tenant_name: "Riverside" },
+      ],
+    });
+    const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-alerts" }), logger);
+    expect(result.status).toBe(200);
+    expect((result.body as { alerts: { tenant_name: string }[] }).alerts[0]?.tenant_name).toBe(
+      "Riverside",
+    );
+    expect(calls[0]?.text).toContain("left join public.tenants");
+    expect(calls[0]?.text).toContain("a.status = 'open'");
+  });
+
   it("acks an open alert", async () => {
     const { sql } = makeSql({ "update public.alerts": [{ id: "alert_1" }] });
     const result = await routeAdminRequest(

@@ -2,6 +2,14 @@
 
 import { ALERT_METRICS, adminAlertThresholdSchema } from "@heyloo/canonical-types";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
   type AlertRule,
   AlertRuleRow,
   Button,
@@ -30,6 +38,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
+import { OpenAlertsPanel } from "./open-alerts-panel";
 
 type RuleDraft = {
   metric: (typeof ALERT_METRICS)[number];
@@ -52,6 +61,7 @@ export default function AlertsPage() {
   const query = useAdminQuery<{ rules: AlertRule[] }>("alert-rules", [], "admin-alerts/rules");
   const [editing, setEditing] = useState<AlertRule | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [deleting, setDeleting] = useState<AlertRule | null>(null);
   const [draft, setDraft] = useState<RuleDraft>(EMPTY_DRAFT);
 
   function invalidate() {
@@ -68,10 +78,19 @@ export default function AlertsPage() {
     else toast.error("Couldn't update the rule — please try again.");
   }
 
-  async function test(rule: AlertRule) {
-    const res = await fetch(`/api/admin/admin-alerts/${rule.id}/test`, { method: "POST" });
-    if (res.ok) toast.success("Test alert sent");
-    else toast.error("Test alert isn't available yet.");
+  // COCKPIT-F24: the "Test" action was removed (no `admin-alerts/:id/test` endpoint exists);
+  // rules can be deleted instead, behind a confirm.
+  async function confirmDelete() {
+    const rule = deleting;
+    setDeleting(null);
+    if (!rule) return;
+    const res = await fetch(`/api/admin/admin-alerts/rules/${rule.id}`, { method: "DELETE" });
+    if (res.ok) {
+      toast.success("Rule deleted");
+      void invalidate();
+    } else {
+      toast.error("Couldn't delete the rule — please try again.");
+    }
   }
 
   function openCreate() {
@@ -121,10 +140,12 @@ export default function AlertsPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Alert rules"
-        description="Thresholds that page the team before a margin or reliability problem reaches customers."
+        title="Alerts"
+        description="Fired alerts to acknowledge, and the threshold rules that page the team before a margin or reliability problem reaches customers."
         actions={<Button onClick={openCreate}>New rule</Button>}
       />
+      <OpenAlertsPanel />
+      <h2 className="text-base font-semibold">Alert rules</h2>
       <DataState
         query={query}
         empty={{
@@ -151,13 +172,31 @@ export default function AlertsPage() {
                   rule={rule}
                   onEdit={openEdit}
                   onToggle={toggle}
-                  onTest={test}
+                  onDelete={setDeleting}
                 />
               ))}
             </TableBody>
           </Table>
         )}
       />
+
+      <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this alert rule?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleting
+                ? `${deleting.metric.replace(/_/g, " ")} ${deleting.operator} ${deleting.value}`
+                : ""}{" "}
+              will stop paging anyone. Alerts it already fired stay in the list above.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmDelete()}>Delete rule</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>

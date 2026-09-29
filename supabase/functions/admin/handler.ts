@@ -533,8 +533,13 @@ async function handleAlerts(sql: SqlClient, ctx: AdminRequestContext): Promise<A
   const alertId = parts[1];
 
   if (ctx.method === "GET" && !alertId) {
+    // COCKPIT-F07: the cockpit lists these with the tenant's name, so join it in.
     const rows = await sql<Record<string, unknown>>`
-      select * from public.alerts where status = 'open' order by created_at desc limit 100
+      select a.*, t.name as tenant_name
+      from public.alerts a
+      left join public.tenants t on t.id = a.tenant_id
+      where a.status = 'open'
+      order by a.created_at desc limit 100
     `;
     return { status: 200, body: { alerts: rows } };
   }
