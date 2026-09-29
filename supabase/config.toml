@@ -66,6 +66,27 @@ content_path = "./supabase/templates/magic_link.html"
 subject = "Confirm your new Heyloo email address"
 content_path = "./supabase/templates/email_change.html"
 
+[auth.email.template.reauthentication]
+subject = "Your Heyloo verification code"
+content_path = "./templates/reauthentication.html"
+
+# Send Email Hook (EMAIL-MSGRAPH, docs/SETUP_EMAIL_MICROSOFT.md): when on,
+# Supabase Auth hands every auth email (signup, recovery, invite, magic link,
+# email change, reauthentication) to the `auth-send-email` edge function, which
+# sends it through the messaging EmailProvider (Microsoft Graph, SMTP or
+# Resend) instead of Supabase's built-in mailer. The templates above are then
+# only used when the hook is off. Left commented out so a plain `supabase start`
+# keeps using Inbucket; to try the hook locally, uncomment, set
+# SEND_EMAIL_HOOK_SECRET (format `v1,whsec_<base64>`) plus the EMAIL_* / MS_*
+# variables in supabase/functions/.env, then `supabase stop && supabase start`
+# and `supabase functions serve auth-send-email --no-verify-jwt`.
+# Field names verified against supabase.com/docs/guides/local-development/cli/config.
+# The LIVE project is switched with `scripts/enable-auth-email-hook.ts --apply`.
+# [auth.hook.send_email]
+# enabled = true
+# uri = "http://host.docker.internal:54321/functions/v1/auth-send-email"
+# secrets = "env(SEND_EMAIL_HOOK_SECRET)"
+
 # Custom Access Token Hook (tenant_id/role/platform_admin/referral_partner_id
 # in app_metadata) — SYSTEM_DESIGN §2/§6, CLAUDE.md Rule 2, BACKEND_SPEC
 # §3.1/§11.2. Function defined in
@@ -132,6 +153,12 @@ verify_jwt = false
 [functions.webhooks-outreach]
 verify_jwt = false
 [functions.webhooks-pos]
+verify_jwt = false
+# auth-send-email (EMAIL-MSGRAPH): Supabase Auth's Send Email Hook. Called by
+# the Auth service with no user JWT, so verify_jwt = false; it authenticates
+# every request itself with the Standard Webhooks signature (raw body,
+# SEND_EMAIL_HOOK_SECRET, fail closed on a missing secret).
+[functions.auth-send-email]
 verify_jwt = false
 [functions.api-demo-agent]
 verify_jwt = false
