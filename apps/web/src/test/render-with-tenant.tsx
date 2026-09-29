@@ -15,11 +15,18 @@ if (typeof globalThis.ResizeObserver === "undefined") {
 }
 
 /** SETTINGS-1 test helper: render inside a fresh QueryClient + TenantIdProvider("t1"). `canWrite: false` renders as a `member` (QA-1). */
-export function renderWithTenant(ui: ReactElement, options: { canWrite?: boolean } = {}) {
+export function renderWithTenant(
+  ui: ReactElement,
+  options: { canWrite?: boolean; isOwner?: boolean } = {},
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <TenantIdProvider tenantId="t1" canWrite={options.canWrite ?? true}>
+      <TenantIdProvider
+        tenantId="t1"
+        canWrite={options.canWrite ?? true}
+        isOwner={options.isOwner ?? options.canWrite ?? true}
+      >
         {ui}
       </TenantIdProvider>
     </QueryClientProvider>,

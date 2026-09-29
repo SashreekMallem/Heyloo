@@ -21,6 +21,7 @@ vi.mock("@/lib/impersonation/use-impersonation-banner", () => ({
   useImpersonationBanner: (tenantId: string) => useImpersonationBanner(tenantId),
 }));
 
+import { useCanWriteSettings, useIsTenantOwner } from "@/lib/tenant/tenant-context";
 import { TenantShellClient } from "./tenant-shell-client";
 
 function renderShell() {
@@ -70,5 +71,45 @@ describe("TenantShellClient — impersonation banner mount", () => {
     renderShell();
     expect(screen.getByText(/edits enabled/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Enable edits/i })).not.toBeInTheDocument();
+  });
+});
+
+function RoleProbe() {
+  return (
+    <p>
+      write:{String(useCanWriteSettings())} owner:{String(useIsTenantOwner())}
+    </p>
+  );
+}
+
+describe("TenantShellClient — role for settings pages (QA-1 F-5 / AUTH-15)", () => {
+  function renderWith(props: { canWrite?: boolean; isOwner?: boolean }) {
+    useImpersonationBanner.mockReturnValue(null);
+    return render(
+      <TenantShellClient
+        tenantId="t1"
+        tenantName="Acme"
+        manualMode={false}
+        manualModeSince={null}
+        {...props}
+      >
+        <RoleProbe />
+      </TenantShellClient>,
+    );
+  }
+
+  it("defaults to full access when the layout passes nothing (previews, older callers)", () => {
+    renderWith({});
+    expect(screen.getByText("write:true owner:true")).toBeInTheDocument();
+  });
+
+  it("a member gets neither write nor owner", () => {
+    renderWith({ canWrite: false, isOwner: false });
+    expect(screen.getByText("write:false owner:false")).toBeInTheDocument();
+  });
+
+  it("an admin can write settings but is not the owner (invites are owner-only)", () => {
+    renderWith({ canWrite: true, isOwner: false });
+    expect(screen.getByText("write:true owner:false")).toBeInTheDocument();
   });
 });

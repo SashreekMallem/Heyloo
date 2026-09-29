@@ -102,6 +102,7 @@ export function TenantShellClient({
   manualMode,
   manualModeSince,
   canWrite = true,
+  isOwner = canWrite,
   children,
 }: {
   tenantId: string;
@@ -110,13 +111,15 @@ export function TenantShellClient({
   manualModeSince: string | null;
   /** Owner/admin (JWT `role` claim) — false renders settings pages read-only (QA-1). */
   canWrite?: boolean;
+  /** Exactly the owner role (team invites) — false for admins and members (QA-1 AUTH-15). */
+  isOwner?: boolean;
   children: ReactNode;
 }) {
   const pathname = usePathname();
   const impersonation = useImpersonationBanner(tenantId);
 
   return (
-    <TenantIdProvider tenantId={tenantId} canWrite={canWrite}>
+    <TenantIdProvider tenantId={tenantId} canWrite={canWrite} isOwner={isOwner}>
       <AppShell
         sidebar={
           <AppSidebarNav

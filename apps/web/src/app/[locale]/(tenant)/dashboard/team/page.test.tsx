@@ -62,4 +62,35 @@ describe("TeamPage", () => {
     renderPage();
     expect(await screen.findByText("owner@example.com")).toBeInTheDocument();
   });
+
+  it("QA-1 AUTH-15: shows the invite form to the owner", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ members: [] })),
+    );
+    renderPage();
+    await screen.findByText("No teammates yet");
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send invite" })).toBeInTheDocument();
+    expect(screen.queryByTestId("team-owner-only")).not.toBeInTheDocument();
+  });
+
+  it("QA-1 AUTH-15: hides the invite form from an admin or member and says who to ask", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ members: [] })),
+    );
+    const client = new QueryClient();
+    render(
+      <TenantIdProvider tenantId="t1" canWrite isOwner={false}>
+        <QueryClientProvider client={client}>
+          <TeamPage />
+        </QueryClientProvider>
+      </TenantIdProvider>,
+    );
+    expect(await screen.findByText(/Ask your account owner to add teammates/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send invite" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Role" })).not.toBeInTheDocument();
+  });
 });

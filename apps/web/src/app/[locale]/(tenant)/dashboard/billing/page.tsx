@@ -19,7 +19,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
 import type { TenantPlanResponse } from "@/app/api/platform-settings/tenant-plan/route";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
-import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
+import { useCanWriteSettings, useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
 interface Invoice {
   id: string;
@@ -49,6 +49,7 @@ const columns: ColumnDef<Invoice, unknown>[] = [
 
 export default function BillingPage() {
   const tenantId = useCurrentTenantId();
+  const canManageBilling = useCanWriteSettings();
 
   const usageQuery = useQuery({
     queryKey: ["tenant", tenantId, "usage_daily", "billing"],
@@ -160,9 +161,15 @@ export default function BillingPage() {
                   </span>
                 </div>
               </div>
-              <Button variant="outline" onClick={openPortal}>
-                Manage payment method
-              </Button>
+              {canManageBilling ? (
+                <Button variant="outline" onClick={openPortal}>
+                  Manage payment method
+                </Button>
+              ) : (
+                <p className="text-xs text-muted-foreground" data-testid="billing-owner-only">
+                  Ask your account owner to manage the payment method.
+                </p>
+              )}
             </CardContent>
           </Card>
         )}

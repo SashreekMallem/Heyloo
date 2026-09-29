@@ -75,6 +75,7 @@ export default async function TenantLayout({ children }: { children: ReactNode }
           canWrite={
             claims.role === "owner" || claims.role === "admin" || claims.platform_admin === true
           }
+          isOwner={claims.role === "owner"}
         >
           {children}
         </TenantShellClient>
