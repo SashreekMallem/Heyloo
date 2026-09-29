@@ -2,7 +2,16 @@
 // public marketing-site flow (BACKEND_SPEC §7.8); rate-limiting/CAPTCHA is
 // the marketing-site layer's job per spec, not this function's (apps/web's
 // `/api/demo/*` routes call it with per-IP limits). Three request shapes:
-// create (scrape), confirm (mint a token), instant (home page, sample shop).
+// create (scrape), confirm (mint a token), instant (a business type picked on
+// the marketing site).
+//
+// DEMO-2: only RETELL_API_KEY (and the database) are required at boot. The
+// instant demo needs nothing else; ANTHROPIC_API_KEY is used by the scrape
+// "create" flow alone, DEMO_AGENT_ID by the scrape "confirm" flow (and as the
+// `auto` instant fallback), DEMO_PHONE_E164 only to show a phone fallback. A
+// missing optional one used to crash the whole function at module load
+// (WORKER_ERROR), taking the instant demo down with it; now the flow that needs
+// it answers a clean 503 `not_configured` instead.
 import { getSql } from "../_shared/deno/db.ts";
 import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
@@ -15,11 +24,12 @@ import {
 import { handleConfirmDemo, handleCreateDemo, handleInstantDemo } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-demo-agent" });
-const ANTHROPIC_API_KEY = requireEnv("ANTHROPIC_API_KEY");
-const ANTHROPIC_MODEL = optionalEnv("ANTHROPIC_DEMO_MODEL") ?? "claude-3-5-haiku-20241022";
 const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
-const DEMO_AGENT_ID = requireEnv("DEMO_AGENT_ID");
-const DEMO_PHONE_E164 = requireEnv("DEMO_PHONE_E164");
+// An empty secret counts as unset (`optionalEnv` alone would return "").
+const ANTHROPIC_API_KEY = optionalEnv("ANTHROPIC_API_KEY") || undefined;
+const ANTHROPIC_MODEL = optionalEnv("ANTHROPIC_DEMO_MODEL") || "claude-3-5-haiku-20241022";
+const DEMO_AGENT_ID = optionalEnv("DEMO_AGENT_ID") || undefined;
+const DEMO_PHONE_E164 = optionalEnv("DEMO_PHONE_E164") || undefined;
 
 const SCRAPE_TIMEOUT_MS = 10_000;
 
@@ -67,8 +77,14 @@ Deno.serve(async (req: Request) => {
     return jsonResponse(result.body, { status: result.status });
   }
 
-  if (InstantDemoRequestSchema.safeParse(body).success) {
-    const result = await handleInstantDemo(sql, deps);
+  // The instant shape is recognised by `instant: true`; a `vertical` outside
+  // the allowlist is then a 400, never a fall-through to the scrape flow.
+  const isInstant =
+    typeof body === "object" && body !== null && (body as { instant?: unknown }).instant === true;
+  if (isInstant) {
+    const instantParsed = InstantDemoRequestSchema.safeParse(body);
+    if (!instantParsed.success) return jsonResponse({ error: "invalid_request" }, { status: 400 });
+    const result = await handleInstantDemo(sql, instantParsed.data, deps);
     return jsonResponse(result.body, { status: result.status });
   }
 

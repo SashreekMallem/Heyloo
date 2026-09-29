@@ -240,6 +240,39 @@ describe("resolveCallContext", () => {
     expect(calls.some((c) => c.text.includes("from public.phone_numbers"))).toBe(false);
   });
 
+  it("DEMO-2: a real-shaped web call on a tenants.is_test tenant that beats call_started is a test call", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.agent_configs": [
+        { tenant_id: "demo-dental", vertical: "dental", manual_mode: false, is_test: true },
+      ],
+      "insert into public.call_logs": [
+        { id: "cl-demo", tenant_id: "demo-dental", caller_number: null, is_test_call: true },
+      ],
+    });
+    const call: ToolCall = { agent_id: "agent_demo_dental", call_type: "web_call" };
+    const ctx = await resolveCallContext(sql, REAL_CALL_ID, call, logger);
+    expect(ctx?.isTestCall).toBe(true);
+    const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
+    // params: tenant, phone number, call id, caller, direction, channel, is_test_call, overwrite
+    expect(insertCall?.values[6]).toBe(true);
+  });
+
+  it("DEMO-2: the same race on an ordinary tenant stays a real call", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.agent_configs": [
+        { tenant_id: "t-real", vertical: "dental", manual_mode: false, is_test: false },
+      ],
+      "insert into public.call_logs": [
+        { id: "cl-real", tenant_id: "t-real", caller_number: null, is_test_call: false },
+      ],
+    });
+    const call: ToolCall = { agent_id: "agent_real", call_type: "web_call" };
+    const ctx = await resolveCallContext(sql, REAL_CALL_ID, call, logger);
+    expect(ctx?.isTestCall).toBe(false);
+    const insertCall = calls.find((c) => c.text.includes("insert into public.call_logs"));
+    expect(insertCall?.values[6]).toBe(false);
+  });
+
   it("(b) falls back to call.to_number -> phone_numbers only when agent_id and the dynamic variable are both absent", async () => {
     const { sql, calls } = makeRecordingSql({
       "from public.phone_numbers": [

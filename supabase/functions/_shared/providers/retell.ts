@@ -347,6 +347,8 @@ export async function createWebCall(
      * demo sets it so a stuck browser tab can't hold a call open.
      */
     agent_override?: { agent?: { max_call_duration_ms?: number } };
+    /** DEMO-2: same docs page: `metadata` is "an arbitrary object for storage purpose only". The public demo tags its calls `{ demo: true, vertical }`. */
+    metadata?: Record<string, unknown>;
   },
 ) {
   return retellRequest(fetchImpl, apiKey, "/v2/create-web-call", {
