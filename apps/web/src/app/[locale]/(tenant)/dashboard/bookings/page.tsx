@@ -26,8 +26,10 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
+import { CustomAnswersList } from "@/components/tenant/custom-answers";
 import { Link } from "@/i18n/navigation";
 import { tenantQueryKey, useTenantQuery } from "@/lib/hooks/use-tenant-query";
+import { readCustomAnswers, withoutCustomAnswers } from "@/lib/settings/custom-questions";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 import { parseTstzrange } from "@/lib/tstzrange";
@@ -464,20 +466,33 @@ export default function BookingsPage() {
               )}
 
               {detailQuery.data &&
-                structuredPayloadEntries(detailQuery.data.structuredPayload).length > 0 && (
+                readCustomAnswers(detailQuery.data.structuredPayload).length > 0 && (
+                  <div>
+                    <p className="mb-1 text-xs font-medium text-muted-foreground">
+                      Answers to your questions
+                    </p>
+                    <div className="rounded-md border border-border p-2">
+                      <CustomAnswersList payload={detailQuery.data.structuredPayload} />
+                    </div>
+                  </div>
+                )}
+
+              {detailQuery.data &&
+                structuredPayloadEntries(withoutCustomAnswers(detailQuery.data.structuredPayload))
+                  .length > 0 && (
                   <div>
                     <p className="mb-1 text-xs font-medium text-muted-foreground">
                       Captured on the call
                     </p>
                     <dl className="space-y-1 rounded-md border border-border p-2 text-sm">
-                      {structuredPayloadEntries(detailQuery.data.structuredPayload).map(
-                        ([label, value]) => (
-                          <div key={label} className="flex justify-between gap-2">
-                            <dt className="capitalize text-muted-foreground">{label}</dt>
-                            <dd className="text-right">{value}</dd>
-                          </div>
-                        ),
-                      )}
+                      {structuredPayloadEntries(
+                        withoutCustomAnswers(detailQuery.data.structuredPayload),
+                      ).map(([label, value]) => (
+                        <div key={label} className="flex justify-between gap-2">
+                          <dt className="capitalize text-muted-foreground">{label}</dt>
+                          <dd className="text-right">{value}</dd>
+                        </div>
+                      ))}
                     </dl>
                   </div>
                 )}

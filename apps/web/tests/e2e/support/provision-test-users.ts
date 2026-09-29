@@ -144,7 +144,49 @@ export async function provisionTenantOwner(): Promise<TestUser & { tenantId: str
     extraHeaders: { Prefer: "return=minimal" },
   });
 
+  await provisionAgentConfig(tenantId);
+
   return { ...user, tenantId };
+}
+
+/**
+ * INTAKE-Q-1: the fixture tenant's `agent_configs` row (with a throwaway
+ * inactive `agent_templates` row it must reference), never published and never
+ * stamped with a compiler version — the state of an agent that predates custom
+ * questions. Needed by `agent-questions.spec.ts` (the Agent settings pages read
+ * and write it) and harmless for every other spec. `unique (vertical, version)`
+ * on templates, so the version is random.
+ */
+async function provisionAgentConfig(tenantId: string): Promise<void> {
+  const version = 1_000_000 + Math.floor(Math.random() * 1_000_000);
+  const template = await adminRequest("/rest/v1/agent_templates", {
+    method: "POST",
+    body: {
+      vertical: "generic",
+      name: `E2E fixture template ${version}`,
+      version,
+      compile_target: "single_prompt",
+      voice_id: "retell-Cimo",
+      model: "gpt-4.1-mini",
+      disclosure_line: "This call may be recorded and you're speaking with an AI assistant.",
+      is_active: false,
+    },
+    extraHeaders: { Prefer: "return=representation" },
+  });
+  const templateId = Array.isArray(template.json)
+    ? (template.json[0] as { id?: string } | undefined)?.id
+    : undefined;
+  if (template.status >= 300 || !templateId) {
+    throw new Error(`Failed to create fixture agent template: ${JSON.stringify(template.json)}`);
+  }
+  const config = await adminRequest("/rest/v1/agent_configs", {
+    method: "POST",
+    body: { tenant_id: tenantId, template_id: templateId, template_version: version },
+    extraHeaders: { Prefer: "return=minimal" },
+  });
+  if (config.status >= 300) {
+    throw new Error(`Failed to create fixture agent config: ${JSON.stringify(config.json)}`);
+  }
 }
 
 /** Platform-admin user WITHOUT a verified MFA factor — the default state

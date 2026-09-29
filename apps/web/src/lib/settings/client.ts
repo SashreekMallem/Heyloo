@@ -76,4 +76,7 @@ export function applyIssues(
 
 export const SAVED_NEXT_CALL = "Saved — your AI uses this from the next call.";
 export const SAVED_NEXT_TEXT = "Saved — your text agent uses this from the next message.";
+/** INTAKE-Q-1: the live agent predates custom questions, so it needs one publish before it asks them. */
+export const SAVED_QUESTIONS_NEED_PUBLISH =
+  "Saved — publish your agent once (“Publish changes” above) and it will start asking these questions.";
 export const SAVED_NEEDS_PUBLISH = "Saved — click “Publish changes” to update your live agent.";

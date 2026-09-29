@@ -23,6 +23,7 @@ const TABS = [
   { value: "hours", label: "Hours" },
   { value: "services", label: "Services" },
   { value: "faq", label: "FAQ" },
+  { value: "questions", label: "Questions" },
   { value: "instructions", label: "AI Instructions" },
   { value: "vertical-details", label: "Vertical details" },
   { value: "manual-mode", label: "Manual Mode" },
