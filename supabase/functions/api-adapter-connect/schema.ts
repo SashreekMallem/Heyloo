@@ -41,7 +41,12 @@ export const AdapterConnectRequestSchema = z.union([
   z.object({
     action: z.literal("paste_key"),
     provider: z.literal("ezyvet"),
-    base_url: z.string().url(),
+    // SSRF-1: https only (the ezyVet client secret is sent to this host); private
+    // targets are additionally blocked by the safe fetch behind `deps.fetchImpl`.
+    base_url: z
+      .string()
+      .url()
+      .refine((u) => /^https:\/\//i.test(u), { message: "base_url must be https" }),
   }),
   z.object({
     action: z.literal("disconnect"),

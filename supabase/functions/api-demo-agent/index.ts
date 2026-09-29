@@ -17,6 +17,7 @@ import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { resolveLlmFromEnv } from "../_shared/deno/llm.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
+import { SafeFetchError, safeFetchText } from "../_shared/safe-fetch.ts";
 import {
   ConfirmDemoRequestSchema,
   CreateDemoRequestSchema,
@@ -33,14 +34,14 @@ const DEMO_PHONE_E164 = optionalEnv("DEMO_PHONE_E164") || undefined;
 const SCRAPE_TIMEOUT_MS = 10_000;
 
 async function fetchUrl(url: string): Promise<string | null> {
+  // SSRF-1: the URL is anonymous-visitor input (verify_jwt false), so it goes
+  // through safeFetchText (public targets only, redirects re-validated, 5 MB /
+  // 10 s caps). A blocked or failed fetch is "no site text", as before.
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), SCRAPE_TIMEOUT_MS);
-    const res = await fetch(url, { signal: controller.signal, redirect: "follow" });
-    clearTimeout(timer);
-    if (!res.ok) return null;
-    return await res.text();
-  } catch {
+    const res = await safeFetchText(url, { timeoutMs: SCRAPE_TIMEOUT_MS });
+    return res.ok ? res.text : null;
+  } catch (err) {
+    if (err instanceof SafeFetchError) logger.warn("demo_scrape_blocked", { code: err.code });
     return null;
   }
 }

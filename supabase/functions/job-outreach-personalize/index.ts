@@ -9,6 +9,7 @@ import { requireEnv } from "../_shared/deno/env.ts";
 import { resolveLlmFromEnv } from "../_shared/deno/llm.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
+import { SafeFetchError, safeFetchText } from "../_shared/safe-fetch.ts";
 import { findLeadsNeedingResearch, submitResearchBatch } from "./handler.ts";
 
 const logger = createLogger({ fn: "job-outreach-personalize" });
@@ -22,14 +23,13 @@ const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
 const SCRAPE_TIMEOUT_MS = 10_000;
 
 async function fetchUrl(url: string): Promise<string | null> {
+  // SSRF-1: `url` comes from a scraped/enriched lead record (third-party data),
+  // so it is fetched through safeFetchText, never a bare fetch().
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), SCRAPE_TIMEOUT_MS);
-    const res = await fetch(url, { signal: controller.signal, redirect: "follow" });
-    clearTimeout(timer);
-    if (!res.ok) return null;
-    return await res.text();
-  } catch {
+    const res = await safeFetchText(url, { timeoutMs: SCRAPE_TIMEOUT_MS });
+    return res.ok ? res.text : null;
+  } catch (err) {
+    if (err instanceof SafeFetchError) logger.warn("outreach_scrape_blocked", { code: err.code });
     return null;
   }
 }

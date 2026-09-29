@@ -5,11 +5,21 @@ import { getSql } from "../_shared/deno/db.ts";
 import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
+import { JSON_API_CONTENT_TYPES, makeSafeFetch } from "../_shared/safe-fetch.ts";
 import type { AdapterPushDeps } from "./handler.ts";
 import { runAdapterPushWorker } from "./handler.ts";
 
 const logger = createLogger({ fn: "worker-adapter-push" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
+
+// SSRF-1: adapter hosts are public HTTPS APIs, and ezyVet's base URL is
+// tenant-supplied (`adapter_connections.metadata.baseUrl`), so every adapter call
+// goes through the SSRF-safe fetch (public targets only, 3 redirects max,
+// 5 MB / 15 s caps). See _shared/safe-fetch.ts.
+const ADAPTER_FETCH = makeSafeFetch({
+  allowedContentTypes: JSON_API_CONTENT_TYPES,
+  timeoutMs: 15_000,
+});
 
 // Per-provider app-level OAuth credentials (never per-tenant — a tenant's
 // OWN token lives on their `adapter_connections` row; these are Heyloo's
@@ -19,7 +29,7 @@ const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
 // push attempt for that provider simply fails loud instead (never a silent
 // skip, matching CLAUDE.md Rule 2's "missing secret = reject").
 const DEPS: AdapterPushDeps = {
-  fetchImpl: fetch,
+  fetchImpl: ADAPTER_FETCH,
   tokenEncryptionKey: requireEnv("ADAPTER_TOKEN_ENCRYPTION_KEY"),
   square: {
     clientId: optionalEnv("SQUARE_CLIENT_ID") ?? "",

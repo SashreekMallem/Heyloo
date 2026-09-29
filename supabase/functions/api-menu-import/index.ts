@@ -10,6 +10,7 @@
 import { resolveLlmFromEnv } from "../_shared/deno/llm.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
+import { SafeFetchError, safeFetchText } from "../_shared/safe-fetch.ts";
 import { MenuImportRequestSchema } from "../_shared/schemas/menu-import.ts";
 import { importMenu } from "./handler.ts";
 
@@ -59,10 +60,16 @@ Deno.serve(async (req: Request) => {
   // is Cluster E's dashboard UI + its own tenant-scoped offerings insert).
   const result = await importMenu(parsed.data, {
     llm: resolveLlmFromEnv(),
+    // SSRF-1: the URL is tenant-supplied; safeFetchText blocks private/loopback/
+    // link-local targets (also via DNS and redirects), caps size and time.
     urlFetch: async (url) => {
-      const res = await fetch(url, { headers: { "user-agent": "Heyloo-MenuImport/1.0" } });
-      const text = await res.text().catch(() => "");
-      return { ok: res.ok, status: res.status, text };
+      try {
+        return await safeFetchText(url, { headers: { "user-agent": "Heyloo-MenuImport/1.0" } });
+      } catch (err) {
+        if (!(err instanceof SafeFetchError)) throw err;
+        logger.warn("menu_import_url_blocked", { code: err.code });
+        return { ok: false, status: 0, text: "" };
+      }
     },
     logger,
   });

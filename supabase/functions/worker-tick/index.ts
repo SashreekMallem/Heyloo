@@ -28,6 +28,13 @@ import {
 } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
+import {
+  JSON_API_CONTENT_TYPES,
+  makeSafeFetch,
+  RECORDING_FETCH_OPTIONS,
+  SafeFetchError,
+  safeFetchBytes,
+} from "../_shared/safe-fetch.ts";
 import type { AdapterPushDeps } from "../worker-adapter-push/handler.ts";
 import { buildOutboundDeps } from "../worker-messages-outbound/deps.ts";
 import type { OutboundDeps } from "../worker-messages-outbound/handler.ts";
@@ -79,20 +86,35 @@ async function uploadToStorage(
   return { ok: false, detail: `${res.status}:${bodyText.slice(0, 200)}` };
 }
 
+// SSRF-1: same as worker-recording-fetch/index.ts (provider-supplied URL).
 async function fetchRecordingBytes(url: string): Promise<ArrayBuffer | null> {
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  return res.arrayBuffer();
+  try {
+    const res = await safeFetchBytes(url, RECORDING_FETCH_OPTIONS);
+    return res.ok ? res.bytes : null;
+  } catch (err) {
+    if (!(err instanceof SafeFetchError)) throw err;
+    logger.warn("recording_fetch_blocked", { code: err.code });
+    return null;
+  }
 }
 
 // --- adapter_push leg (same vars as worker-adapter-push/index.ts) ---
 const ADAPTER_PUSH_MISSING = missingEnv(["ADAPTER_TOKEN_ENCRYPTION_KEY"]);
+// SSRF-1: adapter hosts are public HTTPS APIs, and ezyVet's base URL is
+// tenant-supplied (`adapter_connections.metadata.baseUrl`), so every adapter call
+// goes through the SSRF-safe fetch (public targets only, 3 redirects max,
+// 5 MB / 15 s caps). See _shared/safe-fetch.ts.
+const ADAPTER_FETCH = makeSafeFetch({
+  allowedContentTypes: JSON_API_CONTENT_TYPES,
+  timeoutMs: 15_000,
+});
+
 // Built even when a required var is missing, so the module stays
 // side-effect-free and cheap either way — never USED unless
 // `ADAPTER_PUSH_MISSING` is empty (guarded below), so an empty-string
 // `tokenEncryptionKey` here never reaches `pushToAdapter`.
 const ADAPTER_PUSH_DEPS: AdapterPushDeps = {
-  fetchImpl: fetch,
+  fetchImpl: ADAPTER_FETCH,
   tokenEncryptionKey: optionalEnv("ADAPTER_TOKEN_ENCRYPTION_KEY") ?? "",
   square: {
     clientId: optionalEnv("SQUARE_CLIENT_ID") ?? "",
