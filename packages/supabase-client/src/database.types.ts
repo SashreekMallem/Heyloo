@@ -138,6 +138,8 @@ export type AgentConfigRow = {
   retell_agent_id: Nullable<string>;
   retell_llm_id: Nullable<string>;
   compiled_config: Nullable<Record<string, unknown>>;
+  /** SETTINGS-2: compiler version the published agent was built with (NULL = before the stamp existed). */
+  compiled_with_version: Nullable<number>;
   published_at: Nullable<string>;
   created_at: string;
   updated_at: string;

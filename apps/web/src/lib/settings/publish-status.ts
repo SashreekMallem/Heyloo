@@ -22,15 +22,39 @@
  *   number is set), so a setting the owner changes would not reach calls.
  *   `compiled_config` is treated as opaque text — only Heyloo's own
  *   `{{variable}}` token names are looked for, never its structure.
+ * - `compiler_outdated` (SETTINGS-2): `agent_configs.compiled_with_version`
+ *   (stamped by `compile-and-publish.ts` with the compiler's
+ *   `AGENT_COMPILER_VERSION`) is missing or older than
+ *   `CURRENT_AGENT_COMPILER_VERSION` — the published agent was built before a
+ *   compiler change that only reaches calls on republish (e.g. the block that
+ *   makes the AI read the FAQ and special instructions). Catches what the
+ *   token search cannot see. `undefined` (the column does not exist yet on this
+ *   database) is "unknown" and never flags; `null` (column present, never
+ *   stamped) flags.
  */
 
-export type PublishReason = "never_published" | "language_changed" | "platform_update";
+/**
+ * SETTINGS-2: the compiler version this portal expects a current agent to have
+ * been compiled with. MUST equal `AGENT_COMPILER_VERSION` in
+ * `supabase/functions/_shared/compiler/template-compiler.ts` (a test reads that
+ * file and fails on drift); bump both whenever a compile of the same template
+ * would produce different agent output.
+ */
+export const CURRENT_AGENT_COMPILER_VERSION = 1;
+
+export type PublishReason =
+  | "never_published"
+  | "language_changed"
+  | "platform_update"
+  | "compiler_outdated";
 
 export interface PublishStatusInput {
   publishedAt: string | null;
   compiledConfig: unknown;
   transferNumber: string | null;
   languageConfig: unknown;
+  /** `agent_configs.compiled_with_version`; `undefined` = column not available on this database (skip the check). */
+  compiledWithVersion?: number | null;
 }
 
 export interface PublishStatus {
@@ -44,6 +68,8 @@ export const PUBLISH_REASON_TEXT: Record<PublishReason, string> = {
   language_changed: "You changed the call language — publish to switch your agent over.",
   platform_update:
     "Your agent was published before recent improvements — publish once so your live settings (like the transfer number and language) reach every call.",
+  compiler_outdated:
+    "Your agent was published before recent improvements — publish once so it picks up the newest settings support (FAQ answers, special instructions, call routing and more).",
 };
 
 /** The language-change stamp written by the Language tab (absent on older rows). */
@@ -113,6 +139,16 @@ export function computePublishStatus(input: PublishStatusInput): PublishStatus {
         ? !compiled.includes("{{transfer_number}}")
         : false;
     if (missingLanguage || missingTransfer) reasons.push("platform_update");
+  }
+
+  // SETTINGS-2: a stale compiler version. Skipped when the token check above already
+  // asked for a republish (one "published before recent improvements" message is enough),
+  // and when the database has no stamp column at all (`undefined`).
+  if (input.compiledWithVersion !== undefined && !reasons.includes("platform_update")) {
+    const version = input.compiledWithVersion;
+    if (version === null || version < CURRENT_AGENT_COMPILER_VERSION) {
+      reasons.push("compiler_outdated");
+    }
   }
 
   return { publishedAt: input.publishedAt, pending: reasons.length > 0, reasons };

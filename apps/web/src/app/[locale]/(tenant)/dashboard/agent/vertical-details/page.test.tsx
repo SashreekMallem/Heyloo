@@ -73,3 +73,15 @@ describe("VerticalDetailsTabPage — auto (SETTINGS-1 review)", () => {
     expect(routes.calls).toHaveLength(0);
   });
 });
+
+describe("VerticalDetailsTabPage — honest labels (SETTINGS-2)", () => {
+  it("cancellation window/fee are stated to callers now; only voice reminders is still labeled unused", async () => {
+    loadWith({ cancellation_policy: POLICY });
+    vi.stubGlobal("fetch", stubRoutes({}).fetchMock);
+    renderWithTenant(<VerticalDetailsTabPage />);
+    expect(await screen.findByText(/tells callers the window and fee/)).toBeInTheDocument();
+    // Voice reminders has no reader (a reminder call needs Retell outbound calling): still labeled.
+    expect(screen.getAllByText("Not used on calls yet")).toHaveLength(1);
+    expect(screen.getByText(/Voice appointment reminders/)).toBeInTheDocument();
+  });
+});

@@ -28,7 +28,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
-import { NotLiveBadge, NotLiveNote } from "@/components/tenant/settings/not-live-note";
 import { applyIssues, SAVED_NEXT_CALL, saveErrorMessage, sendJson } from "@/lib/settings/client";
 import {
   type InstructionsFormValues,
@@ -188,10 +187,7 @@ function InstructionsForm({ tenantId, row }: { tenantId: string; row: Instructio
             />
 
             <div className="space-y-4 rounded-md border border-border p-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-sm font-medium">When to transfer</p>
-                <NotLiveBadge />
-              </div>
+              <p className="text-sm font-medium">When to transfer</p>
               <FormField
                 control={form.control}
                 name="transfer_window"
@@ -249,29 +245,27 @@ function InstructionsForm({ tenantId, row }: { tenantId: string; row: Instructio
                   </FormItem>
                 )}
               />
-              <NotLiveNote>
-                Today your AI transfers any caller who asks for a person to the transfer number
-                above, at any hour, and takes a message if no number is set. These choices are kept
-                and apply automatically once call routing rules ship.
-              </NotLiveNote>
+              <p className="text-xs text-muted-foreground">
+                Applies from the next call, using your business hours. Outside hours your AI uses
+                your after-hours number if you set one; otherwise &ldquo;business hours only&rdquo;
+                means it takes a message instead of transferring (unless urgent calls are switched
+                on, in which case it still transfers callers with an emergency). Transfers only ever
+                go to the numbers you enter here — never a number a caller or text supplies.
+              </p>
             </div>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <div className="flex flex-wrap items-center gap-2">
-              <CardTitle>What your AI should know</CardTitle>
-              <NotLiveBadge />
-            </div>
-            <CardDescription>Extra details for callers.</CardDescription>
+            <CardTitle>What your AI should know</CardTitle>
+            <CardDescription>
+              Extra details your AI uses to answer callers, from the next call. It treats what you
+              write as information and preferences: nothing here can turn off the required AI and
+              call-recording notice, change who it transfers to, or override its safety rules.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <NotLiveNote>
-              Your AI doesn&apos;t read these fields on calls yet. To give callers an answer today,
-              put it in your business&apos;s vertical details (cancellation policy, tow partner,
-              emergency clinic…) where it is already spoken.
-            </NotLiveNote>
             <FormField
               control={form.control}
               name="special_instructions"

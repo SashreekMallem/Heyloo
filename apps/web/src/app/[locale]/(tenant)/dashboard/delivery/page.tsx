@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { AirtableStatusResponse } from "@/app/api/tenant/delivery/airtable/status/route";
 import { OwnerAlertsCard } from "@/components/tenant/settings/owner-alerts-card";
+import { Link } from "@/i18n/navigation";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
@@ -105,8 +106,12 @@ export default function DeliveryPage() {
 
       {a2pStatus === "pending_verification" && (
         <Callout tone="warning" title="SMS pending carrier verification">
-          Carrier approval usually takes 1–5 business days — email delivery stays active in the
-          meantime.
+          Carrier approval usually takes about 1–2 weeks — email delivery stays active in the
+          meantime. See your progress on the{" "}
+          <Link href="/dashboard/texting" className="underline">
+            Text messaging
+          </Link>{" "}
+          page.
         </Callout>
       )}
 

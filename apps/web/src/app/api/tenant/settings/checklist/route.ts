@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { type ChecklistItem, computeSettingsChecklist } from "@/lib/settings/checklist";
+import { readAgentConfigForPublish } from "@/lib/settings/publish-config";
 import { computePublishStatus } from "@/lib/settings/publish-status";
 import { requireTenantMember } from "@/lib/settings/route-auth";
 
@@ -23,17 +24,13 @@ export async function GET() {
   if (!auth.ok) return auth.response;
   const { supabase, tenantId } = auth;
 
-  const [tenantRes, configRes, offeringsRes, resourcesRes] = await Promise.all([
+  const [tenantRes, configRead, offeringsRes, resourcesRes] = await Promise.all([
     supabase
       .from("tenants")
       .select("vertical, business_hours, owner_test_phone, language_config")
       .eq("id", tenantId)
       .maybeSingle(),
-    supabase
-      .from("agent_configs")
-      .select("transfer_number, dynamic_variable_overrides, published_at, compiled_config")
-      .eq("tenant_id", tenantId)
-      .maybeSingle(),
+    readAgentConfigForPublish(supabase, tenantId),
     supabase
       .from("offerings")
       .select("id", { count: "exact", head: true })
@@ -45,12 +42,12 @@ export async function GET() {
       .eq("tenant_id", tenantId)
       .eq("active", true),
   ]);
-  if (tenantRes.error || configRes.error) {
+  if (tenantRes.error || !configRead.ok) {
     return NextResponse.json({ error: "read_failed" }, { status: 500 });
   }
 
   const tenant = tenantRes.data;
-  const config = configRes.data;
+  const config = configRead.row;
   const overrides = (config?.dynamic_variable_overrides ?? {}) as Record<string, unknown>;
 
   const items = computeSettingsChecklist({
@@ -66,6 +63,7 @@ export async function GET() {
       compiledConfig: config?.compiled_config ?? null,
       transferNumber: config?.transfer_number ?? null,
       languageConfig: tenant?.language_config ?? null,
+      compiledWithVersion: config?.compiled_with_version,
     }),
   });
 

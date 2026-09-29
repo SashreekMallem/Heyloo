@@ -281,13 +281,12 @@ function VerticalDetailsForm({
               className="space-y-4"
               data-tenant-id={tenantId}
             >
-              <div className="flex flex-wrap items-center gap-2 text-sm">
+              <div className="text-sm">
                 <span className="font-medium">Cancellation window and late fee</span>
-                <NotLiveBadge />
               </div>
               <p className="text-xs text-muted-foreground">
-                Saved for reference — your AI doesn&apos;t enforce the window or charge the fee yet.
-                Callers hear the policy text below, so spell the rules out there.
+                Your AI tells callers the window and fee together with your policy text, from the
+                next call. It states them; it doesn&apos;t enforce the window or charge the fee.
               </p>
               <div className="grid gap-4 sm:grid-cols-2">
                 <FormField
@@ -332,7 +331,7 @@ function VerticalDetailsForm({
                     </FormControl>
                     <FormDescription>
                       {vertical === "legal"
-                        ? "Saved, but not read to callers yet for law firms."
+                        ? "Stated when a consultation is confirmed, cancelled or rescheduled, or when the caller asks."
                         : "Stated at booking and again if the customer cancels."}
                     </FormDescription>
                     <FormMessage />
@@ -347,7 +346,7 @@ function VerticalDetailsForm({
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel className="flex flex-wrap items-center gap-2">
-                        Insurances accepted (one per line) <NotLiveBadge />
+                        Insurances accepted (one per line)
                       </FormLabel>
                       <FormControl>
                         <Textarea
@@ -355,6 +354,10 @@ function VerticalDetailsForm({
                           onChange={(e) => field.onChange(linesToArray(e.target.value))}
                         />
                       </FormControl>
+                      <FormDescription>
+                        Your AI confirms a plan only if it&apos;s on this list, and never promises
+                        coverage or what a plan will pay. Applies from the next call.
+                      </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -542,6 +545,10 @@ function VerticalDetailsForm({
                               }
                             />
                           </FormControl>
+                          <FormDescription>
+                            Your AI quotes pickup as &ldquo;around&rdquo; the current time plus
+                            this, from the next call.
+                          </FormDescription>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -664,7 +671,7 @@ function VerticalDetailsForm({
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel className="flex flex-wrap items-center gap-2">
-                            Typical prep time (minutes) <NotLiveBadge />
+                            Typical prep time (minutes)
                           </FormLabel>
                           <FormControl>
                             <Input
