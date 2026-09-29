@@ -7,7 +7,11 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { setRequestLocale } from "next-intl/server";
 import { Reveal } from "@/components/marketing/reveal";
-import { getVerticalContent, VERTICAL_CONTENT } from "@/content/marketing/verticals";
+import {
+  getVerticalContent,
+  STATS_DISCLAIMER,
+  VERTICAL_CONTENT,
+} from "@/content/marketing/verticals";
 import { Link } from "@/i18n/navigation";
 
 export function generateStaticParams() {
@@ -78,6 +82,7 @@ export default async function VerticalPage({
               </Reveal>
             ))}
           </div>
+          <p className="mt-4 text-center text-micro text-muted-foreground">{STATS_DISCLAIMER}</p>
         </Container>
       </Section>
 
