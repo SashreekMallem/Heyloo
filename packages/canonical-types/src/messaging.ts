@@ -28,9 +28,11 @@ export const SMS_PROVIDER_IDS = ["telnyx", "twilio"] as const;
 export type SmsProviderId = (typeof SMS_PROVIDER_IDS)[number];
 export const zSmsProviderId = z.enum(SMS_PROVIDER_IDS);
 
-/** Email providers with an adapter today: an HTTP API (`resend`) or the
- * owner's own mailbox over SMTP with implicit TLS (`smtp`). */
-export const EMAIL_PROVIDER_IDS = ["resend", "smtp"] as const;
+/** Email providers with an adapter today: an HTTP API (`resend`), the
+ * owner's own mailbox over SMTP with implicit TLS (`smtp`), or the owner's
+ * Microsoft 365 mailbox over HTTPS through Microsoft Graph
+ * (`microsoft_graph`, for hosts that block outgoing SMTP). */
+export const EMAIL_PROVIDER_IDS = ["resend", "smtp", "microsoft_graph"] as const;
 export type EmailProviderId = (typeof EMAIL_PROVIDER_IDS)[number];
 export const zEmailProviderId = z.enum(EMAIL_PROVIDER_IDS);
 

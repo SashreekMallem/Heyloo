@@ -191,3 +191,54 @@ describe("buildMessagingRegistryFromEnv — SMTP email (MSG-3)", () => {
     expect(r.resolveEmail()).toMatchObject({ ok: false, missing: ["EMAIL_FROM_ADDRESS"] });
   });
 });
+
+describe("buildMessagingRegistryFromEnv — Microsoft Graph email (EMAIL-MSGRAPH)", () => {
+  const fetchImpl = vi.fn();
+  const GRAPH_ENV: Record<string, string> = {
+    EMAIL_PROVIDER: "microsoft_graph",
+    EMAIL_FROM_ADDRESS: "Heyloo <ms@heycuey.com>",
+    MS_TENANT_ID: "11111111-2222-3333-4444-555555555555",
+    MS_CLIENT_ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    MS_CLIENT_SECRET: "a-secret-value",
+  };
+
+  it("EMAIL_PROVIDER=microsoft_graph selects the Graph adapter", () => {
+    const r = buildMessagingRegistryFromEnv((n) => GRAPH_ENV[n], fetchImpl);
+    expect(r.emailDefault).toBe("microsoft_graph");
+    const resolved = r.resolveEmail();
+    expect(resolved.ok && resolved.provider.id).toBe("microsoft_graph");
+    expect(r.emailFromAddress).toBe("Heyloo <ms@heycuey.com>");
+    expect(r.anyConfigured()).toBe(true);
+  });
+
+  it("fails closed and names each missing Graph variable", () => {
+    const env: Record<string, string> = {
+      EMAIL_PROVIDER: "microsoft_graph",
+      EMAIL_FROM_ADDRESS: "ms@heycuey.com",
+    };
+    const r = buildMessagingRegistryFromEnv((n) => env[n], fetchImpl);
+    expect(r.resolveEmail()).toMatchObject({
+      ok: false,
+      reason: "provider_not_configured",
+      providerId: "microsoft_graph",
+      missing: ["MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET"],
+    });
+    expect(r.anyConfigured()).toBe(false);
+  });
+
+  it("an invalid id is reported as NAME (why), never with the secret", () => {
+    const env: Record<string, string> = { ...GRAPH_ENV, MS_CLIENT_ID: "nope" };
+    const r = buildMessagingRegistryFromEnv((n) => env[n], fetchImpl);
+    const resolved = r.resolveEmail();
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) return;
+    expect(resolved.missing).toEqual([expect.stringMatching(/^MS_CLIENT_ID \(/)]);
+    expect(JSON.stringify(resolved)).not.toContain("a-secret-value");
+  });
+
+  it("Resend stays the default when Graph is merely configured", () => {
+    const env: Record<string, string> = { ...GRAPH_ENV, EMAIL_PROVIDER: "" };
+    const r = buildMessagingRegistryFromEnv((n) => env[n], fetchImpl);
+    expect(r.resolveEmail()).toMatchObject({ ok: false, providerId: "resend" });
+  });
+});
