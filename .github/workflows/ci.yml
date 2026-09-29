@@ -319,6 +319,12 @@ jobs:
       - name: Run owner column-grant SQL test
         if: steps.migrations.outputs.count != '0'
         run: psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/owner_column_grants.sql
+      # SEC-2 review: time-zone guard (an owner-written bad zone must not be
+      # able to abort the platform-wide nightly usage rollup) and the customers
+      # column grants (sms_opt_out / consent are system-written).
+      - name: Run SEC-2 review hardening SQL test
+        if: steps.migrations.outputs.count != '0'
+        run: psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/sec2_review_hardening.sql
       - name: Run owner privilege-escalation probe
         if: steps.migrations.outputs.count != '0'
         run: node --experimental-strip-types scripts/ci/owner-privilege-escalation-probe.ts

@@ -291,6 +291,15 @@ async function main(): Promise<void> {
     },
     ownerToken,
   );
+  // SEC-2 review: an unknown zone would abort fn_cron_usage_rollup for every
+  // tenant, so the database (not just the portal route) must refuse it.
+  await expectRejected(
+    "owner PATCH of tenants.timezone to an unknown zone",
+    `/rest/v1/tenants?id=eq.${tenantId}`,
+    "PATCH",
+    { timezone: "Mars/Phobos" },
+    ownerToken,
+  );
   await expectRejected(
     "owner INSERT into tenants",
     "/rest/v1/tenants",
@@ -364,7 +373,30 @@ async function main(): Promise<void> {
     ownerToken,
   );
 
+  // --- customers (SEC-2 review): only `metadata` (the notes write) ----------
+  const customerId = await insertReturning("customers", {
+    tenant_id: tenantId,
+    phone_e164: `+1555${String(stamp).slice(-7)}`,
+    sms_opt_out: true,
+  });
+  await checkTable("customers", `id=eq.${customerId}`, { metadata: { notes: [] } }, ownerToken);
+  await expectRejected(
+    "owner INSERT into customers",
+    "/rest/v1/customers",
+    "POST",
+    { tenant_id: tenantId, phone_e164: "+15555550177" },
+    ownerToken,
+  );
+  await expectRejected(
+    "owner DELETE of a customers row",
+    `/rest/v1/customers?id=eq.${customerId}`,
+    "DELETE",
+    undefined,
+    ownerToken,
+  );
+
   // --- cleanup (best effort; the local stack is discarded after CI) ------
+  await asService(`/rest/v1/customers?id=eq.${customerId}`, "DELETE");
   await asService(`/rest/v1/text_conversations?id=eq.${conversationId}`, "DELETE");
   await asService(`/rest/v1/agent_configs?id=eq.${configId}`, "DELETE");
 

@@ -8699,3 +8699,74 @@ Design: **values are resolved per call** (voice: `/voice-inbound` dynamic variab
 1. Apply `supabase/migrations/20260929163000_waitlist_notify_enqueue.sql`.
 2. Deploy `job-offboarding`, `job-retell-health-failover`, `api-provision`, and (they import the changed `_shared` template/owner-alert files) `worker-messages-outbound`, `worker-tick`, `voice-events`, `voice-tools`.
 3. Optional secret: `DEMO_AGENT_ID` (already documented) is now also read by `job-offboarding` and `job-retell-health-failover` to protect the demo agent's number bindings.
+
+## SEC-2-REVIEW (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — owner-writable columns that could still take down other tenants; customers compliance columns
+
+Hostile review of SEC-2 (head a8503ad). The column-grant migration itself
+holds (re-verified: catalog-wide column probe passes, no column-level ACLs or
+PUBLIC grants live, no security-definer view or RPC bypass, no SECURITY
+INVOKER trigger fires from the narrowed tables, every admin route uses the
+service role). What it left open is the flip side of an allow-list: a column
+the owner MAY write is still reachable straight through PostgREST without the
+portal route's validation. Three defects, all reproduced on a local Postgres
+built from the migrations before fixing:
+
+1. **`tenants.timezone` (allow-listed, unvalidated in the DB)** — an owner
+   `PATCH /rest/v1/tenants?id=eq.<own>` `{"timezone":"Mars/Phobos"}` succeeded,
+   then `fn_cron_usage_rollup()` (one loop over ALL tenants, no exception
+   handler, `now() at time zone t.timezone`) raised 22023: the nightly usage
+   rollup, which feeds billing and usage alerts, stops for every tenant. The
+   same free-text zone enters through `api-checkout` (`timezone: z.string()`).
+   Fix (`20260929170000_sec2_review_timezone_guard_and_customer_grants.sql`):
+   `trg_tenants_guard_timezone` (BEFORE INSERT OR UPDATE OF timezone) — unknown
+   zone on UPDATE raises 22023, on INSERT it falls back to the column default
+   so a signup from a browser whose ICU is newer than Postgres still
+   completes; `posix/`, `right/` and `Factory` aliases are refused (Postgres
+   resolves them, the JS `Intl` jobs do not). `fn_cron_usage_rollup()` now
+   isolates each tenant with an exception block (WARNING, skip). Live check:
+   all 18 tenants already carry valid zones, so the trigger rejects nothing
+   existing.
+2. **`agent_configs.dynamic_variable_overrides` (allow-listed jsonb) reaching a
+   cross-tenant cast** — `job-reminder-scheduler` selected
+   `(ac.dynamic_variable_overrides->>'reminder_window_hours')::int` in the one
+   query spanning every tenant's candidate bookings. An owner writing
+   `{"reminder_window_hours":"abc"}` (and their own confirmed booking, also
+   user-insertable) made the query raise 22P02 and stopped reminders
+   platform-wide. The column was selected but never used (the window is a
+   fixed 23-25 h): removed together with the agent_configs join. The consent
+   flags now compare text (`c.consent->>'sms' = 'true'`) instead of casting,
+   the fail-closed direction. **Needs a deploy of `job-reminder-scheduler`.**
+3. **`customers` was still table-wide writable** (the SEC-2 follow-up). A
+   member could clear `sms_opt_out` (a STOP the platform must honour;
+   `worker-messages-outbound` and `job-review-request` trust it) and write
+   `consent` with a non-boolean, which also fed the reminder cast in (2).
+   Fix (same migration): `fn_touch_customer` and `fn_recompute_customer_segment`
+   are now SECURITY DEFINER (`search_path ''`; they only update
+   `public.customers` by the id of a row RLS already tenant-pinned), then
+   `authenticated` loses INSERT/UPDATE/DELETE/TRUNCATE on `customers` and gets
+   `UPDATE (metadata)` only, the one column the portal writes with the
+   user-scoped client (`/api/tenant/customers/[id]/notes`). Voice/edge
+   functions use the secret key and are unaffected. The DB-side test proves a
+   user-scoped booking insert still bumps `lifetime_bookings`.
+
+**Tests:** `supabase/tests/sec2_review_hardening.sql` (new, wired into the
+`rls-probe` job) failed on the pre-fix schema ("owner stored the unknown time
+zone Mars/Phobos"; customers repro: owner set `sms_opt_out=false`,
+`consent={"sms":"x"}`) and passes after; `owner_column_grants.sql` still
+passes; the HTTP probe gained the timezone PATCH and the customers checks (not
+runnable here, first real run is CI). `job-reminder-scheduler/handler.test.ts`
+gained a query-text guard that failed on the old handler. All migrations
+applied from zero on the local PG 16 stub (74 + this one).
+
+**Reviewed, deliberately not changed**
+- `text_conversation_messages` INSERT does not pin `conversation_id` to the
+  caller's tenant (RLS only checks the row's own `tenant_id`); every reader
+  filters by tenant, so a foreign-conversation row is invisible, and the id is
+  an unguessable uuid. Low; a composite FK (tenant_id, conversation_id) is the
+  clean fix if wanted.
+- `support_requests` INSERT lets a tenant choose `status`/`priority`/
+  `created_by`; `support_request_notes` INSERT does not pin `author_id`.
+  Cosmetic (staff triage only).
+- Owner-influenced text (`name`, `special_instructions`, `dynamic_variable_
+  overrides`, `transfer_number`) is by design; the compiler sanitises prompt
+  text (`sanitizeOwnerText`).

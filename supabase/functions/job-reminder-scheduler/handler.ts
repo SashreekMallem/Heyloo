@@ -25,13 +25,22 @@ export interface ReminderCandidateRow {
   consent_sms: boolean;
   consent_call: boolean;
   customer_phone: string | null;
-  reminder_window_hours: number;
   /** `tenants.quiet_hours` jsonb (BACKEND_SPEC.md §13.2) — a proactive
    * booking reminder is exactly the "unsolicited/proactive" case that
    * column exists to gate; resolved via `resolveQuietHoursWindow`. */
   quiet_hours: unknown;
 }
 
+/**
+ * SEC-2 review: this ONE query spans every tenant, so it must never cast a
+ * value a tenant can write. It used to select
+ * `(ac.dynamic_variable_overrides->>'reminder_window_hours')::int` (an unused
+ * column) — an owner PATCHing `{"reminder_window_hours":"abc"}` onto their own
+ * agent_configs row through PostgREST made the cast raise 22P02 and stopped
+ * reminders for every tenant. The unused field and its join are gone, and the
+ * consent flags compare text instead of casting it (anything but the JSON
+ * boolean `true` reads as "no consent", the fail-closed direction).
+ */
 export async function findReminderCandidates(
   sql: SqlClient,
   now: Date,
@@ -43,14 +52,12 @@ export async function findReminderCandidates(
       b.start_at,
       t.timezone,
       t.quiet_hours,
-      coalesce((c.consent->>'sms')::boolean, false) as consent_sms,
-      coalesce((c.consent->>'call')::boolean, false) as consent_call,
-      c.phone_e164 as customer_phone,
-      coalesce((ac.dynamic_variable_overrides->>'reminder_window_hours')::int, 24) as reminder_window_hours
+      coalesce(c.consent->>'sms' = 'true', false) as consent_sms,
+      coalesce(c.consent->>'call' = 'true', false) as consent_call,
+      c.phone_e164 as customer_phone
     from public.bookings b
     join public.tenants t on t.id = b.tenant_id
     left join public.customers c on c.id = b.customer_id
-    left join public.agent_configs ac on ac.tenant_id = b.tenant_id
     where b.status = 'confirmed'
       and not b.is_test
       and b.start_at between ${now.toISOString()}::timestamptz + interval '23 hours'
