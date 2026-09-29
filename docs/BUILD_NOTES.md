@@ -8699,3 +8699,25 @@ Design: **values are resolved per call** (voice: `/voice-inbound` dynamic variab
 1. Apply `supabase/migrations/20260929163000_waitlist_notify_enqueue.sql`.
 2. Deploy `job-offboarding`, `job-retell-health-failover`, `api-provision`, and (they import the changed `_shared` template/owner-alert files) `worker-messages-outbound`, `worker-tick`, `voice-events`, `voice-tools`.
 3. Optional secret: `DEMO_AGENT_ID` (already documented) is now also read by `job-offboarding` and `job-retell-health-failover` to protect the demo agent's number bindings.
+
+## VOICE-ALERTS-1-REVIEW (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — hostile review of VOICE-ALERTS-1
+
+### Defects found and fixed
+
+- **Migration would break slot generation on the current live schema (high).** `20260929161000` read `tenants.booking_horizon_days` as a plain column, but that column comes from `20260929140000_tenant_booking_rules.sql`, which is not applied live (live `schema_migrations` ends at `20260929010000`; column absent). plpgsql resolves columns at run time, so every `fn_regenerate_availability_slots` call would raise 42703 (owner hours/resource saves error; the nightly rollforward skips every resource, one WARNING each). Reproduced on a scratch Postgres 16 with the full migration chain by dropping the column. `20260929164100_regen_slots_horizon_column_optional.sql` re-creates the function reading `to_jsonb(t) ->> 'booking_horizon_days'`. New CI SQL test `supabase/tests/availability_slots_regen.sql` (wired into the `rls-probe` job) fails against 161000 alone and passes with the new migration.
+- **Manual Mode did not cover reschedule/cancel (medium).** The compiled prompt and the portal page promise "do not book, reschedule or cancel", but `update_booking` and `cancel_booking` still committed. Both now refuse (`reason: "manual_mode"`, take-a-message instruction) in the dispatcher and in the tool functions.
+- **Manual Mode was not enforced for the text/chat agent (medium; the builder listed it as not done).** The engine now passes `tenants.manual_mode` to the tool router, which puts it on the `CallContext`, so `create_booking`, `create_order`, `update_booking` and `cancel_booking` refuse there too.
+- **Owner minimum notice bypass (medium).** `check_availability` withheld slots inside `booking_min_notice_minutes`, but `create_booking` did not check it. The existing preflight statement now computes `too_soon` (owner-set value only, never for a day-length motel night, read via `to_jsonb(t)` so it works while 20260929140000 is unapplied); no extra round trip. Preflight bind positions in `create_booking.test.ts` shifted by three (`P.isMotel` 17 -> 20).
+- **`send_sms_confirmation` accepted any `template_key` (medium, tool authorization).** With rows now always queued, a prompt-injected caller could have the agent queue an owner-alert template (empty alert to the owner) or `chat_phone_verification` to any number. Allowlist: `booking_confirmation`, `order_confirmation`, `booking_cancelled`; anything else answers `invalid_template` without touching the DB (other keys already rendered empty and failed in the worker).
+
+### Verified
+
+- All 78 migrations (including `20260929164100`) apply from zero with `ON_ERROR_STOP` on a throwaway local Postgres 16 with stubbed auth/storage/realtime/pgmq schemas and roles (no pg_cron/pg_net, no Supabase image). `supabase/tests/availability_slots_regen.sql` run before (fails 42703) and after (passes). The `too_soon` expression was run against a tenant with `booking_min_notice_minutes = 120`.
+
+### Not fixed (residual)
+
+- Owner-alert dedupe is check-then-insert in one statement with no unique index, so two truly concurrent producers for the same booking/call (deferred tool alert vs `voice-events`) could both insert; in practice they are minutes apart. A partial unique index was not added because live `messages_outbound` may hold duplicate owner rows from the old per-invocation `take_message` insert and the index build would fail.
+- A second `take_message` on one call (a correction) updates `call_logs` but does not re-alert (one alert per call by design); the owner sees the first text.
+- `apps/web` Manual Mode page comment still says tool-level refusal is a separate backend task; it is now done.
+- Deploy list additions for this review: `voice-tools`, `api-text-chat`.
+
