@@ -33,6 +33,7 @@ export type TemplateKey =
   | "owner_new_booking"
   | "owner_urgent_call"
   | "owner_missed_transfer"
+  | "owner_line_ready"
   | "sms_reply"
   | "text_agent_reply";
 
@@ -84,6 +85,16 @@ export function renderTemplate(
       return {
         subject: `Urgent call from ${callerName}`,
         body: `URGENT: ${callerName}${str("caller_phone") ? ` (${str("caller_phone")})` : ""} called about something that may need immediate attention.${str("summary") ? ` Summary: ${str("summary")}` : ""}`,
+      };
+    }
+    // NUMBERS-1: provisioning-saga "your line is live" notice to the OWNER
+    // (api-provision step 6). `phone_e164` is the tenant's new Heyloo voice
+    // number, carried in the body, never the destination.
+    case "owner_line_ready": {
+      const line = str("phone_e164");
+      return {
+        subject: "Your Heyloo AI receptionist is live",
+        body: `Your Heyloo AI receptionist is set up${line ? ` on ${line}` : ""}. Forward your business calls to it to start answering them; the setup guide in your dashboard walks you through it.`,
       };
     }
     case "owner_missed_transfer": {

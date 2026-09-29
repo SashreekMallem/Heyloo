@@ -348,3 +348,96 @@ describe("republishTenantAgent", () => {
     expect(numberUpdate?.body).not.toHaveProperty("outbound_agents");
   });
 });
+
+describe("runProvisioningSaga — notify step (NUMBERS-1)", () => {
+  /** Wraps the base fixtures with the owner-contact lookup, the existing-
+   * notice check, and captured messages_outbound inserts / pgmq sends. */
+  function notifySql(opts: {
+    delivery?: unknown;
+    ownerEmail?: string | null;
+    transferNumber?: string | null;
+    alreadyNotified?: boolean;
+  }) {
+    const base = makeSql(baseFixtures());
+    const inserts: { text: string; values: unknown[] }[] = [];
+    const sends: unknown[][] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("left join public.agent_configs ac on ac.tenant_id = t.id")) {
+        return Promise.resolve([
+          {
+            transfer_number: opts.transferNumber ?? null,
+            delivery: opts.delivery ?? null,
+            owner_email: opts.ownerEmail ?? null,
+          },
+        ]);
+      }
+      if (text.includes("template_key = 'owner_line_ready'")) {
+        return Promise.resolve(opts.alreadyNotified ? [{ id: "msg_old" }] : []);
+      }
+      if (text.includes("insert into public.messages_outbound")) {
+        inserts.push({ text, values });
+        return Promise.resolve([{ id: "msg_1" }]);
+      }
+      if (text.includes("pgmq.send")) {
+        sends.push(values);
+        return Promise.resolve([]);
+      }
+      return (base.sql as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown[]>)(
+        strings,
+        ...values,
+      );
+    }) as SqlClient;
+    return { sql, inserts, sends };
+  }
+
+  it("notifies the OWNER's alert phone (delivery.alert_phone), never the tenant's own new voice number, and enqueues it", async () => {
+    const { sql, inserts, sends } = notifySql({
+      delivery: { alert_phone: "+15557770001" },
+      ownerEmail: "owner@example.com",
+    });
+    const result = await runProvisioningSaga(sql, "tenant_1", makeDeps());
+    expect(result).toEqual({ status: "complete" });
+    expect(inserts).toHaveLength(1);
+    const insert = inserts[0];
+    expect(insert?.values).toEqual(
+      expect.arrayContaining(["tenant_1", "sms", "+15557770001", "owner_line_ready"]),
+    );
+    // The provisioned voice number (+15551230000) is in the payload only.
+    expect(insert?.values).not.toContain("+15551230000");
+    expect(insert?.values).toContainEqual({ phone_e164: "+15551230000" });
+    expect(insert?.values).not.toContain("weekly_value_summary");
+    expect(sends).toEqual([["messages_outbound_queue", { message_id: "msg_1" }]]);
+  });
+
+  it("falls back to the owner's email when texting is off in delivery preferences", async () => {
+    const { sql, inserts } = notifySql({
+      delivery: { sms_enabled: false },
+      ownerEmail: "owner@example.com",
+      transferNumber: "+15558880000",
+    });
+    await runProvisioningSaga(sql, "tenant_1", makeDeps());
+    expect(inserts[0]?.values).toEqual(
+      expect.arrayContaining(["email", "owner@example.com", "owner_line_ready"]),
+    );
+  });
+
+  it("does not fail the saga or enqueue anything when the owner has no reachable contact", async () => {
+    const { sql, inserts, sends } = notifySql({});
+    const result = await runProvisioningSaga(sql, "tenant_1", makeDeps());
+    expect(result).toEqual({ status: "complete" });
+    expect(inserts).toHaveLength(0);
+    expect(sends).toHaveLength(0);
+  });
+
+  it("is idempotent: a resumed saga that already sent the notice sends no second one", async () => {
+    const { sql, inserts, sends } = notifySql({
+      delivery: { alert_phone: "+15557770001" },
+      alreadyNotified: true,
+    });
+    const result = await runProvisioningSaga(sql, "tenant_1", makeDeps());
+    expect(result).toEqual({ status: "complete" });
+    expect(inserts).toHaveLength(0);
+    expect(sends).toHaveLength(0);
+  });
+});

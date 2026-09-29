@@ -83,9 +83,10 @@ describe("owner alert templates", () => {
         caller_phone: "+15551234567",
         message_text: "Call me",
         summary: "Brakes failing",
+        phone_e164: "+15551230000",
       });
       expect(rendered.subject, template).toBeTruthy();
-      expect(rendered.body, template).toContain("Jordan");
+      expect(rendered.body, template).toMatch(/Jordan|\+15551230000/);
     }
     expect(isOwnerAlertTemplate("booking_confirmation")).toBe(false);
   });

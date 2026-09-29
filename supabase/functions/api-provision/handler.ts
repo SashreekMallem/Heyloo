@@ -1,3 +1,4 @@
+import { enqueueOwnerAlert } from "../_shared/owner-alerts.ts";
 import type { RetellFetch } from "../_shared/providers/retell.ts";
 import { createPhoneNumber, updatePhoneNumber } from "../_shared/providers/retell.ts";
 import {
@@ -6,7 +7,6 @@ import {
   compileCreateAndPublish,
   publishTenantAgent,
 } from "../_shared/provisioning/compile-and-publish.ts";
-import { enqueue, QUEUE_NAMES } from "../_shared/queue.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import type { Vertical } from "../_shared/vertical-defaults.ts";
 
@@ -176,15 +176,32 @@ export async function runProvisioningSaga(
     }
     await recordStep(sql, tenantId, "publish_agent", "succeeded");
 
-    // 6. Notify — enqueued, never sent inline.
+    // 6. Notify — the OWNER hears their line is live, never the tenant's own
+    // new voice number (NUMBERS-1: this step used to text
+    // `weekly_value_summary` to `phoneNumber.e164`, i.e. to the AI line
+    // itself). Goes through the owner-alert layer, which picks the alert
+    // phone and/or notification email from the tenant's delivery
+    // preferences (SMS falls back to email while texting is unverified) and
+    // is enqueued, never sent inline. Idempotent: a re-entered saga (this
+    // step re-runs on resume) never sends a second notice.
     await recordStep(sql, tenantId, "notify", "in_progress");
-    const messageRows = await sql<{ id: string }>`
-      insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload)
-      select ${tenantId}, 'sms', ${phoneNumber.e164}, 'weekly_value_summary', '{}'::jsonb
-      returning id
+    const alreadyNotified = await sql<{ id: string }>`
+      select id from public.messages_outbound
+      where tenant_id = ${tenantId} and template_key = 'owner_line_ready' and parent_message_id is null
+      limit 1
     `;
-    const message = messageRows[0];
-    if (message) await enqueue(sql, QUEUE_NAMES.messagesOutbound, { message_id: message.id });
+    if (alreadyNotified.length === 0) {
+      const notified = await enqueueOwnerAlert(sql, {
+        tenantId,
+        kind: "line_ready",
+        payload: { phone_e164: phoneNumber.e164 },
+      });
+      // No reachable owner destination is not a provisioning failure (the
+      // dashboard still shows the number); surface it for ops.
+      if (!notified) {
+        deps.logger.warn("provisioning_notify_no_owner_contact", { tenant_id: tenantId });
+      }
+    }
     await recordStep(sql, tenantId, "notify", "succeeded");
 
     return { status: "complete" };
