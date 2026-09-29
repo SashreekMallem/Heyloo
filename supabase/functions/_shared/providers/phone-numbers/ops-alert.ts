@@ -19,7 +19,7 @@ export async function raiseNumberOpsAlert(sql: SqlClient, alert: NumberOpsAlert)
     select ${alert.rule}, ${alert.severity}, ${alert.tenantId}, ${alert.payload}::jsonb, 'open'
     where not exists (
       select 1 from public.alerts a
-      where a.rule = ${alert.rule} and a.status = 'open' and a.tenant_id = ${alert.tenantId}
+      where a.rule = ${alert.rule} and a.status in ('open', 'acked') and a.tenant_id = ${alert.tenantId}
     )
   `;
 }
@@ -27,6 +27,6 @@ export async function raiseNumberOpsAlert(sql: SqlClient, alert: NumberOpsAlert)
 /** Resolves every open alert of `rule` (e.g. when the Retell incident ends). */
 export async function resolveNumberOpsAlerts(sql: SqlClient, rule: string): Promise<void> {
   await sql`
-    update public.alerts set status = 'resolved' where rule = ${rule} and status = 'open'
+    update public.alerts set status = 'resolved' where rule = ${rule} and status in ('open', 'acked')
   `;
 }

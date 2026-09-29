@@ -1,5 +1,5 @@
 import type { RetellFetch } from "../retell.ts";
-import { deletePhoneNumber, getPhoneNumber } from "../retell.ts";
+import { deletePhoneNumber, getPhoneNumber, listPhoneNumbersPage } from "../retell.ts";
 import type {
   FailoverSupport,
   NumberRecord,
@@ -18,10 +18,47 @@ export interface RetellNumberDeps {
   protectedAgentIds: readonly string[];
 }
 
-/** Retell answers "no such number" with 422 per docs.retellai.com (404 is
- * tolerated too); both mean the same thing on a GET. */
-function isGone(status: number): boolean {
+/** delete-phone-number documents 422 "Cannot find requested asset"; the
+ * get-phone-number page documents 422 only as the generic "Unprocessable
+ * Content" (and no 404). Neither status is proof of absence on its own, so a
+ * 404/422 is always confirmed against the list endpoint (`findListed`). */
+function isGoneStatus(status: number): boolean {
   return status === 404 || status === 422;
+}
+
+const LIST_MAX_PAGES = 20;
+
+/**
+ * Looks the number up in the account's number list (paginated). `entry` is
+ * the list item when the number still exists (it carries the agent bindings)
+ * and null when the whole list was read and it is absent. Any list failure is
+ * a failure, never "absent": absence is only ever concluded from a complete,
+ * successful read.
+ */
+async function findListed(
+  deps: RetellNumberDeps,
+  e164: string,
+): Promise<{ ok: true; entry: unknown | null } | { ok: false; status: number }> {
+  let paginationKey: string | undefined;
+  for (let page = 0; page < LIST_MAX_PAGES; page += 1) {
+    const res = await listPhoneNumbersPage(deps.retellFetch, deps.retellApiKey, {
+      ...(paginationKey ? { paginationKey } : {}),
+    });
+    const body = res.body as
+      | { items?: unknown; has_more?: unknown; pagination_key?: unknown }
+      | undefined;
+    if (!res.ok || !Array.isArray(body?.items)) return { ok: false, status: res.status || 502 };
+    const hit = body.items.find(
+      (item) => (item as { phone_number?: unknown } | null)?.phone_number === e164,
+    );
+    if (hit !== undefined) return { ok: true, entry: hit };
+    if (body.has_more !== true) return { ok: true, entry: null };
+    if (typeof body.pagination_key !== "string" || body.pagination_key === "") {
+      return { ok: false, status: 502 };
+    }
+    paginationKey = body.pagination_key;
+  }
+  return { ok: false, status: 502 };
 }
 
 function boundAgentIds(body: unknown): string[] {
@@ -51,9 +88,10 @@ function boundAgentIds(body: unknown): string[] {
  *
  * Read first (`GET /get-phone-number`): a number Retell no longer has is a
  * completed release (retried run), and a number bound to a protected agent
- * is refused. Retell's documented "not found" on DELETE is 422 (not 404), so
- * a 404/422 on the DELETE is re-verified with a GET before it counts as
- * gone; a 422 for any other reason stays a failure.
+ * is refused. 404/422 (on the GET or the DELETE) is never trusted on its
+ * own: the number counts as gone only when the paginated list-phone-numbers
+ * read succeeds and does not contain it; a listed number is still checked
+ * against protected agents and deleted.
  */
 export async function releaseRetellNumber(
   deps: RetellNumberDeps,
@@ -63,19 +101,26 @@ export async function releaseRetellNumber(
   | { ok: false; reason: "retell_delete_failed" | "protected_agent_bound"; status: number }
 > {
   const current = await getPhoneNumber(deps.retellFetch, deps.retellApiKey, e164);
-  if (isGone(current.status)) return { ok: true, alreadyReleased: true };
-  if (!current.ok) return { ok: false, reason: "retell_delete_failed", status: current.status };
+  let body: unknown = current.body;
+  if (isGoneStatus(current.status)) {
+    const listed = await findListed(deps, e164);
+    if (!listed.ok) return { ok: false, reason: "retell_delete_failed", status: listed.status };
+    if (listed.entry === null) return { ok: true, alreadyReleased: true };
+    body = listed.entry;
+  } else if (!current.ok) {
+    return { ok: false, reason: "retell_delete_failed", status: current.status };
+  }
 
   const protectedIds = new Set(deps.protectedAgentIds.filter((id) => id !== ""));
-  if (boundAgentIds(current.body).some((id) => protectedIds.has(id))) {
+  if (boundAgentIds(body).some((id) => protectedIds.has(id))) {
     return { ok: false, reason: "protected_agent_bound", status: current.status };
   }
 
   const deleted = await deletePhoneNumber(deps.retellFetch, deps.retellApiKey, e164);
   if (deleted.ok) return { ok: true, alreadyReleased: false };
-  if (isGone(deleted.status)) {
-    const recheck = await getPhoneNumber(deps.retellFetch, deps.retellApiKey, e164);
-    if (isGone(recheck.status)) return { ok: true, alreadyReleased: true };
+  if (isGoneStatus(deleted.status)) {
+    const listed = await findListed(deps, e164);
+    if (listed.ok && listed.entry === null) return { ok: true, alreadyReleased: true };
   }
   return { ok: false, reason: "retell_delete_failed", status: deleted.status };
 }
