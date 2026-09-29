@@ -208,10 +208,21 @@ const BLOCKED_HOST_SUFFIXES = [
   ".home.arpa",
   ".corp",
   ".private",
+  // Public wildcard-DNS services that resolve `<anything>.<ip>.<domain>` to that
+  // IP (`127.0.0.1.nip.io`). The DNS answer check catches these when a resolver
+  // exists; blocking them by name keeps that case closed when it does not.
+  ".nip.io",
+  ".sslip.io",
+  ".xip.io",
+  ".localtest.me",
+  ".lvh.me",
+  ".vcap.me",
+  ".traefik.me",
 ];
 
 function isInternalHostname(host: string): boolean {
   if (host === "localhost" || host === "metadata") return true;
+  if (host === "nip.io" || host === "sslip.io" || host === "localtest.me") return true;
   if (!host.includes(".")) return true; // single-label names are LAN/search-domain names
   return BLOCKED_HOST_SUFFIXES.some((s) => host.endsWith(s));
 }
@@ -229,20 +240,20 @@ function defaultResolver(): DnsResolver | null {
 
 async function resolveAll(host: string, resolver: DnsResolver): Promise<string[]> {
   const answers: string[] = [];
-  let anyOk = false;
-  let lastError: unknown;
   for (const type of ["A", "AAAA"] as const) {
     try {
       answers.push(...(await resolver(host, type)));
-      anyOk = true;
     } catch (err) {
+      if (err instanceof SafeFetchError) throw err;
       const name = (err as { name?: string } | null)?.name;
-      // "No record of this type" is a normal answer (an A-only host), not a failure.
-      if (name === "NotFound") anyOk = true;
-      else lastError = err;
+      // "No record of this type" is a normal answer (an A-only host). Any other
+      // failure of EITHER query is fail-closed: a half-validated answer set is
+      // not the set the fetch stack will connect to.
+      if (name !== "NotFound") {
+        throw new SafeFetchError("dns_failed", String((err as Error | null)?.message ?? ""));
+      }
     }
   }
-  if (!anyOk) throw new SafeFetchError("dns_failed", String((lastError as Error)?.message ?? ""));
   return answers;
 }
 
@@ -279,7 +290,14 @@ export async function assertPublicUrl(
     return url;
   }
 
+  // One trailing dot is the FQDN root (`example.com.`). Anything else with an
+  // empty label (`localhost..`, `a..b`, `.x.com`) is not a name any resolver
+  // agrees on, so it is rejected instead of being interpreted differently here
+  // and in the fetch stack.
   const trimmed = hostname.endsWith(".") ? hostname.slice(0, -1) : hostname;
+  if (trimmed === "" || trimmed.split(".").some((label) => label === "")) {
+    throw new SafeFetchError("invalid_url", "empty hostname label");
+  }
 
   // IPv4 literal. The URL parser already canonicalized decimal/octal/hex/short
   // spellings (`2130706433`, `0177.0.0.1`, `0x7f.1`) to dotted-quad.
@@ -390,7 +408,21 @@ export async function safeFetch(
     let method = (initMethod ?? "GET").toUpperCase();
     let body = initBody;
     let headers = new Headers(initHeaders);
-    let current = await assertPublicUrl(input, resolver);
+    // The deadline also covers DNS: a resolver that never answers must not hang the caller.
+    const boundedResolver: DnsResolver | null = resolver
+      ? (host, type) =>
+          new Promise<string[]>((resolve, reject) => {
+            const onAbort = () => reject(new SafeFetchError("timeout", "dns"));
+            if (controller.signal.aborted) return onAbort();
+            controller.signal.addEventListener("abort", onAbort, { once: true });
+            resolver(host, type)
+              .then(resolve, reject)
+              .finally(() => {
+                controller.signal.removeEventListener("abort", onAbort);
+              });
+          })
+      : null;
+    let current = await assertPublicUrl(input, boundedResolver);
 
     for (let hop = 0; ; hop += 1) {
       let res: Response;
@@ -419,13 +451,15 @@ export async function safeFetch(
         } catch {
           throw new SafeFetchError("bad_redirect", "unparseable location");
         }
-        next = await assertPublicUrl(next, resolver);
+        next = await assertPublicUrl(next, boundedResolver);
         if (next.origin !== current.origin) {
           // Never forward credentials to another origin.
           headers = new Headers(headers);
-          headers.delete("authorization");
-          headers.delete("cookie");
-          headers.delete("proxy-authorization");
+          const sensitive: string[] = [];
+          headers.forEach((_value, name) => {
+            if (/auth|cookie|token|secret|key|credential|session/i.test(name)) sensitive.push(name);
+          });
+          for (const name of sensitive) headers.delete(name);
         }
         if (
           res.status === 303 ||
@@ -478,9 +512,22 @@ export async function safeFetch(
 
 /** `safeFetch` shaped like `fetch`, for injection into provider clients. */
 export function makeSafeFetch(opts: SafeFetchOptions): typeof fetch {
-  return ((input: string | URL | Request, init?: RequestInit) => {
-    const target = input instanceof Request ? input.url : input;
-    return safeFetch(target, init ?? {}, opts);
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    if (input instanceof Request) {
+      // Keep the Request's own method/headers/body; `init` overrides, as in fetch().
+      const body = input.body ? await input.clone().arrayBuffer() : undefined;
+      return safeFetch(
+        input.url,
+        {
+          method: input.method,
+          headers: input.headers,
+          ...(body !== undefined ? { body } : {}),
+          ...init,
+        },
+        opts,
+      );
+    }
+    return safeFetch(input, init ?? {}, opts);
   }) as typeof fetch;
 }
 

@@ -8950,3 +8950,21 @@ Branch `wave/LLM-1-ssrf` (from `wave/LLM-1-review`). `api-menu-import` fetched a
 **Residual risk.** (1) DNS rebinding: `fetch` resolves the name again after validation; an attacker-run authoritative DNS server that answers a public IP to the validator and a private one to the connection can still reach an internal address. Edge functions cannot pin a resolved IP for https (SNI/certificate), so this is documented, not closed. It is limited by: none of the user-URL call sites send credentials, the body is only ever stripped to text and summarized by an LLM (menu import returns extracted candidates, never the raw page), and 4xx/5xx/blocked answers are indistinguishable to the caller. (2) `Deno.resolveDns` on the Supabase Edge runtime is not confirmed (docs/VERIFY.md SSRF-1); without it the helper only blocks IP literals (all of them, even public ones) and known-internal names, so a public-looking name that resolves to a private address is not caught. (3) ezyVet: private targets are blocked but the partner `client_secret` is still POSTed to whatever public https host the tenant typed; restrict `base_url` to ezyVet's real host suffix once the docs conflict is settled (VERIFY.md SSRF-1: per-practice subdomain vs `api.ezyvet.com`). (4) Existing stored `adapter_connections.metadata.baseUrl` values are not re-validated at rest; they are checked on every request by the safe fetch.
 
 **Deploy (nothing deployed by this branch).** Functions: `api-menu-import`, `api-demo-agent`, `job-outreach-personalize`, `worker-recording-fetch`, `worker-tick`, `api-adapter-connect`, `worker-adapter-push`. Then the live checks in docs/VERIFY.md "SSRF-1".
+
+## SSRF-1 hostile review (wave/LLM-1-ssrf-review)
+
+- Gaps fixed in `_shared/safe-fetch.ts`: hostnames with empty labels
+  (`localhost..`, `x.internal..`, `example..com`) passed the internal-name
+  check because only one trailing dot was stripped; they are now `invalid_url`.
+  A failure of either the A or the AAAA lookup (other than NotFound) is now
+  fail-closed (`dns_failed`) instead of trusting the other answer set. The
+  overall deadline now also covers DNS. Cross-origin redirects drop every
+  header whose name looks credential-bearing (`x-api-key`, `*-token`, ...), not
+  just `authorization`/`cookie`. `makeSafeFetch` keeps a `Request` input's
+  method/headers/body. Public wildcard-DNS names (nip.io, sslip.io, xip.io,
+  localtest.me, lvh.me, vcap.me, traefik.me) are blocked by name so they stay
+  closed even when `Deno.resolveDns` is absent.
+- Still open (unchanged, cannot be closed in an edge function): DNS rebinding
+  between validation and connect; a public name resolving to a private IP is
+  only caught when `Deno.resolveDns` exists; ezyVet partner `client_secret` goes
+  to whichever public https host the tenant typed.

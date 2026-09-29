@@ -160,6 +160,15 @@ describe("safeFetch URL policy (network never reached)", () => {
     ["sub.localhost", "http://app.localhost/", "blocked_hostname"],
     ["metadata.google.internal", "http://metadata.google.internal/", "blocked_hostname"],
     ["single label", "http://intranet/", "blocked_hostname"],
+    ["double trailing dot", "http://localhost../", "invalid_url"],
+    ["double trailing dot ip", "http://127.0.0.1../", "invalid_url"],
+    ["empty middle label", "http://example..com/", "invalid_url"],
+    ["internal double dot", "http://svc.internal../", "invalid_url"],
+    ["wildcard dns (nip.io)", "http://127.0.0.1.nip.io/", "blocked_hostname"],
+    ["wildcard dns (localtest.me)", "http://localtest.me/", "blocked_hostname"],
+    ["fullwidth digits", "http://\uff11\uff12\uff17.0.0.1/", "blocked_address"],
+    ["percent-encoded ip", "http://%31%32%37.0.0.1/", "blocked_address"],
+    ["ideographic dots", "http://127\u30020\u30020\u30021/", "blocked_address"],
     [".local", "http://printer.local/", "blocked_hostname"],
     ["resolves private", "https://evil.example.net/", "blocked_address"],
     ["resolves mixed", "https://mixed.example.net/", "blocked_address"],
@@ -182,6 +191,29 @@ describe("safeFetch URL policy (network never reached)", () => {
       "blocked_address",
     );
     expect(await codeOf(safeFetch("http://localhost/", {}, noDns))).toBe("blocked_hostname");
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when only ONE of the A/AAAA lookups errors", async () => {
+    const { fn, impl } = mockFetch(html("x"));
+    const halfBroken: DnsResolver = async (_h, type) => {
+      if (type === "AAAA") throw new Error("servfail");
+      return [PUBLIC_IP];
+    };
+    expect(
+      await codeOf(safeFetch("https://example.com/", {}, opts(impl, { resolver: halfBroken }))),
+    ).toBe("dns_failed");
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("the overall timeout covers a resolver that never answers", async () => {
+    const { fn, impl } = mockFetch(html("x"));
+    const hang: DnsResolver = () => new Promise<string[]>(() => undefined);
+    expect(
+      await codeOf(
+        safeFetch("https://example.com/", {}, opts(impl, { resolver: hang, timeoutMs: 20 })),
+      ),
+    ).toBe("timeout");
     expect(fn).not.toHaveBeenCalled();
   });
 
@@ -232,6 +264,23 @@ describe("safeFetch allowed requests", () => {
     expect(await codeOf(f("http://169.254.169.254/"))).toBe("blocked_address");
   });
 
+  it("makeSafeFetch keeps a Request's method, headers and body", async () => {
+    const { fn, impl } = mockFetch(html("x"));
+    const f = makeSafeFetch(opts(impl));
+    await f(
+      new Request("https://example.com/p", {
+        method: "POST",
+        body: "payload",
+        headers: { "content-type": "text/plain", "x-trace": "1" },
+      }),
+    );
+    const init = fn.mock.calls[0]?.[1];
+    expect(init?.method).toBe("POST");
+    expect(new Headers(init?.headers).get("x-trace")).toBe("1");
+    expect(init?.body).toBeDefined();
+    expect(await codeOf(f(new Request("http://127.0.0.1/")))).toBe("blocked_address");
+  });
+
   it("safeFetchBytes returns the bytes for an allowed audio type", async () => {
     const { impl } = mockFetch(
       new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/wav" } }),
@@ -275,6 +324,25 @@ describe("safeFetch redirects", () => {
     const { fn, impl } = mockFetch(redirect(302, location));
     expect(await codeOf(safeFetch("https://example.com/", {}, opts(impl)))).toBe(code);
     expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops custom secret-bearing headers on a cross-origin redirect, keeps them same-origin", async () => {
+    const { fn, impl } = mockFetch(
+      redirect(302, "https://example.com/same"),
+      redirect(302, "https://www.example.com/cross"),
+      html("ok"),
+    );
+    await safeFetch(
+      "https://example.com/",
+      { headers: { "x-api-key": "k", "x-auth-token": "t", accept: "text/html" } },
+      opts(impl),
+    );
+    const sameOrigin = new Headers(fn.mock.calls[1]?.[1]?.headers);
+    expect(sameOrigin.get("x-api-key")).toBe("k");
+    const cross = new Headers(fn.mock.calls[2]?.[1]?.headers);
+    expect(cross.get("x-api-key")).toBeNull();
+    expect(cross.get("x-auth-token")).toBeNull();
+    expect(cross.get("accept")).toBe("text/html");
   });
 
   it("stops after 3 redirects", async () => {
