@@ -270,13 +270,26 @@ weeks and should not be the last thing blocking launch.
    wiring actually does (env-gated, no SDK dependency, built T9) and the
    one manual verification step to run before trusting it.
 
-### 1.13 Anthropic (outreach personalization + reply-intent classification)
+### 1.13 Google Gemini (every LLM feature — LLM-1)
 
-1. Create an Anthropic account, copy the API key into `ANTHROPIC_API_KEY`.
-2. Confirm current model ids are still valid before go-live —
-   `_shared/providers/anthropic.ts` and `ANTHROPIC_DEMO_MODEL`
-   (`.env.example`) reference specific model id strings that Anthropic can
-   deprecate; check `docs.anthropic.com`'s current model list.
+The owner chose Gemini for every LLM feature: the SMS/web-chat text agent, menu
+import, the demo website scrape, outreach personalization, review scoring and
+reply classification. Full design: `docs/design/LLM_PROVIDERS.md`.
+
+1. Create a Gemini API key in Google AI Studio (aistudio.google.com) on a billed
+   project, then `supabase secrets set GEMINI_API_KEY=...`. That is the only
+   required secret; `LLM_PROVIDER` defaults to `gemini`.
+2. Optional model overrides (`.env.example`): `GEMINI_MODEL` (default
+   `gemini-3.5-flash-lite`), `GEMINI_MODEL_QUALITY`, `GEMINI_MODEL_VISION`.
+   Confirm the ids are still current at ai.google.dev/gemini-api/docs/models
+   before go-live.
+3. Deploy the LLM-using functions (list in `docs/BUILD_NOTES.md` LLM-1) and run
+   the live checks in `docs/VERIFY.md` "Google Gemini".
+4. With no key set nothing crashes: menu import shows "AI isn't configured yet",
+   `api-text-chat` answers 503 `ai_not_configured`, the text agent stays
+   archive-only, and the outreach crons skip with `not_configured`.
+5. Anthropic remains available as a second adapter (`LLM_PROVIDER=anthropic` +
+   `ANTHROPIC_API_KEY`); it is never used unless explicitly chosen.
 
 ### 1.14 Airtable (partner portal sync)
 
@@ -335,7 +348,9 @@ not fetched from a vendor dashboard.
 | `SENTRY_ENVIRONMENT` / `SENTRY_RELEASE` | Your own choice — tags on edge-function Sentry events (T9, `docs/OPS_RUNBOOK.md` §2) |
 | `NEXT_PUBLIC_POSTHOG_KEY` / `NEXT_PUBLIC_POSTHOG_HOST` | PostHog project settings |
 | `SIGNUP_DRAFT_SECRET` | Generated (32+ random bytes) |
-| `ANTHROPIC_API_KEY` | console.anthropic.com |
+| `GEMINI_API_KEY` | Google AI Studio (§1.13) — the LLM key for every AI feature |
+| `LLM_PROVIDER` / `GEMINI_MODEL` / `GEMINI_MODEL_QUALITY` / `GEMINI_MODEL_VISION` | Leave unset for the pinned defaults (`gemini`, `gemini-3.5-flash-lite`); see `.env.example` |
+| `ANTHROPIC_API_KEY` | Only if you set `LLM_PROVIDER=anthropic` (console.anthropic.com) |
 | `NODE_ENV` | `production` in every real deploy |
 | `APP_BASE_URL` | Your production domain, e.g. `https://heyloo.app` |
 | `RESEND_API_KEY` / `RESEND_FROM_ADDRESS` | Resend dashboard, after domain verification (§1.7) |
@@ -348,12 +363,10 @@ not fetched from a vendor dashboard.
 | `WEBHOOKS_POS_SQUARE_URL` | `https://<project-ref>.supabase.co/functions/v1/webhooks-pos/square` |
 | `OUTREACH_WEBHOOK_SECRET` | Generated (shared-secret header, until a real per-vendor HMAC scheme is confirmed) |
 | `SQUARE_WEBHOOK_SIGNATURE_KEY` | Square Developer Dashboard, once the Square adapter is live (`packages/adapters/square`) |
-| `ANTHROPIC_DEMO_MODEL` | Leave as the pinned default unless Anthropic deprecates it |
 | `DEMO_AGENT_ID` | The Retell agent id created for the public demo-call flow (create once in Retell, or let `api-provision`'s pattern guide a one-off manual create) |
 | `DEMO_PHONE_E164` | A real Twilio number reserved for the shared demo-call phone flow |
 | `PAYMENT_LINK_SUCCESS_URL` / `PAYMENT_LINK_CANCEL_URL` | Your own domain's payment-outcome pages |
 | `RETELL_FAILOVER_VOICE_URL` | A TwiML Bin or your own small endpoint implementing "forward to owner cell, then voicemail" — build this before go-live, since `job-retell-health-failover` points a tenant's Twilio number here during a real Retell outage |
-| `ANTHROPIC_TEXT_AGENT_MODEL` | Leave as the pinned default (Channels, `BACKEND_SPEC.md` §13) — SMS/web-chat text-agent replies, same Anthropic provider voice-tools/outreach already use |
 | `WIDGET_TOKEN_SECRET` | Generated (32+ random bytes) — signs the embeddable widget's short-lived session token (Channels, `BACKEND_SPEC.md` §13.2). Needed by **both** `api-text-chat` (widget chat mode) and `api-widget-voice-token` (widget voice mode, `[functions.api-widget-voice-token]` in `supabase/config.toml`) — set it once, both functions read the same secret. `api-widget-voice-token` also needs `RETELL_API_KEY` (already listed above for the other Retell-touching functions) to mint the tenant's own web-call token, same as `api-tenant-test-call`/`api-demo-agent` (`docs/audit/CHANNELS_REQUESTS.md` item 6). |
 
 Set every server-only var as an edge-function **secret**
