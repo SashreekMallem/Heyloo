@@ -27,7 +27,7 @@ export async function GET() {
   const [tenantRes, configRead, offeringsRes, resourcesRes] = await Promise.all([
     supabase
       .from("tenants")
-      .select("vertical, business_hours, owner_test_phone, language_config")
+      .select("vertical, business_hours, owner_test_phone, language_config, a2p_status")
       .eq("id", tenantId)
       .maybeSingle(),
     readAgentConfigForPublish(supabase, tenantId),
@@ -58,6 +58,7 @@ export async function GET() {
     activeResources: resourcesRes.count ?? 0,
     delivery: overrides["delivery"] ?? null,
     ownerTestPhone: tenant?.owner_test_phone ?? null,
+    textingOn: tenant?.a2p_status === "verified",
     publish: computePublishStatus({
       publishedAt: config?.published_at ?? null,
       compiledConfig: config?.compiled_config ?? null,

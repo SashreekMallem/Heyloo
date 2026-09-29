@@ -59,7 +59,14 @@ function valuesFrom(row: AlertsRow): NotificationsFormValues {
  * Saved through `POST /api/tenant/settings/notifications` (E.164 phone,
  * real email, owner/admin only).
  */
-export function OwnerAlertsCard({ tenantId }: { tenantId: string }) {
+export function OwnerAlertsCard({
+  tenantId,
+  textingOn = false,
+}: {
+  tenantId: string;
+  /** Carriers approved this business for texting; false (the default) = texting is off. */
+  textingOn?: boolean;
+}) {
   const query = useQuery({
     queryKey: ["tenant", tenantId, "agent_configs", "owner_alerts"],
     queryFn: async (): Promise<AlertsRow | null> => {
@@ -72,10 +79,18 @@ export function OwnerAlertsCard({ tenantId }: { tenantId: string }) {
     },
   });
   if (!query.data) return null;
-  return <OwnerAlertsForm tenantId={tenantId} row={query.data} />;
+  return <OwnerAlertsForm tenantId={tenantId} row={query.data} textingOn={textingOn} />;
 }
 
-function OwnerAlertsForm({ tenantId, row }: { tenantId: string; row: AlertsRow }) {
+function OwnerAlertsForm({
+  tenantId,
+  row,
+  textingOn,
+}: {
+  tenantId: string;
+  row: AlertsRow;
+  textingOn: boolean;
+}) {
   const queryClient = useQueryClient();
   const form = useForm<NotificationsFormValues>({
     resolver: zodResolver(notificationsFormSchema),
@@ -83,7 +98,7 @@ function OwnerAlertsForm({ tenantId, row }: { tenantId: string; row: AlertsRow }
   });
   const smsEnabled = useWatch({ control: form.control, name: "sms_enabled" });
   const alertPhone = useWatch({ control: form.control, name: "alert_phone" });
-  const noPhoneToText = smsEnabled && !alertPhone && !row.transfer_number;
+  const noPhoneToText = textingOn && smsEnabled && !alertPhone && !row.transfer_number;
 
   async function onSubmit(values: NotificationsFormValues) {
     const result = await sendJson("/api/tenant/settings/notifications", values);
@@ -137,6 +152,12 @@ function OwnerAlertsForm({ tenantId, row }: { tenantId: string; row: AlertsRow }
                   </FormItem>
                 )}
               />
+              {!textingOn && (
+                <p className="text-xs text-muted-foreground" role="note">
+                  Texting is off until it&apos;s set up, so every alert is emailed to you for now,
+                  whatever you choose here.
+                </p>
+              )}
               {noPhoneToText && (
                 <p className="text-xs text-warning" role="status">
                   There&apos;s no phone to text yet — add an alert phone here or a transfer number

@@ -55,20 +55,44 @@ describe("DeliveryPage", () => {
     a2pStatus = "verified";
   });
 
-  it("SETTINGS-2: pending carrier verification says about 1–2 weeks and links to Text messaging", async () => {
+  it("MSG-3: without carrier approval it says texting is off, alerts are emailed, and links to Text messaging", async () => {
     a2pStatus = "pending_verification";
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => Response.json({ status: "disconnected" })),
     );
     renderPage();
-    const callout = await screen.findByText(/Carrier approval usually takes about 1–2 weeks/);
-    expect(callout).toBeInTheDocument();
+    expect(await screen.findByText("Texting is off until it's set up")).toBeInTheDocument();
+    expect(
+      screen.getByText(/won't offer to text callers and every alert is emailed to you/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/usually about 1–2 weeks/)).toBeInTheDocument();
     expect(screen.queryByText(/1–5 business days/)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Text messaging" })).toHaveAttribute(
       "href",
       "/dashboard/texting",
     );
+  });
+
+  it("MSG-3: a failed carrier registration is still 'texting is off', not silence", async () => {
+    a2pStatus = "failed";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ status: "disconnected" })),
+    );
+    renderPage();
+    expect(await screen.findByText("Texting is off until it's set up")).toBeInTheDocument();
+  });
+
+  it("shows no texting-off notice once carriers have approved texting", async () => {
+    a2pStatus = "verified";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ status: "disconnected" })),
+    );
+    renderPage();
+    expect(await screen.findByText("Delivery preferences")).toBeInTheDocument();
+    expect(screen.queryByText("Texting is off until it's set up")).not.toBeInTheDocument();
   });
 
   it("never crashes when the Airtable status response has no sync_log array", async () => {

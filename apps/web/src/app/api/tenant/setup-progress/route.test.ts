@@ -152,12 +152,21 @@ describe("GET /api/tenant/setup-progress", () => {
     };
     const res = await GET();
     const body = (await res.json()) as {
-      steps: Array<{ id: string; done: boolean; href: string | null; label: string }>;
+      steps: Array<{
+        id: string;
+        done: boolean;
+        href: string | null;
+        label: string;
+        description: string;
+      }>;
     };
     const step = body.steps.find((s) => s.id === "a2p");
     expect(step?.done).toBe(true);
     expect(step?.href).toBe("/dashboard/texting");
     expect(step?.label).toBe("Set up text messaging");
+    // MSG-3: the checklist says texting is OFF until set up and where alerts go meanwhile.
+    expect(step?.description).toMatch(/^Texting is off until it's set up\./);
+    expect(step?.description).toMatch(/every alert is emailed to you/);
   });
 
   it("does not let the optional team/integration steps count toward requiredTotal", async () => {

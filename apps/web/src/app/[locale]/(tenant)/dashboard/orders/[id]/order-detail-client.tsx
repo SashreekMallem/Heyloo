@@ -15,6 +15,9 @@ import {
 import { useState } from "react";
 import { toast } from "sonner";
 import { Link, useRouter } from "@/i18n/navigation";
+import { paymentLinkResentToast } from "@/lib/messaging/texting-copy";
+import { useTextingOn } from "@/lib/messaging/use-texting-on";
+import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
 export interface OrderDetailData {
   id: string;
@@ -79,6 +82,8 @@ const PAYMENT_STATUS_VARIANT: Record<string, "outline" | "secondary" | "success"
 
 export function OrderDetailClient({ order }: { order: OrderDetailData }) {
   const router = useRouter();
+  // MSG-3: never claim a link was texted unless carriers approved texting.
+  const textingOn = useTextingOn(useCurrentTenantId());
   const [status, setStatus] = useState(order.status);
   const [savingStatus, setSavingStatus] = useState(false);
   const [resendingId, setResendingId] = useState<string | null>(null);
@@ -108,7 +113,7 @@ export function OrderDetailClient({ order }: { order: OrderDetailData }) {
       toast.error("Couldn't resend the payment link — please try again shortly.");
       return;
     }
-    toast.success("Payment link re-sent by SMS");
+    toast.success(paymentLinkResentToast({ textingOn }));
     router.refresh();
   }
 

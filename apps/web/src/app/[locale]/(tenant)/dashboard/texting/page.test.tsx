@@ -25,6 +25,8 @@ describe("TextingPage", () => {
     renderWith({ state: "not_started", sender: null, profile: null, can_edit: true });
     expect(await screen.findByText("Texting isn't set up yet")).toBeInTheDocument();
     expect(screen.getByText(/emailed to you instead/)).toBeInTheDocument();
+    expect(screen.getByText(/Texting is off until it's set up/)).toBeInTheDocument();
+    expect(screen.getByText(/won't offer or promise texts on calls/)).toBeInTheDocument();
     expect(screen.getByLabelText("Legal business name")).toBeInTheDocument();
     expect(screen.getByLabelText("EIN")).toBeInTheDocument();
   });
@@ -46,6 +48,9 @@ describe("TextingPage", () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/\(888\) 555-0100 is waiting on carrier approval/)).toBeInTheDocument();
     expect(screen.getByText(/about 1–2 weeks/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Texting stays off, and you'll keep getting email alerts/),
+    ).toBeInTheDocument();
   });
 
   it("never crashes on an unexpected response shape (falls back to not set up)", async () => {
