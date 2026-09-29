@@ -21,8 +21,9 @@ export function ManualModeBanner({ since, onDisable }: ManualModeBannerProps) {
       <div className="flex items-center gap-2">
         <AlertOctagon className="size-4 text-warning" />
         <span>
-          <strong className="font-medium">Manual Mode is on</strong> since {sinceLabel} — new
-          bookings and orders are sent to you by SMS instead of being confirmed automatically.
+          <strong className="font-medium">Manual Mode is on</strong> since {sinceLabel} — your AI is
+          not booking, rescheduling or cancelling; it takes a message so your team can confirm each
+          request.
         </span>
       </div>
       {onDisable && (

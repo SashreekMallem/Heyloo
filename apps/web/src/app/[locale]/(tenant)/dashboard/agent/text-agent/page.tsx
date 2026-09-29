@@ -21,9 +21,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Link } from "@/i18n/navigation";
-import { SAVED_NEXT_TEXT } from "@/lib/settings/client";
+import { browserWriteOutcome, NOT_ALLOWED_TO_CHANGE, SAVED_NEXT_TEXT } from "@/lib/settings/client";
+import { ReadOnlyNote } from "@/lib/settings/read-only-note";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
-import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
+import { useCanWriteSettings, useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
 type Tone = "friendly" | "professional" | "concise";
 
@@ -55,6 +56,23 @@ function toWholeHour(value: string, fallback: string): string {
   return match ? `${match[1]}:00` : fallback;
 }
 
+/**
+ * QA-1 F-17: the bounds are picked from whole hours (a `type=time` box let
+ * an owner type 21:30 and silently saved 21:00), and start = end is
+ * rejected — it would mean "quiet for 0 hours or all day", depending on the reader.
+ */
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, hour) => {
+  const value = `${String(hour).padStart(2, "0")}:00`;
+  const label = new Date(2000, 0, 1, hour).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    hour12: true,
+  });
+  return { value, label };
+});
+
+const SELECT_CLASS =
+  "h-9 w-full rounded-md border border-input bg-background px-3 text-sm disabled:opacity-60";
+
 type TenantTextAgentRow = {
   text_agent_enabled: boolean | null;
   text_agent_persona: unknown;
@@ -69,8 +87,8 @@ function deriveForm(row: TenantTextAgentRow): TextAgentForm {
     tone: persona.tone ?? DEFAULTS.tone,
     signOff: persona.signOff ?? "",
     quietHoursEnabled: quiet.enabled !== false,
-    quietStart: quiet.start ?? DEFAULTS.quietStart,
-    quietEnd: quiet.end ?? DEFAULTS.quietEnd,
+    quietStart: toWholeHour(quiet.start ?? DEFAULTS.quietStart, DEFAULTS.quietStart),
+    quietEnd: toWholeHour(quiet.end ?? DEFAULTS.quietEnd, DEFAULTS.quietEnd),
   };
 }
 
@@ -115,25 +133,37 @@ function TextAgentSettingsCard({
   initial: TenantTextAgentRow;
 }) {
   const queryClient = useQueryClient();
+  const canWrite = useCanWriteSettings();
   const [form, setForm] = useState<TextAgentForm>(() => deriveForm(initial));
   const [saving, setSaving] = useState(false);
 
   async function save(next: TextAgentForm) {
+    if (next.quietHoursEnabled && next.quietStart === next.quietEnd) {
+      toast.error("Quiet hours must start and end at different times.");
+      return;
+    }
     setSaving(true);
-    const { error } = await supabaseBrowserClient
-      .from("tenants")
-      .update({
-        text_agent_enabled: next.enabled,
-        text_agent_persona: { tone: next.tone, signOff: next.signOff || undefined },
-        quiet_hours: {
-          enabled: next.quietHoursEnabled,
-          start: toWholeHour(next.quietStart, DEFAULTS.quietStart),
-          end: toWholeHour(next.quietEnd, DEFAULTS.quietEnd),
-        },
-      })
-      .eq("id", tenantId);
+    const outcome = browserWriteOutcome(
+      await supabaseBrowserClient
+        .from("tenants")
+        .update({
+          text_agent_enabled: next.enabled,
+          text_agent_persona: { tone: next.tone, signOff: next.signOff || undefined },
+          quiet_hours: {
+            enabled: next.quietHoursEnabled,
+            start: toWholeHour(next.quietStart, DEFAULTS.quietStart),
+            end: toWholeHour(next.quietEnd, DEFAULTS.quietEnd),
+          },
+        })
+        .eq("id", tenantId)
+        .select("id"),
+    );
     setSaving(false);
-    if (error) {
+    if (outcome === "denied") {
+      toast.error(NOT_ALLOWED_TO_CHANGE);
+      return;
+    }
+    if (outcome === "error") {
       toast.error("Couldn't save — please try again.");
       return;
     }
@@ -143,6 +173,7 @@ function TextAgentSettingsCard({
 
   return (
     <div className="space-y-4">
+      <ReadOnlyNote />
       <Card>
         <CardHeader>
           <CardTitle>Text agent</CardTitle>
@@ -167,6 +198,7 @@ function TextAgentSettingsCard({
                 void save(next);
               }}
               aria-label="Text agent enabled"
+              disabled={!canWrite}
             />
           </div>
           <p className="text-xs text-muted-foreground">
@@ -194,7 +226,11 @@ function TextAgentSettingsCard({
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="text-agent-tone">Tone</Label>
-            <Select value={form.tone} onValueChange={(v) => setForm({ ...form, tone: v as Tone })}>
+            <Select
+              value={form.tone}
+              onValueChange={(v) => setForm({ ...form, tone: v as Tone })}
+              disabled={!canWrite}
+            >
               <SelectTrigger id="text-agent-tone">
                 <SelectValue />
               </SelectTrigger>
@@ -214,11 +250,14 @@ function TextAgentSettingsCard({
               onChange={(e) => setForm({ ...form, signOff: e.target.value })}
               rows={2}
               maxLength={120}
+              disabled={!canWrite}
             />
           </div>
-          <Button type="button" disabled={saving} onClick={() => void save(form)}>
-            Save persona
-          </Button>
+          {canWrite && (
+            <Button type="button" disabled={saving} onClick={() => void save(form)}>
+              Save persona
+            </Button>
+          )}
         </CardContent>
       </Card>
 
@@ -237,33 +276,48 @@ function TextAgentSettingsCard({
               checked={form.quietHoursEnabled}
               onCheckedChange={(checked) => setForm({ ...form, quietHoursEnabled: checked })}
               aria-label="Enable quiet hours"
+              disabled={!canWrite}
             />
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="quiet-start">Starts at</Label>
-              <Input
+              <select
                 id="quiet-start"
-                type="time"
-                step={3600}
+                className={SELECT_CLASS}
                 value={form.quietStart}
+                disabled={!canWrite}
                 onChange={(e) => setForm({ ...form, quietStart: e.target.value })}
-              />
+              >
+                {HOUR_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="space-y-2">
               <Label htmlFor="quiet-end">Ends at</Label>
-              <Input
+              <select
                 id="quiet-end"
-                type="time"
-                step={3600}
+                className={SELECT_CLASS}
                 value={form.quietEnd}
+                disabled={!canWrite}
                 onChange={(e) => setForm({ ...form, quietEnd: e.target.value })}
-              />
+              >
+                {HOUR_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
-          <Button type="button" disabled={saving} onClick={() => void save(form)}>
-            Save quiet hours
-          </Button>
+          {canWrite && (
+            <Button type="button" disabled={saving} onClick={() => void save(form)}>
+              Save quiet hours
+            </Button>
+          )}
         </CardContent>
       </Card>
     </div>

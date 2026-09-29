@@ -14,12 +14,14 @@ if (typeof globalThis.ResizeObserver === "undefined") {
   (globalThis as { ResizeObserver?: unknown }).ResizeObserver = ResizeObserverStub;
 }
 
-/** SETTINGS-1 test helper: render inside a fresh QueryClient + TenantIdProvider("t1"). */
-export function renderWithTenant(ui: ReactElement) {
+/** SETTINGS-1 test helper: render inside a fresh QueryClient + TenantIdProvider("t1"). `canWrite: false` renders as a `member` (QA-1). */
+export function renderWithTenant(ui: ReactElement, options: { canWrite?: boolean } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <TenantIdProvider tenantId="t1">{ui}</TenantIdProvider>
+      <TenantIdProvider tenantId="t1" canWrite={options.canWrite ?? true}>
+        {ui}
+      </TenantIdProvider>
     </QueryClientProvider>,
   );
 }

@@ -80,3 +80,20 @@ export const SAVED_NEXT_TEXT = "Saved — your text agent uses this from the nex
 export const SAVED_QUESTIONS_NEED_PUBLISH =
   "Saved — publish your agent once (“Publish changes” above) and it will start asking these questions.";
 export const SAVED_NEEDS_PUBLISH = "Saved — click “Publish changes” to update your live agent.";
+
+/** QA-1 F-5: shown when a browser-client write touched zero rows (RLS silently filters a `member`'s write). */
+export const NOT_ALLOWED_TO_CHANGE = "Only an owner or admin can change this.";
+
+/**
+ * A browser-client `.update(...).select("id")` outcome. RLS filters a write
+ * the caller isn't allowed to make down to ZERO rows and PostgREST reports
+ * no error, so `error === null` is not proof anything was saved (QA-1 F-5:
+ * a member got "Saved" while the value stayed put).
+ */
+export function browserWriteOutcome(result: {
+  data: unknown;
+  error: unknown;
+}): "ok" | "denied" | "error" {
+  if (result.error) return "error";
+  return Array.isArray(result.data) && result.data.length > 0 ? "ok" : "denied";
+}

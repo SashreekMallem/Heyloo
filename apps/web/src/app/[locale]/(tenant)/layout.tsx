@@ -21,7 +21,7 @@ import { TenantRealtimeProvider } from "@/lib/realtime/tenant-realtime-provider"
  * scoped, never reachable from the marketing bundle.
  */
 export default async function TenantLayout({ children }: { children: ReactNode }) {
-  const { tenant } = await requireTenantSession("/dashboard");
+  const { tenant, claims } = await requireTenantSession("/dashboard");
 
   if (tenant.status === "trialing") redirect("/signup/plan");
 
@@ -72,6 +72,9 @@ export default async function TenantLayout({ children }: { children: ReactNode }
           tenantName={tenant.name}
           manualMode={tenant.manual_mode}
           manualModeSince={tenant.manual_mode_enabled_at}
+          canWrite={
+            claims.role === "owner" || claims.role === "admin" || claims.platform_admin === true
+          }
         >
           {children}
         </TenantShellClient>

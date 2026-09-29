@@ -20,13 +20,15 @@ import { useEffect } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 import { Link } from "@/i18n/navigation";
-import { SAVED_NEXT_CALL } from "@/lib/settings/client";
+import { browserWriteOutcome, NOT_ALLOWED_TO_CHANGE, SAVED_NEXT_CALL } from "@/lib/settings/client";
 import { DEFAULT_ASSISTANT_NAME, openingLinePreview } from "@/lib/settings/greeting";
+import { ReadOnlyNote } from "@/lib/settings/read-only-note";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
-import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
+import { useCanWriteSettings, useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
 export default function GreetingTabPage() {
   const tenantId = useCurrentTenantId();
+  const canWrite = useCanWriteSettings();
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -62,11 +64,19 @@ export default function GreetingTabPage() {
   }, [query.data, form.reset]);
 
   async function onSubmit(values: AgentGreeting) {
-    const { error } = await supabaseBrowserClient
-      .from("agent_configs")
-      .update({ assistant_name: values.persona_name })
-      .eq("tenant_id", tenantId as string);
-    if (error) {
+    // Blank -> null: every reader falls back to the default name.
+    const outcome = browserWriteOutcome(
+      await supabaseBrowserClient
+        .from("agent_configs")
+        .update({ assistant_name: values.persona_name.trim() || null })
+        .eq("tenant_id", tenantId as string)
+        .select("tenant_id"),
+    );
+    if (outcome === "denied") {
+      toast.error(NOT_ALLOWED_TO_CHANGE);
+      return;
+    }
+    if (outcome === "error") {
       toast.error("Couldn't save — please try again.");
       return;
     }
@@ -86,6 +96,7 @@ export default function GreetingTabPage() {
   return (
     <Card>
       <CardContent className="space-y-6 pt-6">
+        <ReadOnlyNote />
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
             <FormField
@@ -95,7 +106,7 @@ export default function GreetingTabPage() {
                 <FormItem>
                   <FormLabel>AI assistant name</FormLabel>
                   <FormControl>
-                    <Input placeholder={DEFAULT_ASSISTANT_NAME} {...field} />
+                    <Input placeholder={DEFAULT_ASSISTANT_NAME} disabled={!canWrite} {...field} />
                   </FormControl>
                   <FormDescription>
                     If left blank, callers hear &ldquo;{DEFAULT_ASSISTANT_NAME}&rdquo;.
@@ -119,7 +130,7 @@ export default function GreetingTabPage() {
                 tab.
               </p>
             </div>
-            <Button type="submit">Save</Button>
+            {canWrite && <Button type="submit">Save</Button>}
           </form>
         </Form>
       </CardContent>

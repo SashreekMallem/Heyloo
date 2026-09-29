@@ -17,8 +17,10 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
+import { browserWriteOutcome, NOT_ALLOWED_TO_CHANGE } from "@/lib/settings/client";
+import { ReadOnlyNote } from "@/lib/settings/read-only-note";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
-import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
+import { useCanWriteSettings, useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
 /**
  * Agent → Manual Mode. SETTINGS-1 found `manual_mode` was sent to the call as
@@ -32,6 +34,7 @@ import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
  */
 export default function ManualModeTabPage() {
   const tenantId = useCurrentTenantId();
+  const canWrite = useCanWriteSettings();
   const queryClient = useQueryClient();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -49,14 +52,21 @@ export default function ManualModeTabPage() {
   });
 
   async function setManualMode(enabled: boolean) {
-    const { error } = await supabaseBrowserClient
-      .from("tenants")
-      .update({
-        manual_mode: enabled,
-        manual_mode_enabled_at: enabled ? new Date().toISOString() : null,
-      })
-      .eq("id", tenantId as string);
-    if (error) {
+    const outcome = browserWriteOutcome(
+      await supabaseBrowserClient
+        .from("tenants")
+        .update({
+          manual_mode: enabled,
+          manual_mode_enabled_at: enabled ? new Date().toISOString() : null,
+        })
+        .eq("id", tenantId as string)
+        .select("id"),
+    );
+    if (outcome === "denied") {
+      toast.error(NOT_ALLOWED_TO_CHANGE);
+      return;
+    }
+    if (outcome === "error") {
       toast.error("Couldn't save — please try again.");
       return;
     }
@@ -72,10 +82,11 @@ export default function ManualModeTabPage() {
 
   return (
     <div className="space-y-4">
+      <ReadOnlyNote />
       {enabled && query.data?.manual_mode_enabled_at && (
         <ManualModeBanner
           since={query.data.manual_mode_enabled_at}
-          onDisable={() => void setManualMode(false)}
+          onDisable={canWrite ? () => void setManualMode(false) : undefined}
         />
       )}
       <Card>
@@ -95,6 +106,7 @@ export default function ManualModeTabPage() {
               else void setManualMode(false);
             }}
             aria-label="Manual Mode"
+            disabled={!canWrite}
           />
         </CardContent>
       </Card>
