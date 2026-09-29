@@ -176,7 +176,36 @@ describe("checkAvailability — HOTPATH: never offers a slot that has already st
     expect(window?.text).toContain("upper(slot_range) - lower(slot_range) >= interval '23 hours'");
     expect(window?.text).not.toContain("interval '1 day'");
     expect(window?.text).toContain("upper(slot_range) > now() + make_interval(mins =>");
-    expect(window?.values.filter((v) => v === 30)).toHaveLength(2);
+    // The vertical default is bound once, as the fallback of the tenant's own
+    // booking_min_notice_minutes (VOICE-ALERTS-1).
+    expect(window?.values.filter((v) => v === 30)).toHaveLength(1);
+    expect(window?.text).toContain("booking_min_notice_minutes");
+  });
+
+  it("VOICE-ALERTS-1: reads the owner's minimum notice without naming the column, so it still answers on a database that has not applied 20260929140000 yet", async () => {
+    const { sql, calls } = recordingSql([[], []]);
+    await checkAvailability(sql, ctx, { date_range: dateRange });
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.text).toContain("to_jsonb(tn) ->> 'booking_min_notice_minutes'");
+      expect(call.text).not.toContain("tn.booking_min_notice_minutes");
+      expect(call.text).not.toContain("select booking_min_notice_minutes");
+      expect(call.text).toContain("coalesce(");
+      expect(call.text).toContain("make_interval(mins => (select notice from t))");
+    }
+  });
+
+  it("VOICE-ALERTS-1: never offers a slot of an inactive resource, with or without a type filter", async () => {
+    const { sql, calls } = recordingSql([[], []]);
+    await checkAvailability(sql, ctx, { date_range: dateRange });
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.text).toContain("and resource_id in (");
+      expect(call.text).toContain("where tenant_id = ");
+      expect(call.text).toContain("and active");
+      // The old shape skipped the resource check when no filter was given.
+      expect(call.text).not.toContain("is null and");
+    }
   });
 
   it("applies the same cutoff to the nearest-alternative query, so a request for a past window is pointed at the next upcoming slot", async () => {
@@ -191,7 +220,7 @@ describe("checkAvailability — HOTPATH: never offers a slot that has already st
     const alternative = calls[1];
     expect(alternative?.text).toContain("lower(slot_range) >=");
     expect(alternative?.text).toContain("now() + make_interval(mins =>");
-    expect(alternative?.values.filter((v) => v === 15)).toHaveLength(2);
+    expect(alternative?.values.filter((v) => v === 15)).toHaveLength(1);
   });
 
   it("renders slot times in the tenant's timezone with an explicit offset (same instant as the stored UTC value)", async () => {
