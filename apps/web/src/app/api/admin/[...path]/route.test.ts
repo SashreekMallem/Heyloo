@@ -24,7 +24,9 @@ vi.mock("@/lib/supabase/server", () => ({
       getClaims: async () => {
         const s = mockSession?.user as { app_metadata?: unknown } | undefined;
         return {
-          data: { claims: { aal: mockAal, app_metadata: mockClaimsOverride ?? s?.app_metadata ?? {} } },
+          data: {
+            claims: { aal: mockAal, app_metadata: mockClaimsOverride ?? s?.app_metadata ?? {} },
+          },
           error: null,
         };
       },

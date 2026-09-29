@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { impersonatedByFromSupabaseClient, sessionAssuranceFromSupabaseClient } from "@/lib/auth/claims";
+import {
+  impersonatedByFromSupabaseClient,
+  sessionAssuranceFromSupabaseClient,
+} from "@/lib/auth/claims";
 import { env } from "@/lib/env";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
