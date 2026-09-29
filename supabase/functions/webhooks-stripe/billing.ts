@@ -401,3 +401,20 @@ export async function replayDeferredCharges(
   }
   return recorded;
 }
+
+/** Closes the deferral race. `checkout.session.completed` (or `invoice.paid`)
+ * replays only rows ALREADY marked `deferred:*`, but a charge is marked after
+ * its own processing finishes: if the tenant got linked in between, nobody
+ * would replay it until the customer's next invoice (a month later). Called by
+ * the entrypoint right AFTER a `tenant_unresolved` deferral is persisted, it
+ * re-checks once: whichever of "tenant linked" and "row marked" happens last
+ * sees the other, so the fee is always recorded. */
+export async function replayAfterTenantDeferral(
+  sql: SqlClient,
+  logger: Logger,
+  deps: ChargeDeps,
+  charge: Record<string, unknown>,
+): Promise<number> {
+  const customerId = str(charge["customer"]);
+  return customerId ? replayDeferredCharges(sql, logger, deps, customerId) : 0;
+}

@@ -11,7 +11,7 @@ import {
   upsertInvoiceRow,
 } from "./billing.ts";
 
-export { StripeEventDeferred } from "./billing.ts";
+export { replayAfterTenantDeferral, StripeEventDeferred } from "./billing.ts";
 
 /**
  * `/webhooks-stripe` (BACKEND_SPEC §7.9, E2E_FLOWS_AUDIT H3): the ONLY

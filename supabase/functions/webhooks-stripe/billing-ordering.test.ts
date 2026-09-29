@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import type { StripeEvent } from "../_shared/schemas/stripe-event.ts";
 import type { SqlClient } from "../_shared/types.ts";
-import { processStripeEvent, StripeEventDeferred, type StripeEventDeps } from "./handler.ts";
+import {
+  processStripeEvent,
+  replayAfterTenantDeferral,
+  StripeEventDeferred,
+  type StripeEventDeps,
+} from "./handler.ts";
 import {
   BALANCE_TXN,
   BALANCE_TXN_ID,
@@ -305,6 +310,36 @@ describe("E: first payment's processing fee (charge.succeeded ordering)", () => 
     // The deferred event is settled so it is never replayed again.
     expect(db.webhookEvents.get("evt_3ChargeSucceeded")?.processing_error).toBeNull();
     expect(deps.fetchBalanceTransaction).toHaveBeenCalledWith(BALANCE_TXN_ID);
+  });
+
+  it("race: the tenant is linked BETWEEN charge processing and the deferral being persisted; the post-mark re-check still records the fee", async () => {
+    const db = makeDb();
+    const deps = makeDeps();
+    const charge = chargeSucceeded();
+
+    // index.ts step 1: the charge is processed (tenant not linked yet) ...
+    await expect(processStripeEvent(db.sql, charge, logger, deps)).rejects.toBeInstanceOf(
+      StripeEventDeferred,
+    );
+    // ... checkout.session.completed links the tenant and replays, but the
+    // charge row is not marked deferred yet, so nothing is replayed.
+    db.webhookEvents.set(charge.id, {
+      id: charge.id,
+      event_type: charge.type,
+      payload: charge as unknown as WebhookRow["payload"],
+      processing_error: null,
+    });
+    await db.deliver(checkoutSessionCompleted(), deps);
+    expect(db.fees).toHaveLength(0);
+
+    // index.ts step 2: the deferral is persisted, then re-checked once.
+    const row = db.webhookEvents.get(charge.id);
+    if (row) row.processing_error = "deferred:tenant_unresolved";
+    await replayAfterTenantDeferral(db.sql, logger, deps, charge.data.object);
+
+    expect(db.fees).toHaveLength(1);
+    expect(db.fees[0]?.fee_cents).toBe(897);
+    expect(db.webhookEvents.get(charge.id)?.processing_error).toBeNull();
   });
 
   it("charge.succeeded AFTER checkout.session.completed records the real fee immediately", async () => {

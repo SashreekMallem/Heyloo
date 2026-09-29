@@ -9,7 +9,7 @@ import { StripeEventSchema } from "../_shared/schemas/stripe-event.ts";
 import { verifyStripeSignature } from "../_shared/stripe-signature.ts";
 import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/webhook-dedup.ts";
 import { createFetchBalanceTransaction } from "./balance-transaction.ts";
-import { processStripeEvent, StripeEventDeferred } from "./handler.ts";
+import { processStripeEvent, replayAfterTenantDeferral, StripeEventDeferred } from "./handler.ts";
 import { createInvokeProvisioning } from "./invoke-provisioning.ts";
 
 const logger = createLogger({ fn: "webhooks-stripe" });
@@ -86,13 +86,14 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ received: true });
   }
 
+  const deps = {
+    invokeProvisioning,
+    ...(fetchBalanceTransaction ? { fetchBalanceTransaction } : {}),
+  };
   runInBackground(
     async () => {
       try {
-        await processStripeEvent(sql, event, logger, {
-          invokeProvisioning,
-          ...(fetchBalanceTransaction ? { fetchBalanceTransaction } : {}),
-        });
+        await processStripeEvent(sql, event, logger, deps);
         if (dedup.webhookEventId) await markWebhookEventProcessed(sql, dedup.webhookEventId);
       } catch (err) {
         if (err instanceof StripeEventDeferred) {
@@ -102,6 +103,13 @@ Deno.serve(async (req: Request) => {
           logger.warn("stripe_event_deferred", { reason: err.reason, type: event.type });
           if (dedup.webhookEventId)
             await markWebhookEventProcessed(sql, dedup.webhookEventId, err.message);
+          // The tenant may have been linked while this event was processing,
+          // i.e. before this deferral was persisted, so that link's replay
+          // could not see it: re-check once now (whichever of "linked" and
+          // "marked" happens last sees the other).
+          if (err.reason === "tenant_unresolved") {
+            await replayAfterTenantDeferral(sql, logger, deps, event.data.object);
+          }
           return;
         }
         logger.error("stripe_background_error", { error: String(err), type: event.type });
