@@ -1,3 +1,4 @@
+import { recordCallCost } from "../_shared/call-cost.ts";
 import { enqueueOwnerAlert } from "../_shared/owner-alerts.ts";
 import { normalizeE164 } from "../_shared/phone.ts";
 import { enqueue, QUEUE_NAMES } from "../_shared/queue.ts";
@@ -265,12 +266,33 @@ export async function handleCallEnded(
     attempt: 0,
   });
 
-  const productCosts = call.call_cost?.product_costs ?? [];
-  for (const cost of productCosts) {
-    await sql`
-      insert into public.cost_events (tenant_id, call_id, provider, product, total_cost_cents, raw, occurred_at)
-      values (${callRow.tenant_id}, ${callRow.id}, 'retell', ${cost.product}, ${cost.cost}, ${cost}::jsonb, ${endedAt})
-    `;
+  // COCKPIT-1: idempotent upsert (call_ended and call_analyzed both carry
+  // `call_cost`; a redelivery or the get-call backfill can never double
+  // count) + stamps call_logs.cost_cents/cost_source — including an explicit
+  // 0 for provider-reported zero-cost calls (error_user_not_joined web
+  // calls), which the old insert-only path left NULL ("unknown").
+  // A cost-ledger failure must not also lose this call's usage row below (the
+  // billing meter); `call_analyzed` re-upserts the same cost and
+  // scripts/backfill-call-costs.ts can repair it, so log loudly and continue.
+  try {
+    await recordCallCost(sql, {
+      tenantId: callRow.tenant_id,
+      callId: callRow.id,
+      occurredAt: endedAt,
+      callCost: call.call_cost,
+      source: "retell_call_ended",
+    });
+  } catch (err) {
+    logger.error("voice_events_call_ended_cost_failed", {
+      call_id: call.call_id,
+      error: String(err),
+    });
+  }
+  if (!call.call_cost) {
+    logger.warn("voice_events_call_ended_without_call_cost", {
+      call_id: call.call_id,
+      disconnection_reason: call.disconnection_reason ?? null,
+    });
   }
 
   if (durationSeconds !== null) {
@@ -335,6 +357,27 @@ export async function handleCallAnalyzed(
   if (!row) {
     logger.warn("voice_events_call_analyzed_no_matching_call", { call_id: call.call_id });
     return;
+  }
+
+  // COCKPIT-1: call_analyzed re-carries the final `call_cost`; upserting it
+  // (same idempotency key as call_ended) reconciles a missed/partial
+  // call_ended and picks up late-arriving lines (e.g. transfer legs). Never
+  // allowed to fail the analysis write that already happened above.
+  if (call.call_cost) {
+    try {
+      await recordCallCost(sql, {
+        tenantId: row.tenant_id,
+        callId: row.id,
+        occurredAt: isoFromUnixSeconds(call.end_timestamp) ?? new Date().toISOString(),
+        callCost: call.call_cost,
+        source: "retell_call_analyzed",
+      });
+    } catch (err) {
+      logger.error("voice_events_call_analyzed_cost_failed", {
+        call_id: call.call_id,
+        error: String(err),
+      });
+    }
   }
 
   // MESSAGING-1 owner alerts (new booking / urgent call / missed transfer),

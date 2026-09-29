@@ -1,4 +1,5 @@
 import { textToEmailHtml } from "../_shared/email-body.ts";
+import { recordMessageCost } from "../_shared/messaging-cost.ts";
 import type { OwnerAlertContact } from "../_shared/owner-alerts.ts";
 import { isOwnerAlertTemplate, loadOwnerAlertContact } from "../_shared/owner-alerts.ts";
 import { normalizeE164 } from "../_shared/phone.ts";
@@ -227,6 +228,22 @@ async function sendSmsFor(
           provider = ${provider.id}, sent_via = 'sms', recipient = ${toE164}, sent_at = now(), error = null
       where id = ${message.id}
     `;
+    await recordMessageCost(
+      sql,
+      {
+        tenantId: message.tenant_id,
+        messageId: message.id,
+        relatedCallId: message.related_call_id,
+        provider: provider.id,
+        kind: "sms",
+        body,
+      },
+      (err) =>
+        deps.logger.warn("worker_messages_outbound_cost_record_failed", {
+          message_id: message.id,
+          error: String(err),
+        }),
+    );
     return "sent";
   }
   return handleSendFailure(sql, message, provider.id, result, deps);
@@ -295,6 +312,21 @@ async function sendEmailFor(
         provider = ${provider.id}, sent_via = 'email', sent_at = now(), error = null
     where id = ${message.id}
   `;
+  await recordMessageCost(
+    sql,
+    {
+      tenantId: message.tenant_id,
+      messageId: message.id,
+      relatedCallId: message.related_call_id,
+      provider: provider.id,
+      kind: "email",
+    },
+    (err) =>
+      deps.logger.warn("worker_messages_outbound_cost_record_failed", {
+        message_id: message.id,
+        error: String(err),
+      }),
+  );
   return outcome;
 }
 

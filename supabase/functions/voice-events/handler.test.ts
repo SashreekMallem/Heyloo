@@ -258,6 +258,41 @@ describe("handleCallEnded", () => {
     expect(usageCall?.values).toContain(1); // 60s / 60 = 1 minute
   });
 
+  it("COCKPIT-1: stamps an explicit zero cost + source for a zero-cost provider-reported call (error_user_not_joined)", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "update public.call_logs": [
+        { id: "cl1", tenant_id: "t1", is_test_call: false, cost_cents: 0 },
+      ],
+    });
+    await handleCallEnded(
+      sql,
+      {
+        call_id: "call_web_err",
+        start_timestamp: 1_700_000_000_000,
+        end_timestamp: 1_700_000_000_000,
+        disconnection_reason: "error_user_not_joined",
+        call_cost: { combined_cost: 0, product_costs: [] },
+      },
+      logger,
+    );
+    const stamp = calls.find((c) => c.text.includes("cost_source ="));
+    expect(stamp).toBeDefined();
+    expect(stamp?.values).toContain("retell_call_ended");
+    expect(calls.some((c) => c.text.includes("insert into public.cost_events"))).toBe(false);
+  });
+
+  it("COCKPIT-1: leaves cost unknown (no cost stamp) when call_ended carries no call_cost", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "update public.call_logs": [{ id: "cl1", tenant_id: "t1", is_test_call: false }],
+    });
+    await handleCallEnded(
+      sql,
+      { call_id: "call_1", start_timestamp: 1_700_000_000_000, end_timestamp: 1_700_000_060_000 },
+      logger,
+    );
+    expect(calls.some((c) => c.text.includes("cost_source ="))).toBe(false);
+  });
+
   it("tolerates call_ended arriving before call_started (out-of-order delivery)", async () => {
     const { sql, calls } = makeRecordingSql({
       // First `update` returns no row (call not started yet); the fallback
@@ -323,6 +358,29 @@ describe("handleCallAnalyzed", () => {
     expect(update?.values).toContain("positive");
     expect(update?.values).toContain("new_booking");
     expect(update?.values).toContain("booked");
+  });
+
+  it("COCKPIT-1: reconciles call_cost from call_analyzed via the same idempotent upsert", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "update public.call_logs": [{ id: "cl1", tenant_id: "t1", urgency_flag: false }],
+    });
+    await handleCallAnalyzed(
+      sql,
+      {
+        call_id: "call_1",
+        end_timestamp: 1_700_000_060_000,
+        call_cost: {
+          combined_cost: 12,
+          product_costs: [{ product: "retell_voice_engine", cost: 12, unit_price: 0.05 }],
+        },
+        call_analysis: { call_summary: "x" },
+      },
+      logger,
+    );
+    const inserts = calls.filter((c) => c.text.includes("insert into public.cost_events"));
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0]?.text).toContain("on conflict (call_id, provider, product");
+    expect(inserts[0]?.values).toContain("retell_call_analyzed");
   });
 
   it("fires a compliance alert (error log) when legal_advice_given is true", async () => {

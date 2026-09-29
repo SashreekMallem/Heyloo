@@ -14,14 +14,19 @@ import { z } from "zod";
 export const RetellProductCostSchema = z
   .object({
     product: z.string(),
+    // US cents PER SECOND (docs.retellai.com/api-references/get-call).
     unit_price: z.number().optional(),
+    // US cents for the whole call (fractional).
     cost: z.number(),
+    is_transfer_leg_cost: z.boolean().optional(),
   })
   .passthrough();
 
 export const RetellCallCostSchema = z
   .object({
+    // US cents (docs.retellai.com/api-references/get-call: "All monetary values are in cents").
     combined_cost: z.number().optional(),
+    total_duration_seconds: z.number().optional(),
     product_costs: z.array(RetellProductCostSchema).default([]),
   })
   .passthrough();

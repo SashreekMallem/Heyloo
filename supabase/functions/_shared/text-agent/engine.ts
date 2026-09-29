@@ -17,6 +17,7 @@ import {
   resolveTenantTextContext,
   saveConversationPatch,
 } from "./conversation-store.ts";
+import { recordTextAgentLlmCost } from "./llm-cost.ts";
 import { textAgentRateLimiter } from "./rate-limit.ts";
 import {
   buildTextSystemPrompt,
@@ -296,6 +297,23 @@ export async function handleInboundText(
       }
 
       const { response } = result;
+      // COCKPIT-1: token cost of every successful Anthropic call enters the
+      // tenant's margin (text turns are not covered by Retell's call_cost).
+      await recordTextAgentLlmCost(
+        deps.sql,
+        {
+          tenantId: input.tenantId,
+          model: deps.model,
+          usage: response.usage,
+          channel: input.channel,
+          externalRef: crypto.randomUUID(),
+        },
+        (err) =>
+          deps.logger.warn("text_agent_cost_record_failed", {
+            tenant_id: input.tenantId,
+            error: String(err),
+          }),
+      );
       if (response.stop_reason !== "tool_use") {
         return extractReplyText(response.content) || FALLBACK_REPLY;
       }
