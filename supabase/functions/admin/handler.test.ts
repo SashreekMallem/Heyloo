@@ -19,6 +19,15 @@ const REPLY1 = uuid(6);
 const P1 = uuid(7);
 const SR1 = uuid(8);
 const R1 = uuid(9);
+/** The new-campaign form's body (canonical `outreachCampaignSchema` fields). */
+const CAMPAIGN_BODY = {
+  name: "Q1 legal",
+  vertical: "legal",
+  sending_domain: "mail.heyloo.ai",
+  daily_send_cap: 100,
+  template_id: "",
+  respect_suppression: true,
+};
 
 function baseCtx(overrides: Partial<AdminRequestContext> = {}): AdminRequestContext {
   return {
@@ -1590,7 +1599,7 @@ describe("routeAdminRequest — outreach group", () => {
       baseCtx({
         method: "POST",
         path: "/admin-outreach/campaigns",
-        body: { name: "Q1 legal", sender_domain: "mail.heyloo.ai" },
+        body: CAMPAIGN_BODY,
       }),
       logger,
     );
@@ -1605,7 +1614,7 @@ describe("routeAdminRequest — outreach group", () => {
       baseCtx({
         method: "POST",
         path: "/admin-outreach/campaigns",
-        body: { name: "Q1 legal", sender_domain: "mail.heyloo.ai" },
+        body: CAMPAIGN_BODY,
       }),
       logger,
       {
@@ -1630,7 +1639,7 @@ describe("routeAdminRequest — outreach group", () => {
       baseCtx({
         method: "POST",
         path: "/admin-outreach/campaigns",
-        body: { name: "x", sender_domain: "mail.heyloo.ai", provider: "instantly" },
+        body: { ...CAMPAIGN_BODY, provider: "instantly" },
       }),
       logger,
       {

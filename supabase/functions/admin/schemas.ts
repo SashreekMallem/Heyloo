@@ -89,3 +89,26 @@ export const AdminSupportRequestNoteSchema = z.object({
   body: z.string().trim().min(1).max(5000),
   visible_to_tenant: z.boolean().default(false),
 });
+
+/**
+ * `POST admin-outreach/campaigns` body — field for field the canonical
+ * `outreachCampaignSchema` (`packages/canonical-types`, which Deno cannot
+ * import); `handler.outreach.test.ts` fails when the two drift. `sending_domain`
+ * is the form's name for `campaigns.sender_domain` (COCKPIT-F08, F23).
+ */
+export const SENDING_DOMAIN_RE =
+  /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+export const MAX_DAILY_SEND_CAP = 2000;
+
+export const OutreachCampaignCreateSchema = z.object({
+  name: z.string().trim().min(1, "Campaign name is required").max(200),
+  vertical: z.enum(VERTICALS),
+  sending_domain: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .regex(SENDING_DOMAIN_RE, "Enter a domain such as mail.example.com"),
+  daily_send_cap: z.number().int().min(1, "Must be at least 1").max(MAX_DAILY_SEND_CAP),
+  template_id: z.union([z.literal(""), z.uuid("Template ID must be a UUID")]).optional(),
+  respect_suppression: z.literal(true),
+});

@@ -33,6 +33,7 @@ import {
   AdminReferralSettingSchema,
   AdminSupportRequestNoteSchema,
   AdminSupportRequestUpdateSchema,
+  OutreachCampaignCreateSchema,
   PlatformPricingTableSchema,
   VERTICALS,
 } from "./schemas.ts";
@@ -1550,7 +1551,9 @@ async function handleOutreach(
     // Score column sort control.
     const minScoreRaw = query["min_score"];
     const minScore = minScoreRaw !== undefined ? Number(minScoreRaw) : null;
-    const validMinScore = minScore !== null && Number.isFinite(minScore) ? minScore : null;
+    // COCKPIT-F23: the score is a 0-1 confidence; clamp instead of trusting the input's min/max.
+    const validMinScore =
+      minScore !== null && Number.isFinite(minScore) ? Math.min(1, Math.max(0, minScore)) : null;
     const sortByScore = query["sort"] === "score";
 
     const rows = sortByScore
@@ -1606,30 +1609,100 @@ async function handleOutreach(
 
   if (resource === "campaigns" && ctx.method === "GET" && !parts[2]) {
     const rows = await sql<Record<string, unknown>>`
-      select id, name, vertical, sender_domain, provider, status, external_campaign_id, complaint_rate, created_at
+      select id, name, vertical, sender_domain, provider, status, external_campaign_id,
+             complaint_rate, daily_send_cap, template_id, created_at
       from public.campaigns order by created_at desc limit 100
     `;
     return { status: 200, body: { campaigns: rows } };
   }
 
-  if (resource === "campaigns" && ctx.method === "POST" && !parts[2]) {
-    if (!deps.outreach) return { status: 501, body: { error: "outreach_sender_not_configured" } };
-    const body = (ctx.body ?? {}) as {
-      name?: string;
-      vertical?: string;
-      sender_domain?: string;
-      provider?: string;
+  // COCKPIT-F08: the campaign detail page reads `{ name, status, funnel, leads }`;
+  // there was no branch, so every campaign opened as a 404.
+  if (resource === "campaigns" && ctx.method === "GET" && parts[2] && !parts[3]) {
+    const campaignId = parts[2];
+    const campaign = (
+      await sql<Record<string, unknown>>`
+        select id, name, vertical, sender_domain, provider, status, external_campaign_id,
+               complaint_rate, daily_send_cap, template_id, created_at
+        from public.campaigns where id = ${campaignId}
+      `
+    )[0];
+    if (!campaign) return { status: 404, body: { error: "campaign_not_found" } };
+
+    const counts = (
+      await sql<Record<string, unknown>>`
+        select count(distinct se.lead_id)::int as added,
+               count(distinct se.lead_id) filter (where se.sent_at is not null)::int as sent,
+               count(distinct se.lead_id) filter (where se.opened_at is not null)::int as opened,
+               count(distinct se.lead_id) filter (where se.clicked_at is not null)::int as clicked,
+               count(distinct r.lead_id)::int as replied
+        from public.send_events se
+        left join public.replies r on r.send_event_id = se.id
+        where se.campaign_id = ${campaignId}
+      `
+    )[0];
+    const leads = await sql<{
+      id: string;
+      company_name: string | null;
+      contact_name: string | null;
+      email: string | null;
+      status: string;
+      phone_complaint_score: unknown;
+    }>`
+      select l.id, l.company_name, l.contact_name, l.email, l.status, l.phone_complaint_score
+      from public.leads l
+      where l.id in (select lead_id from public.send_events where campaign_id = ${campaignId})
+      order by l.created_at desc
+      limit 200
+    `;
+    return {
+      status: 200,
+      body: {
+        ...campaign,
+        funnel: [
+          { label: "Leads added", count: toNumber(counts?.["added"]) },
+          { label: "Sent", count: toNumber(counts?.["sent"]) },
+          { label: "Opened", count: toNumber(counts?.["opened"]) },
+          { label: "Clicked", count: toNumber(counts?.["clicked"]) },
+          { label: "Replied", count: toNumber(counts?.["replied"]) },
+        ],
+        leads: leads.map((l) => ({
+          id: l.id,
+          companyName: l.company_name,
+          contactName: l.contact_name,
+          email: l.email,
+          status: l.status,
+          suppressed: l.status === "suppressed",
+          isDuplicate: false,
+          phoneComplaintScore:
+            l.phone_complaint_score === null ? null : toNumber(l.phone_complaint_score),
+        })),
+      },
     };
-    if (!body.name || !body.sender_domain) {
-      return { status: 422, body: { error: "missing_name_or_sender_domain" } };
-    }
-    const provider = body.provider ?? "smartlead";
+  }
+
+  if (resource === "campaigns" && ctx.method === "POST" && !parts[2]) {
+    const raw = (ctx.body ?? {}) as Record<string, unknown>;
+    const provider = typeof raw["provider"] === "string" ? raw["provider"] : "smartlead";
     if (provider !== "smartlead") {
       // Compliance/scope: only the Smartlead adapter is implemented (see
       // this module's provider-choice docstring) — never silently accept
       // a provider value this build can't actually create a campaign for.
       return { status: 422, body: { error: "unsupported_provider" } };
     }
+    // COCKPIT-F08/F23: validate the form's canonical body BEFORE the
+    // not-configured answer, so an invalid form always gets field errors.
+    // `sender_domain` is accepted as the pre-F08 spelling of `sending_domain`.
+    const parsed = OutreachCampaignCreateSchema.safeParse({
+      respect_suppression: true,
+      ...raw,
+      sending_domain: raw["sending_domain"] ?? raw["sender_domain"],
+    });
+    if (!parsed.success) {
+      return { status: 422, body: { error: "invalid_campaign", issues: parsed.error.issues } };
+    }
+    const body = parsed.data;
+    if (!deps.outreach) return { status: 501, body: { error: "outreach_sender_not_configured" } };
 
     const created = await createSmartleadCampaign(
       deps.outreach.smartleadFetchImpl,
@@ -1642,9 +1715,13 @@ async function handleOutreach(
       return { status: 502, body: { error: "smartlead_campaign_create_failed" } };
     }
 
+    // The cap and template are stored for the sender; they are not pushed to
+    // Smartlead yet (docs/BUILD_NOTES.md QA-1-cockpit).
     const inserted = await sql<{ id: string }>`
-      insert into public.campaigns (name, vertical, sender_domain, provider, status, external_campaign_id)
-      values (${body.name}, ${body.vertical ?? null}, ${body.sender_domain}, ${provider}, 'draft', ${created.externalCampaignId})
+      insert into public.campaigns
+        (name, vertical, sender_domain, provider, status, external_campaign_id, daily_send_cap, template_id)
+      values (${body.name}, ${body.vertical}, ${body.sending_domain}, ${provider}, 'draft',
+              ${created.externalCampaignId}, ${body.daily_send_cap}, ${body.template_id || null})
       returning id
     `;
     const campaignId = inserted[0]?.id;
@@ -1656,7 +1733,13 @@ async function handleOutreach(
         action: "outreach_campaign_create",
         targetType: "campaign",
         targetId: campaignId,
-        after: { name: body.name, provider, external_campaign_id: created.externalCampaignId },
+        after: {
+          name: body.name,
+          provider,
+          external_campaign_id: created.externalCampaignId,
+          sender_domain: body.sending_domain,
+          daily_send_cap: body.daily_send_cap,
+        },
         ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
         ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
       });
@@ -1782,7 +1865,22 @@ async function handleOutreach(
     const byIntent = await sql<{ ai_intent: string | null; count: number }>`
       select ai_intent, count(*)::int as count from public.replies group by ai_intent
     `;
-    return { status: 200, body: { leads_by_status: byStatus, replies_by_intent: byIntent } };
+    // COCKPIT-F09: overall complaint rate (a percentage; campaigns auto-pause at
+    // 0.3%) so the overview can warn before the auto-pause trips.
+    const complaint = (
+      await sql<{ rate: unknown }>`
+        select (count(*) filter (where status = 'complained'))::numeric / nullif(count(*), 0) as rate
+        from public.send_events
+      `
+    )[0];
+    return {
+      status: 200,
+      body: {
+        leads_by_status: byStatus,
+        replies_by_intent: byIntent,
+        complaint_rate_pct: complaint?.rate == null ? 0 : toNumber(complaint.rate) * 100,
+      },
+    };
   }
 
   if (resource === "replies" && ctx.method === "GET" && !parts[2]) {

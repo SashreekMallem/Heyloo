@@ -10,12 +10,24 @@ interface CampaignRow {
   name: string;
   vertical: string | null;
   status: string;
+  sender_domain: string | null;
+  daily_send_cap: number | null;
   complaint_rate: number | null;
 }
 
 const columns: ColumnDef<CampaignRow, unknown>[] = [
   { accessorKey: "name", header: "Campaign" },
   { accessorKey: "vertical", header: "Vertical", cell: ({ row }) => row.original.vertical ?? "—" },
+  {
+    accessorKey: "sender_domain",
+    header: "Sending domain",
+    cell: ({ row }) => row.original.sender_domain ?? "—",
+  },
+  {
+    accessorKey: "daily_send_cap",
+    header: "Daily cap",
+    cell: ({ row }) => <span className="tabular-nums">{row.original.daily_send_cap ?? "—"}</span>,
+  },
   {
     accessorKey: "status",
     header: "Status",
@@ -25,7 +37,12 @@ const columns: ColumnDef<CampaignRow, unknown>[] = [
 
 export default function CampaignsListPage() {
   const router = useRouter();
-  const query = useAdminQuery<{ rows: CampaignRow[] }>("campaigns", [], "admin-outreach/campaigns");
+  // `GET admin-outreach/campaigns` answers `{ campaigns }` (COCKPIT-F08: this page read `rows`).
+  const query = useAdminQuery<{ campaigns: CampaignRow[] }>(
+    "campaigns",
+    [],
+    "admin-outreach/campaigns",
+  );
 
   return (
     <div className="space-y-6">
@@ -39,11 +56,14 @@ export default function CampaignsListPage() {
       />
       <DataState
         query={query}
-        empty={{ title: "No campaigns yet" }}
+        empty={{
+          title: "No campaigns yet",
+          isEmpty: (data) => (data?.campaigns?.length ?? 0) === 0,
+        }}
         render={(data) => (
           <DataTable
             columns={columns}
-            data={data.rows}
+            data={data.campaigns}
             onRowClick={(row) => router.push(`/cockpit/outreach/campaigns/${row.id}`)}
             emptyState={{
               title: "No campaigns yet",

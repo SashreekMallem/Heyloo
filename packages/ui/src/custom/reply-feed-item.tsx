@@ -25,13 +25,17 @@ export interface ReplyFeedItemProps {
   onAction: (action: string) => void;
 }
 
+/**
+ * COCKPIT-F09: the `action` values are the ones `POST admin-outreach/replies/:id/actions`
+ * understands (`mark_interested` sends the demo-link email, `suppress` adds the lead
+ * to the suppression list). The earlier labels (qualify/archive/reply/dismiss) had no
+ * backend, so every click failed; replies without a real action show none.
+ */
 const INTENT_ACTIONS: Record<string, { label: string; action: string; variant?: "destructive" }[]> =
   {
-    interested: [{ label: "Mark qualified", action: "qualify" }],
-    not_interested: [{ label: "Archive", action: "archive" }],
-    unsubscribe: [{ label: "Confirm unsubscribe", action: "unsubscribe", variant: "destructive" }],
-    question: [{ label: "Reply", action: "reply" }],
-    auto_reply: [{ label: "Dismiss", action: "dismiss" }],
+    interested: [{ label: "Send demo link", action: "mark_interested" }],
+    not_interested: [{ label: "Suppress lead", action: "suppress" }],
+    unsubscribe: [{ label: "Confirm unsubscribe", action: "suppress", variant: "destructive" }],
   };
 
 /** Reply row w/ intent badge + one-click actions — outreach replies (FRONTEND_SPEC.md §1.3/§7.3). "unsubscribe" acts instantly (CAN-SPAM-critical). */
