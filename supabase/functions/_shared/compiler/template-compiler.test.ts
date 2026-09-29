@@ -119,6 +119,9 @@ describe("compileTemplate — conversation_flow", () => {
       business_facts: expect.stringContaining("nothing extra"),
       voicemail_message: "",
       booking_mode_text: expect.stringContaining("Normal"),
+      // MSG-3: texting defaults to OFF for calls that never run /voice-inbound.
+      sms_enabled: "false",
+      texting_policy_text: expect.stringContaining("Text messages are NOT available"),
       transfer_policy_text: expect.stringContaining("No live transfer"),
       cancellation_policy_text: expect.any(String),
     });
@@ -128,6 +131,7 @@ describe("compileTemplate — conversation_flow", () => {
       "{{business_facts}}",
       "{{voicemail_message}}",
       "{{booking_mode_text}}",
+      "{{texting_policy_text}}",
       "{{transfer_policy_text}}",
       "{{cancellation_policy_text}}",
     ]) {

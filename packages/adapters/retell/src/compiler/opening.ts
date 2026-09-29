@@ -105,6 +105,16 @@ export const COMPILER_DEFAULT_DYNAMIC_VARIABLES: Readonly<Record<string, string>
   business_facts: "(nothing extra on file)",
   voicemail_message: "",
   booking_mode_text: "Normal — you can book, reschedule and cancel appointments as usual.",
+  // MSG-3: texting defaults to OFF (parity with the Deno compiler's table).
+  sms_enabled: "false",
+  texting_policy_text:
+    "Text messages are NOT available for this business right now. Never offer to text or " +
+    "message the caller, never say or imply that you are texting, messaging or sending anything " +
+    "to their phone (no text confirmation, no link, no reminder), and do not call " +
+    "send_sms_confirmation or send_payment_link. Confirm out loud instead: after a tool reports " +
+    "the booking or order is confirmed, read back the day, time and key details once and say it " +
+    "is confirmed. If the caller wants it in writing or asks for a link, tell them someone from " +
+    "the team will follow up.",
   transfer_policy_text:
     "No live transfer number is set. Do not offer or attempt a transfer: take a message instead.",
   cancellation_policy_text:

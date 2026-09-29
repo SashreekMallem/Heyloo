@@ -171,7 +171,7 @@ export const AUTO_REPAIR_TEMPLATE: AgentTemplate = {
         "Read back the full appointment (vehicle, service, drop-off/wait, date/time), ask the " +
         "consent question, state the cancellation policy, then create the booking — pass " +
         "structured_payload with vehicle_year, vehicle_make, vehicle_model, symptom_category, " +
-        "and drop_off_or_wait — and send the SMS confirmation.",
+        "and drop_off_or_wait — and, if text messages are available, send the SMS confirmation.",
       allowed_tools: ["create_booking", "send_sms_confirmation"],
       is_terminal: true,
     },

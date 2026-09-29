@@ -138,9 +138,10 @@ export const MOTEL_TEMPLATE: AgentTemplate = {
         "question; state the cancellation policy; then create the booking — pass " +
         "structured_payload with room_type, quoted_rate_cents (the exact nightly rate you " +
         "quoted from {{rate_table}}), and num_guests. If a deposit is required " +
-        "({{deposit_policy_text}}), say so and send a payment link — the reservation stays " +
-        "held but not guaranteed until the deposit is paid. Send the SMS confirmation either " +
-        "way.",
+        "({{deposit_policy_text}}), say so and, if text messages are available, send a " +
+        "payment link (otherwise say someone from the team will follow up to arrange the " +
+        "deposit) — the reservation stays held but not guaranteed until the deposit is paid. " +
+        "If text messages are available, send the SMS confirmation either way.",
       allowed_tools: ["create_booking", "send_payment_link", "send_sms_confirmation"],
       is_terminal: true,
     },

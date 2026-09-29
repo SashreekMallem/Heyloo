@@ -125,7 +125,7 @@ export const RESTAURANT_TEMPLATE: AgentTemplate = {
       name: "Confirm reservation",
       prompt_fragment:
         "Read back party size and date/time, ask the consent question, then create the " +
-        "booking and send the SMS confirmation.",
+        "booking and, if text messages are available, send the SMS confirmation.",
       allowed_tools: ["create_booking", "send_sms_confirmation"],
       is_terminal: true,
     },
@@ -170,7 +170,9 @@ export const RESTAURANT_TEMPLATE: AgentTemplate = {
         "pass whatever the caller said about allergies as the allergies argument (an empty " +
         "list if they said none) and any other special instructions as special_instructions, " +
         "so the kitchen sees them, not just the transcript. If the order requires prepayment, " +
-        "send a payment link; always send the SMS confirmation.",
+        "send a payment link if text messages are available (otherwise say someone from the " +
+        "team will follow up about payment); if text messages are available, also send the " +
+        "SMS confirmation.",
       allowed_tools: ["create_order", "send_payment_link", "send_sms_confirmation"],
       is_terminal: true,
     },
