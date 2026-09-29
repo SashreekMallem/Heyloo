@@ -199,7 +199,13 @@ weeks and should not be the last thing blocking launch.
    near-term follow-up, not done as part of this task (see that document
    for why it was scoped out here).
 
-### 1.7 Resend (transactional email)
+### 1.7 Email: your own mailbox over SMTP (owner decision, MSG-3) or Resend
+
+**Default for launch: the owner's own domain mailbox over SMTP.** Follow
+`docs/SETUP_EMAIL.md` (create `alerts@<domain>`, app password, SPF/DKIM/DMARC,
+`EMAIL_PROVIDER=smtp` + `SMTP_*` secrets, and the same mailbox as Supabase Auth
+custom SMTP). Only port 465 works from Edge Functions. The Resend steps below
+are the alternative (`EMAIL_PROVIDER=resend`).
 
 1. Create a Resend account, add and verify your sending domain (DNS
    records — SPF/DKIM, follow Resend's dashboard instructions for your
@@ -338,7 +344,8 @@ not fetched from a vendor dashboard.
 | `ANTHROPIC_API_KEY` | console.anthropic.com |
 | `NODE_ENV` | `production` in every real deploy |
 | `APP_BASE_URL` | Your production domain, e.g. `https://heyloo.app` |
-| `RESEND_API_KEY` / `RESEND_FROM_ADDRESS` | Resend dashboard, after domain verification (§1.7) |
+| `EMAIL_PROVIDER`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM_ADDRESS` | Your domain mailbox, `docs/SETUP_EMAIL.md` (§1.7); `EMAIL_PROVIDER=smtp` |
+| `RESEND_API_KEY` / `RESEND_FROM_ADDRESS` | Alternative to SMTP: Resend dashboard, after domain verification (§1.7) |
 | `GEOCODE_API_KEY` | Whichever provider you pick (Geocodio or Google — still an open `VERIFY:`, `docs/VERIFY.md`) |
 | `CRON_INVOKE_SECRET` | Generated — shared secret every `worker-*`/`job-*` function checks on its `x-cron-secret` header |
 | `PROVISION_INTERNAL_SECRET` | Generated |

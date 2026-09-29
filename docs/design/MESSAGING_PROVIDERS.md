@@ -38,6 +38,7 @@ supabase/functions/_shared/providers/messaging/
   smtp-fake-server.ts   scripted SMTP server used by the tests only
   canonical-parity.test.ts   Deno mirror == canonical package
 supabase/functions/_shared/owner-alerts.ts         owner alert kinds, preferences, producer helper
+supabase/functions/_shared/sms-availability.ts     "can this tenant text right now" + what the model is told (MSG-3)
 supabase/functions/worker-messages-outbound/       queue worker (uses only the interface)
 supabase/functions/webhooks-sms/                   inbound + delivery receipts, any provider
 supabase/functions/webhooks-twilio-sms/            legacy URL, thin alias of webhooks-sms (Twilio)
@@ -234,6 +235,60 @@ owner steps are in `docs/SETUP_EMAIL.md`.
   accepted the message, not that it reached the inbox; bounces arrive in the
   sending mailbox. Microsoft 365 (`smtp.office365.com`) is not usable: its SMTP
   AUTH only offers 587/25. Google Workspace and Zoho both offer 465.
+
+## No promise of a text without texting (MSG-3)
+
+Owner decision: phone numbers are Retell-provided and there is **no texting
+provider at launch** (no Telnyx/Twilio keys). Every live tenant is
+`a2p_status = pending_verification` with no `messaging_senders` row. So the
+product must never *say* it is texting.
+
+**One definition of "can text".** `supabase/functions/_shared/sms-availability.ts`
+(`resolveSmsRoute` moved out of the worker so both sides share it): a tenant can
+text a customer only when it has a **carrier-verified** sender
+(`messaging_senders.registration_status = 'verified'`; legacy fallback: primary
+number + `tenants.a2p_status = 'verified'`) **and** that sender's provider
+resolves in the registry (secrets set). `isSmsAvailable` is exactly the worker's
+`resolveSmsRoute(..., { requireVerified: true }).ok`, so the tool-time answer can
+never disagree with what the worker would do.
+
+| Where | What changed |
+|---|---|
+| `voice-tools` `send_sms_confirmation` | `{ queued: false, reason: "sms_unavailable", texting_available: false, message }` and **nothing is queued** (no owner "text not sent" copy either). The message tells the model no text was sent and to confirm out loud. One indexed statement, asked only by the three text-promising tools (`send_sms_confirmation`, `send_payment_link`, `join_waitlist`), never by the other tools. |
+| `send_payment_link` | Same answer, before any Stripe Checkout Session is created. |
+| `join_waitlist` | Still joins; the result carries `texting_available: false` and a note not to promise a text. |
+| `voice-inbound` | Per call `sms_enabled` (`"true"`/`"false"`) and `texting_policy_text`, dispatched in parallel with the customer lookup; a failed lookup reads as OFF, never delays the call. |
+| Compilers (`template-compiler.ts` and the Node `owner-info.ts`, byte-identical) | The owner-info block carries `Text messages right now: {{texting_policy_text}}` (outside the owner-data fence; owner text cannot override it). `default_dynamic_variables` default to OFF, so a web call that never ran `/voice-inbound` is safe. `AGENT_COMPILER_VERSION` 1 -> 2 (the portal flags agents compiled before it). |
+| Templates (`packages/templates` and the seeds copy) | Every line that promised a text is conditional ("if text messages are available"): confirmation states, the consent ask (asks only about calls when texting is off), the waitlist offer ("get in touch", "text you" only if available), the secure-link fallback, the dental form link, motel deposit link, restaurant prepayment link, and the `send_sms_confirmation` / `send_payment_link` / `join_waitlist` tool descriptions. |
+| Text agent (SMS + web chat) | Same block and the same reused fragments; `engine.ts` resolves `texting_policy_text` per turn (SMS conversation = on; web chat = on only when the tenant is verified); `send_payment_link` answers `sms_unavailable` for an unverified web chat. |
+| Portal | `/dashboard/texting`, Delivery preferences, the account and settings checklists, and the booking/order toasts say texting is off until set up and never claim a customer was texted or a link re-sent by SMS. |
+
+**Red team.** `packages/templates/src/red-team/texting-lint.ts` is a sentence-level
+checker: `findUngatedTextInstructions` (authored prompt text must gate every
+send/offer/promise of a text on availability or be a prohibition) and
+`findTextPromises` (no sentence may commit to or report a text, English or
+Spanish). It runs over the canonical templates, and
+`supabase/functions/_shared/compiler/texting-red-team.test.ts` runs it over every
+seeded vertical x every compile target x both languages, rendered with the
+per-call variables exactly as Retell substitutes them, over the text agent's
+prompt and tools, and over every model-facing tool answer. It also pins the seeds
+copy to the package's wording and the compiler defaults to the runtime constants.
+
+**Owner alerts.** They already re-plan at send time: SMS only when the alert phone
+exists, the sender is verified and its provider is configured; otherwise **email**
+(even if the owner turned the email toggle off, because they asked to be alerted).
+`worker-messages-outbound/handler.email-only.test.ts` drives every alert kind
+through the real SMTP provider against the fake server for the launch state, the
+verified-but-no-provider state, both preferences, a missing owner address (marked
+failed with a reason, never "sent"), bad credentials, a transient 4xx, the daily
+limit and an unconfigured mailbox.
+
+**Known gaps (not changed here).** `create_order` still queues an
+`order_confirmation` text on every order and the waitlist trigger, reminders and
+review requests still queue texts; without a sender the worker turns each into an
+"X not sent yet, copy for you" email to the owner (their reroute wording still says
+"carrier approval pending"). The public home page still illustrates a confirmation
+text (its pricing note already says texts start after carrier approval).
 
 ## Inbound texts and delivery receipts
 
