@@ -538,3 +538,136 @@ export async function createChatCompletion(
     body: JSON.stringify(payload),
   });
 }
+
+/**
+ * RETELLCFG (docs/BUILD_NOTES.md): read-only account-inventory endpoints used
+ * by `api-admin-attach-retell-number`'s `action: "inventory"` to find every
+ * webhook / tool / MCP URL configured anywhere in the Retell account.
+ * RETELL-VERIFIED against docs.retellai.com on 2026-09-29 (citations in
+ * docs/VERIFY.md RETELLCFG):
+ *
+ * - `POST /v2/list-agents` (api-references/list-agents): note the METHOD is
+ *   POST (an optional `filter_criteria` body), `limit` (default 50, max
+ *   1000) / `sort_order` / `pagination_key` are QUERY params, and the
+ *   response is `{items, has_more, pagination_key?}`. Each item is a
+ *   SUMMARY only (`agent_id`, `agent_name`, `channel`,
+ *   `user_modified_timestamp`, `tags`) — no `webhook_url`, `language`,
+ *   `voice_id` or `response_engine`, so a caller needs `getAgentVersion`
+ *   per agent for those.
+ * - `GET /v2/list-retell-llms`, `GET /v2/list-conversation-flows`,
+ *   `GET /v2/list-phone-numbers`: same three query params, same
+ *   `{items, has_more, pagination_key?}` envelope; LLM / flow items are the
+ *   FULL resource (tools with `url`, `mcps` with `url`, `begin_message`,
+ *   `start_speaker`, `nodes`...).
+ * - `GET /list-agent-versions/{agent_id}` (api-references/get-agent-versions):
+ *   same envelope; each version carries `version`, `is_published`,
+ *   `last_modification_timestamp`. Retell exposes NO creation timestamp
+ *   anywhere, so the earliest version's `last_modification_timestamp`
+ *   (`sort_order=ascending&limit=1`) is the closest available proxy.
+ * - `GET /get-agent/{agent_id}?version=` (api-references/get-agent):
+ *   `version` accepts a number, a tag, `"latest"` or `"latest_published"`;
+ *   omitted means the latest (largest) version, which can be an unpublished
+ *   draft.
+ */
+export interface RetellListPageOptions {
+  limit?: number;
+  paginationKey?: string;
+  sortOrder?: "ascending" | "descending";
+}
+
+function listPageQuery(opts: RetellListPageOptions): string {
+  const params = new URLSearchParams();
+  params.set("limit", String(opts.limit ?? 1000));
+  if (opts.sortOrder) params.set("sort_order", opts.sortOrder);
+  if (opts.paginationKey) params.set("pagination_key", opts.paginationKey);
+  return params.toString();
+}
+
+export async function listAgentsPage(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  opts: RetellListPageOptions = {},
+) {
+  return retellRequest(fetchImpl, apiKey, `/v2/list-agents?${listPageQuery(opts)}`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function listRetellLLMsPage(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  opts: RetellListPageOptions = {},
+) {
+  return retellRequest(fetchImpl, apiKey, `/v2/list-retell-llms?${listPageQuery(opts)}`, {
+    method: "GET",
+  });
+}
+
+export async function listConversationFlowsPage(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  opts: RetellListPageOptions = {},
+) {
+  return retellRequest(fetchImpl, apiKey, `/v2/list-conversation-flows?${listPageQuery(opts)}`, {
+    method: "GET",
+  });
+}
+
+export async function listPhoneNumbersPage(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  opts: RetellListPageOptions = {},
+) {
+  return retellRequest(fetchImpl, apiKey, `/v2/list-phone-numbers?${listPageQuery(opts)}`, {
+    method: "GET",
+  });
+}
+
+export async function listAgentVersions(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  agentId: string,
+  opts: RetellListPageOptions = {},
+) {
+  return retellRequest(
+    fetchImpl,
+    apiKey,
+    `/list-agent-versions/${encodeURIComponent(agentId)}?${listPageQuery(opts)}`,
+    { method: "GET" },
+  );
+}
+
+export async function getAgentVersion(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  agentId: string,
+  version: number | "latest" | "latest_published",
+) {
+  return retellRequest(
+    fetchImpl,
+    apiKey,
+    `/get-agent/${encodeURIComponent(agentId)}?version=${encodeURIComponent(String(version))}`,
+    { method: "GET" },
+  );
+}
+
+/** GET /get-chat-agent/{agent_id}?version= (RETELLCFG, RETELL-VERIFIED
+ * against docs.retellai.com/api-references/get-chat-agent 2026-09-29):
+ * `/v2/list-agents` returns chat agents too (`channel: "chat"`), whose
+ * details live here rather than under `/get-agent`. Same `version` values
+ * and the same `webhook_url` semantics ("will ignore the account level
+ * webhook for this agent"). */
+export async function getChatAgentVersion(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  agentId: string,
+  version: number | "latest" | "latest_published",
+) {
+  return retellRequest(
+    fetchImpl,
+    apiKey,
+    `/get-chat-agent/${encodeURIComponent(agentId)}?version=${encodeURIComponent(String(version))}`,
+    { method: "GET" },
+  );
+}

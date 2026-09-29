@@ -139,13 +139,50 @@ entry for the call ids and full live evidence.
 
 ---
 
-### 10. Cleanup: Delete old Retell agents
+### 10. Cleanup: Retell account-level webhook and unused agents (RETELLCFG)
+
+**Why**: Retell sends an agent's call events to that agent's own `webhook_url`
+and, only when an agent has none, to the ACCOUNT-level webhook set in the
+dashboard (docs.retellai.com/features/webhook-overview: "If set, the
+account-level webhook URL will not be triggered for that agent"). The
+account-level webhook still points at the deleted legacy function
+`https://qulcubtwqsqgqpfgvorn.supabase.co/functions/v1/retell-assistant`, so
+every call leg handled by an agent without its own `webhook_url` (today: the
+self-call test caller agent) POSTs there about 8 times and gets a 404. Every
+tenant agent sets its own `webhook_url` (`/voice-events`), so nothing needs the
+account-level webhook. The old step 10 here (delete the agents listed in
+`agent_configs`) was wrong: those are the LIVE agents. Only delete agents the
+audit below lists as unreferenced.
 
 **Steps**:
-1. `psql "$SUPABASE_DB_URL" -c "select tenant_id, retell_agent_id from agent_configs where tenant_id like 'test-%';"`
-2. For each test agent, delete from Retell dashboard (Agents → 3-dot → Delete)
+1. Once `api-admin-attach-retell-number` is redeployed, run the read-only audit:
+   `SUPABASE_URL=https://qulcubtwqsqgqpfgvorn.supabase.co PROVISION_INTERNAL_SECRET=<secret> node --experimental-strip-types scripts/retell/audit-config.ts --json retell-inventory.json`
+   (keep `retell-inventory.json` out of git). Section 1 lists stale URLs,
+   section 2 the agents that fall back to the account-level webhook, section 3
+   any repair for a current tenant, section 4 the cleanup list.
+2. Retell dashboard (dashboard.retellai.com) -> **Settings** -> **Webhooks** tab
+   -> account-level **Webhook URL**: delete
+   `https://qulcubtwqsqgqpfgvorn.supabase.co/functions/v1/retell-assistant` so
+   the field is empty, then save. Do NOT paste the `/voice-events` URL there
+   instead: `voice-events` finds the tenant from the call's `to_number`, so the
+   self-call caller leg (dialing +12602354330) would be recorded as a second
+   call and a second usage row on the called tenant. If the dashboard will not
+   save an empty value, leave it and tell engineering (the self-call caller
+   agent then needs its own webhook setting; see docs/BUILD_NOTES.md RETELLCFG).
+3. If section 3 lists a repair: for `test-*` tenants re-run the audit with
+   `--apply` and `OWNER_EMAIL=<your email>`; for a real tenant, click
+   **Publish changes** in that tenant's portal, then re-run the audit.
+4. Old agents: for each agent in section 4 you do not want, Retell dashboard ->
+   **Agents** -> open it -> the "..." menu -> **Delete**. Skip lines marked
+   `STILL BOUND` (unbind the number first). Never delete an agent that is not
+   in section 4.
 
-**Verify**: Only production agents remain.
+**Verify**:
+- Run `scripts/e2e/self-call.ts` once. Supabase -> Logs -> Edge Functions for
+  that window: no `POST | 404 | .../functions/v1/retell-assistant` rows
+  (log explorer: `select timestamp, event_message from function_edge_logs where event_message like '%retell-assistant%'`).
+- Re-run the audit: no `legacy_function` findings; section 4 holds only agents
+  you chose to keep.
 
 ---
 

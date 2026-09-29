@@ -5,15 +5,30 @@
 
 import { timingSafeEqual } from "../_shared/crypto.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { requireEnv } from "../_shared/deno/env.ts";
+import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { attachRetellNumber, inspectRetellConfig } from "./handler.ts";
+import { inventoryRetellAccount } from "./inventory.ts";
 
 const logger = createLogger({ fn: "api-admin-attach-retell-number" });
 const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
 const RETELL_INBOUND_WEBHOOK_URL = requireEnv("RETELL_INBOUND_WEBHOOK_URL");
 const PROVISION_INTERNAL_SECRET = requireEnv("PROVISION_INTERNAL_SECRET");
+
+// RETELLCFG: the endpoints this platform configures on Retell, for the
+// read-only `inventory` action's URL classification. Deliberately NOT
+// `requireEnv`: a missing optional var must never take down the attach
+// action. `RETELL_INBOUND_WEBHOOK_URL` (required above) is always
+// `https://<ref>.supabase.co/functions/v1/voice-inbound`, so its parent path
+// is this project's functions base; the explicit secrets win when set.
+const FUNCTIONS_BASE = RETELL_INBOUND_WEBHOOK_URL.replace(/\/[^/]*\/?$/, "");
+const EXPECTED_RETELL_URLS = {
+  voice_events: optionalEnv("VOICE_EVENTS_WEBHOOK_URL") ?? `${FUNCTIONS_BASE}/voice-events`,
+  voice_tools: optionalEnv("VOICE_TOOLS_WEBHOOK_URL") ?? `${FUNCTIONS_BASE}/voice-tools`,
+  voice_inbound: RETELL_INBOUND_WEBHOOK_URL,
+};
+const PROJECT_HOST = new URL(RETELL_INBOUND_WEBHOOK_URL).host.toLowerCase();
 
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
@@ -46,6 +61,24 @@ Deno.serve(async (req: Request) => {
       retellFetch: fetch,
       retellApiKey: RETELL_API_KEY,
       logger,
+    });
+    return jsonResponse(result.body, { status: result.status });
+  }
+
+  // RETELLCFG: `action: "inventory"` — read-only, account-wide listing of
+  // every Retell agent / number / LLM / flow and every URL they call, with
+  // stale-URL findings and the unreferenced-agent cleanup list (inventory.ts).
+  if (
+    typeof body === "object" &&
+    body !== null &&
+    (body as { action?: unknown }).action === "inventory"
+  ) {
+    const result = await inventoryRetellAccount(sql, {
+      retellFetch: fetch,
+      retellApiKey: RETELL_API_KEY,
+      logger,
+      expected: EXPECTED_RETELL_URLS,
+      projectHost: PROJECT_HOST,
     });
     return jsonResponse(result.body, { status: result.status });
   }

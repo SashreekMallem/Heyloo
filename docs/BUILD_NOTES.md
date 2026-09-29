@@ -7461,3 +7461,161 @@ the real-registry checks ran against this change).
 ### Gates
 
 `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm run test` in `supabase/functions` (see commit).
+
+## RETELLCFG (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — the `retell-assistant` 404s come from Retell's ACCOUNT-level webhook, reached only by agents without their own `webhook_url` (today: the self-call caller agent); read-only account inventory + audit script; `inspect` now returns language, voice and the opening
+
+Code + tests + docs only. Nothing was deployed, no DDL, no Retell or database
+write. Citations: `docs/VERIFY.md` RETELLCFG.
+
+### 1. Root cause of the ~8 POSTs per call to the deleted `/functions/v1/retell-assistant`
+
+Retell delivers an agent's call events to the agent's own `webhook_url`; only
+when an agent has NO `webhook_url` do they go to the account-level webhook set
+in the dashboard ("If set, the account-level webhook URL will not be triggered
+for that agent", docs.retellai.com/features/webhook-overview). Evidence, all
+read-only:
+
+- **Every current tenant agent already overrides it.** The deployed `inspect`
+  action, run for all 10 `agent_configs` tenants: `webhook_url =
+  https://qulcubtwqsqgqpfgvorn.supabase.co/functions/v1/voice-events` on every
+  one (all published). Both attached numbers (+12602354330 riverside,
+  +16105383920 signup-1-auto) have `inbound_webhook_url = .../voice-inbound`.
+- **Only the self-call CALLER leg hits it.** `function_edge_logs` (Management
+  API `analytics/endpoints/logs`, `source = 'function_edge_logs'`): the 404s
+  exist on exactly two days — 36 on 2026-09-21 08:15-09:31 (SELFCALL-1's runs;
+  `platform_settings.self_call_caller_agent` was created 08:15:03, first 404 at
+  08:15:08) and 8 on 2026-09-29 00:38-00:41 (VERIFY-DEPLOY's one self-call) —
+  and zero on every other day 09-20..09-28 despite web calls, batch tests and
+  nightly regressions (all on tenant agents). In the 09-29 call, the callee's
+  events went to `voice-events` (`call_started` 1821 B at 00:38:39; end events
+  77630 B / 76900 B at 00:41:41) while a DIFFERENT, smaller call's events went
+  to `retell-assistant` (`call_started` 1101 B x3 at 00:38:37-38; end events
+  64044 B x2 and 63750 B x3 at 00:41:40-41). Sender `100.20.5.228` (Retell's
+  documented IP), `axios/1.15.2`.
+- **Why that agent has no `webhook_url`:** `api-admin-self-call/handler.ts
+  #ensureCallerAgent` calls `createAgent({agent_name, voice_id,
+  response_engine})` without `webhook_url` (by design: nothing consumes the
+  caller leg's events; `api-admin-self-call` polls `get-call`). So its events
+  fall through to the account-level URL, which still holds the legacy
+  product's `.../functions/v1/retell-assistant` (a function the owner deleted
+  with the other 13 legacy functions). `admin/handler.ts`'s template-publish
+  path (`heyloo-template-*` agents) creates agents the same way, so any call on
+  one of those would do the same.
+
+**Fix: an owner dashboard step (no API exists for the account-level
+webhook):** Retell dashboard -> Settings -> Webhooks -> clear the account-level
+URL (docs/GO_LIVE.md step 10, rewritten). Clearing, not re-pointing: setting it
+to `/voice-events` would be harmful, because `voice-events/handler.ts
+#resolveTenantForCall` resolves the tenant from `to_number` first, so the
+self-call caller leg (to +12602354330) would be written as a second
+`call_logs` + `usage_events` row on the callee tenant. No tenant-owned agent,
+LLM, flow or number needs an update (live evidence above); should the
+post-deploy inventory show one, `scripts/retell/audit-config.ts` prints the
+repair (recompile + republish through the existing compile path, then
+re-attach the number) and `--apply` runs it for `test-*` tenants only.
+
+### 2. `action: "inventory"` on `api-admin-attach-retell-number` (read-only)
+
+`inventory.ts` lists every agent (`POST /v2/list-agents`, then `get-agent` /
+`get-chat-agent` per agent because the list is a summary; the latest
+PUBLISHED version is reported and an unpublished newer draft is scanned too),
+phone number, retell-llm and conversation flow (paginated, limit 1000, capped
+at 20 pages), and deep-scans each for every http(s) URL (webhook_url, custom
+tool `url`, MCP `url`, `inbound_webhook_url`, `inbound_sms_webhook_url`,
+`llm_websocket_url`, URLs inside prompt / code text) WITHOUT descending into
+`headers` / `query_params` / SIP credentials; every returned URL has
+credentials and query values replaced by `REDACTED`. Each URL is classified
+against the endpoints this platform configures (`expected`,
+`current_function_wrong_field`, `legacy_function` for the 14 deleted legacy
+functions, `unexpected_project_function`, `other_supabase_project`,
+`external`), each agent without `webhook_url` becomes an
+`account_webhook_fallback` finding, and every finding carries its owners
+(tenant via `agent_configs.retell_agent_id` / `retell_llm_id` / the number's
+`phone_numbers` row, or `platform_settings.<key>`) and a recommended action
+(`republish_tenant_agent`, `reattach_tenant_number`,
+`clear_account_level_webhook`, `owner_cleanup_candidate`). An agent is
+"referenced" when it is some tenant's `agent_configs.retell_agent_id` or its
+id appears anywhere inside a `platform_settings` value (covers
+`self_call_caller_agent` and any future key); the rest form
+`unreferenced_agents`, oldest first, with `created_at_approx` (Retell exposes
+no creation time; earliest version's `last_modification_timestamp`), name,
+bound numbers and a category (`superseded_tenant_agent`,
+`orphan_tenant_agent`, `template_publish_agent`,
+`superseded_self_call_caller`, `unrecognized`). Response engines no agent uses
+are listed too. Bounded: 4 parallel Retell calls, 429/5xx retried twice, 100 s
+budget, `complete: false` + `errors[]` instead of a timeout. Retell responses
+are Zod-validated at the boundary. No new required env: expected URLs come
+from `RETELL_INBOUND_WEBHOOK_URL` (required already) and the optional
+`VOICE_EVENTS_WEBHOOK_URL` / `VOICE_TOOLS_WEBHOOK_URL` (set live), so the
+attach action can never fail cold-start over them.
+
+`scripts/retell/audit-config.ts` calls it and prints the four sections
+(stale URLs with a repo-existence check of each function name, account-level
+fallback agents, the tenant repair plan, the cleanup list) plus each
+referenced agent's language and opening; `--json <file>` saves the full
+inventory. Verified end to end against a local mock of the endpoint.
+
+### 3. `inspect` now returns language and the opening (VERIFY-DEPLOY row 1c)
+
+`InspectedAgent` gains `language` (locale or array), `voice_id`,
+`webhook_events`, `start_speaker`, `begin_message` (retell-llm) and
+`start_node` (conversation flow: `id`, `type`, `instruction_type`,
+`instruction_text`), so DISCLOSE-1's static opening (flow `__opening` node
+with `instruction_type = "static_text"`, or the LLM `begin_message`) and the
+agent-level `language` (`es-419` for `test-generic-anyservice`) can be read
+back live. Existing fields unchanged.
+
+### 4. Tests
+
+`api-admin-attach-retell-number/`: `inventory.test.ts` (new, 13: a fake
+account reproducing the live shape — self-call caller without webhook_url ->
+high `account_webhook_fallback` owned by `platform_settings`; legacy agent /
+LLM URLs -> `legacy_function` cleanup candidates with no secret leaked;
+stale tool URL on a current tenant's flow -> `republish_tenant_agent`; stale
+tenant number -> `reattach_tenant_number`; draft vs published; chat agent via
+`get-chat-agent`; pagination; 429 retry; malformed list -> partial result;
+budget exhaustion; POST/GET-only, no mutating endpoint ever called),
+`retell-summaries.test.ts` (new, 14: redaction, URL discovery skipping
+secret-bearing keys, classification, field expectations, opening/language
+descriptors), `retell-list-endpoints.test.ts` (new, 3: exact method / path /
+query / auth of the new `_shared/providers/retell.ts` wrappers),
+`handler.test.ts` (+2 and updated pinned shapes: language, voice, static
+opening node, `begin_message`).
+
+### What needs redeploying / applying
+
+- **Behavior change:** `api-admin-attach-retell-number` only.
+- `_shared/providers/retell.ts` gained additive exports only (no existing
+  function changed), but every function that imports it gets a new bundle:
+  `admin`, `api-admin-attach-retell-number`, `api-admin-create-web-call`,
+  `api-admin-provision-test-tenant`, `api-admin-run-agent-tests`,
+  `api-admin-self-call`, `api-demo-agent`, `api-lead-callback`,
+  `api-provision`, `api-tenant-agent-publish`, `api-tenant-test-call`,
+  `api-widget-voice-token`, `job-lead-callback-retry`, `job-reconciliation`,
+  `job-retell-health-failover`, `worker-recording-fetch`, `worker-tick`
+  (transitive import graph from each `index.ts`).
+- No migration, no new secret.
+- After deploying: run the audit (docs/GO_LIVE.md step 10), then the owner
+  clears the account-level webhook and works through section 4.
+
+### Not fixed here (other packages own these files)
+
+- `api-admin-self-call/handler.ts#ensureCallerAgent` and
+  `admin/handler.ts`'s template publish create agents with no
+  `webhook_url`. Once the account-level URL is cleared that is harmless (no
+  events are sent). If the dashboard refuses an empty value, the self-call
+  caller agent needs its own setting; `webhook_events: []` is undocumented
+  ("If not set, defaults to ..."), so the safe option is a dedicated no-op
+  2xx endpoint, not `/voice-events` (see section 1).
+- The definitive cleanup list needs the deployed inventory (the Retell key is
+  only readable inside an edge function). Evidence-only candidate until then:
+  `agent_bd7f3b7cee9e0de1e9ecfbe0f3` (`heyloo-test-tenant-b2efae9d-...`,
+  riverside, calls on 2026-09-20 20:05-20:19, no deletion in any
+  `*_cleanup_superseded_agent_deleted` log). From 2026-09-20 21:50 on, the
+  `api-admin-provision-test-tenant` / `api-tenant-agent-publish` republishes
+  logged a deletion of each superseded agent; earlier runs (CALL-1..CALL-6)
+  and agents from the legacy product are what section 4 will surface.
+
+### Gates
+
+`pnpm lint`, `pnpm typecheck`, `cd supabase/functions && pnpm run test` (see commit).

@@ -9,6 +9,13 @@ import {
   updatePhoneNumber,
 } from "../_shared/providers/retell.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
+import {
+  describeBeginMessage,
+  describeLanguage,
+  describeStartNode,
+  describeStartSpeaker,
+  type StartNodeSummary,
+} from "./retell-summaries.ts";
 
 /**
  * `api-admin-attach-retell-number` (CALL-1, docs/BUILD_PLAN.md task 2):
@@ -158,6 +165,12 @@ export async function attachRetellNumber(
  * `webhook_url`/`webhook_timeout_ms`/`is_published`/`version` for the
  * agent, `inbound_agents`/`inbound_webhook_url` for the number. Never
  * mutates anything; never calls Twilio.
+ *
+ * RETELLCFG: also returns the agent's `language`, `voice_id`,
+ * `webhook_events` and its opening — `begin_message` + `start_speaker` for a
+ * retell-llm, the start node (type + `static_text`/`prompt` instruction) for
+ * a conversation flow — so the configured call language and the static
+ * disclosure greeting can be verified against what Retell actually has.
  */
 export interface InspectRetellConfigRequest {
   tenant_id: string;
@@ -193,6 +206,25 @@ export interface InspectedAgent {
    * comment). Requested by this task explicitly ("if needed") — included
    * whenever the fetched resource actually has one. */
   general_tools: string[] | null;
+  /** RETELLCFG (VERIFY-DEPLOY row 1c follow-up): the agent-level `language`
+   * Retell uses for STT and the default TTS locale — a single locale such as
+   * `"es-419"`, an array of locales for a multilingual agent, or null. */
+  language: string | string[] | null;
+  voice_id: string | null;
+  /** Events this agent's `webhook_url` receives (null = Retell's default
+   * call_started / call_ended / call_analyzed). */
+  webhook_events: unknown;
+  /** `start_speaker` of the flow / LLM ("agent" or "user"). */
+  start_speaker: string | null;
+  /** retell-llm only: the verbatim first utterance (`begin_message`), or
+   * null when unset (the model then generates the opening). Always null for
+   * a conversation flow, which has no such field. */
+  begin_message: string | null;
+  /** conversation-flow only: the node the flow starts on. For a
+   * deterministic opening `instruction_type` must be `"static_text"` and
+   * `instruction_text` the compiled greeting + disclosure. Null for a
+   * retell-llm agent. */
+  start_node: StartNodeSummary | null;
 }
 
 async function sha256Hex(input: string): Promise<string> {
@@ -257,6 +289,8 @@ export async function inspectRetellConfig(
         agent_id?: string;
         webhook_url?: string | null;
         webhook_timeout_ms?: number | null;
+        webhook_events?: unknown;
+        voice_id?: string | null;
         is_published?: boolean | null;
         version?: number | null;
         response_engine?: {
@@ -268,6 +302,9 @@ export async function inspectRetellConfig(
       const responseEngine = b.response_engine ?? null;
       let flowHash: string | null = null;
       let generalTools: string[] | null = null;
+      let startSpeaker: string | null = null;
+      let beginMessage: string | null = null;
+      let startNode: StartNodeSummary | null = null;
       if (responseEngine?.type === "conversation-flow" && responseEngine.conversation_flow_id) {
         const flowResult = await getConversationFlow(
           deps.retellFetch,
@@ -281,6 +318,8 @@ export async function inspectRetellConfig(
             tools?: unknown;
             global_prompt?: unknown;
           };
+          startSpeaker = describeStartSpeaker(flowBody);
+          startNode = describeStartNode(flowBody);
           // ANALYSIS-1 (docs/BUILD_NOTES.md): `stableStringify` (deep,
           // recursive key-sort), NOT plain `JSON.stringify` — live-diagnosed
           // via a temporary debug field (removed) that two tenants
@@ -326,6 +365,8 @@ export async function inspectRetellConfig(
             states?: unknown;
             starting_state?: unknown;
           };
+          startSpeaker = describeStartSpeaker(llmBody);
+          beginMessage = describeBeginMessage(llmBody);
           // ANALYSIS-1: same `stableStringify` fix as the conversation-flow
           // branch above, for the same reason (Retell's own storage/echo
           // key ordering isn't guaranteed stable across two separately
@@ -360,6 +401,12 @@ export async function inspectRetellConfig(
         response_engine_type: responseEngine?.type ?? null,
         flow_hash: flowHash,
         general_tools: generalTools,
+        language: describeLanguage(b),
+        voice_id: b.voice_id ?? null,
+        webhook_events: b.webhook_events ?? null,
+        start_speaker: startSpeaker,
+        begin_message: beginMessage,
+        start_node: startNode,
       };
     } else {
       deps.logger.error("inspect_retell_config_get_agent_failed", {

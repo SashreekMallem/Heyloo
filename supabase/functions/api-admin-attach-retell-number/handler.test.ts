@@ -201,6 +201,17 @@ describe("inspectRetellConfig", () => {
           response_engine_type: "conversation-flow",
           flow_hash: body.agent.flow_hash,
           general_tools: null,
+          language: null,
+          voice_id: null,
+          webhook_events: null,
+          start_speaker: null,
+          start_node: {
+            id: "greeting",
+            type: null,
+            instruction_type: null,
+            instruction_text: null,
+          },
+          begin_message: null,
         },
         phone_number: {
           phone_number: "+14155551234",
@@ -388,9 +399,121 @@ describe("inspectRetellConfig", () => {
         response_engine_type: null,
         flow_hash: null,
         general_tools: null,
+        language: null,
+        voice_id: null,
+        webhook_events: null,
+        start_speaker: null,
+        begin_message: null,
+        start_node: null,
       },
       phone_number: null,
     });
+  });
+
+  it("RETELLCFG: returns the agent language, voice and the conversation flow's static opening node", async () => {
+    const { sql } = makeSql({
+      "from public.agent_configs": [{ retell_agent_id: "agent_es" }],
+      "from public.phone_numbers": [],
+    });
+    const retellFetch = async (url: string) => {
+      if (url.includes("/get-agent/agent_es")) {
+        return jsonResponse({
+          agent_id: "agent_es",
+          is_published: true,
+          version: 2,
+          language: "es-419",
+          voice_id: "11labs-Adrian",
+          webhook_url: "https://example.com/voice-events",
+          webhook_events: ["call_started", "call_ended", "call_analyzed"],
+          response_engine: { type: "conversation-flow", conversation_flow_id: "flow_es" },
+        });
+      }
+      if (url.includes("/get-conversation-flow/flow_es")) {
+        return jsonResponse({
+          conversation_flow_id: "flow_es",
+          start_speaker: "agent",
+          start_node_id: "__opening",
+          nodes: [
+            { id: "intake", type: "conversation", instruction: { type: "prompt", text: "Ask" } },
+            {
+              id: "__opening",
+              type: "conversation",
+              instruction: {
+                type: "static_text",
+                text: "Gracias por llamar. Soy un asistente de IA y esta llamada puede ser grabada.",
+              },
+            },
+          ],
+          tools: [],
+        });
+      }
+      throw new Error(`unexpected call: ${url}`);
+    };
+
+    const result = await inspectRetellConfig(
+      sql,
+      { action: "inspect", tenant_id: "t1" },
+      { retellFetch, retellApiKey: "key", logger },
+    );
+
+    const agent = (result.body as unknown as { agent: Record<string, unknown> }).agent;
+    expect(agent["language"]).toBe("es-419");
+    expect(agent["voice_id"]).toBe("11labs-Adrian");
+    expect(agent["webhook_events"]).toEqual(["call_started", "call_ended", "call_analyzed"]);
+    expect(agent["start_speaker"]).toBe("agent");
+    expect(agent["begin_message"]).toBeNull();
+    expect(agent["start_node"]).toEqual({
+      id: "__opening",
+      type: "conversation",
+      instruction_type: "static_text",
+      instruction_text:
+        "Gracias por llamar. Soy un asistente de IA y esta llamada puede ser grabada.",
+    });
+  });
+
+  it("RETELLCFG: returns a retell-llm agent's begin_message and a multilingual language array", async () => {
+    const { sql } = makeSql({
+      "from public.agent_configs": [{ retell_agent_id: "agent_llm" }],
+      "from public.phone_numbers": [],
+    });
+    const retellFetch = async (url: string) => {
+      if (url.includes("/get-agent/agent_llm")) {
+        return jsonResponse({
+          agent_id: "agent_llm",
+          is_published: true,
+          version: 0,
+          language: ["en-US", "es-419"],
+          voice_id: "retell-Cimo",
+          response_engine: { type: "retell-llm", llm_id: "llm_1" },
+        });
+      }
+      if (url.includes("/get-retell-llm/llm_1")) {
+        return jsonResponse({
+          llm_id: "llm_1",
+          start_speaker: "agent",
+          begin_message: "Thanks for calling. I'm an AI assistant and this call may be recorded.",
+          general_prompt: "p",
+          general_tools: [{ type: "custom", name: "lookup_customer" }],
+        });
+      }
+      throw new Error(`unexpected call: ${url}`);
+    };
+
+    const result = await inspectRetellConfig(
+      sql,
+      { tenant_id: "t1" },
+      { retellFetch, retellApiKey: "key", logger },
+    );
+
+    const agent = (result.body as unknown as { agent: Record<string, unknown> }).agent;
+    expect(agent["language"]).toEqual(["en-US", "es-419"]);
+    expect(agent["voice_id"]).toBe("retell-Cimo");
+    expect(agent["start_speaker"]).toBe("agent");
+    expect(agent["begin_message"]).toBe(
+      "Thanks for calling. I'm an AI assistant and this call may be recorded.",
+    );
+    expect(agent["start_node"]).toBeNull();
+    expect(agent["general_tools"]).toEqual(["lookup_customer"]);
   });
 
   it("returns null agent/phone_number rather than erroring when the tenant has neither yet", async () => {
