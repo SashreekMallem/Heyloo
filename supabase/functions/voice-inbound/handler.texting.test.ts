@@ -1,11 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import { createMessagingRegistry } from "../_shared/providers/messaging/registry.ts";
 import type { SmsProvider } from "../_shared/providers/messaging/types.ts";
 import { VoiceInboundResponseSchema } from "../_shared/schemas/voice-inbound.ts";
 import { TEXTING_POLICY_OFF, TEXTING_POLICY_ON } from "../_shared/sms-availability.ts";
 import type { SqlClient } from "../_shared/types.ts";
-import { handleVoiceInbound } from "./handler.ts";
+import { handleVoiceInbound, SMS_LOOKUP_TIMEOUT_MS } from "./handler.ts";
 
 /**
  * MSG-3: `/voice-inbound` resolves, per call, whether this business can text
@@ -133,6 +133,32 @@ describe("voice-inbound: per-call texting variables (MSG-3)", () => {
     );
     expect(vars.sms_enabled).toBe("false");
     expect(vars.business_name).toBe("Acme Auto Repair");
+  });
+
+  it("a hung sender lookup cannot hold the call: after the cap it reads as OFF and the call proceeds", async () => {
+    vi.useFakeTimers();
+    try {
+      const sql = ((strings: TemplateStringsArray) => {
+        const text = strings.join(" ");
+        if (text.includes("from public.phone_numbers pn")) return Promise.resolve([ROW]);
+        if (text.includes("messaging_senders")) return new Promise(() => {}); // never settles
+        return Promise.resolve([]);
+      }) as SqlClient;
+      const pending = handleVoiceInbound({
+        sql,
+        request: REQUEST,
+        logger,
+        now: NOW,
+        sms: { registry: registry(true) },
+      });
+      await vi.advanceTimersByTimeAsync(SMS_LOOKUP_TIMEOUT_MS + 1);
+      const result = await pending;
+      if (result.status !== 200) throw new Error("expected 200");
+      expect(result.body.call_inbound.dynamic_variables.sms_enabled).toBe("false");
+      expect(result.body.call_inbound.dynamic_variables.business_name).toBe("Acme Auto Repair");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("adds exactly one indexed statement, issued alongside the customer lookup", async () => {

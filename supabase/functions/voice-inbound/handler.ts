@@ -6,7 +6,11 @@ import type {
 } from "../_shared/schemas/voice-inbound.ts";
 import type { SmsRegistry } from "../_shared/sms-availability.ts";
 import { isSmsAvailable, resolveTextingVariables } from "../_shared/sms-availability.ts";
+import { withTimeout } from "../_shared/timeout.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
+
+/** Ceiling on how long the per-call texting lookup may hold the response (MSG-3). */
+export const SMS_LOOKUP_TIMEOUT_MS = 2_000;
 
 /**
  * `/voice-inbound` core logic (BACKEND_SPEC §7.1) — number -> tenant ->
@@ -101,8 +105,14 @@ export async function handleVoiceInbound(params: {
   // MSG-3: can this business text a caller right now? One indexed statement,
   // dispatched alongside the customer lookup below (no added round-trip wait);
   // a failure here must never delay or fail the call, so it reads as "no".
+  // The wait is capped too: a slow or hung lookup reads as "no" instead of holding
+  // the caller on the line (Retell's inbound webhook gives up after a few seconds).
   const smsAvailable: Promise<boolean> = sms
-    ? isSmsAvailable(sql, row.tenant_id, sms.registry).catch((err: unknown) => {
+    ? withTimeout(
+        isSmsAvailable(sql, row.tenant_id, sms.registry),
+        SMS_LOOKUP_TIMEOUT_MS,
+        () => new Error("sms_availability_timeout"),
+      ).catch((err: unknown) => {
         logger.warn("voice_inbound_sms_availability_failed", {
           tenant_id: row.tenant_id,
           error: String(err),
