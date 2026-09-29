@@ -131,6 +131,7 @@ export interface MessagingProviderCapabilities {
 export const OWNER_ALERT_KINDS = [
   "message_taken",
   "new_booking",
+  "new_order",
   "urgent_call",
   "missed_transfer",
 ] as const;

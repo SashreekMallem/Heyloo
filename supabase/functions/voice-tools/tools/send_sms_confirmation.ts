@@ -12,13 +12,10 @@ export type SendSmsConfirmationResult =
   | { queued: false; reason: "invalid_phone" | "booking_not_found" | "order_not_found" };
 
 /**
- * BACKEND_SPEC §7.2.7 — enqueue-only, the actual Twilio send happens in the
+ * BACKEND_SPEC §7.2.7 — enqueue-only, the actual send happens in the
  * `messages_outbound_queue` worker (§9/§10), never inline, to keep this
- * tool call fast. `status` is set to `pending_verification` up front when
- * the tenant's A2P 10DLC campaign isn't yet vetted (G4) — VERIFY.md: this
- * assumes a `tenants.a2p_status` column per BACKEND_SPEC §10.1's own
- * `DECIDE:` recommendation; coordinate with T1 that it lands (see
- * supabase/functions/BUILD_NOTES.md).
+ * tool call fast. The row is always inserted `queued` and enqueued; the
+ * worker decides SMS vs the email reroute (VOICE-ALERTS-1).
  */
 export async function sendSmsConfirmation(
   sql: SqlClient,
@@ -58,17 +55,18 @@ export async function sendSmsConfirmation(
     if (prior) return { queued: true, message_id: prior.id };
   }
 
-  const tenantRows = await sql<{ a2p_status: string | null }>`
-    select a2p_status from public.tenants where id = ${ctx.tenantId}
-  `;
-  const a2pStatus = tenantRows[0]?.a2p_status ?? "verified";
-  const status = a2pStatus === "verified" ? "queued" : "pending_verification";
-
+  // VOICE-ALERTS-1: always `queued` + enqueued. This used to write
+  // `pending_verification` (without enqueueing) whenever the tenant's A2P
+  // campaign wasn't verified, so confirmations sat unsent forever (238 live
+  // rows). The worker already decides at send time whether the sender is
+  // usable (SMS) or the message is rerouted to the owner's email
+  // (`resolveSmsRoute` -> `sender_not_verified`, BACKEND_SPEC §10.1). One
+  // fewer round trip on this tool too (no `tenants.a2p_status` read).
   const inserted = await sql<{ id: string }>`
     insert into public.messages_outbound (
       tenant_id, channel, recipient, template_key, payload, status, related_booking_id, related_order_id
     ) values (
-      ${ctx.tenantId}, 'sms', ${phone}, ${args.template_key}, '{}'::jsonb, ${status},
+      ${ctx.tenantId}, 'sms', ${phone}, ${args.template_key}, '{}'::jsonb, 'queued',
       ${args.booking_id ?? null}, ${args.order_id ?? null}
     )
     returning id
@@ -76,12 +74,7 @@ export async function sendSmsConfirmation(
   const message = inserted[0];
   if (!message) return { queued: false, reason: "invalid_phone" };
 
-  if (status === "queued") {
-    await enqueue(sql, QUEUE_NAMES.messagesOutbound, { message_id: message.id });
-  }
-  // pending_verification rows are picked up by the messages_outbound worker's
-  // own sweep once the tenant's A2P status flips to verified, or routed to
-  // the email fallback per MASTER_SPEC §3.3 — never left silently unsent.
+  await enqueue(sql, QUEUE_NAMES.messagesOutbound, { message_id: message.id });
 
   return { queued: true, message_id: message.id };
 }

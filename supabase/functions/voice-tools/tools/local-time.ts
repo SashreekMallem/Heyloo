@@ -48,6 +48,29 @@ export function toTenantLocalIso(value: unknown, timeZone: string | null | undef
   }
 }
 
+/**
+ * VOICE-ALERTS-1: a short human time for an owner alert ("Thu, Oct 1, 2:00
+ * PM") in the tenant's timezone, same wording as the `voice-events`
+ * end-of-call booking alert. Never throws: falls back to the ISO string, or
+ * "" for an unreadable value.
+ */
+export function formatLocalHuman(value: unknown, timeZone: string | null | undefined): string {
+  const date = toDate(value);
+  if (!date) return "";
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: timeZone ?? "UTC",
+    }).format(date);
+  } catch {
+    return date.toISOString();
+  }
+}
+
 function toDate(value: unknown): Date | null {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
   if (typeof value === "string" && value.length > 0) {

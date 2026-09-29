@@ -110,29 +110,43 @@ export async function checkAvailability(
     };
   }
 
+  // VOICE-ALERTS-1: one statement per query, with the tenant's own row read
+  // once in the `t` CTE (the timezone was already a per-query subselect):
+  //  - `notice` is the owner's `tenants.booking_min_notice_minutes`, else the
+  //    vertical default bound above. Read as `to_jsonb(t) ->> '...'` rather
+  //    than as a column so this keeps answering (with the default) on a
+  //    database where 20260929140000_tenant_booking_rules.sql has not been
+  //    applied yet; a plain column reference would fail every call with 42703
+  //    there. Once that migration is live everywhere, this can become a column.
+  //  - slots of inactive resources are never offered, with or without a type
+  //    filter (the resource subselect used to run only when a filter was
+  //    given, so a deactivated bay/room kept being offered until its slots
+  //    aged out).
   const rows = await sql<SlotRow>`
+    with t as (
+      select timezone,
+        coalesce((to_jsonb(tn) ->> 'booking_min_notice_minutes')::int, ${noticeMinutes}::int) as notice
+      from public.tenants tn where tn.id = ${ctx.tenantId}
+    )
     select resource_id, lower(slot_range) as slot_start, upper(slot_range) as slot_end,
-      (select timezone from public.tenants where id = ${ctx.tenantId}) as tz
+      (select timezone from t) as tz
     from public.availability_slots
     where tenant_id = ${ctx.tenantId}
       and is_available = true
       and slot_range && tstzrange(${range.start}, ${range.end})
       and (
-        lower(slot_range) >= now() + make_interval(mins => ${noticeMinutes}::int)
+        lower(slot_range) >= now() + make_interval(mins => (select notice from t))
         or (
           upper(slot_range) - lower(slot_range) >= interval '23 hours'
-          and upper(slot_range) > now() + make_interval(mins => ${noticeMinutes}::int)
+          and upper(slot_range) > now() + make_interval(mins => (select notice from t))
         )
       )
-      and (
-        (${resourceType}::text is null and ${roomType}::text is null and ${partySize}::int is null)
-        or resource_id in (
-          select id from public.resources
-          where tenant_id = ${ctx.tenantId} and active
-            and (${resourceType}::text is null or type = ${resourceType})
-            and (${roomType}::text is null or room_type = ${roomType})
-            and (${partySize}::int is null or capacity >= ${partySize})
-        )
+      and resource_id in (
+        select id from public.resources
+        where tenant_id = ${ctx.tenantId} and active
+          and (${resourceType}::text is null or type = ${resourceType})
+          and (${roomType}::text is null or room_type = ${roomType})
+          and (${partySize}::int is null or capacity >= ${partySize})
       )
     order by slot_start asc
     limit 20
@@ -143,28 +157,30 @@ export async function checkAvailability(
     // the requested window (bounded lookahead — a single extra indexed read,
     // not an unbounded scan).
     const alt = await sql<SlotRow>`
+      with t as (
+        select timezone,
+          coalesce((to_jsonb(tn) ->> 'booking_min_notice_minutes')::int, ${noticeMinutes}::int) as notice
+        from public.tenants tn where tn.id = ${ctx.tenantId}
+      )
       select resource_id, lower(slot_range) as slot_start, upper(slot_range) as slot_end,
-        (select timezone from public.tenants where id = ${ctx.tenantId}) as tz
+        (select timezone from t) as tz
       from public.availability_slots
       where tenant_id = ${ctx.tenantId}
         and is_available = true
         and lower(slot_range) >= ${range.end}
         and (
-          lower(slot_range) >= now() + make_interval(mins => ${noticeMinutes}::int)
+          lower(slot_range) >= now() + make_interval(mins => (select notice from t))
           or (
             upper(slot_range) - lower(slot_range) >= interval '23 hours'
-            and upper(slot_range) > now() + make_interval(mins => ${noticeMinutes}::int)
+            and upper(slot_range) > now() + make_interval(mins => (select notice from t))
           )
         )
-        and (
-          (${resourceType}::text is null and ${roomType}::text is null and ${partySize}::int is null)
-          or resource_id in (
-            select id from public.resources
-            where tenant_id = ${ctx.tenantId} and active
-              and (${resourceType}::text is null or type = ${resourceType})
-              and (${roomType}::text is null or room_type = ${roomType})
-              and (${partySize}::int is null or capacity >= ${partySize})
-          )
+        and resource_id in (
+          select id from public.resources
+          where tenant_id = ${ctx.tenantId} and active
+            and (${resourceType}::text is null or type = ${resourceType})
+            and (${roomType}::text is null or room_type = ${roomType})
+            and (${partySize}::int is null or capacity >= ${partySize})
         )
       order by slot_start asc
       limit 1

@@ -119,7 +119,7 @@ dead-letters after 24 hours). With email alone configured, the leg runs.
 ## What the worker does with each row
 
 - **Owner alerts** (`take_message`, `after_hours_message`, `owner_new_booking`,
-  `owner_urgent_call`, `owner_missed_transfer`): re-planned from the
+  `owner_new_order`, `owner_urgent_call`, `owner_missed_transfer`): re-planned from the
   tenant's current preferences (see below). SMS to the alert phone when
   texting is on and the sender is approved, plus an idempotent email copy
   (`parent_message_id`) when email is on too. If SMS can't go out yet, the
@@ -151,12 +151,13 @@ rerouted to the owner) and `delivered_at`.
 
 | Event | Template | Producer |
 |---|---|---|
-| Message taken | `take_message` | `voice-tools/take_message` (row to the transfer number) |
-| New booking | `owner_new_booking` | `voice-events` `call_analyzed` (booking with this call as `source_call_id`) |
+| Message taken | `take_message` | `voice-tools/take_message` (VOICE-ALERTS-1: via `enqueueOwnerAlert`, whether or not a transfer number is set) |
+| New booking | `owner_new_booking` | `voice-tools/create_booking` right after the booking commits (deferred past the response); `voice-events` `call_analyzed` sends the same alert for a booking made on the call, deduped per booking |
+| New order | `owner_new_order` | `voice-tools/create_order` after the order commits (deferred past the response) |
 | Urgent / emergency call | `owner_urgent_call` | `voice-events` `call_analyzed` (`emergency_detected` or classification `emergency`) |
 | Missed transfer | `owner_missed_transfer` | `voice-events` `call_analyzed` (`disconnection_reason = transfer_cancelled`) |
 
-Test calls never alert. Each alert is idempotent per (call, kind).
+Test calls never alert. Each alert is idempotent per booking or order when one is attached, else per (call, kind).
 
 Preferences live at `agent_configs.dynamic_variable_overrides.delivery`
 (canonical `deliveryPreferencesSchema`; written by the dashboard Delivery

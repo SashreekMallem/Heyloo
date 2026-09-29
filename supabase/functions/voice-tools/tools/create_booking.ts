@@ -2,12 +2,14 @@ import type { z } from "zod";
 import { enqueueAdapterPush } from "../../_shared/adapter-push.ts";
 import { issueDentalIntakeToken } from "../../_shared/dental-intake.ts";
 import { bookingIdempotencyKey } from "../../_shared/idempotency.ts";
+import { enqueueOwnerAlertBestEffort } from "../../_shared/owner-alerts.ts";
 import { normalizeE164 } from "../../_shared/phone.ts";
 import { sanitizeBookingStructuredPayload } from "../../_shared/schemas/booking-payloads.ts";
 import type { CreateBookingArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { Logger, SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
-import { toTenantLocalIso } from "./local-time.ts";
+import { MANUAL_MODE_BOOKING_MESSAGE } from "../manual-mode.ts";
+import { formatLocalHuman, toTenantLocalIso } from "./local-time.ts";
 import { normalizeInstant, normalizeTimeRange } from "./time-args.ts";
 
 type Args = z.infer<typeof CreateBookingArgsSchema>;
@@ -53,6 +55,7 @@ export type CreateBookingResult =
         | "offering_not_found"
         | "start_in_past"
         | "invalid_time"
+        | "manual_mode"
         | "not_completed";
       nearest_alternative?: { start: string; end: string };
       message?: string;
@@ -217,6 +220,9 @@ interface PreflightRow {
   exact_resource_id: string | null;
   first_available_resource_id: string | null;
   offering_ok: boolean;
+  /** VOICE-ALERTS-1: the offering's name, for the owner's new-booking alert
+   * (same statement, no extra round trip). */
+  offering_name?: string | null;
   start_in_past: boolean;
   tz: string | null;
   deposit_overrides: Record<string, unknown> | null;
@@ -278,7 +284,9 @@ async function preflight(
         select dynamic_variable_overrides from public.agent_configs
         where tenant_id = ${ctx.tenantId}
         limit 1
-      ) end as deposit_overrides
+      ) end as deposit_overrides,
+      (select name from public.offerings
+        where id = ${offeringId}::uuid and tenant_id = ${ctx.tenantId}) as offering_name
   `;
   const row = rows[0];
   if (!row) {
@@ -377,6 +385,12 @@ export async function createBooking(
   input: Args,
   deps?: CreateBookingDeps,
 ): Promise<CreateBookingResult> {
+  // VOICE-ALERTS-1: Manual Mode — the owner turned automatic booking off.
+  // Answered before any SQL (the flag rode in on the call context), so
+  // nothing is written and the agent falls back to `take_message`.
+  if (ctx.manualMode) {
+    return { confirmed: false, reason: "manual_mode", message: MANUAL_MODE_BOOKING_MESSAGE };
+  }
   const phone = normalizeE164(input.customer.phone);
   if (!phone) {
     return { confirmed: false, reason: "invalid_phone" };
@@ -595,6 +609,12 @@ export async function createBooking(
       phone,
       customerName: args.customer.name ?? null,
       idempotencyKey,
+      startAt: booking.start_at,
+      timezone: pre.tz,
+      offeringName: pre.offering_name ?? null,
+      // A deposit-hold booking is not confirmed yet; the owner still wants
+      // to hear about it.
+      pendingDeposit: bookingStatus === "scheduled",
     });
   if (deps?.defer) {
     deps.defer("create_booking_post_commit", postCommit);
@@ -622,6 +642,10 @@ async function runPostCommitEffects(
     phone: string;
     customerName: string | null;
     idempotencyKey: string;
+    startAt: string | Date;
+    timezone: string | null;
+    offeringName: string | null;
+    pendingDeposit: boolean;
   },
 ): Promise<void> {
   const logFailure =
@@ -688,5 +712,25 @@ async function runPostCommitEffects(
       entityId: input.bookingId,
       idempotencyKey: input.idempotencyKey,
     }).then(() => undefined, logFailure("adapter_push")),
+    // VOICE-ALERTS-1: tell the owner now, not only when the call is
+    // analyzed (`voice-events` sends the same alert at end of call; the
+    // per-booking idempotency in `enqueueOwnerAlert` keeps it to one). Runs
+    // in this already-deferred batch, so it is off the response path; it is
+    // best-effort, skips test calls, and honors the tenant's delivery
+    // preferences (SMS/email/both, decided at send time by the worker).
+    deps
+      ? enqueueOwnerAlertBestEffort(sql, deps.logger, ctx, {
+          kind: "new_booking",
+          payload: {
+            ...(input.customerName ? { caller_name: input.customerName } : {}),
+            caller_phone: input.phone,
+            start_local: formatLocalHuman(input.startAt, input.timezone),
+            ...(input.offeringName ? { service: input.offeringName } : {}),
+            ...(input.pendingDeposit ? { note: "awaiting deposit" } : {}),
+          },
+          relatedCallId: ctx.callLogId,
+          relatedBookingId: input.bookingId,
+        }).then(() => undefined)
+      : Promise.resolve(),
   ]);
 }

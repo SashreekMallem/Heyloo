@@ -14,11 +14,14 @@ const ctx: CallContext = {
 
 type Step = { rows?: unknown[]; throws?: unknown };
 
-function makeStepSql(steps: Step[]): { sql: SqlClient; calls: { text: string }[] } {
-  const calls: { text: string }[] = [];
+function makeStepSql(steps: Step[]): {
+  sql: SqlClient;
+  calls: { text: string; values: unknown[] }[];
+} {
+  const calls: { text: string; values: unknown[] }[] = [];
   let i = 0;
-  const sql = ((strings: TemplateStringsArray) => {
-    calls.push({ text: strings.join(" ") });
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    calls.push({ text: strings.join(" "), values });
     const step = steps[i];
     i += 1;
     if (!step) return Promise.resolve([]);
@@ -65,28 +68,35 @@ describe("sendSmsConfirmation", () => {
     expect(result).toEqual({ queued: true, message_id: "msg_1" });
   });
 
-  it("queues immediately when the tenant's A2P status is verified", async () => {
-    const { sql } = makeStepSql([
+  it("always inserts a queued row and enqueues it (VOICE-ALERTS-1: no more pending_verification rows that nothing ever sends)", async () => {
+    const { sql, calls } = makeStepSql([
       { rows: [{ id: "booking_1" }] }, // booking ownership check
       { rows: [] }, // idempotency soft-check: nothing prior
-      { rows: [{ a2p_status: "verified" }] }, // tenant lookup
       { rows: [{ id: "msg_1" }] }, // insert
       { rows: [] }, // enqueue messages_outbound
     ]);
     const result = await sendSmsConfirmation(sql, ctx, { ...args, booking_id: "booking_1" });
     expect(result).toEqual({ queued: true, message_id: "msg_1" });
+    const insert = calls.find((c) => c.text.includes("insert into public.messages_outbound"));
+    expect(insert?.text).toContain("'queued'");
+    expect(insert?.values).not.toContain("pending_verification");
+    expect(calls.filter((c) => c.text.includes("pgmq.send"))).toHaveLength(1);
+    expect(calls.filter((c) => c.text.includes("pgmq.send"))[0]?.values).toEqual([
+      "messages_outbound_queue",
+      { message_id: "msg_1" },
+    ]);
   });
 
-  it("marks pending_verification (and does not enqueue) when A2P isn't verified yet", async () => {
+  it("does not consult tenants.a2p_status: an unverified tenant's confirmation is still queued (the worker reroutes it to email)", async () => {
     const { sql, calls } = makeStepSql([
-      // no booking_id/order_id in `args` below, so neither ownership check
-      // nor the idempotency soft-check fires — first real call is the
-      // tenant a2p_status lookup.
-      { rows: [{ a2p_status: "pending_verification" }] }, // tenant lookup
-      { rows: [{ id: "msg_1" }] }, // insert
+      { rows: [{ id: "msg_1" }] }, // insert (no booking_id/order_id: no ownership/idempotency reads)
+      { rows: [] }, // enqueue
     ]);
     const result = await sendSmsConfirmation(sql, ctx, args);
     expect(result).toEqual({ queued: true, message_id: "msg_1" });
-    expect(calls.some((c) => c.text.includes("pgmq.send"))).toBe(false);
+    expect(calls.some((c) => c.text.includes("a2p_status"))).toBe(false);
+    expect(calls.some((c) => c.text.includes("pending_verification"))).toBe(false);
+    expect(calls.some((c) => c.text.includes("pgmq.send"))).toBe(true);
+    expect(calls).toHaveLength(2);
   });
 });
