@@ -8699,3 +8699,13 @@ Design: **values are resolved per call** (voice: `/voice-inbound` dynamic variab
 1. Apply `supabase/migrations/20260929163000_waitlist_notify_enqueue.sql`.
 2. Deploy `job-offboarding`, `job-retell-health-failover`, `api-provision`, and (they import the changed `_shared` template/owner-alert files) `worker-messages-outbound`, `worker-tick`, `voice-events`, `voice-tools`.
 3. Optional secret: `DEMO_AGENT_ID` (already documented) is now also read by `job-offboarding` and `job-retell-health-failover` to protect the demo agent's number bindings.
+
+## SETTINGS-2-REVIEW (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR)
+
+Hostile review of SETTINGS-2. Fixed:
+
+- `sanitizeOwnerText` cleaned in a single pass, so a removal could splice its neighbours into a new marker (`[[[[END OWNER INFO]]END OWNER INFO]]` became `[[ END OWNER INFO]]`, a fence-end lookalike; a doubled override phrase reassembled the same way). It now repeats to a fixed point (bounded) and collapses any leftover `[[`/`]]`.
+- `compile-and-publish.ts` wrote `compiled_with_version` unconditionally, so deploying `api-provision` / `api-tenant-agent-publish` BEFORE the migration would fail every publish after the Retell agent was already created (the notes only promised the portal tolerates the missing column). A `42703` now retries the same upsert without the stamp (logged `compile_and_publish_stamp_column_missing`); apply the migration first anyway.
+- `isOpenAt` treated the stored 24-hour window `00:00`-`23:59` (two live tenants) as closed at 23:59, blanking `{{transfer_number}}` for one minute a day under "business hours only" routing.
+
+Not changed (judgment calls): urgent-only transfer while closed is still model-judged; `is_manual_mode` (boolean) and `accepted_payment_types` (array) are still sent as non-strings as before (docs.retellai.com/build/dynamic-variables says "as strings, as required by the API schema", the inbound-webhook example shows strings only; live calls have worked with the boolean since before SETTINGS-2). The `system:` / `assistant:` override patterns in `sanitizeScrapedContent` also redact harmless owner text such as "Payment system: cash" (fails safe, wording lost).

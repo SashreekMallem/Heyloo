@@ -334,19 +334,44 @@ export async function compileAndCreateAgent(
   }
   const agentId = createdBody.agent_id;
   const retellLlmId = compiled.flow.kind === "conversation_flow" ? null : (flowBody.llm_id ?? null);
-  await sql`
-    insert into public.agent_configs (tenant_id, template_id, template_version, retell_agent_id, retell_llm_id, compiled_config, compiled_with_version)
-    values (
-      ${tenantId}, ${compiled.templateId}, ${compiled.templateVersion}, ${agentId}, ${retellLlmId},
-      ${{ compileTarget: compiled.flow.kind, flow: compiled.flow.body, response_engine: responseEngine }}::jsonb,
-      ${compiled.compilerVersion}
-    )
-    on conflict (tenant_id) do update set
-      retell_agent_id = excluded.retell_agent_id, retell_llm_id = excluded.retell_llm_id,
-      compiled_config = excluded.compiled_config, template_id = excluded.template_id,
-      template_version = excluded.template_version,
-      compiled_with_version = excluded.compiled_with_version, published_at = null
-  `;
+  const compiledConfig = {
+    compileTarget: compiled.flow.kind,
+    flow: compiled.flow.body,
+    response_engine: responseEngine,
+  };
+  try {
+    await sql`
+      insert into public.agent_configs (tenant_id, template_id, template_version, retell_agent_id, retell_llm_id, compiled_config, compiled_with_version)
+      values (
+        ${tenantId}, ${compiled.templateId}, ${compiled.templateVersion}, ${agentId}, ${retellLlmId},
+        ${compiledConfig}::jsonb,
+        ${compiled.compilerVersion}
+      )
+      on conflict (tenant_id) do update set
+        retell_agent_id = excluded.retell_agent_id, retell_llm_id = excluded.retell_llm_id,
+        compiled_config = excluded.compiled_config, template_id = excluded.template_id,
+        template_version = excluded.template_version,
+        compiled_with_version = excluded.compiled_with_version, published_at = null
+    `;
+  } catch (error) {
+    // SETTINGS-2-REVIEW: the stamp column ships in a migration; a function deployed before it
+    // is applied must still publish (the Retell agent is already created above). 42703 =
+    // undefined_column: write the same row without the stamp (the portal reads a missing
+    // column as "unknown", never "outdated").
+    if ((error as { code?: string } | null)?.code !== "42703") throw error;
+    deps.logger.warn("compile_and_publish_stamp_column_missing", { tenant_id: tenantId });
+    await sql`
+      insert into public.agent_configs (tenant_id, template_id, template_version, retell_agent_id, retell_llm_id, compiled_config)
+      values (
+        ${tenantId}, ${compiled.templateId}, ${compiled.templateVersion}, ${agentId}, ${retellLlmId},
+        ${compiledConfig}::jsonb
+      )
+      on conflict (tenant_id) do update set
+        retell_agent_id = excluded.retell_agent_id, retell_llm_id = excluded.retell_llm_id,
+        compiled_config = excluded.compiled_config, template_id = excluded.template_id,
+        template_version = excluded.template_version, published_at = null
+    `;
+  }
   return {
     ok: true,
     agentId,

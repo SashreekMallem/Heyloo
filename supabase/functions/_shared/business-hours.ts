@@ -154,10 +154,14 @@ export function isOpenAt(
   if (exception?.closed) windows = [];
   else if (exception?.hours) windows = exception.hours;
   else windows = businessHours[dow] ?? [];
-  return windows.some(
-    (window) =>
-      minutes >= timeStrToMinutes(window.open) && minutes < timeStrToMinutes(window.close),
-  );
+  // A window closing at 23:59 is how an all-day ("open 24 hours") day is stored: it stays open
+  // through the last minute instead of flipping to "closed" for 23:59.
+  return windows.some((window) => {
+    const closeMin = timeStrToMinutes(window.close);
+    return (
+      minutes >= timeStrToMinutes(window.open) && minutes < (closeMin >= 1439 ? 1440 : closeMin)
+    );
+  });
 }
 
 export function computeGreetingHoursContext(

@@ -257,4 +257,39 @@ describe("compileAndCreateAgent — SETTINGS-2 compiler-version stamp", () => {
     expect(upsert.text).toContain("compiled_with_version = excluded.compiled_with_version");
     expect(upsert.values).toContain(AGENT_COMPILER_VERSION);
   });
+  it("SETTINGS-2-REVIEW: a database without the stamp column (42703) still stores the agent, without the stamp", async () => {
+    const upserts: string[] = [];
+    const fixtures: Record<string, unknown[]> = {
+      "as tools_ok\n    from public.agent_templates": [],
+      "select at.* from public.agent_templates": [HEALTHY_TEMPLATE_ROW],
+      "as language_primary": [{ language_primary: "en" }],
+    };
+    const sql = ((strings: TemplateStringsArray) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.agent_configs")) {
+        upserts.push(text);
+        if (text.includes("compiled_with_version")) {
+          return Promise.reject(
+            Object.assign(new Error('column "compiled_with_version" does not exist'), {
+              code: "42703",
+            }),
+          );
+        }
+      }
+      for (const [key, rows] of Object.entries(fixtures)) {
+        if (text.includes(key)) return Promise.resolve(rows);
+      }
+      return Promise.resolve([]);
+    }) as SqlClient;
+    const outcome = await compileAndCreateAgent(sql, "tenant_stamp", "auto", {
+      retellFetch: makeCapturingRetellFetch([]),
+      retellApiKey: "key",
+      voiceToolsWebhookUrl: "https://example.supabase.co/functions/v1/voice-tools",
+      eventsWebhookUrl: "https://example.supabase.co/functions/v1/voice-events",
+      logger: createLogger(),
+    });
+    expect(outcome.ok).toBe(true);
+    expect(upserts).toHaveLength(2);
+    expect(upserts[1]).not.toContain("compiled_with_version");
+  });
 });
