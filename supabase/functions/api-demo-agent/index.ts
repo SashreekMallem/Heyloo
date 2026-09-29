@@ -1,7 +1,10 @@
 // Deno entrypoint (excluded from ../tsconfig.json). verify_jwt false —
-// public marketing-site flow (BACKEND_SPEC §7.8); rate-limiting/CAPTCHA is
-// the marketing-site layer's job per spec, not this function's (apps/web's
-// `/api/demo/*` routes call it with per-IP limits). Three request shapes:
+// public marketing-site flow (BACKEND_SPEC §7.8). Per-visitor rate limiting is
+// the marketing-site layer's job (apps/web's `/api/demo/*` routes apply per-IP
+// limits), but the bare function URL is public too, so this function enforces
+// its own database-backed ceilings (SEC-04): a global hourly cap on new demo
+// sessions and one token mint per session (`_shared/demo-mint-limit.ts`).
+// Three request shapes:
 // create (scrape), confirm (mint a token), instant (a business type picked on
 // the marketing site).
 //
@@ -12,6 +15,7 @@
 // missing optional one used to crash the whole function at module load
 // (WORKER_ERROR), taking the instant demo down with it; now the flow that needs
 // it answers a clean 503 `not_configured` instead.
+import { demoSessionAlreadyMinted, demoSessionCeilingReached } from "../_shared/demo-mint-limit.ts";
 import { getSql } from "../_shared/deno/db.ts";
 import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { resolveLlmFromEnv } from "../_shared/deno/llm.ts";
@@ -71,6 +75,9 @@ Deno.serve(async (req: Request) => {
 
   const confirmParsed = ConfirmDemoRequestSchema.safeParse(body);
   if (confirmParsed.success) {
+    if (await demoSessionAlreadyMinted(sql, confirmParsed.data.demo_session_id)) {
+      return jsonResponse({ error: "demo_already_started" }, { status: 409 });
+    }
     const result = await handleConfirmDemo(sql, confirmParsed.data, deps);
     return jsonResponse(result.body, { status: result.status });
   }
@@ -82,6 +89,9 @@ Deno.serve(async (req: Request) => {
   if (isInstant) {
     const instantParsed = InstantDemoRequestSchema.safeParse(body);
     if (!instantParsed.success) return jsonResponse({ error: "invalid_request" }, { status: 400 });
+    if (await demoSessionCeilingReached(sql)) {
+      return jsonResponse({ error: "rate_limited" }, { status: 429 });
+    }
     const result = await handleInstantDemo(sql, instantParsed.data, deps);
     return jsonResponse(result.body, { status: result.status });
   }
@@ -89,6 +99,9 @@ Deno.serve(async (req: Request) => {
   const createParsed = CreateDemoRequestSchema.safeParse(body);
   if (!createParsed.success) {
     return jsonResponse({ error: "invalid_request" }, { status: 400 });
+  }
+  if (await demoSessionCeilingReached(sql)) {
+    return jsonResponse({ error: "rate_limited" }, { status: 429 });
   }
   const result = await handleCreateDemo(sql, createParsed.data, deps);
   return jsonResponse(result.body, { status: result.status });

@@ -1,5 +1,11 @@
 import { demoRequestSchema } from "@heyloo/canonical-types";
 import { NextResponse } from "next/server";
+import {
+  demoGenerateGlobalLimiter,
+  demoGenerateIpLimiter,
+  forbiddenOriginResponse,
+  rateLimitedResponse,
+} from "@/lib/demo/guard";
 import { callEdgeFunction } from "@/lib/edge-functions";
 
 export const runtime = "nodejs";
@@ -21,6 +27,9 @@ interface CreateDemoResponse {
  * async-polling shape to the real synchronous one).
  */
 export async function POST(request: Request) {
+  const forbidden = forbiddenOriginResponse(request);
+  if (forbidden) return forbidden;
+
   let json: unknown;
   try {
     json = await request.json();
@@ -35,6 +44,10 @@ export async function POST(request: Request) {
       { status: 422 },
     );
   }
+
+  // Refused input costs nothing, so validation runs before the limiters (QA SEC-04).
+  const limited = rateLimitedResponse(request, demoGenerateIpLimiter, demoGenerateGlobalLimiter);
+  if (limited) return limited;
 
   const { status, body } = await callEdgeFunction<CreateDemoResponse>("api-demo-agent", {
     method: "POST",

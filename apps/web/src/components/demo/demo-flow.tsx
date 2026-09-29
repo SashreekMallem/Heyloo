@@ -1,10 +1,6 @@
 "use client";
 
-import {
-  type DemoRequest,
-  demoEmailCaptureSchema,
-  demoRequestSchema,
-} from "@heyloo/canonical-types";
+import { type DemoRequest, demoRequestSchema } from "@heyloo/canonical-types";
 import {
   Button,
   Card,
@@ -22,7 +18,7 @@ import {
 } from "@heyloo/ui";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Loader2, Mic, PhoneCall } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { Link } from "@/i18n/navigation";
@@ -68,6 +64,11 @@ export function DemoFlow({ initialVertical }: { initialVertical?: string | undef
         // from a website is switched off (no LLM key: `ai_not_configured`): say so plainly
         // instead of blaming the visitor's URL.
         setStep({ name: "not_configured" });
+        return;
+      }
+      if (res.status === 429) {
+        toast.error("You've tried a few times. Please wait a few minutes and try again.");
+        setStep({ name: "form" });
         return;
       }
       if (!res.ok) {
@@ -201,10 +202,8 @@ function ConfirmStep({
   const [hours, setHours] = useState(summary.hours_detected);
   const [services, setServices] = useState(summary.services_detected.join(", "));
   const [activating, setActivating] = useState(false);
-  const autoAdvanceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function activate() {
-    if (autoAdvanceRef.current) clearTimeout(autoAdvanceRef.current);
     setActivating(true);
     const edits = {
       business_name: businessName,
@@ -243,17 +242,9 @@ function ConfirmStep({
     }
   }
 
-  // Auto-advance after ~8s of no interaction (FRONTEND_SPEC.md §3.4).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally mount-once; activate is recreated every render
-  useEffect(() => {
-    autoAdvanceRef.current = setTimeout(() => {
-      void activate();
-    }, 8000);
-    return () => {
-      if (autoAdvanceRef.current) clearTimeout(autoAdvanceRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally mount-once; activate is recreated every render
-  }, []);
+  // No auto-advance (QA F-10): the old 8 second timer fired a stale closure and
+  // activated with the ORIGINAL scraped values, silently discarding anything the
+  // visitor had typed. The visitor confirms explicitly with the button below.
 
   return (
     <Card className="mx-auto max-w-lg">
@@ -306,23 +297,6 @@ function ActiveStep({
   // is the same state machine the home page's "Talk to Heyloo" uses.
   const call = useDemoCall({ fetchGrant: async () => ({ token: callToken, webCall }) });
   const callState = call.phase;
-  const [emailSent, setEmailSent] = useState(false);
-  const [email, setEmail] = useState("");
-
-  async function submitEmail() {
-    const parsed = demoEmailCaptureSchema.safeParse({ email });
-    if (!parsed.success) {
-      toast.error("Enter a valid email address.");
-      return;
-    }
-    await fetch("/api/demo/email", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email, demo_session_id: demoSessionId }),
-    });
-    setEmailSent(true);
-    toast.success("We'll send you a link to this demo.");
-  }
 
   return (
     <div className="mx-auto max-w-lg space-y-8">
@@ -389,26 +363,6 @@ function ActiveStep({
             <p className="text-xs text-muted-foreground">
               Allow microphone access in your browser to talk to the demo.
             </p>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Email me this demo</CardTitle>
-        </CardHeader>
-        <CardContent className="flex gap-2">
-          {emailSent ? (
-            <p className="text-sm text-success">Sent — check your inbox shortly.</p>
-          ) : (
-            <>
-              <Input
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-              <Button onClick={submitEmail}>Send</Button>
-            </>
           )}
         </CardContent>
       </Card>
