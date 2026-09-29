@@ -15,7 +15,6 @@ import {
   FormLabel,
   FormMessage,
   Input,
-  Label,
   WizardStepper,
 } from "@heyloo/ui";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -57,6 +56,10 @@ export function AccountStepClient({
   >(null);
   const [submitting, setSubmitting] = useState(false);
   const [awaitingEmail, setAwaitingEmail] = useState<string | null>(null);
+  // Set when signUp succeeded with a session but the payment step then failed:
+  // a retry must go straight to checkout, never call signUp again (which would
+  // now answer "already registered").
+  const [createdEmail, setCreatedEmail] = useState<string | null>(null);
   const [resendNotice, setResendNotice] = useState<string | null>(null);
 
   const form = useForm<SignupAccount>({
@@ -69,7 +72,7 @@ export function AccountStepClient({
     },
   });
 
-  async function goToCheckout() {
+  async function goToCheckout(emailForRetry?: string) {
     const result = await startCheckout({ annual, whiteGlove });
     if (result.ok) {
       // eslint-disable-next-line react-hooks/immutability -- hard redirect to an external (Stripe-hosted) URL from an event handler; router.push only handles internal routes
@@ -77,6 +80,7 @@ export function AccountStepClient({
       return;
     }
     setSubmitting(false);
+    if (emailForRetry) setCreatedEmail(emailForRetry);
     setError({ kind: "checkout", message: checkoutErrorMessage(result.error) });
   }
 
@@ -126,7 +130,7 @@ export function AccountStepClient({
       return;
     }
 
-    await goToCheckout();
+    await goToCheckout(values.email);
   }
 
   async function onContinueSignedIn() {
@@ -176,13 +180,14 @@ export function AccountStepClient({
     );
   }
 
-  if (signedInEmail) {
+  const continueEmail = signedInEmail ?? createdEmail;
+  if (continueEmail) {
     return (
       <div className="mx-auto max-w-md space-y-8">
         <div className="space-y-1.5 text-center">
           <h1 className="font-display text-h2 font-semibold">Continue to payment</h1>
           <p className="text-small text-muted-foreground">
-            You&apos;re signed in as {signedInEmail}. Your account is ready; only payment is left.
+            You&apos;re signed in as {continueEmail}. Your account is ready; only payment is left.
           </p>
         </div>
         <WizardStepper steps={SIGNUP_STEPS} current={2} completed={[0, 1]} />
@@ -216,7 +221,7 @@ export function AccountStepClient({
               <FormItem>
                 <FormLabel>Your name</FormLabel>
                 <FormControl>
-                  <Input {...field} />
+                  <Input autoComplete="name" {...field} />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -229,7 +234,7 @@ export function AccountStepClient({
               <FormItem>
                 <FormLabel>Email</FormLabel>
                 <FormControl>
-                  <Input type="email" {...field} />
+                  <Input type="email" autoComplete="email" {...field} />
                 </FormControl>
                 <FormMessage />
                 {error?.kind === "already_registered" && (
@@ -256,7 +261,7 @@ export function AccountStepClient({
               <FormItem>
                 <FormLabel>Password</FormLabel>
                 <FormControl>
-                  <Input type="password" {...field} />
+                  <Input type="password" autoComplete="new-password" {...field} />
                 </FormControl>
                 <FormMessage />
                 {error?.kind === "weak_password" && (
@@ -275,12 +280,17 @@ export function AccountStepClient({
                 <FormControl>
                   <Checkbox checked={field.value} onCheckedChange={field.onChange} />
                 </FormControl>
-                <Label className="font-normal">
+                <FormLabel className="font-normal">
                   I agree to the{" "}
-                  <Link href="/legal/terms" className="underline">
+                  <Link
+                    href="/legal/terms"
+                    className="underline"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
                     Terms of Service
                   </Link>
-                </Label>
+                </FormLabel>
                 <FormMessage />
               </FormItem>
             )}

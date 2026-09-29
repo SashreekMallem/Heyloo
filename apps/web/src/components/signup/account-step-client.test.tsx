@@ -11,8 +11,17 @@ vi.mock("@/lib/supabase/browser", () => ({
   },
 }));
 vi.mock("@/i18n/navigation", () => ({
-  Link: ({ href, children }: { href: string; children: React.ReactNode }) => (
-    <a href={href}>{children}</a>
+  Link: ({
+    href,
+    children,
+    ...rest
+  }: {
+    href: string;
+    children: React.ReactNode;
+  } & React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
   ),
 }));
 
@@ -158,5 +167,43 @@ describe("AccountStepClient — signup errors and email confirmation (SIGNUP-BIL
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(signUp).not.toHaveBeenCalled();
     expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't start the payment step/i);
+  });
+
+  it("F-03: a non-JSON 5xx from checkout after a successful signUp recovers, and Retry goes to checkout without calling signUp again", async () => {
+    signUp.mockResolvedValue({
+      data: { user: { identities: [{ provider: "email" }] }, session: { access_token: "t" } },
+      error: null,
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("<html>Bad gateway</html>", { status: 502 }))
+      .mockResolvedValueOnce(Response.json({ url: "https://checkout.example/pay" }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AccountStepClient annual={false} whiteGlove={false} draft={draft} />);
+    await fillAndSubmit();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't start the payment step/i);
+    expect(screen.queryByText(/couldn't create your account/i)).not.toBeInTheDocument();
+    // The form is gone; the retry button is enabled and does not re-run signUp.
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    const retry = screen.getByRole("button", { name: /continue to payment/i });
+    expect(retry).toBeEnabled();
+    await userEvent.setup().click(retry);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(signUp).toHaveBeenCalledTimes(1);
+  });
+
+  it("F-12: name, email and password carry autocomplete tokens; the Terms checkbox is labelled and the link opens in a new tab", () => {
+    render(<AccountStepClient annual={false} whiteGlove={false} draft={draft} />);
+    expect(screen.getByLabelText("Your name")).toHaveAttribute("autocomplete", "name");
+    expect(screen.getByLabelText("Email")).toHaveAttribute("autocomplete", "email");
+    expect(screen.getByLabelText("Password")).toHaveAttribute("autocomplete", "new-password");
+    expect(
+      screen.getByRole("checkbox", { name: /i agree to the terms of service/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Terms of Service" })).toHaveAttribute(
+      "target",
+      "_blank",
+    );
   });
 });
