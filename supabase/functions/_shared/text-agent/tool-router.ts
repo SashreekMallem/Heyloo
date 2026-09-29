@@ -102,10 +102,12 @@ export interface TextToolRouterDeps {
     successUrl: string;
     cancelUrl: string;
   };
-  /** Enables `verify_phone` (web_chat only) — omitted when the tenant's A2P
-   * campaign isn't verified, so the tool simply isn't callable and the
-   * model is told so via the tool_result instead of silently failing. */
-  a2pVerified: boolean;
+  /** Whether a customer text would really be sent right now
+   * (`_shared/sms-availability.ts#isSmsAvailable`: a carrier-verified sender
+   * AND a configured provider; MSG-3). Gates `verify_phone` (web_chat only),
+   * `send_payment_link` and the waitlist's text notice: when false the model is
+   * told so via the tool_result instead of silently failing or promising a text. */
+  smsAvailable: boolean;
   /** `tenants.manual_mode` (VOICE-ALERTS-1 review): the same tool-level
    * refusal the voice dispatcher applies — create_booking/create_order/
    * update_booking/cancel_booking answer `reason: "manual_mode"`. */
@@ -152,7 +154,7 @@ async function runVerifyPhone(
   if (!phone) {
     return { resultText: jsonResult({ sent: false, reason: "invalid_phone" }), isError: false };
   }
-  if (!deps.a2pVerified) {
+  if (!deps.smsAvailable) {
     return {
       resultText: jsonResult({
         sent: false,
@@ -368,7 +370,13 @@ export async function dispatchTextTool(
           return { resultText: jsonResult({ error: "invalid_args" }), isError: true };
         return {
           resultText: jsonResult(
-            await sendPaymentLink(sql, ctx, parsed.data, { ...deps.paymentLink, logger }),
+            await sendPaymentLink(sql, ctx, parsed.data, {
+              ...deps.paymentLink,
+              logger,
+              // MSG-3: a payment link travels by text; a business that cannot
+              // really text (no verified sender, or no provider) cannot deliver it.
+              smsAvailable: async () => deps.smsAvailable,
+            }),
           ),
           isError: false,
         };
@@ -378,7 +386,11 @@ export async function dispatchTextTool(
         if (!parsed.success)
           return { resultText: jsonResult({ error: "invalid_args" }), isError: true };
         return {
-          resultText: jsonResult(await joinWaitlist(sql, ctx, parsed.data)),
+          resultText: jsonResult(
+            await joinWaitlist(sql, ctx, parsed.data, {
+              smsAvailable: async () => deps.smsAvailable,
+            }),
+          ),
           isError: false,
         };
       }

@@ -39,6 +39,7 @@ import {
   computeUpcomingWeekdayDates,
 } from "./business-hours.ts";
 import type { VoiceInboundResponse } from "./schemas/voice-inbound.ts";
+import { resolveTextingVariables } from "./sms-availability.ts";
 import type { Logger, SqlClient } from "./types.ts";
 
 /**
@@ -334,6 +335,10 @@ export async function buildInboundDynamicVariables(params: {
     business_facts: settings.business_facts,
     voicemail_message: settings.voicemail_message,
     booking_mode_text: settings.booking_mode_text,
+    // MSG-3: texting is OFF here (fail-safe). `voice-inbound/handler.ts` overrides
+    // this with the tenant's real per-call state; every other caller (the batch-test
+    // harness) runs the agent exactly as a tenant with no texting would.
+    ...resolveTextingVariables(false),
     ...verticalTokens,
     ...(typeof overrides["manager_name"] === "string"
       ? { manager_name: overrides["manager_name"] as string }

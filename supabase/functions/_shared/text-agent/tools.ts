@@ -182,7 +182,8 @@ export function joinWaitlistTool(): AnthropicToolDef {
     name: "join_waitlist",
     description:
       "Add the customer to the waitlist for a preferred date/time window that's fully booked. " +
-      "They'll be texted automatically if a matching slot opens up.",
+      "If text messages are available they are texted automatically when a matching slot " +
+      "opens up; if the result says texting is unavailable, do not promise a text.",
     input_schema: {
       type: "object",
       properties: {
@@ -247,8 +248,10 @@ export function sendPaymentLinkTool(): AnthropicToolDef {
   return {
     name: "send_payment_link",
     description:
-      "Text the customer a secure Stripe payment link. NEVER ask for a card number, expiry, " +
-      "or CVC in the chat — always use this tool instead.",
+      "Text the customer a secure Stripe payment link, only when text messages are available " +
+      "for this business (see the Text messages right now line); if the result says texting is " +
+      "unavailable, no link exists, so never say one is coming. NEVER ask for a card number, " +
+      "expiry, or CVC in the chat.",
     input_schema: {
       type: "object",
       properties: {
@@ -275,7 +278,8 @@ export function verifyPhoneTool(): AnthropicToolDef {
   return {
     name: "verify_phone",
     description:
-      "Send a 6-digit verification code by text to the phone number the customer provides. Use " +
+      "Send a 6-digit verification code by text to the phone number the customer provides, only " +
+      "when text messages are available for this business. Use " +
       "this before looking up an existing customer/booking by phone, or when the customer wants " +
       "to confirm their identity. After calling this, ask the customer to type the code they " +
       "receive.",

@@ -13,6 +13,7 @@
 
 export const TEMPLATES_PACKAGE_VERSION = "1.0.0" as const;
 
+export * from "./red-team/texting-lint.js";
 export * from "./registry.js";
 export * from "./shared/disclosure.js";
 export * from "./shared/fragments.js";

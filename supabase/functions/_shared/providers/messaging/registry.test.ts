@@ -127,3 +127,67 @@ describe("buildMessagingRegistryFromEnv", () => {
     expect(r.resolveEmail().ok).toBe(true);
   });
 });
+
+describe("buildMessagingRegistryFromEnv — SMTP email (MSG-3)", () => {
+  const fetchImpl = vi.fn();
+  const SMTP_ENV: Record<string, string> = {
+    EMAIL_PROVIDER: "smtp",
+    EMAIL_FROM_ADDRESS: "Heyloo <alerts@example.com>",
+    SMTP_HOST: "smtp.gmail.com",
+    SMTP_USERNAME: "alerts@example.com",
+    SMTP_PASSWORD: "abcdefghijklmnop",
+  };
+
+  it("EMAIL_PROVIDER=smtp selects the SMTP adapter; the port defaults to 465", () => {
+    const r = buildMessagingRegistryFromEnv((n) => SMTP_ENV[n], fetchImpl);
+    expect(r.emailDefault).toBe("smtp");
+    const resolved = r.resolveEmail();
+    expect(resolved.ok && resolved.provider.id).toBe("smtp");
+    expect(r.anyConfigured()).toBe(true);
+  });
+
+  it("Resend stays the default, and stays unconfigured without its key, when SMTP is merely set", () => {
+    const env: Record<string, string> = { ...SMTP_ENV, EMAIL_PROVIDER: "" };
+    const r = buildMessagingRegistryFromEnv((n) => env[n], fetchImpl);
+    expect(r.resolveEmail()).toMatchObject({
+      ok: false,
+      reason: "provider_not_configured",
+      providerId: "resend",
+      missing: ["RESEND_API_KEY"],
+    });
+  });
+
+  it("fails closed and names each missing SMTP variable (honest 'not configured')", () => {
+    const env = { EMAIL_PROVIDER: "smtp", EMAIL_FROM_ADDRESS: "alerts@example.com" };
+    const r = buildMessagingRegistryFromEnv((n) => (env as Record<string, string>)[n], fetchImpl);
+    expect(r.resolveEmail()).toMatchObject({
+      ok: false,
+      reason: "provider_not_configured",
+      providerId: "smtp",
+      missing: ["SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD"],
+    });
+    expect(r.anyConfigured()).toBe(false);
+  });
+
+  it.each(["25", "587"])(
+    "rejects SMTP_PORT=%s at configuration time with a clear error",
+    (port) => {
+      const env: Record<string, string> = { ...SMTP_ENV, SMTP_PORT: port };
+      const r = buildMessagingRegistryFromEnv((n) => env[n], fetchImpl);
+      const resolved = r.resolveEmail();
+      expect(resolved.ok).toBe(false);
+      if (resolved.ok) return;
+      expect(resolved.missing).toEqual([
+        expect.stringMatching(/^SMTP_PORT \(.*ports 25 and 587 are blocked.*465\)\)$/),
+      ]);
+      expect(r.missing().some((m) => m.startsWith("SMTP_PORT ("))).toBe(true);
+      expect(r.anyConfigured()).toBe(false);
+    },
+  );
+
+  it("still needs EMAIL_FROM_ADDRESS", () => {
+    const env: Record<string, string> = { ...SMTP_ENV, EMAIL_FROM_ADDRESS: "" };
+    const r = buildMessagingRegistryFromEnv((n) => env[n], fetchImpl);
+    expect(r.resolveEmail()).toMatchObject({ ok: false, missing: ["EMAIL_FROM_ADDRESS"] });
+  });
+});

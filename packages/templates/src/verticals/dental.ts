@@ -42,8 +42,8 @@ import {
 
 const PHI_DEFERRAL_FRAGMENT =
   "Never ask for the patient's date of birth, insurance details, or SSN over the phone — " +
-  "those are collected later through a secure post-call form link so they stay out of the " +
-  "call transcript. If the caller volunteers them anyway, don't repeat them back or dwell on " +
+  "those are collected later through a secure post-call form link (sent by text when text " +
+  "messages are available) or by the office directly, so they stay out of the call transcript. If the caller volunteers them anyway, don't repeat them back or dwell on " +
   "them — just acknowledge and move on.";
 
 const SYSTEM_PROMPT = buildSystemPrompt(
@@ -165,8 +165,9 @@ const rawStates: AgentState[] = [
       "Read back the patient name, reason for visit, and date/time, ask the consent " +
       "question, state the cancellation policy, then create the booking — pass " +
       "structured_payload with new_or_existing, reason_for_visit, and pain_level (if " +
-      "asked) — and send the SMS confirmation, including a mention that a secure link for " +
-      "insurance/DOB will follow separately.",
+      "asked) — and, if text messages are available, send the SMS confirmation, including a " +
+      "mention that a secure link for insurance/DOB will follow separately (otherwise say the " +
+      "office will collect insurance and date of birth directly).",
     allowed_tools: ["create_booking", "send_sms_confirmation"],
     is_terminal: true,
   },

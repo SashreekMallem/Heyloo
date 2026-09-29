@@ -10,6 +10,7 @@ const EMPTY: ChecklistInput = {
   delivery: null,
   ownerTestPhone: null,
   publish: { publishedAt: null, pending: true, reasons: ["never_published"] },
+  textingOn: false,
 };
 
 function byId(input: ChecklistInput) {
@@ -38,6 +39,7 @@ describe("computeSettingsChecklist", () => {
       delivery: { sms_enabled: true, email_enabled: true, alert_phone: "+16105550199" },
       ownerTestPhone: "+16105550100",
       publish: { publishedAt: "2026-09-29T00:00:00Z", pending: false, reasons: [] },
+      textingOn: true,
     });
     expect(Object.values(items).every((item) => item.done)).toBe(true);
     expect(items["transfer_number"]?.detail).toContain("(610) 555-0122");
@@ -51,6 +53,17 @@ describe("computeSettingsChecklist", () => {
       businessHours: { sun: [{ open: "09:00", close: "13:00", closed: true }] },
     });
     expect(items["business_hours"]?.done).toBe(false);
+  });
+
+  it("MSG-3: with texting off, the alert phone is not described as a place alerts are texted", () => {
+    const items = byId({
+      ...EMPTY,
+      delivery: { alert_phone: "+16105550199", notification_email: "owner@example.com" },
+    });
+    expect(items["notification_recipients"]?.done).toBe(true);
+    expect(items["notification_recipients"]?.detail).toBe(
+      "Texts to (610) 555-0199 (texting is off until it's set up, so alerts are emailed), email to owner@example.com.",
+    );
   });
 
   it("counts an alert email alone as a recipient", () => {

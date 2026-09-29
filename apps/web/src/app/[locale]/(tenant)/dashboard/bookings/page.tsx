@@ -28,6 +28,8 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Link } from "@/i18n/navigation";
 import { tenantQueryKey, useTenantQuery } from "@/lib/hooks/use-tenant-query";
+import { customerNotifiedToast, paymentLinkResentToast } from "@/lib/messaging/texting-copy";
+import { useTextingOn } from "@/lib/messaging/use-texting-on";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 import { parseTstzrange } from "@/lib/tstzrange";
@@ -86,6 +88,8 @@ const PAYMENT_STATUS_VARIANT: Record<string, "outline" | "secondary" | "success"
 export default function BookingsPage() {
   const tenantId = useCurrentTenantId();
   const queryClient = useQueryClient();
+  // MSG-3: never claim a customer was texted unless carriers approved texting.
+  const textingOn = useTextingOn(tenantId);
   const [view, setView] = useState<BookingCalendarView>("list");
   const [selected, setSelected] = useState<BookingCalendarEntry | null>(null);
   const [rescheduling, setRescheduling] = useState(false);
@@ -268,9 +272,7 @@ export default function BookingsPage() {
       toast.error("Something went wrong — please try again.");
       return;
     }
-    toast.success(
-      body.sms_queued ? "Customer notified by SMS" : "Saved — SMS notification pending",
-    );
+    toast.success(customerNotifiedToast({ textingOn, smsQueued: body.sms_queued === true }));
     closeSheet();
     if (tenantId)
       void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "bookings"] });
@@ -295,9 +297,7 @@ export default function BookingsPage() {
       toast.error("Something went wrong — please try again.");
       return;
     }
-    toast.success(
-      body.sms_queued ? "Customer notified by SMS" : "Saved — SMS notification pending",
-    );
+    toast.success(customerNotifiedToast({ textingOn, smsQueued: body.sms_queued === true }));
     closeSheet();
     void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "bookings"] });
   }
@@ -312,7 +312,7 @@ export default function BookingsPage() {
       toast.error("Couldn't resend the payment link — please try again shortly.");
       return;
     }
-    toast.success("Payment link re-sent by SMS");
+    toast.success(paymentLinkResentToast({ textingOn }));
     void queryClient.invalidateQueries({
       queryKey: tenantQueryKey(tenantId, "booking_detail", selected?.id ?? ""),
     });

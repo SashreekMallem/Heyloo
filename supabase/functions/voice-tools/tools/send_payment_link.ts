@@ -4,6 +4,7 @@ import type { StripeFetch } from "../../_shared/providers/stripe.ts";
 import { createCheckoutSession } from "../../_shared/providers/stripe.ts";
 import { enqueue, QUEUE_NAMES } from "../../_shared/queue.ts";
 import type { SendPaymentLinkArgsSchema } from "../../_shared/schemas/voice-tools.ts";
+import { SMS_UNAVAILABLE_PAYMENT_LINK_MESSAGE } from "../../_shared/sms-availability.ts";
 import type { Logger, SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
 
@@ -11,7 +12,15 @@ type Args = z.infer<typeof SendPaymentLinkArgsSchema>;
 
 export type SendPaymentLinkResult =
   | { queued: true; message_id: string }
-  | { queued: false; reason: "invalid_phone" | "invalid_amount" | "stripe_error" };
+  | { queued: false; reason: "invalid_phone" | "invalid_amount" | "stripe_error" }
+  /** MSG-3: no usable SMS sender, so no Checkout Session is created and no
+   * text is queued; the model is told not to claim a link is on its way. */
+  | {
+      queued: false;
+      reason: "sms_unavailable";
+      texting_available: false;
+      message: string;
+    };
 
 /**
  * MASTER_SPEC §3.2 `send_payment_link` tool: creates a Stripe Checkout
@@ -31,10 +40,21 @@ export async function sendPaymentLink(
     successUrl: string;
     cancelUrl: string;
     logger: Logger;
+    /** Whether a customer text would really be sent (`isSmsAvailable`). Required so
+     * no caller can hand out a link the worker cannot deliver (MSG-3). */
+    smsAvailable: () => Promise<boolean>;
   },
 ): Promise<SendPaymentLinkResult> {
   const phone = normalizeE164(args.phone);
   if (!phone) return { queued: false, reason: "invalid_phone" };
+  if (!(await deps.smsAvailable())) {
+    return {
+      queued: false,
+      reason: "sms_unavailable",
+      texting_available: false,
+      message: SMS_UNAVAILABLE_PAYMENT_LINK_MESSAGE,
+    };
+  }
 
   let amountCents = args.amount_cents;
   if (amountCents === undefined && args.order_id) {

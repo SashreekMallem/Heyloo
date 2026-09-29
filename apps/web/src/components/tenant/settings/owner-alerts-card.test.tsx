@@ -36,6 +36,28 @@ describe("OwnerAlertsCard (SETTINGS-1)", () => {
     expect(screen.getByText(/use your transfer number, \(610\) 555-0122/)).toBeInTheDocument();
   });
 
+  it("MSG-3: says texting is off until it's set up, and does not warn about a missing phone to text", async () => {
+    fake.queue("agent_configs:select", {
+      data: { transfer_number: null, dynamic_variable_overrides: {} },
+      error: null,
+    });
+    renderWithTenant(<OwnerAlertsCard tenantId="t1" />);
+    expect(
+      await screen.findByText(/Texting is off until it's set up, so every alert is emailed to you/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/no phone to text yet/)).not.toBeInTheDocument();
+  });
+
+  it("MSG-3: once carriers approve texting the off-notice goes away", async () => {
+    fake.queue("agent_configs:select", {
+      data: { transfer_number: null, dynamic_variable_overrides: {} },
+      error: null,
+    });
+    renderWithTenant(<OwnerAlertsCard tenantId="t1" textingOn />);
+    expect(await screen.findByLabelText("Alert email")).toBeInTheDocument();
+    expect(screen.queryByText(/Texting is off until it's set up/)).not.toBeInTheDocument();
+  });
+
   it("blocks an invalid email inline without calling the route", async () => {
     fake.queue("agent_configs:select", {
       data: { transfer_number: null, dynamic_variable_overrides: {} },
@@ -45,7 +67,7 @@ describe("OwnerAlertsCard (SETTINGS-1)", () => {
       "/api/tenant/settings/notifications": () => ({ body: { ok: true } }),
     });
     vi.stubGlobal("fetch", routes.fetchMock);
-    renderWithTenant(<OwnerAlertsCard tenantId="t1" />);
+    renderWithTenant(<OwnerAlertsCard tenantId="t1" textingOn />);
     await userEvent.click(await screen.findByLabelText("Alert email"));
     await userEvent.paste("not-an-email");
     await userEvent.click(screen.getByRole("button", { name: "Save alert settings" }));

@@ -1,4 +1,5 @@
 import { createResendEmailProvider } from "./resend.ts";
+import { createSmtpEmailProvider, parseSmtpEnv } from "./smtp.ts";
 import { createTelnyxSmsProvider } from "./telnyx.ts";
 import { createTwilioSmsProvider } from "./twilio.ts";
 import type {
@@ -22,7 +23,7 @@ export const EMAIL_FROM_ENV = "EMAIL_FROM_ADDRESS";
  *   2. the tenant override (`tenants.sms_provider`);
  *   3. the platform default (`SMS_PROVIDER` env, default `telnyx`).
  * Email: tenant override (none stored yet) then `EMAIL_PROVIDER` (default
- * `resend`).
+ * `resend`; `smtp` sends from the owner's own mailbox, MSG-3).
  *
  * Fails CLOSED: a chosen provider whose secrets are missing resolves to
  * `provider_not_configured` (never a silent fallback to a different
@@ -64,7 +65,8 @@ export interface MessagingRegistry {
   readonly emailFromAddress: string | null;
   /** True when at least one SMS or email provider can send. */
   anyConfigured(): boolean;
-  /** Every missing env var name across all known providers (ops logging). */
+  /** Every env var that is unset or invalid across all known providers (ops
+   * logging): a bare name when unset, `NAME (why)` when its value is unusable. */
   missing(): string[];
   readonly smsDefault: string;
   readonly emailDefault: string;
@@ -159,6 +161,8 @@ export const PROVIDER_REQUIRED_ENV: Record<SmsProviderId | EmailProviderId, read
   telnyx: ["TELNYX_API_KEY"],
   twilio: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"],
   resend: ["RESEND_API_KEY"],
+  // SMTP_PORT is optional (default 465) but validated when set (`parseSmtpEnv`).
+  smtp: ["SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD"],
 };
 
 function slotFor<P>(
@@ -196,10 +200,14 @@ export function buildMessagingRegistryFromEnv(
       }),
     ),
   };
+  const smtp = parseSmtpEnv(env);
   const email: MessagingRegistryConfig["email"] = {
     resend: slotFor(env, "resend", () =>
       createResendEmailProvider({ fetchImpl, apiKey: value("RESEND_API_KEY") }),
     ),
+    smtp: smtp.ok
+      ? { configured: true, provider: createSmtpEmailProvider({ config: smtp.config }) }
+      : { configured: false, missing: smtp.missing },
   };
   return createMessagingRegistry({
     smsDefault: env("SMS_PROVIDER") || "telnyx",

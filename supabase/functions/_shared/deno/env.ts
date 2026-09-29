@@ -122,6 +122,11 @@ export const ENV_VAR_NAMES = {
   smsProvider: "SMS_PROVIDER",
   emailProvider: "EMAIL_PROVIDER",
   emailFromAddress: "EMAIL_FROM_ADDRESS",
+  // MSG-3: SMTP email from the owner's own mailbox (EMAIL_PROVIDER=smtp).
+  smtpHost: "SMTP_HOST",
+  smtpPort: "SMTP_PORT",
+  smtpUsername: "SMTP_USERNAME",
+  smtpPassword: "SMTP_PASSWORD",
   telnyxApiKey: "TELNYX_API_KEY",
   telnyxPublicKey: "TELNYX_PUBLIC_KEY",
   telnyxMessagingProfileId: "TELNYX_MESSAGING_PROFILE_ID",

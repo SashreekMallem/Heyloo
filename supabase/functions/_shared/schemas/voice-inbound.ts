@@ -86,6 +86,14 @@ export const VoiceInboundDynamicVariablesSchema = z.object({
   business_facts: z.string(),
   voicemail_message: z.string(),
   booking_mode_text: z.string(),
+  // MSG-3 (docs/BUILD_NOTES.md): whether this business can text, resolved PER
+  // CALL by `voice-inbound` (`_shared/sms-availability.ts#resolveTextingVariables`):
+  // `sms_enabled` is "true"/"false", `texting_policy_text` is the sentence the
+  // compiled owner-info block ("Text messages right now: ...") shows the model.
+  // Required, and defaulted to the OFF wording everywhere else, so an unresolved
+  // call can never promise a text.
+  sms_enabled: z.string(),
+  texting_policy_text: z.string(),
   // GAP_REGISTER §1.3 — per-vertical `{{token}}`s every compiled prompt may
   // reference (packages/templates/src/red-team/prompt-lint.ts's
   // ALLOWED_DYNAMIC_VARIABLES), always resolved with a safe default by

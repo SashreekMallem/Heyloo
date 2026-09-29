@@ -201,7 +201,7 @@ export async function GET() {
       id: "a2p",
       label: "Set up text messaging",
       description:
-        "Carriers must approve texting for your business (about 1–2 weeks). Until then, confirmations and alerts are emailed to you.",
+        "Texting is off until it's set up. Carriers must approve texting for your business (about 1–2 weeks); until then your AI won't offer to text callers and every alert is emailed to you.",
       href: "/dashboard/texting",
       done: tenant?.a2p_status === "verified" || !!messagingProfile?.submitted_at,
       optional: false,

@@ -139,7 +139,7 @@ const rawStates: AgentState[] = [
       "Read back the pet's name, visit reason, and date/time, ask the consent question, " +
       "state the cancellation policy, then create the booking — pass structured_payload " +
       "with pet_name, species, breed, age_years, visit_reason, and symptom_or_routine from " +
-      "what you gathered — and send the SMS confirmation.",
+      "what you gathered — and, if text messages are available, send the SMS confirmation.",
     allowed_tools: ["create_booking", "send_sms_confirmation"],
     is_terminal: true,
   },

@@ -16,6 +16,8 @@ import {
   ToolDispatchEnvelopeSchema,
   UpdateBookingArgsSchema,
 } from "../_shared/schemas/voice-tools.ts";
+import type { SmsRegistry } from "../_shared/sms-availability.ts";
+import { isSmsAvailable } from "../_shared/sms-availability.ts";
 import type { Logger, SqlClient, ToolResultEnvelope } from "../_shared/types.ts";
 import { getMissingRequiredFields } from "../_shared/vertical-intake.ts";
 import type { CallContext } from "./context.ts";
@@ -158,6 +160,11 @@ export interface DispatchDeps {
     fetchImpl: GeocodeFetch;
     apiKey: string;
   };
+  /** MSG-3: the messaging registry the text-promising tools (`send_sms_confirmation`,
+   * `send_payment_link`, `join_waitlist`) consult to know whether the tenant can
+   * really text. Omitted = texting is treated as UNAVAILABLE (fail closed: a tool
+   * never promises a text it cannot prove will be sent). */
+  sms?: { registry: SmsRegistry };
   /** CALL-2 fix: a mutable out-param `index.ts` reads AFTER `dispatchTool`
    * resolves, so `recordToolStat`'s `tool_health` row can be tagged with
    * the real resolved `tenant_id` instead of always `null` (the pre-CALL-2
@@ -286,6 +293,24 @@ async function runTool(
   startedAt: number,
 ): Promise<ToolResultEnvelope> {
   const { sql, logger, geocode } = deps;
+  // MSG-3: one indexed statement, only when a text-promising tool asks (at most
+  // once per tool call), never on the other tools' path.
+  let smsAvailability: Promise<boolean> | undefined;
+  const smsAvailable = (): Promise<boolean> => {
+    // A failed lookup reads as "no texting", never as a failed tool: the tool then
+    // answers "texting unavailable" (a booking or waitlist entry it already wrote
+    // must not turn into an error, and no text may be promised on a guess).
+    smsAvailability ??= deps.sms
+      ? isSmsAvailable(sql, ctx.tenantId, deps.sms.registry).catch((err: unknown) => {
+          logger.warn("voice_tools_sms_availability_failed", {
+            tenant_id: ctx.tenantId,
+            error: String(err),
+          });
+          return false;
+        })
+      : Promise.resolve(false);
+    return smsAvailability;
+  };
   switch (name) {
     case "check_availability": {
       const parsed = CheckAvailabilityArgsSchema.safeParse(rawArgs);
@@ -348,7 +373,7 @@ async function runTool(
     case "send_sms_confirmation": {
       const parsed = SendSmsConfirmationArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
-      return toolEnvelope(await sendSmsConfirmation(sql, ctx, parsed.data));
+      return toolEnvelope(await sendSmsConfirmation(sql, ctx, parsed.data, { smsAvailable }));
     }
     case "create_order": {
       const parsed = CreateOrderArgsSchema.safeParse(rawArgs);
@@ -373,13 +398,17 @@ async function runTool(
       const parsed = SendPaymentLinkArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
       return toolEnvelope(
-        await sendPaymentLink(sql, ctx, parsed.data, { ...deps.paymentLink, logger }),
+        await sendPaymentLink(sql, ctx, parsed.data, {
+          ...deps.paymentLink,
+          logger,
+          smsAvailable,
+        }),
       );
     }
     case "join_waitlist": {
       const parsed = JoinWaitlistArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
-      return toolEnvelope(await joinWaitlist(sql, ctx, parsed.data));
+      return toolEnvelope(await joinWaitlist(sql, ctx, parsed.data, { smsAvailable }));
     }
     case "list_offerings": {
       const parsed = ListOfferingsArgsSchema.safeParse(rawArgs);

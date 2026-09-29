@@ -132,8 +132,8 @@ export const REAL_ESTATE_TEMPLATE: AgentTemplate = {
         "follow the waitlist-offer rule. Once a slot is chosen, read back area, timeline, and " +
         "the date/time, ask the consent question, state the cancellation policy, then create " +
         "the booking with structured_payload set to whatever you learned in qualification " +
-        "(buyer_or_seller, area, pre_approved, timeline, budget_cents) and send the SMS " +
-        "confirmation.",
+        "(buyer_or_seller, area, pre_approved, timeline, budget_cents) and, if text messages " +
+        "are available, send the SMS confirmation.",
       allowed_tools: [
         "check_availability",
         "create_booking",

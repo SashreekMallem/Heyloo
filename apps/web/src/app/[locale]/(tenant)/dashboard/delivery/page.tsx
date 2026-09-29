@@ -104,10 +104,10 @@ export default function DeliveryPage() {
         description="Choose how you and your customers hear about calls, bookings, and orders."
       />
 
-      {a2pStatus === "pending_verification" && (
-        <Callout tone="warning" title="SMS pending carrier verification">
-          Carrier approval usually takes about 1–2 weeks — email delivery stays active in the
-          meantime. See your progress on the{" "}
+      {a2pStatus !== "verified" && (
+        <Callout tone="warning" title="Texting is off until it's set up">
+          Until carriers approve your texting number (usually about 1–2 weeks), your AI won&apos;t
+          offer to text callers and every alert is emailed to you instead. See your progress on the{" "}
           <Link href="/dashboard/texting" className="underline">
             Text messaging
           </Link>{" "}
@@ -115,7 +115,7 @@ export default function DeliveryPage() {
         </Callout>
       )}
 
-      {tenantId && <OwnerAlertsCard tenantId={tenantId} />}
+      {tenantId && <OwnerAlertsCard tenantId={tenantId} textingOn={a2pStatus === "verified"} />}
 
       <ConnectionLifecycleCard
         provider="Airtable"

@@ -87,17 +87,17 @@ function StatusCallout({ data }: { data: MessagingSetupResponse }): ReactNode {
     not_started: {
       tone: "warning",
       title: "Texting isn't set up yet",
-      body: "US carriers only let a business text its customers after they approve that business. Add your details below to start. Until then, booking confirmations and alerts are emailed to you instead.",
+      body: "Texting is off until it's set up: your AI won't offer or promise texts on calls, and every alert is emailed to you instead. US carriers only let a business text its customers after they approve that business, so add your details below to start.",
     },
     details_submitted: {
       tone: "info",
       title: "We have your details",
-      body: "We'll get you a dedicated texting number and send your details to the carriers. Approval usually takes about 1–2 weeks. You'll keep getting email alerts until it's approved.",
+      body: "We'll get you a dedicated texting number and send your details to the carriers. Approval usually takes about 1–2 weeks. Texting stays off, and you'll keep getting email alerts, until it's approved.",
     },
     in_review: {
       tone: "info",
       title: "Carriers are reviewing your texting number",
-      body: `${number ? `${number} is ` : "Your number is "}waiting on carrier approval, which usually takes about 1–2 weeks. You'll keep getting email alerts until it's approved.`,
+      body: `${number ? `${number} is ` : "Your number is "}waiting on carrier approval, which usually takes about 1–2 weeks. Texting stays off, and you'll keep getting email alerts, until it's approved.`,
     },
     active: {
       tone: "success",
@@ -107,7 +107,7 @@ function StatusCallout({ data }: { data: MessagingSetupResponse }): ReactNode {
     action_needed: {
       tone: "danger",
       title: "Carriers didn't approve texting yet",
-      body: `${data.sender?.failure_reason ? `Reason given: ${data.sender.failure_reason}. ` : ""}Check that your details below exactly match your IRS paperwork, then save them again and we'll resubmit.`,
+      body: `${data.sender?.failure_reason ? `Reason given: ${data.sender.failure_reason}. ` : ""}Texting stays off in the meantime. Check that your details below exactly match your IRS paperwork, then save them again and we'll resubmit.`,
     },
   };
   const c = copy[data.state];

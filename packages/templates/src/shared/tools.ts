@@ -252,7 +252,11 @@ export function takeMessageTool(vertical?: Vertical): CanonicalTool {
 export function sendSmsConfirmationTool(): CanonicalTool {
   return {
     name: "send_sms_confirmation",
-    description: "Send a text confirmation for a booking or order.",
+    description:
+      "Queue a text confirmation for a booking or order, only when text messages are " +
+      "available for this business (see the Text messages right now line). The result says " +
+      "whether a text was queued (queued: true) or texting is unavailable (reason: " +
+      "sms_unavailable): never tell the caller a text was sent unless queued is true.",
     parameters: {
       type: "object",
       properties: {
@@ -279,7 +283,8 @@ export function joinWaitlistTool(): CanonicalTool {
     name: "join_waitlist",
     description:
       "Add the caller to the waitlist for a preferred date/time window that's fully booked. " +
-      "They'll be texted automatically if a matching slot opens up.",
+      "If text messages are available they are texted automatically when a matching slot " +
+      "opens up; if the result says texting is unavailable, do not promise a text.",
     parameters: {
       type: "object",
       properties: {
@@ -377,8 +382,10 @@ export function sendPaymentLinkTool(): CanonicalTool {
   return {
     name: "send_payment_link",
     description:
-      "Text the caller a secure Stripe payment link. NEVER ask the caller to read a card " +
-      "number, expiry, or CVC out loud — always use this tool instead.",
+      "Text the caller a secure Stripe payment link, only when text messages are " +
+      "available for this business; if the result says texting is unavailable, no link " +
+      "exists, so never say one is coming. NEVER ask the caller to read a card number, " +
+      "expiry, or CVC out loud.",
     parameters: {
       type: "object",
       properties: {

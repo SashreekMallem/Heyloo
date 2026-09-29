@@ -4,6 +4,7 @@
 // numbers already point at) — so they can never drift (MESSAGING-1).
 import type { MessagingRegistry } from "../providers/messaging/registry.ts";
 import { buildMessagingRegistryFromEnv } from "../providers/messaging/registry.ts";
+import { isSmsAvailable } from "../sms-availability.ts";
 import type { TextAgentDeps } from "../text-agent/engine.ts";
 import type { Logger } from "../types.ts";
 import { runInBackground } from "./background.ts";
@@ -20,8 +21,13 @@ export function buildSmsWebhookRegistry(): MessagingRegistry {
 export function buildTextEngineDeps(logger: Logger): TextAgentDeps | undefined {
   const apiKey = optionalEnv("ANTHROPIC_API_KEY");
   if (!apiKey) return undefined;
+  const sql = getSql();
+  const registry = buildSmsWebhookRegistry();
   return {
-    sql: getSql(),
+    sql,
+    // MSG-3: the text agent promises a text (payment link, code) only when the
+    // tenant can really send one: verified sender AND a configured provider.
+    smsAvailable: (tenantId) => isSmsAvailable(sql, tenantId, registry),
     logger,
     anthropicFetch: fetch,
     anthropicApiKey: apiKey,

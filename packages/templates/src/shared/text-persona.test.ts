@@ -58,6 +58,7 @@ describe("SETTINGS-2: owner settings in the text prompt", () => {
   it("references every owner-setting token, fences owner text once, and states precedence BEFORE the fence", () => {
     for (const token of [
       "{{booking_mode_text}}",
+      "{{texting_policy_text}}",
       "{{text_tone_text}}",
       "{{special_instructions}}",
       "{{faq_text}}",

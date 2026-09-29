@@ -35,6 +35,8 @@ export interface ChecklistInput {
   delivery: unknown;
   ownerTestPhone: string | null;
   publish: PublishStatus;
+  /** Carriers approved this business for texting (`tenants.a2p_status = 'verified'`). */
+  textingOn: boolean;
 }
 
 const RESOURCE_NOUN: Record<string, string> = {
@@ -58,9 +60,14 @@ function recipientsFrom(delivery: unknown): { phone: string | null; email: strin
   };
 }
 
-function recipientsDetail(recipients: { phone: string | null; email: string | null }): string {
+function recipientsDetail(
+  recipients: { phone: string | null; email: string | null },
+  textingOn: boolean,
+): string {
   const parts = [
-    recipients.phone ? `texts to ${formatPhoneDisplay(recipients.phone)}` : null,
+    recipients.phone
+      ? `texts to ${formatPhoneDisplay(recipients.phone)}${textingOn ? "" : " (texting is off until it's set up, so alerts are emailed)"}`
+      : null,
     recipients.email ? `email to ${recipients.email}` : null,
   ].filter((part): part is string => part !== null);
   if (parts.length === 0) {
@@ -123,7 +130,7 @@ export function computeSettingsChecklist(input: ChecklistInput): ChecklistItem[]
       id: "notification_recipients",
       label: "Who gets alerts",
       done: recipients.phone !== null || recipients.email !== null,
-      detail: recipientsDetail(recipients),
+      detail: recipientsDetail(recipients, input.textingOn),
       href: "/dashboard/delivery",
       optional: false,
     },

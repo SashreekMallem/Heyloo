@@ -20,7 +20,7 @@ const zE164String = z.string().regex(E164);
 
 export const SMS_PROVIDER_IDS = ["telnyx", "twilio"] as const;
 export type SmsProviderId = (typeof SMS_PROVIDER_IDS)[number];
-export const EMAIL_PROVIDER_IDS = ["resend"] as const;
+export const EMAIL_PROVIDER_IDS = ["resend", "smtp"] as const;
 export type EmailProviderId = (typeof EMAIL_PROVIDER_IDS)[number];
 
 export function isSmsProviderId(value: unknown): value is SmsProviderId {
