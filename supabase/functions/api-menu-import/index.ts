@@ -7,15 +7,16 @@
 // forwards the caller's session bearer token and sends `{raw_text}` — no
 // `tenant_id` in the body at all, so there is nothing to cross-check a
 // body value against; the JWT's own tenant membership is the entire scope.
-import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { resolveLlmFromEnv } from "../_shared/deno/llm.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { MenuImportRequestSchema } from "../_shared/schemas/menu-import.ts";
 import { importMenu } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-menu-import" });
-const ANTHROPIC_API_KEY = requireEnv("ANTHROPIC_API_KEY");
-const ANTHROPIC_MENU_IMPORT_MODEL = optionalEnv("ANTHROPIC_MENU_IMPORT_MODEL") ?? "claude-sonnet-5";
+// LLM-1: no LLM key is read at module load. The client is resolved per request
+// and a missing key answers a 503 `ai_not_configured` from `importMenu` (which
+// the dashboard's import page shows), instead of crashing the isolate.
 
 interface JwtClaims {
   app_metadata?: { tenant_id?: string; role?: string };
@@ -57,9 +58,7 @@ Deno.serve(async (req: Request) => {
   // (candidates only, never auto-published; the confirm/edit/publish step
   // is Cluster E's dashboard UI + its own tenant-scoped offerings insert).
   const result = await importMenu(parsed.data, {
-    anthropicFetch: fetch,
-    anthropicApiKey: ANTHROPIC_API_KEY,
-    anthropicModel: ANTHROPIC_MENU_IMPORT_MODEL,
+    llm: resolveLlmFromEnv(),
     urlFetch: async (url) => {
       const res = await fetch(url, { headers: { "user-agent": "Heyloo-MenuImport/1.0" } });
       const text = await res.text().catch(() => "");

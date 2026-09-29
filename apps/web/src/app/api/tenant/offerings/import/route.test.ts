@@ -123,6 +123,26 @@ describe("POST /api/tenant/offerings/import", () => {
     vi.unstubAllGlobals();
   });
 
+  it("passes the edge function's ai_not_configured answer through so the page can tell the owner (LLM-1)", async () => {
+    mockSession = { user: mockUser, access_token: "token-123" };
+    const edgeBody = {
+      error: "ai_not_configured",
+      provider: "gemini",
+      reason: "not_configured",
+      missing: ["GEMINI_API_KEY"],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(edgeBody), { status: 503 })),
+    );
+
+    const res = await POST(postRequest({ raw_text: "Margherita Pizza — $14" }));
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual(edgeBody);
+    vi.unstubAllGlobals();
+  });
+
   it("degrades to import_unavailable when the edge function 404s", async () => {
     mockSession = { user: mockUser, access_token: "token-123" };
     vi.stubGlobal(

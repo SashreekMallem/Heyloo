@@ -22,10 +22,10 @@ const UrlSourceSchema = z.object({
 const FileSourceSchema = z.object({
   kind: z.literal("file"),
   media_type: z.union([ImageMediaTypeSchema, z.literal("application/pdf")]),
-  // Base64-encoded file bytes. ~10MB (Anthropic's own per-file cap for a
-  // direct base64 request body) base64-inflates to ~14M characters —
-  // capped here so an oversized upload fails fast with a clear 422 instead
-  // of a slow round trip to Anthropic that would reject it anyway.
+  // Base64-encoded file bytes. ~10MB base64-inflates to ~14M characters —
+  // capped here (well inside every LLM vendor's inline-request limit, e.g.
+  // Gemini's 20MB whole-request cap) so an oversized upload fails fast with a
+  // clear 422 instead of a slow round trip the provider would reject anyway.
   data_base64: z.string().min(1).max(14_000_000),
 });
 
@@ -69,3 +69,40 @@ export const MenuImportExtractionSchema = z.object({
 });
 
 export type MenuImportCandidate = z.infer<typeof MenuImportCandidateSchema>;
+
+/**
+ * The same shape as `MenuImportExtractionSchema` as plain JSON Schema, handed to
+ * the LLM port so the provider's structured-output mode constrains the reply.
+ * Only keywords every adapter's structured-output subset supports are used
+ * (`type`, `properties`, `items`, `required`, `description`); the numeric and
+ * length bounds are enforced afterwards by the zod schema above, which remains
+ * the authority — a provider's schema mode is best-effort.
+ */
+export const MENU_IMPORT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          category: { type: "string", description: "The menu section, e.g. Appetizers." },
+          price_cents: { type: "integer", description: "Price in cents, e.g. $12.50 is 1250." },
+          duration_minutes: { type: "integer", description: "Bookable services only." },
+          allergens: { type: "array", items: { type: "string" } },
+          modifiers: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: { name: { type: "string" }, price_cents: { type: "integer" } },
+              required: ["name"],
+            },
+          },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  required: ["items"],
+} as const;
