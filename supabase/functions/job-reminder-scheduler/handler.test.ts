@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SqlClient } from "../_shared/types.ts";
-import { scheduleOneReminder } from "./handler.ts";
+import { findReminderCandidates, scheduleOneReminder } from "./handler.ts";
 
 const BASE_ROW = {
   booking_id: "b1",
@@ -10,7 +10,6 @@ const BASE_ROW = {
   consent_sms: true,
   consent_call: false,
   customer_phone: "+15551234567",
-  reminder_window_hours: 24,
   quiet_hours: {},
 };
 
@@ -100,5 +99,17 @@ describe("scheduleOneReminder", () => {
       expect(outcome).toBe("deferred_quiet_hours");
       expect(calls).toHaveLength(0);
     });
+  });
+});
+
+describe("findReminderCandidates (SEC-2 review)", () => {
+  it("never casts tenant-writable JSON, which would abort the query for every tenant", async () => {
+    const { sql, calls } = makeSql([]);
+    await findReminderCandidates(sql, new Date("2026-01-15T14:00:00.000Z"));
+    const text = String(calls[0]?.[0]);
+    // dynamic_variable_overrides / consent are owner- or member-writable jsonb:
+    // a `::int` / `::boolean` on them raises 22P02 on the first bad value.
+    expect(text).not.toMatch(/dynamic_variable_overrides/);
+    expect(text).not.toMatch(/consent[^,\n]*::/);
   });
 });
