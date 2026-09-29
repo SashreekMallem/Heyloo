@@ -13,16 +13,18 @@ import { collectResearchBatch, findInFlightResearchBatchIds } from "./handler.ts
 
 const logger = createLogger({ fn: "job-outreach-personalize-collect" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
-// OUTREACH_CAN_SPAM_FOOTER is a compliance hard rule (.env.example), not an
-// optional integration secret — stays required at module scope, unchanged.
-const CAN_SPAM_FOOTER = requireEnv("OUTREACH_CAN_SPAM_FOOTER");
+// OUTREACH_CAN_SPAM_FOOTER is a compliance hard rule (.env.example): nothing is
+// ever prepared for sending without it. QA-1 BE-04: it is checked after the
+// cron-secret check (module-scope `requireEnv` crashed the isolate every 15
+// minutes, 32 times in 6 h) and unset means `skipped: not_configured`, which
+// is still fail-closed.
 
 // Smartlead is an OPTIONAL-integration secret here (OPS-1, docs/BUILD_NOTES.md),
 // and the LLM key (LLM-1: Gemini by default) is resolved the same lazy,
 // non-throwing way: both are read inside the handler, after the cron-secret
 // check, so the job skips cleanly instead of crashing cold-start every 15
 // minutes while outreach isn't configured yet.
-const OPTIONAL_VARS = ["SMARTLEAD_API_KEY"] as const;
+const OPTIONAL_VARS = ["SMARTLEAD_API_KEY", "OUTREACH_CAN_SPAM_FOOTER"] as const;
 
 Deno.serve(async (req: Request) => {
   const provided = req.headers.get("x-cron-secret");
@@ -37,6 +39,7 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ skipped: "not_configured", missing }, { status: 200 });
   }
   const SMARTLEAD_API_KEY = requireEnv("SMARTLEAD_API_KEY");
+  const CAN_SPAM_FOOTER = requireEnv("OUTREACH_CAN_SPAM_FOOTER");
 
   const sql = getSql();
   const deps = {

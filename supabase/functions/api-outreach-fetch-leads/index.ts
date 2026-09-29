@@ -6,15 +6,15 @@
 
 import { isPlatformAdmin } from "../_shared/admin-auth.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { requireEnv } from "../_shared/deno/env.ts";
+import { optionalEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { FetchLeadsRequestSchema } from "../_shared/schemas/outreach-fetch-leads.ts";
 import { handleFetchLeads } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-outreach-fetch-leads" });
-const APOLLO_API_KEY = requireEnv("APOLLO_API_KEY");
-const OUTSCRAPER_API_KEY = requireEnv("OUTSCRAPER_API_KEY");
+// QA-1 BE-04: read lazily, after the platform-admin check. `requireEnv` at
+// module scope crashed the isolate (WORKER_ERROR 500) when either key was unset.
 
 interface DecodedClaims {
   app_metadata?: { platform_admin?: boolean };
@@ -47,6 +47,17 @@ Deno.serve(async (req: Request) => {
     rawBody = await req.json();
   } catch {
     return jsonResponse({ error: "invalid_json" }, { status: 400 });
+  }
+
+  const APOLLO_API_KEY = optionalEnv("APOLLO_API_KEY");
+  const OUTSCRAPER_API_KEY = optionalEnv("OUTSCRAPER_API_KEY");
+  if (!APOLLO_API_KEY || !OUTSCRAPER_API_KEY) {
+    const missing = [
+      ...(APOLLO_API_KEY ? [] : ["APOLLO_API_KEY"]),
+      ...(OUTSCRAPER_API_KEY ? [] : ["OUTSCRAPER_API_KEY"]),
+    ];
+    logger.warn("fetch_leads_not_configured", { missing });
+    return jsonResponse({ error: "not_configured", missing }, { status: 503 });
   }
 
   const parsed = FetchLeadsRequestSchema.safeParse(rawBody);

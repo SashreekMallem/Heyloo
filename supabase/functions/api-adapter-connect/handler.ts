@@ -1,4 +1,4 @@
-import { encryptSecret } from "../_shared/crypto.ts";
+import { checkEncryptionKey, encryptSecret } from "../_shared/crypto.ts";
 import { refreshEzyVetToken } from "../_shared/providers/ezyvet.ts";
 import { validateShopmonkeyApiKey } from "../_shared/providers/shopmonkey.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
@@ -17,14 +17,19 @@ import { signOAuthState, verifyOAuthState } from "./state.ts";
  */
 export interface AdapterConnectDeps {
   fetchImpl: typeof fetch;
-  stateSecret: string;
   nonce: () => string;
-  square: { clientId: string; clientSecret: string; redirectUri: string };
-  googleCalendar: { clientId: string; clientSecret: string; redirectUri: string };
-  ezyvet: { clientId: string; clientSecret: string; partnerId: string };
+  // QA-1 BE-04: every secret below is OPTIONAL at the type level. `index.ts`
+  // used to `requireEnv` all of them at module scope, so ONE unset provider
+  // secret crashed the whole function (WORKER_ERROR 500) and no integration
+  // could connect. Each action now checks only what it needs, AFTER auth, and
+  // answers 503 `not_configured` when that is missing.
+  stateSecret?: string | undefined;
+  square?: { clientId: string; clientSecret: string; redirectUri: string } | undefined;
+  googleCalendar?: { clientId: string; clientSecret: string; redirectUri: string } | undefined;
+  ezyvet?: { clientId: string; clientSecret: string; partnerId: string } | undefined;
   // DB-H2: AES-256-GCM key `access_token`/`refresh_token` are encrypted
   // with before ever reaching `adapter_connections` — see `_shared/crypto.ts`.
-  tokenEncryptionKey: string;
+  tokenEncryptionKey?: string | undefined;
   logger: Logger;
 }
 
@@ -90,6 +95,11 @@ async function upsertConnection(
   `;
 }
 
+function notConfigured(deps: AdapterConnectDeps, provider: string): AdapterConnectResult {
+  deps.logger.error("adapter_connect_not_configured", { provider });
+  return { ok: false, status: 503, error: "not_configured" };
+}
+
 export async function handleAdapterConnect(
   sql: SqlClient,
   userId: string,
@@ -110,14 +120,17 @@ export async function handleAdapterConnect(
 
   switch (req.action) {
     case "initiate": {
-      const state = await signOAuthState(deps.stateSecret, {
+      const stateSecret = deps.stateSecret;
+      const providerConfig = req.provider === "square" ? deps.square : deps.googleCalendar;
+      if (!stateSecret || !providerConfig) return notConfigured(deps, req.provider);
+      const state = await signOAuthState(stateSecret, {
         tenantId,
         provider: req.provider,
         nonce: deps.nonce(),
       });
       if (req.provider === "square") {
         const url = new URL("https://connect.squareup.com/oauth2/authorize");
-        url.searchParams.set("client_id", deps.square.clientId);
+        url.searchParams.set("client_id", providerConfig.clientId);
         url.searchParams.set(
           "scope",
           "APPOINTMENTS_ALL_READ APPOINTMENTS_ALL_WRITE MERCHANT_PROFILE_READ",
@@ -127,8 +140,8 @@ export async function handleAdapterConnect(
         return { ok: true, status: 200, body: { authorize_url: url.toString(), state } };
       }
       const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-      url.searchParams.set("client_id", deps.googleCalendar.clientId);
-      url.searchParams.set("redirect_uri", deps.googleCalendar.redirectUri);
+      url.searchParams.set("client_id", providerConfig.clientId);
+      url.searchParams.set("redirect_uri", providerConfig.redirectUri);
       url.searchParams.set("response_type", "code");
       url.searchParams.set("scope", "https://www.googleapis.com/auth/calendar");
       url.searchParams.set("access_type", "offline");
@@ -138,7 +151,18 @@ export async function handleAdapterConnect(
     }
 
     case "callback": {
-      const verification = await verifyOAuthState(deps.stateSecret, req.state);
+      const stateSecret = deps.stateSecret;
+      const tokenEncryptionKey = deps.tokenEncryptionKey;
+      const providerConfig = req.provider === "square" ? deps.square : deps.googleCalendar;
+      if (
+        !stateSecret ||
+        !providerConfig ||
+        !tokenEncryptionKey ||
+        checkEncryptionKey(tokenEncryptionKey) !== null
+      ) {
+        return notConfigured(deps, req.provider);
+      }
+      const verification = await verifyOAuthState(stateSecret, req.state);
       if (!verification.valid) {
         deps.logger.warn("adapter_connect_state_rejected", {
           reason: verification.reason,
@@ -159,8 +183,8 @@ export async function handleAdapterConnect(
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            client_id: deps.square.clientId,
-            client_secret: deps.square.clientSecret,
+            client_id: providerConfig.clientId,
+            client_secret: providerConfig.clientSecret,
             code: req.code,
             grant_type: "authorization_code",
           }),
@@ -185,7 +209,7 @@ export async function handleAdapterConnect(
           expiresAt: body.expires_at,
           providerAccountId: body.merchant_id,
           connectedBy: userId,
-          tokenEncryptionKey: deps.tokenEncryptionKey,
+          tokenEncryptionKey,
         });
         return { ok: true, status: 200, body: { connected: true, provider: "square" } };
       }
@@ -194,10 +218,10 @@ export async function handleAdapterConnect(
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
-          client_id: deps.googleCalendar.clientId,
-          client_secret: deps.googleCalendar.clientSecret,
+          client_id: providerConfig.clientId,
+          client_secret: providerConfig.clientSecret,
           code: req.code,
-          redirect_uri: deps.googleCalendar.redirectUri,
+          redirect_uri: providerConfig.redirectUri,
           grant_type: "authorization_code",
         }).toString(),
       });
@@ -218,12 +242,16 @@ export async function handleAdapterConnect(
           : undefined,
         metadata: { calendarId: "primary" },
         connectedBy: userId,
-        tokenEncryptionKey: deps.tokenEncryptionKey,
+        tokenEncryptionKey,
       });
       return { ok: true, status: 200, body: { connected: true, provider: "google_calendar" } };
     }
 
     case "paste_key": {
+      const tokenEncryptionKey = deps.tokenEncryptionKey;
+      if (!tokenEncryptionKey || checkEncryptionKey(tokenEncryptionKey) !== null) {
+        return notConfigured(deps, req.provider);
+      }
       if (req.provider === "shopmonkey") {
         const validated = await validateShopmonkeyApiKey(deps.fetchImpl, req.api_key);
         if (!validated.ok) {
@@ -235,7 +263,7 @@ export async function handleAdapterConnect(
           authMode: "api_key",
           accessToken: req.api_key,
           connectedBy: userId,
-          tokenEncryptionKey: deps.tokenEncryptionKey,
+          tokenEncryptionKey,
         });
         return { ok: true, status: 200, body: { connected: true, provider: "shopmonkey" } };
       }
@@ -245,6 +273,7 @@ export async function handleAdapterConnect(
       // database granted us access at `base_url`; success here IS the
       // proof the practice completed the partner-authorization step on
       // their end (API_AND_FLOWS.md A.6).
+      if (!deps.ezyvet) return notConfigured(deps, req.provider);
       const refreshed = await refreshEzyVetToken(deps.fetchImpl, req.base_url, deps.ezyvet);
       if (!refreshed.ok) {
         return { ok: false, status: 401, error: "ezyvet_practice_not_authorized" };
@@ -260,7 +289,7 @@ export async function handleAdapterConnect(
           : undefined,
         metadata: { baseUrl: req.base_url },
         connectedBy: userId,
-        tokenEncryptionKey: deps.tokenEncryptionKey,
+        tokenEncryptionKey,
       });
       return { ok: true, status: 200, body: { connected: true, provider: "ezyvet" } };
     }

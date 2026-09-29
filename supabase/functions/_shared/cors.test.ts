@@ -14,7 +14,7 @@ describe("publicCorsHeaders", () => {
       expect(h["access-control-allow-headers"]).toContain(name);
     }
     expect(h["access-control-allow-methods"]).toContain("POST");
-    expect(h.vary).toBe("origin");
+    expect(h["vary"]).toBe("origin");
   });
 
   it("falls back to * when there is no Origin header", () => {

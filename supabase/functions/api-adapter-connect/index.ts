@@ -3,7 +3,7 @@
 // user's id (`sub`) is what this function trusts, never a body-supplied
 // user id (same convention as api-checkout/index.ts).
 import { getSql } from "../_shared/deno/db.ts";
-import { requireEnv } from "../_shared/deno/env.ts";
+import { optionalEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { JSON_API_CONTENT_TYPES, makeSafeFetch } from "../_shared/safe-fetch.ts";
@@ -34,28 +34,44 @@ const ADAPTER_FETCH = makeSafeFetch({
   timeoutMs: 15_000,
 });
 
-const DEPS: AdapterConnectDeps = {
-  fetchImpl: ADAPTER_FETCH,
-  stateSecret: requireEnv("ADAPTER_CONNECT_STATE_SECRET"),
-  nonce: () => crypto.randomUUID(),
-  square: {
-    clientId: requireEnv("SQUARE_CLIENT_ID"),
-    clientSecret: requireEnv("SQUARE_CLIENT_SECRET"),
-    redirectUri: requireEnv("SQUARE_OAUTH_REDIRECT_URI"),
-  },
-  googleCalendar: {
-    clientId: requireEnv("GOOGLE_CALENDAR_CLIENT_ID"),
-    clientSecret: requireEnv("GOOGLE_CALENDAR_CLIENT_SECRET"),
-    redirectUri: requireEnv("GOOGLE_CALENDAR_OAUTH_REDIRECT_URI"),
-  },
-  ezyvet: {
-    clientId: requireEnv("EZYVET_CLIENT_ID"),
-    clientSecret: requireEnv("EZYVET_CLIENT_SECRET"),
-    partnerId: requireEnv("EZYVET_PARTNER_ID"),
-  },
-  tokenEncryptionKey: requireEnv("ADAPTER_TOKEN_ENCRYPTION_KEY"),
-  logger,
-};
+// QA-1 BE-04: nothing here throws at module load. Each provider's secrets are
+// read lazily and stay `undefined` when incomplete, so only the action that
+// needs a missing one answers 503 `not_configured` (see handler.ts); before,
+// the first unset `requireEnv` killed the isolate for every provider.
+function envGroup<K extends string>(names: Record<K, string>): Record<K, string> | undefined {
+  const out = {} as Record<K, string>;
+  for (const key of Object.keys(names) as K[]) {
+    const value = optionalEnv(names[key]);
+    if (!value) return undefined;
+    out[key] = value;
+  }
+  return out;
+}
+
+function buildDeps(): AdapterConnectDeps {
+  return {
+    fetchImpl: ADAPTER_FETCH,
+    stateSecret: optionalEnv("ADAPTER_CONNECT_STATE_SECRET") || undefined,
+    nonce: () => crypto.randomUUID(),
+    square: envGroup({
+      clientId: "SQUARE_CLIENT_ID",
+      clientSecret: "SQUARE_CLIENT_SECRET",
+      redirectUri: "SQUARE_OAUTH_REDIRECT_URI",
+    }),
+    googleCalendar: envGroup({
+      clientId: "GOOGLE_CALENDAR_CLIENT_ID",
+      clientSecret: "GOOGLE_CALENDAR_CLIENT_SECRET",
+      redirectUri: "GOOGLE_CALENDAR_OAUTH_REDIRECT_URI",
+    }),
+    ezyvet: envGroup({
+      clientId: "EZYVET_CLIENT_ID",
+      clientSecret: "EZYVET_CLIENT_SECRET",
+      partnerId: "EZYVET_PARTNER_ID",
+    }),
+    tokenEncryptionKey: optionalEnv("ADAPTER_TOKEN_ENCRYPTION_KEY") || undefined,
+    logger,
+  };
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
@@ -73,7 +89,7 @@ Deno.serve(async (req: Request) => {
   }
 
   const sql = getSql();
-  const result = await handleAdapterConnect(sql, userId, body, DEPS);
+  const result = await handleAdapterConnect(sql, userId, body, buildDeps());
   if (!result.ok) return jsonResponse({ error: result.error }, { status: result.status });
   return jsonResponse(result.body, { status: result.status });
 });
