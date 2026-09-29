@@ -251,7 +251,7 @@ describe("resolveTenantTextContext", () => {
     });
     const ctx = await resolveTenantTextContext(sql, "t1");
     expect(ctx?.businessName).toBe("Acme Dental");
-    expect(ctx?.assistantName).toBe("the AI assistant");
+    expect(ctx?.assistantName).toBe("Ava");
     expect(ctx?.cancellationPolicyText).toContain("as soon as possible");
     expect(ctx?.priceVersion).toBe("v2");
   });

@@ -184,7 +184,7 @@ describe("compileAndCreateAgent — static opening line + default dynamic variab
     const start = flow.nodes.find((n) => n.id === flow.start_node_id);
     expect(start?.instruction?.type).toBe("static_text");
     expect(start?.instruction?.text).toContain("esta llamada puede ser grabada");
-    expect(flow.default_dynamic_variables["assistant_name"]).toBe("el asistente virtual");
+    expect(flow.default_dynamic_variables["assistant_name"]).toBe("Ava");
     expect(flow.default_dynamic_variables["language"]).toBe("es");
   });
 

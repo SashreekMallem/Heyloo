@@ -7,6 +7,7 @@ import {
   CardContent,
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -20,7 +21,7 @@ import { useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 import { Link } from "@/i18n/navigation";
 import { SAVED_NEXT_CALL } from "@/lib/settings/client";
-import { openingLinePreview } from "@/lib/settings/greeting";
+import { DEFAULT_ASSISTANT_NAME, openingLinePreview } from "@/lib/settings/greeting";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
@@ -94,8 +95,11 @@ export default function GreetingTabPage() {
                 <FormItem>
                   <FormLabel>AI assistant name</FormLabel>
                   <FormControl>
-                    <Input placeholder="Ava" {...field} />
+                    <Input placeholder={DEFAULT_ASSISTANT_NAME} {...field} />
                   </FormControl>
+                  <FormDescription>
+                    If left blank, callers hear &ldquo;{DEFAULT_ASSISTANT_NAME}&rdquo;.
+                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}

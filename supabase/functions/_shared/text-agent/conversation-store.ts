@@ -1,5 +1,6 @@
 import { resolveCancellationPolicyText } from "../../voice-inbound/dynamic-variables.ts";
 import { randomOpaqueToken, sha256Hex } from "../crypto.ts";
+import { DEFAULT_ASSISTANT_NAME } from "../inbound-dynamic-variables.ts";
 import type { SqlClient } from "../types.ts";
 import type { TenantTextContext, TextChannel, TextConversationRow, TextTurn } from "./types.ts";
 
@@ -353,7 +354,7 @@ export async function resolveTenantTextContext(
   return {
     tenantId,
     businessName: row.business_name,
-    assistantName: row.assistant_name ?? "the AI assistant",
+    assistantName: row.assistant_name?.trim() || DEFAULT_ASSISTANT_NAME,
     vertical: row.vertical,
     timezone: row.timezone,
     transferNumber: row.transfer_number,

@@ -146,7 +146,7 @@ describe("handleVoiceInbound", () => {
     });
     if (result.status !== 200) throw new Error("unreachable");
     expect(result.body.call_inbound.override_agent_id).toBeUndefined();
-    expect(result.body.call_inbound.dynamic_variables.assistant_name).toBe("the AI assistant");
+    expect(result.body.call_inbound.dynamic_variables.assistant_name).toBe("Ava");
     expect(result.body.call_inbound.dynamic_variables.special_instructions).toBe("");
   });
 

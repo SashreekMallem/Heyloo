@@ -6,13 +6,15 @@
  * question) — mirrored here because `agent_templates` is platform-admin
  * only under RLS. Keep in sync with `_shared/compiler/template-compiler.ts`
  * (`DISCLOSURE_TRANSLATIONS`, `OPENING_QUESTION`) and
- * `_shared/inbound-dynamic-variables.ts` (`defaultAssistantName`).
+ * `_shared/inbound-dynamic-variables.ts` (`DEFAULT_ASSISTANT_NAME`).
  */
 
-const DEFAULT_ASSISTANT_NAME: Record<string, string> = {
-  en: "the AI assistant",
-  es: "el asistente virtual",
-};
+/**
+ * DISCLOSE-2: a persona name, never a description — the disclosure literal
+ * already says "their AI assistant", so a descriptive fallback made callers
+ * hear "This is the AI assistant, their AI assistant".
+ */
+export const DEFAULT_ASSISTANT_NAME = "Ava";
 
 export function openingLinePreview(params: {
   businessName: string;
@@ -21,7 +23,7 @@ export function openingLinePreview(params: {
 }): string {
   const business = params.businessName.trim() || "your business";
   const language = params.language === "es" ? "es" : "en";
-  const assistant = params.assistantName.trim() || (DEFAULT_ASSISTANT_NAME[language] as string);
+  const assistant = params.assistantName.trim() || DEFAULT_ASSISTANT_NAME;
   if (language === "es") {
     return `Gracias por llamar a ${business}. Le atiende ${assistant}, su asistente de inteligencia artificial; esta llamada puede ser grabada. ¿En qué puedo ayudarle hoy?`;
   }

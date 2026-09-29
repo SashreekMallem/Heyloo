@@ -229,19 +229,21 @@ export function resolveRetellAgentLanguage(languagePrimary: string): string {
 }
 
 /**
- * DISCLOSE-1: `{{assistant_name}}` when `agent_configs.assistant_name` is
- * unset — spoken inside the static opening line's disclosure literal, so it
- * must match the line's language ("Le atiende the AI assistant" would not).
- * Also used by `_shared/provisioning/compile-and-publish.ts` for the
- * compiled `default_dynamic_variables`.
+ * DISCLOSE-2: `{{assistant_name}}` when `agent_configs.assistant_name` is
+ * unset. It is spoken inside the static opening line's disclosure literal
+ * ("This is {{assistant_name}}, their AI assistant"), so it must be a real
+ * persona name, not a description — the DISCLOSE-1 fallback "the AI
+ * assistant" made callers hear "This is the AI assistant, their AI
+ * assistant". A given name reads the same in every language. Also used by
+ * `_shared/provisioning/compile-and-publish.ts` for the compiled
+ * `default_dynamic_variables`, and mirrored in
+ * `_shared/text-agent/conversation-store.ts` and
+ * `apps/web/src/lib/settings/greeting.ts`.
  */
-const DEFAULT_ASSISTANT_NAME: Record<string, string> = {
-  en: "the AI assistant",
-  es: "el asistente virtual",
-};
+export const DEFAULT_ASSISTANT_NAME = "Ava";
 
-export function defaultAssistantName(languagePrimary: string): string {
-  return DEFAULT_ASSISTANT_NAME[languagePrimary] ?? "the AI assistant";
+export function defaultAssistantName(_languagePrimary?: string): string {
+  return DEFAULT_ASSISTANT_NAME;
 }
 
 export async function buildInboundDynamicVariables(params: {
@@ -301,7 +303,7 @@ export async function buildInboundDynamicVariables(params: {
 
   const dynamicVariables: InboundDynamicVariables = {
     business_name: config.businessName,
-    assistant_name: config.assistantName ?? defaultAssistantName(config.languagePrimary),
+    assistant_name: config.assistantName?.trim() || defaultAssistantName(config.languagePrimary),
     greeting_hours_context: greetingHoursContext,
     timezone: config.timezone,
     current_date: currentDateContext.date,

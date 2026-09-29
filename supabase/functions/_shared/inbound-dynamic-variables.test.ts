@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildOpeningLine } from "./compiler/template-compiler.ts";
 import {
   buildInboundDynamicVariables,
   defaultAssistantName,
@@ -71,6 +72,9 @@ function customersSql(rows: unknown[]): { sql: SqlClient; queries: string[] } {
   return { sql, queries };
 }
 
+const DISCLOSURE_LINE =
+  "Thanks for calling {{business_name}}. This is {{assistant_name}}, their AI assistant — this call may be recorded.";
+
 const NOW = new Date("2026-09-29T15:00:00.000Z");
 const logger = createLogger();
 
@@ -90,10 +94,10 @@ describe("buildInboundDynamicVariables — returning caller (DISCLOSE-1)", () =>
     expect(vars.caller_name_on_file).toBe("Devon Ashworth");
     expect(vars.caller_phone_on_file).toBe("+16105383920");
     expect(vars.caller_recent_context).toBe("Devon has booked with us before.");
-    expect(vars.assistant_name).toBe("the AI assistant");
+    expect(vars.assistant_name).toBe("Ava");
   });
 
-  it("a Spanish-configured tenant greets a recognized caller in Spanish (gender-neutral) and defaults the assistant name in Spanish", async () => {
+  it("a Spanish-configured tenant greets a recognized caller in Spanish (gender-neutral) and defaults the assistant name to the same persona name", async () => {
     const { sql } = customersSql([
       { name: "Elena Vargas", last_seen_at: "2026-09-20T00:00:00Z", lifetime_bookings: 1 },
     ]);
@@ -105,7 +109,7 @@ describe("buildInboundDynamicVariables — returning caller (DISCLOSE-1)", () =>
       config: { ...CONFIG, languagePrimary: "es" },
     });
     expect(vars.caller_greeting).toBe("Qué gusto saludarle de nuevo, Elena.");
-    expect(vars.assistant_name).toBe("el asistente virtual");
+    expect(vars.assistant_name).toBe("Ava");
   });
 
   it("a known number with no stored name still gets an unnamed welcome back", async () => {
@@ -172,12 +176,64 @@ describe("sanitizeNameForSpeech (DISCLOSE-1)", () => {
   });
 });
 
-describe("defaultAssistantName (DISCLOSE-1)", () => {
-  it("matches the static opening line's language", () => {
-    expect(defaultAssistantName("en")).toBe("the AI assistant");
-    expect(defaultAssistantName("es")).toBe("el asistente virtual");
-    expect(defaultAssistantName("fr")).toBe("the AI assistant");
+describe("defaultAssistantName (DISCLOSE-2)", () => {
+  it("is a real persona name, identical for every language", () => {
+    expect(defaultAssistantName("en")).toBe("Ava");
+    expect(defaultAssistantName("es")).toBe("Ava");
+    expect(defaultAssistantName("fr")).toBe("Ava");
   });
+
+  it("falls back for a blank or whitespace-only stored name, not just null", async () => {
+    const sql = (() => Promise.resolve([])) as unknown as SqlClient;
+    for (const assistantName of [null, "", "   "]) {
+      const vars = await buildInboundDynamicVariables({
+        sql,
+        logger,
+        now: NOW,
+        fromNumber: "",
+        config: { ...CONFIG, assistantName },
+      });
+      expect(vars.assistant_name).toBe("Ava");
+    }
+    const named = await buildInboundDynamicVariables({
+      sql,
+      logger,
+      now: NOW,
+      fromNumber: "",
+      config: { ...CONFIG, assistantName: "Riley" },
+    });
+    expect(named.assistant_name).toBe("Riley");
+  });
+
+  it.each([
+    ["en", "AI assistant, their AI assistant"],
+    ["es", "asistente virtual, su asistente de inteligencia artificial"],
+  ])(
+    "the rendered %s opening never repeats 'AI assistant' when assistant_name is unset",
+    async (language, banned) => {
+      const sql = (() => Promise.resolve([])) as unknown as SqlClient;
+      const vars = await buildInboundDynamicVariables({
+        sql,
+        logger,
+        now: NOW,
+        fromNumber: "",
+        config: { ...CONFIG, languagePrimary: language, assistantName: null },
+      });
+      const { text } = buildOpeningLine(DISCLOSURE_LINE, language);
+      // Retell substitutes {{tokens}} in the static opening at call time.
+      const rendered = text.replace(
+        /\{\{(\w+)\}\}/g,
+        (_m, key: string) => (vars as unknown as Record<string, string>)[key] ?? "",
+      );
+      expect(rendered).not.toContain(banned);
+      expect(rendered).not.toMatch(/This is the AI assistant/i);
+      expect(rendered).not.toMatch(/Le atiende el asistente virtual/i);
+      expect(rendered).toContain(
+        language === "es" ? "Le atiende Ava," : "This is Ava, their AI assistant",
+      );
+      expect(rendered).toContain(language === "es" ? "grabada" : "may be recorded");
+    },
+  );
 });
 
 /**
