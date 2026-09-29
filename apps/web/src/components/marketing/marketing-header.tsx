@@ -2,8 +2,9 @@
 
 import { ThemeToggle } from "@heyloo/ui";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Link } from "@/i18n/navigation";
+import { hasSessionCookie } from "@/lib/auth/session-cookie";
 
 /**
  * The marketing header: wordmark, the four home chapters, the demo link and
@@ -16,10 +17,29 @@ import { Link } from "@/i18n/navigation";
  * `/pricing`, `/login` and `/signup` route chunks right after the home page
  * hydrates and count against the perf budget's initial-JS window.
  */
+const subscribeNever = () => () => {};
+const readSessionCookie = () => hasSessionCookie(document.cookie);
+
 export function MarketingHeader() {
   const t = useTranslations("Nav");
   const [open, setOpen] = useState(false);
+  // Server snapshot is `false` so the prerendered HTML and first hydration match.
+  const signedIn = useSyncExternalStore(subscribeNever, readSessionCookie, () => false);
+  const menuButton = useRef<HTMLButtonElement>(null);
   const close = () => setOpen(false);
+
+  // A signed-in visitor sees "Open dashboard" instead of "Log in" / "Get started".
+  // Escape closes the phone menu and hands focus back to its button.
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      menuButton.current?.focus();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open]);
 
   const chapters = [
     { href: "/#call", label: t("call") },
@@ -40,21 +60,30 @@ export function MarketingHeader() {
               {item.label}
             </Link>
           ))}
-          <Link href="/login" prefetch={false}>
-            {t("login")}
-          </Link>
+          {signedIn ? null : (
+            <Link href="/login" prefetch={false}>
+              {t("login")}
+            </Link>
+          )}
         </nav>
         <div className="hdr-cta">
           <Link className="lnk" href="/#talk" prefetch={false}>
             {t("demo")}
           </Link>
-          <Link className="btn btn-p btn-sm" href="/signup" prefetch={false}>
-            {t("signup")}
-          </Link>
+          {signedIn ? (
+            <Link className="btn btn-p btn-sm" href="/dashboard" prefetch={false}>
+              {t("openDashboard")}
+            </Link>
+          ) : (
+            <Link className="btn btn-p btn-sm" href="/signup" prefetch={false}>
+              {t("signup")}
+            </Link>
+          )}
           <div className="hdr-theme">
             <ThemeToggle />
           </div>
           <button
+            ref={menuButton}
             type="button"
             className="hdr-menu"
             aria-label={open ? t("closeMenu") : t("openMenu")}
@@ -92,9 +121,15 @@ export function MarketingHeader() {
           <Link href="/#talk" prefetch={false} onClick={close}>
             {t("demo")}
           </Link>
-          <Link href="/login" prefetch={false} onClick={close}>
-            {t("login")}
-          </Link>
+          {signedIn ? (
+            <Link href="/dashboard" prefetch={false} onClick={close}>
+              {t("openDashboard")}
+            </Link>
+          ) : (
+            <Link href="/login" prefetch={false} onClick={close}>
+              {t("login")}
+            </Link>
+          )}
           <div className="hdr-theme">
             <ThemeToggle />
           </div>

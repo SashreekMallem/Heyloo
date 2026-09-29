@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { NextIntlClientProvider } from "next-intl";
 import type { ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import messages from "../../../messages/en.json";
 
 vi.mock("@/i18n/navigation", () => ({
@@ -81,6 +81,40 @@ describe("MarketingHeader", () => {
     expect(within(menu).getByRole("button", { name: "Theme" })).toBeInTheDocument();
     await user.click(within(menu).getByRole("link", { name: "Pricing" }));
     expect(screen.queryByRole("navigation", { name: "Mobile" })).toBeNull();
+  });
+});
+
+describe("MarketingHeader — session awareness and keyboard (F-13, MAP-16)", () => {
+  afterEach(() => {
+    document.cookie = "sb-testref-auth-token=; max-age=0; path=/";
+  });
+
+  it("swaps Log in / Get started for Open dashboard when a session cookie is present", async () => {
+    document.cookie = "sb-testref-auth-token=base64-abc; path=/";
+    render(withIntl(<MarketingHeader />));
+    expect(await screen.findByRole("link", { name: "Open dashboard" })).toHaveAttribute(
+      "href",
+      "/dashboard",
+    );
+    expect(screen.queryByRole("link", { name: "Log in" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Get started" })).toBeNull();
+  });
+
+  it("shows Log in and Get started to a visitor with no session", () => {
+    render(withIntl(<MarketingHeader />));
+    expect(screen.getByRole("link", { name: "Log in" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Get started" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open dashboard" })).toBeNull();
+  });
+
+  it("closes the phone menu on Escape and returns focus to the menu button", async () => {
+    const user = userEvent.setup();
+    render(withIntl(<MarketingHeader />));
+    await user.click(screen.getByRole("button", { name: "Open menu" }));
+    expect(screen.getByRole("navigation", { name: "Mobile" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("navigation", { name: "Mobile" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open menu" })).toHaveFocus();
   });
 });
 
