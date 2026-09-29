@@ -6,14 +6,15 @@
 // the marketing site).
 //
 // DEMO-2: only RETELL_API_KEY (and the database) are required at boot. The
-// instant demo needs nothing else; ANTHROPIC_API_KEY is used by the scrape
-// "create" flow alone, DEMO_AGENT_ID by the scrape "confirm" flow (and as the
+// instant demo needs nothing else; the LLM key (GEMINI_API_KEY, LLM-1) is used by
+// the scrape "create" flow alone, DEMO_AGENT_ID by the scrape "confirm" flow (and as the
 // `auto` instant fallback), DEMO_PHONE_E164 only to show a phone fallback. A
 // missing optional one used to crash the whole function at module load
 // (WORKER_ERROR), taking the instant demo down with it; now the flow that needs
 // it answers a clean 503 `not_configured` instead.
 import { getSql } from "../_shared/deno/db.ts";
 import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { resolveLlmFromEnv } from "../_shared/deno/llm.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import {
@@ -26,8 +27,6 @@ import { handleConfirmDemo, handleCreateDemo, handleInstantDemo } from "./handle
 const logger = createLogger({ fn: "api-demo-agent" });
 const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
 // An empty secret counts as unset (`optionalEnv` alone would return "").
-const ANTHROPIC_API_KEY = optionalEnv("ANTHROPIC_API_KEY") || undefined;
-const ANTHROPIC_MODEL = optionalEnv("ANTHROPIC_DEMO_MODEL") || "claude-3-5-haiku-20241022";
 const DEMO_AGENT_ID = optionalEnv("DEMO_AGENT_ID") || undefined;
 const DEMO_PHONE_E164 = optionalEnv("DEMO_PHONE_E164") || undefined;
 
@@ -60,9 +59,7 @@ Deno.serve(async (req: Request) => {
 
   const sql = getSql();
   const deps = {
-    anthropicFetch: fetch,
-    anthropicApiKey: ANTHROPIC_API_KEY,
-    anthropicModel: ANTHROPIC_MODEL,
+    llm: resolveLlmFromEnv(),
     retellFetch: fetch,
     retellApiKey: RETELL_API_KEY,
     demoAgentId: DEMO_AGENT_ID,
