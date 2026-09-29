@@ -25,15 +25,30 @@ export interface Alert {
   payload: Record<string, unknown>;
 }
 
+/**
+ * COCKPIT-1: evaluated on the LAST CLOSED month, for real tenants that were
+ * actually paid (revenue > 0). The previous rule read the current-month
+ * `v_tenant_margin` (revenue from an always-empty `revenue_events`, cost from
+ * test calls too), so every tenant with any cost looked negative and one
+ * tenant's test calls raised 193 hourly "negative margin" alerts. Invoices are
+ * billed in arrears, so the current month has no paid revenue to compare
+ * against until it closes.
+ */
 export async function evaluateNegativeMargin(sql: SqlClient): Promise<Alert[]> {
-  const rows = await sql<{ tenant_id: string; name: string; margin_cents: number }>`
-    select tenant_id, name, margin_cents from public.v_tenant_margin where margin_cents < 0
+  const rows = await sql<{ tenant_id: string; name: string; margin_cents: unknown }>`
+    select tenant_id, name, margin_cents
+    from public.fn_margin_by_tenant(
+      (date_trunc('month', now() at time zone 'UTC') - interval '1 month') at time zone 'UTC',
+      date_trunc('month', now() at time zone 'UTC') at time zone 'UTC',
+      false
+    )
+    where revenue_cents > 0 and margin_cents < 0
   `;
   return rows.map((r) => ({
     rule: "negative_margin",
     severity: "warning",
     tenant_id: r.tenant_id,
-    payload: { tenant_name: r.name, margin_cents: r.margin_cents },
+    payload: { tenant_name: r.name, margin_cents: Number(r.margin_cents), period: "last_month" },
   }));
 }
 

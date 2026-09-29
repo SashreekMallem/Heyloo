@@ -24,9 +24,9 @@ function makeSql(fixtures: Record<string, unknown[]> = {}): {
 }
 
 describe("evaluateNegativeMargin", () => {
-  it("maps v_tenant_margin rows with negative margin into alerts", async () => {
-    const { sql } = makeSql({
-      "from public.v_tenant_margin": [{ tenant_id: "t1", name: "Acme", margin_cents: -500 }],
+  it("COCKPIT-1: alerts on the last closed month's PAID negative margin (real tenants only), coercing bigint strings", async () => {
+    const { sql, calls } = makeSql({
+      "from public.fn_margin_by_tenant": [{ tenant_id: "t1", name: "Acme", margin_cents: "-500" }],
     });
     const alerts = await evaluateNegativeMargin(sql);
     expect(alerts).toEqual([
@@ -34,9 +34,14 @@ describe("evaluateNegativeMargin", () => {
         rule: "negative_margin",
         severity: "warning",
         tenant_id: "t1",
-        payload: { tenant_name: "Acme", margin_cents: -500 },
+        payload: { tenant_name: "Acme", margin_cents: -500, period: "last_month" },
       },
     ]);
+    const q = calls[0]?.text ?? "";
+    expect(q).toContain("revenue_cents > 0 and margin_cents < 0");
+    // include_test = false: test tenants/calls never raise a margin alert
+    expect(q).toContain("false");
+    expect(q).not.toContain("v_tenant_margin");
   });
 });
 

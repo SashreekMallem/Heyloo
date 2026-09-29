@@ -53,15 +53,45 @@ describe("routeAdminRequest — auth gate", () => {
 });
 
 describe("routeAdminRequest — tenants group", () => {
-  it("lists tenants on GET /admin-tenants", async () => {
+  it("lists tenants on GET /admin-tenants with MRR (plan base fee for billing tenants) and margin % (null without a paid invoice)", async () => {
     const { sql } = makeSql({
-      "from public.tenants where deleted_at": [
-        { id: "t1", name: "Acme", vertical: "auto", status: "active" },
+      "from public.tenants t": [
+        {
+          id: "t1",
+          name: "Acme",
+          vertical: "auto",
+          status: "active",
+          plan_code: "standard",
+          created_at: "2026-09-01T00:00:00Z",
+          base_cents: "29900",
+          revenue_cents: "29900",
+          margin_cents: "29662",
+        },
+        {
+          id: "t2",
+          name: "Trial Co",
+          vertical: "auto",
+          status: "trialing",
+          plan_code: "standard",
+          created_at: "2026-09-02T00:00:00Z",
+          base_cents: "29900",
+          revenue_cents: "0",
+          margin_cents: "-40",
+        },
       ],
     });
     const result = await routeAdminRequest(sql, baseCtx(), logger);
     expect(result.status).toBe(200);
-    expect((result.body as { tenants: unknown[] }).tenants).toHaveLength(1);
+    const tenants = (
+      result.body as {
+        tenants: { id: string; mrr_cents: number; margin_pct: number | null }[];
+      }
+    ).tenants;
+    expect(tenants).toHaveLength(2);
+    expect(tenants[0]?.mrr_cents).toBe(29900);
+    expect(tenants[0]?.margin_pct).toBeCloseTo(99.2, 1);
+    expect(tenants[1]?.mrr_cents).toBe(0);
+    expect(tenants[1]?.margin_pct).toBeNull();
   });
 
   it("returns { tenant, metrics } on GET /admin-tenants/:id, computing MRR/margin/minutes rather than reading them off `tenants`", async () => {
@@ -69,9 +99,8 @@ describe("routeAdminRequest — tenants group", () => {
       "select * from public.tenants where id": [
         { id: "t1", name: "Acme", vertical: "auto", status: "active" },
       ],
-      "from public.v_tenant_margin": [
-        { revenue_cents: 20000, cost_cents: 5000, margin_cents: 15000 },
-      ],
+      "from public.fn_margin_by_tenant": [{ revenue_cents: "20000", margin_cents: "15000" }],
+      "from public.platform_settings where key": [{ base_cents: "29900" }],
       "from public.usage_daily": [{ minutes_used: 340 }],
     });
     const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-tenants/t1" }), logger);
@@ -81,7 +110,8 @@ describe("routeAdminRequest — tenants group", () => {
       metrics: { mrr_cents: number; margin_pct: number; minutes_used: number };
     };
     expect(body.tenant.id).toBe("t1");
-    expect(body.metrics).toEqual({ mrr_cents: 20000, margin_pct: 75, minutes_used: 340 });
+    // MRR = the plan's base fee (billing tenant), not paid-invoices-so-far.
+    expect(body.metrics).toEqual({ mrr_cents: 29900, margin_pct: 75, minutes_used: 340 });
   });
 
   it("GET /admin-tenants/:id returns zeroed metrics (not a crash) when the tenant has no margin/usage rows yet", async () => {
@@ -439,26 +469,204 @@ describe("routeAdminRequest — tenants group", () => {
 });
 
 describe("routeAdminRequest — cockpit group", () => {
-  it("returns the aggregate waterfall from v_tenant_margin", async () => {
-    const { sql } = makeSql({
-      "from public.v_tenant_margin": [
-        { revenue_cents: 50000, cost_cents: 10000, margin_cents: 40000 },
-      ],
+  const marginRow = (over: Record<string, unknown> = {}) => ({
+    tenant_id: "t1",
+    name: "Acme",
+    vertical: "auto",
+    status: "active",
+    is_test: false,
+    revenue_cents: "29900",
+    pending_revenue_cents: "0",
+    voice_cost_cents: "20",
+    llm_cost_cents: "7",
+    telephony_cost_cents: "11",
+    other_call_cost_cents: "0",
+    number_cost_cents: "200",
+    messaging_cost_cents: "1",
+    processing_fee_cents: "897",
+    commission_cents: "0",
+    cost_cents: "1136",
+    margin_cents: "28764",
+    billable_minutes: "3.5",
+    call_count: "2",
+    ...over,
+  });
+
+  it("returns a waterfall of segments (revenue down to net margin) from fn_margin_by_tenant, with fixed costs", async () => {
+    const { sql, calls } = makeSql({
+      "from public.fn_margin_by_tenant": [marginRow()],
+      "from public.fixed_cost_allocations": [{ amount_cents: "500" }],
     });
     const result = await routeAdminRequest(
       sql,
       baseCtx({ path: "/admin-cockpit/waterfall" }),
       logger,
     );
-    expect(result).toEqual({
-      status: 200,
-      body: { waterfall: { revenue_cents: 50000, cost_cents: 10000, margin_cents: 40000 } },
+    expect(result.status).toBe(200);
+    const body = result.body as {
+      segments: { label: string; amount: number; kind: string }[];
+      totals: { revenue_cents: number; cost_cents: number; margin_cents: number };
+      waterfall: { revenue_cents: number; cost_cents: number; margin_cents: number };
+      include_test: boolean;
+    };
+    expect(body.include_test).toBe(false);
+    expect(body.segments[0]).toEqual({ label: "Revenue", amount: 29900, kind: "add" });
+    expect(body.segments.at(-1)).toEqual({
+      label: "Net margin",
+      amount: 29900 - (1136 + 500),
+      kind: "total",
     });
+    // components sum exactly to total cost (no double counting, nothing dropped)
+    const subtract = body.segments.filter((s) => s.kind === "subtract");
+    expect(subtract.reduce((sum, s) => sum + s.amount, 0)).toBe(body.totals.cost_cents);
+    expect(subtract.map((s) => s.label)).toContain("Fixed costs");
+    expect(body.waterfall.margin_cents).toBe(body.totals.margin_cents);
+    // test data excluded by default
+    const fn = calls.find((c) => c.text.includes("fn_margin_by_tenant"));
+    expect(fn?.values).toContain(false);
   });
 
-  it("returns per-call cost rows", async () => {
+  it("passes include_test=1 through to the margin function", async () => {
+    const { sql, calls } = makeSql({ "from public.fn_margin_by_tenant": [marginRow()] });
+    await routeAdminRequest(
+      sql,
+      baseCtx({
+        path: "/admin-cockpit/waterfall",
+        query: { include_test: "1", period: "quarter" },
+      }),
+      logger,
+    );
+    const fn = calls.find((c) => c.text.includes("fn_margin_by_tenant"));
+    expect(fn?.values).toContain(true);
+  });
+
+  it("returns no segments (empty state) when the period has neither revenue nor cost", async () => {
+    const { sql } = makeSql({ "from public.fn_margin_by_tenant": [] });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-cockpit/waterfall" }),
+      logger,
+    );
+    expect((result.body as { segments: unknown[] }).segments).toEqual([]);
+  });
+
+  it("per-customer margin: backend-computed health/diagnosis, worst first, bigint strings coerced", async () => {
     const { sql } = makeSql({
-      "from public.v_call_cost_vs_billed": [{ call_id: "c1", provider_cost_cents: 100 }],
+      "from public.fn_margin_by_tenant": [
+        marginRow({ tenant_id: "good", name: "Good" }),
+        marginRow({
+          tenant_id: "bad",
+          name: "Bad",
+          revenue_cents: "29900",
+          cost_cents: "31000",
+          margin_cents: "-1100",
+          llm_cost_cents: "25000",
+          processing_fee_cents: "897",
+          voice_cost_cents: "5000",
+          billable_minutes: "100",
+        }),
+      ],
+      "like 'price_card_%'": [{ key: "price_card_auto", value: { included_minutes: 300 } }],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-cockpit/per-customer-margin" }),
+      logger,
+    );
+    const rows = (
+      result.body as {
+        rows: {
+          tenant_id: string;
+          health: string;
+          margin_pct: number | null;
+          diagnosis_reason: string | null;
+          revenue_cents: number;
+        }[];
+      }
+    ).rows;
+    expect(rows.map((r) => r.tenant_id)).toEqual(["bad", "good"]);
+    expect(rows[0]?.health).toBe("negative");
+    expect(rows[0]?.diagnosis_reason).toContain("LLM");
+    expect(rows[1]?.health).toBe("healthy");
+    expect(typeof rows[0]?.revenue_cents).toBe("number");
+  });
+
+  it("per-customer margin detail returns the tenant's calls with cost vs billed, and 404 for an unknown tenant", async () => {
+    const { sql } = makeSql({
+      "from public.fn_margin_by_tenant": [marginRow()],
+      "like 'price_card_%'": [],
+      "from public.call_logs cl": [
+        {
+          call_id: "c1",
+          tenant_id: "t1",
+          tenant_name: "Acme",
+          started_at: "2026-09-29T10:00:00Z",
+          duration_seconds: 180,
+          cost_cents: "34",
+          cost_source: "retell_call_ended",
+          is_test: true,
+          base_cents: "29900",
+          included_minutes: "300",
+        },
+        {
+          call_id: "c2",
+          tenant_id: "t1",
+          tenant_name: "Acme",
+          started_at: "2026-09-29T09:00:00Z",
+          duration_seconds: 0,
+          cost_cents: null,
+          cost_source: null,
+          is_test: false,
+          base_cents: null,
+          included_minutes: null,
+        },
+      ],
+    });
+    const ok = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-cockpit/per-customer-margin/t1" }),
+      logger,
+    );
+    expect(ok.status).toBe(200);
+    const calls = (
+      ok.body as {
+        calls: {
+          cost_cents: number | null;
+          billed_cents: number | null;
+          delta_cents: number | null;
+        }[];
+      }
+    ).calls;
+    // 180s = 3 min x 29900/300 = 299 cents billed at the allowance rate; cost 34
+    expect(calls[0]).toMatchObject({ cost_cents: 34, billed_cents: 299, delta_cents: 265 });
+    // unknown cost stays null — never fabricated as 0
+    expect(calls[1]).toMatchObject({ cost_cents: null, delta_cents: null });
+
+    const { sql: sql2 } = makeSql({ "from public.fn_margin_by_tenant": [] });
+    const missing = await routeAdminRequest(
+      sql2,
+      baseCtx({ path: "/admin-cockpit/per-customer-margin/nope" }),
+      logger,
+    );
+    expect(missing.status).toBe(404);
+  });
+
+  it("returns per-call cost rows (cost/billed/delta) under `rows`, keeping `calls` for older callers", async () => {
+    const { sql } = makeSql({
+      "from public.call_logs cl": [
+        {
+          call_id: "c1",
+          tenant_id: "t1",
+          tenant_name: "Acme",
+          started_at: "2026-09-29T10:00:00Z",
+          duration_seconds: 214,
+          cost_cents: "42",
+          cost_source: "retell_call_ended",
+          is_test: false,
+          base_cents: "29900",
+          included_minutes: "300",
+        },
+      ],
     });
     const result = await routeAdminRequest(
       sql,
@@ -466,7 +674,44 @@ describe("routeAdminRequest — cockpit group", () => {
       logger,
     );
     expect(result.status).toBe(200);
-    expect((result.body as { calls: unknown[] }).calls).toHaveLength(1);
+    const body = result.body as { rows: { cost_cents: number }[]; calls: unknown[] };
+    expect(body.rows).toHaveLength(1);
+    expect(body.calls).toHaveLength(1);
+    expect(body.rows[0]?.cost_cents).toBe(42);
+  });
+
+  it("repricing drift: $/min points per day and a marker where a category deviates >8% from baseline", async () => {
+    const { sql } = makeSql({
+      "from public.platform_settings where key = 'provider_rate_baseline'": [],
+      "with lines as": [
+        { day: "2026-09-21", cat: "voice", rate_cents_per_min: 7.0, calls: 2 },
+        { day: "2026-09-21", cat: "llm", rate_cents_per_min: 1.28, calls: 2 },
+        { day: "2026-09-21", cat: "telephony", rate_cents_per_min: 3.0, calls: 2 },
+        // incomplete day (no telephony) is skipped
+        { day: "2026-09-22", cat: "voice", rate_cents_per_min: 7.0, calls: 1 },
+      ],
+      "avg(unit_cost_cents)": [
+        {
+          provider: "retell",
+          product: "us_telnyx_telephony",
+          avg_unit_cost_cents: "3.0000",
+          sample_count: 4,
+        },
+      ],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({ path: "/admin-cockpit/repricing-drift" }),
+      logger,
+    );
+    const body = result.body as {
+      points: { label: string; voice: number; llm: number; telephony: number }[];
+      markers: { label: string; provider: string; value: number }[];
+      baseline_configured: boolean;
+    };
+    expect(body.points).toEqual([{ label: "09-21", voice: 0.07, llm: 0.0128, telephony: 0.03 }]);
+    expect(body.markers).toEqual([{ label: "09-21", provider: "telephony", value: 0.03 }]);
+    expect(body.baseline_configured).toBe(false);
   });
 
   it("returns tool_health-derived bottleneck rows", async () => {
@@ -482,6 +727,7 @@ describe("routeAdminRequest — cockpit group", () => {
     );
     expect(result.status).toBe(200);
     expect((result.body as { tools: unknown[] }).tools).toHaveLength(1);
+    expect((result.body as { byTool: Record<string, unknown[]> }).byTool).toBeDefined();
   });
 
   it("returns 404 for an unknown cockpit page", async () => {

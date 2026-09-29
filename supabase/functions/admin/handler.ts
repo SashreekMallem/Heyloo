@@ -25,6 +25,7 @@ import { generateMagicLink, getUserEmailById } from "../_shared/providers/supaba
 import { metricsAll } from "../_shared/queue.ts";
 import { renderTemplate } from "../_shared/templates.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
+import { handleCockpit, handleConfigLab, n as toNumber } from "./cockpit.ts";
 import {
   AdminAlertThresholdSchema,
   AdminCommissionTermsSchema,
@@ -151,10 +152,54 @@ async function handleTenants(
   const tenantId = parts[1];
 
   if (ctx.method === "GET" && !tenantId) {
-    const rows = await sql<{ id: string; name: string; vertical: string; status: string }>`
-      select id, name, vertical, status from public.tenants where deleted_at is null order by created_at desc limit 100
+    // COCKPIT-1: the list page's MRR / Margin % columns were always "—" (this
+    // route only returned id/name/vertical/status). MRR = the plan's recurring
+    // base fee for tenants that are billing (active/past_due); margin % is this
+    // month's paid-invoice margin from `fn_margin_by_tenant` (null until a paid
+    // invoice exists — never a fabricated 0%).
+    const rows = await sql<{
+      id: string;
+      name: string;
+      vertical: string;
+      status: string;
+      plan_code: string | null;
+      created_at: string;
+      base_cents: unknown;
+      revenue_cents: unknown;
+      margin_cents: unknown;
+    }>`
+      select t.id, t.name, t.vertical, t.status, t.plan_code, t.created_at,
+             (ps.value->>'base_cents')::numeric as base_cents,
+             m.revenue_cents, m.margin_cents
+      from public.tenants t
+      left join public.platform_settings ps on ps.key = 'price_card_' || t.vertical
+      left join public.fn_margin_by_tenant(
+        date_trunc('month', now() at time zone 'UTC') at time zone 'UTC',
+        (date_trunc('month', now() at time zone 'UTC') + interval '1 month') at time zone 'UTC',
+        true
+      ) m on m.tenant_id = t.id
+      where t.deleted_at is null
+      order by t.created_at desc limit 100
     `;
-    return { status: 200, body: { tenants: rows } };
+    return {
+      status: 200,
+      body: {
+        tenants: rows.map((r) => {
+          const revenue = toNumber(r.revenue_cents);
+          return {
+            id: r.id,
+            name: r.name,
+            vertical: r.vertical,
+            status: r.status,
+            plan_code: r.plan_code,
+            created_at: r.created_at,
+            mrr_cents:
+              r.status === "active" || r.status === "past_due" ? toNumber(r.base_cents) : 0,
+            margin_pct: revenue > 0 ? (toNumber(r.margin_cents) / revenue) * 100 : null,
+          };
+        }),
+      },
+    };
   }
 
   if (ctx.method === "GET" && tenantId && parts[2] === undefined) {
@@ -167,29 +212,40 @@ async function handleTenants(
     // The tenants table itself carries no MRR/margin/usage columns — the
     // cockpit tenant-detail page needs all three (admin-partner design
     // review round 5: page destructured a flat `TenantDetail` the real
-    // response never carried). Compute them the same way the margin
-    // cockpit's per-customer route does (`v_tenant_margin`, current
-    // calendar month) plus a `usage_daily` rollup for minutes, rather than
-    // adding ad hoc denormalized columns to `tenants`.
+    // response never carried). COCKPIT-1: margin comes from the single
+    // `fn_margin_by_tenant` definition (current UTC month, INCLUDING test
+    // data — an admin looking at one tenant wants to see all of it), and MRR
+    // is the plan's recurring base fee for a billing tenant, not "paid
+    // invoices so far this month" (invoices are billed in arrears, so that was
+    // always 0 mid-month).
     const marginRows = await sql<{
-      revenue_cents: number;
-      cost_cents: number;
-      margin_cents: number;
+      revenue_cents: unknown;
+      margin_cents: unknown;
     }>`
-      select revenue_cents, cost_cents, margin_cents
-      from public.v_tenant_margin where tenant_id = ${tenantId}
+      select revenue_cents, margin_cents
+      from public.fn_margin_by_tenant(
+        date_trunc('month', now() at time zone 'UTC') at time zone 'UTC',
+        (date_trunc('month', now() at time zone 'UTC') + interval '1 month') at time zone 'UTC',
+        true
+      ) where tenant_id = ${tenantId}
     `;
-    const margin = marginRows[0] ?? { revenue_cents: 0, cost_cents: 0, margin_cents: 0 };
+    const revenueCents = toNumber(marginRows[0]?.revenue_cents);
+    const marginCents = toNumber(marginRows[0]?.margin_cents);
 
     const minutesRows = await sql<{ minutes_used: number }>`
       select coalesce(sum(billable_minutes), 0)::numeric as minutes_used
       from public.usage_daily
       where tenant_id = ${tenantId} and date >= date_trunc('month', now())::date
     `;
+    const baseRows = await sql<{ base_cents: unknown }>`
+      select (value->>'base_cents')::numeric as base_cents
+      from public.platform_settings where key = ${`price_card_${String(tenant["vertical"])}`}
+    `;
+    const billing = tenant["status"] === "active" || tenant["status"] === "past_due";
 
     const metrics = {
-      mrr_cents: margin.revenue_cents,
-      margin_pct: margin.revenue_cents > 0 ? (margin.margin_cents / margin.revenue_cents) * 100 : 0,
+      mrr_cents: billing ? toNumber(baseRows[0]?.base_cents) : 0,
+      margin_pct: revenueCents > 0 ? (marginCents / revenueCents) * 100 : 0,
       minutes_used: Number(minutesRows[0]?.minutes_used ?? 0),
     };
 
@@ -846,168 +902,24 @@ async function handlePlatformSettings(
 }
 
 // ---------------------------------------------------------------------
-// Margin cockpit (BACKEND_SPEC §7.7) — reads T1's §6 views + cost_events/
-// revenue_events directly for drill-down. No writes, no admin_actions.
+// Margin cockpit + Config Lab (BACKEND_SPEC §7.7) — implemented in
+// ./cockpit.ts (COCKPIT-1). Only the pgmq queue-depth page (OPS-8) stays here
+// because it needs `_shared/queue.ts`.
 // ---------------------------------------------------------------------
-async function handleCockpit(sql: SqlClient, ctx: AdminRequestContext): Promise<AdminResponse> {
-  const parts = segments(ctx.path); // ["admin-cockpit", "<page>"]
-  const page = parts[1];
-  if (ctx.method !== "GET") return { status: 404, body: { error: "not_found" } };
-
-  if (page === "waterfall") {
-    const rows = await sql<{ revenue_cents: number; cost_cents: number; margin_cents: number }>`
-      select coalesce(sum(revenue_cents),0)::int as revenue_cents,
-             coalesce(sum(cost_cents),0)::int as cost_cents,
-             coalesce(sum(margin_cents),0)::int as margin_cents
-      from public.v_tenant_margin
-    `;
-    return {
-      status: 200,
-      body: { waterfall: rows[0] ?? { revenue_cents: 0, cost_cents: 0, margin_cents: 0 } },
-    };
-  }
-
-  if (page === "per-customer-margin") {
-    const rows = await sql<Record<string, unknown>>`
-      select * from public.v_tenant_margin order by margin_cents asc limit 200
-    `;
-    return { status: 200, body: { tenants: rows } };
-  }
-
-  if (page === "per-call-cost") {
-    const rows = await sql<Record<string, unknown>>`
-      select * from public.v_call_cost_vs_billed order by provider_cost_cents desc nulls last limit 100
-    `;
-    return { status: 200, body: { calls: rows } };
-  }
-
-  if (page === "repricing-drift") {
-    // BACKEND_SPEC §8's "price drift >8%" needs a per-provider/product cost
-    // BASELINE this build has no platform_settings key for yet (T1/T3 left
-    // it as a literal-thresholds follow-up) — rather than guess a baseline,
-    // this surfaces the current trailing-30-day average unit cost per
-    // provider/product so an admin can eyeball drift manually until a real
-    // baseline key is introduced (docs/BUILD_NOTES.md T4 entry).
-    const rows = await sql<{
-      provider: string;
-      product: string;
-      avg_unit_cost_cents: number;
-      sample_count: number;
-    }>`
-      select provider, product, avg(unit_cost_cents)::numeric(12,4) as avg_unit_cost_cents, count(*)::int as sample_count
-      from public.cost_events
-      where occurred_at >= now() - interval '30 days' and unit_cost_cents is not null
-      group by provider, product
-      order by provider, product
-    `;
-    return { status: 200, body: { drift: rows, baseline_configured: false } };
-  }
-
-  if (page === "bottleneck") {
-    const rows = await sql<{
-      tool_name: string;
-      calls: number;
-      error_rate: number;
-      p95_ms: number;
-    }>`
-      select
-        tool_name,
-        count(*)::int as calls,
-        (count(*) filter (where not success))::numeric / nullif(count(*), 0) as error_rate,
-        percentile_cont(0.95) within group (order by latency_ms) as p95_ms
-      from public.tool_health
-      where occurred_at >= now() - interval '1 hour'
-      group by tool_name
-      order by p95_ms desc nulls last
-    `;
-    return { status: 200, body: { tools: rows } };
-  }
-
-  if (page === "alerts") {
-    const rows = await sql<Record<string, unknown>>`
-      select * from public.alerts where status = 'open' order by created_at desc limit 100
-    `;
-    return { status: 200, body: { alerts: rows } };
-  }
-
+async function handleCockpitRoute(
+  sql: SqlClient,
+  ctx: AdminRequestContext,
+): Promise<AdminResponse> {
+  const parts = segments(ctx.path);
   // OPS-8 (docs/BUILD_NOTES.md deliverable 3) — every queue's
   // `pgmq.metrics_all()` row (including each `_dlq` companion), so an
   // admin can see backlog/DLQ depth without a direct DB query. Mirrors
   // `worker-tick`'s own `queues` field (same `_shared/queue.ts#metricsAll`
   // helper) so both surfaces stay in lockstep.
-  if (page === "queues") {
-    const queues = await metricsAll(sql);
-    return { status: 200, body: { queues } };
+  if (ctx.method === "GET" && parts[1] === "queues") {
+    return { status: 200, body: { queues: await metricsAll(sql) } };
   }
-
-  return { status: 404, body: { error: "not_found" } };
-}
-
-// ---------------------------------------------------------------------
-// Config Lab (BACKEND_SPEC §7.7) — "what-if" margin projection against a
-// proposed price-card edit, WITHOUT committing it to platform_settings.
-// ---------------------------------------------------------------------
-interface PriceCardValue {
-  base_cents: number;
-  included_minutes: number;
-  overage_cents: number;
-}
-
-async function handleConfigLab(sql: SqlClient, ctx: AdminRequestContext): Promise<AdminResponse> {
-  const parts = segments(ctx.path); // ["admin-config-lab", "simulate"]
-  if (parts[1] !== "simulate" || (ctx.method !== "GET" && ctx.method !== "POST")) {
-    return { status: 404, body: { error: "not_found" } };
-  }
-
-  const body = (ctx.body ?? {}) as Partial<PriceCardValue> & { vertical?: string };
-  if (!body.vertical) return { status: 422, body: { error: "missing_vertical" } };
-
-  const currentRows = await sql<{ value: PriceCardValue }>`
-    select value from public.platform_settings where key = ${`price_card_${body.vertical}`}
-  `;
-  const current = currentRows[0]?.value;
-  if (!current) return { status: 404, body: { error: "unknown_vertical" } };
-
-  const proposed: PriceCardValue = {
-    base_cents: body.base_cents ?? current.base_cents,
-    included_minutes: body.included_minutes ?? current.included_minutes,
-    overage_cents: body.overage_cents ?? current.overage_cents,
-  };
-
-  const usageRows = await sql<{ tenant_id: string; billable_minutes: number }>`
-    select t.id as tenant_id, coalesce(sum(ud.billable_minutes), 0) as billable_minutes
-    from public.tenants t
-    left join public.usage_daily ud on ud.tenant_id = t.id and ud.date >= date_trunc('month', now())::date
-    where t.vertical = ${body.vertical} and t.deleted_at is null and t.status = 'active'
-    group by t.id
-  `;
-
-  const costRows = await sql<{ cost_cents: number }>`
-    select coalesce(sum(ce.total_cost_cents), 0)::int as cost_cents
-    from public.cost_events ce
-    join public.tenants t on t.id = ce.tenant_id
-    where t.vertical = ${body.vertical} and ce.occurred_at >= date_trunc('month', now())
-  `;
-  const costCents = costRows[0]?.cost_cents ?? 0;
-
-  const project = (card: PriceCardValue) => {
-    let revenue = 0;
-    for (const row of usageRows) {
-      const overage = Math.max(0, row.billable_minutes - card.included_minutes);
-      revenue += card.base_cents + Math.round(overage * card.overage_cents);
-    }
-    return { revenue_cents: revenue, cost_cents: costCents, margin_cents: revenue - costCents };
-  };
-
-  return {
-    status: 200,
-    body: {
-      vertical: body.vertical,
-      tenant_count: usageRows.length,
-      current: project(current),
-      simulated: project(proposed),
-    },
-  };
+  return handleCockpit(sql, ctx);
 }
 
 // ---------------------------------------------------------------------
@@ -1025,7 +937,26 @@ async function handleReferrals(
     const rows = await sql<Record<string, unknown>>`
       select * from public.v_referral_pnl order by accrued_cents desc nulls last limit 200
     `;
-    return { status: 200, body: { referral_partners: rows } };
+    // COCKPIT-1: the Referral P&L page reads `rows` with per-partner funnel
+    // fields; `referral_partners` (raw view rows) is kept for existing callers.
+    // `clicks` is null: link clicks are not tracked anywhere yet.
+    return {
+      status: 200,
+      body: {
+        rows: rows.map((r) => ({
+          partner_id: r["referral_partner_id"],
+          partner_name: r["name"],
+          clicks: null,
+          signups: toNumber(r["signup_count"]),
+          qualified: toNumber(r["qualified_count"]),
+          paid: toNumber(r["paid_count"]),
+          payouts_cents: toNumber(r["paid_cents"]),
+          accrued_cents: toNumber(r["accrued_cents"]),
+          revenue_cents: toNumber(r["attributed_revenue_cents"]),
+        })),
+        referral_partners: rows,
+      },
+    };
   }
 
   // Recurring commission terms (GAP_REGISTER Cluster G item 1, owner
@@ -1184,31 +1115,69 @@ async function handleReferrals(
 // ---------------------------------------------------------------------
 async function handleCac(sql: SqlClient, ctx: AdminRequestContext): Promise<AdminResponse> {
   if (ctx.method !== "GET") return { status: 404, body: { error: "not_found" } };
+  // COCKPIT-1: lead_count now counts DISTINCT leads (was one per cost row, so
+  // a lead with several cost events was counted several times) and converted
+  // tenants exclude test tenants. `pipeline_costs` is deliberately NOT added:
+  // it is the campaign-level ledger of the very same spend `cac_events`
+  // records per lead — summing both would double count.
   const rows = await sql<{
     channel: string;
-    total_cost_cents: number;
-    lead_count: number;
-    converted_tenant_count: number;
+    total_cost_cents: unknown;
+    lead_count: unknown;
+    converted_tenant_count: unknown;
   }>`
     select
-      channel,
-      sum(cost_cents)::int as total_cost_cents,
-      count(*) filter (where lead_id is not null)::int as lead_count,
-      count(distinct tenant_id) filter (where tenant_id is not null)::int as converted_tenant_count
-    from public.cac_events
-    group by channel
+      ce.channel,
+      sum(ce.cost_cents)::int as total_cost_cents,
+      count(distinct ce.lead_id)::int as lead_count,
+      count(distinct ce.tenant_id) filter (where t.id is not null and not t.is_test)::int as converted_tenant_count
+    from public.cac_events ce
+    left join public.tenants t on t.id = ce.tenant_id
+    group by ce.channel
     order by total_cost_cents desc
   `;
+  const monthly = await sql<{
+    channel: string;
+    label: string;
+    cost_cents: unknown;
+    converted: unknown;
+  }>`
+    select
+      ce.channel,
+      to_char(date_trunc('month', ce.occurred_at), 'YYYY-MM') as label,
+      sum(ce.cost_cents)::int as cost_cents,
+      count(distinct ce.tenant_id) filter (where t.id is not null and not t.is_test)::int as converted
+    from public.cac_events ce
+    left join public.tenants t on t.id = ce.tenant_id
+    group by ce.channel, date_trunc('month', ce.occurred_at)
+    order by date_trunc('month', ce.occurred_at)
+  `;
+  // Cohort CAC per spend month: that month's spend / tenants converted from
+  // the leads it paid for. A month with no conversions has no defined CAC and
+  // is omitted from the trend (the channel table below still shows its spend).
+  const byChannel: Record<string, { label: string; value: number }[]> = {};
+  for (const m of monthly) {
+    const converted = toNumber(m.converted);
+    if (converted <= 0) continue;
+    const series = byChannel[m.channel] ?? [];
+    series.push({ label: m.label, value: Math.round(toNumber(m.cost_cents) / converted) });
+    byChannel[m.channel] = series;
+  }
   return {
     status: 200,
     body: {
-      channels: rows.map((r) => ({
-        ...r,
-        cac_cents:
-          r.converted_tenant_count > 0
-            ? Math.round(r.total_cost_cents / r.converted_tenant_count)
-            : null,
-      })),
+      byChannel,
+      channels: rows.map((r) => {
+        const total = toNumber(r.total_cost_cents);
+        const converted = toNumber(r.converted_tenant_count);
+        return {
+          channel: r.channel,
+          total_cost_cents: total,
+          lead_count: toNumber(r.lead_count),
+          converted_tenant_count: converted,
+          cac_cents: converted > 0 ? Math.round(total / converted) : null,
+        };
+      }),
     },
   };
 }
@@ -1962,7 +1931,7 @@ export async function routeAdminRequest(
   if (first === "admin-tenants") return handleTenants(sql, ctx, logger, deps);
   if (first === "admin-alerts") return handleAlerts(sql, ctx);
   if (first === "admin-platform-settings") return handlePlatformSettings(sql, ctx);
-  if (first === "admin-cockpit") return handleCockpit(sql, ctx);
+  if (first === "admin-cockpit") return handleCockpitRoute(sql, ctx);
   if (first === "admin-config-lab") return handleConfigLab(sql, ctx);
   if (first === "admin-referrals") return handleReferrals(sql, ctx, logger);
   if (first === "admin-cac") return handleCac(sql, ctx);
