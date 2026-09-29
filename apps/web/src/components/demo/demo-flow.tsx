@@ -35,13 +35,14 @@ type Step =
   | { name: "form" }
   | { name: "loading" }
   | { name: "scrape_failed" }
+  | { name: "not_configured" }
   | { name: "confirm"; demoSessionId: string; summary: AgentSummary }
   | {
       name: "active";
       demoSessionId: string;
       callToken: string;
       webCall: DemoWebCall | undefined;
-      demoPhone: string;
+      demoPhone: string | undefined;
       summary: AgentSummary;
     };
 
@@ -62,6 +63,13 @@ export function DemoFlow({ initialVertical }: { initialVertical?: string | undef
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ ...values, vertical: initialVertical }),
       });
+      if (res.status === 503) {
+        // `api-demo-agent` answers 503 `not_configured` when building a demo
+        // from a website is switched off (no Anthropic key): say so plainly
+        // instead of blaming the visitor's URL.
+        setStep({ name: "not_configured" });
+        return;
+      }
       if (!res.ok) {
         setStep({ name: "scrape_failed" });
         return;
@@ -75,6 +83,14 @@ export function DemoFlow({ initialVertical }: { initialVertical?: string | undef
     } catch {
       setStep({ name: "scrape_failed" });
     }
+  }
+
+  if (step.name === "not_configured") {
+    return (
+      <div className="mx-auto max-w-md">
+        <ErrorState message="Building a demo from your website isn't available right now. Pick a kind of business above to talk to a sample receptionist instead." />
+      </div>
+    );
   }
 
   if (step.name === "form" || step.name === "scrape_failed") {
@@ -176,7 +192,7 @@ function ConfirmStep({
   summary: AgentSummary;
   onActivate: (
     callToken: string,
-    demoPhone: string,
+    demoPhone: string | undefined,
     summary: AgentSummary,
     webCall: DemoWebCall | undefined,
   ) => void;
@@ -210,7 +226,7 @@ function ConfirmStep({
         demo_phone_e164?: string;
         agent_summary?: AgentSummary;
       };
-      if (!res.ok || !body.retell_call_token || !body.demo_phone_e164) {
+      if (!res.ok || !body.retell_call_token) {
         toast.error("We couldn't activate your demo — please try again.");
         setActivating(false);
         return;
@@ -283,7 +299,7 @@ function ActiveStep({
   demoSessionId: string;
   callToken: string;
   webCall: DemoWebCall | undefined;
-  demoPhone: string;
+  demoPhone: string | undefined;
   summary: AgentSummary;
 }) {
   // The call itself (mic prompt, connect, live transcript, the hard time limit)
@@ -316,7 +332,9 @@ function ActiveStep({
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Talk to it right in your browser, or call the demo number yourself.
+            Talk to it right in your browser{demoPhone ? ", or call the demo number yourself" : ""}.
+            Calls end on their own after 30 seconds. This demo call is recorded, and the agent says
+            it is an AI.
           </p>
           <div className="flex flex-col gap-3 sm:flex-row">
             <Button
@@ -330,11 +348,13 @@ function ActiveStep({
               <Mic className="size-4" />
               {callState === "live" ? "Call in progress…" : "Talk to it now"}
             </Button>
-            <Button size="lg" variant="outline" className="flex-1" asChild>
-              <a href={`tel:${demoPhone}`}>
-                <PhoneCall className="size-4" /> {demoPhone}
-              </a>
-            </Button>
+            {demoPhone ? (
+              <Button size="lg" variant="outline" className="flex-1" asChild>
+                <a href={`tel:${demoPhone}`}>
+                  <PhoneCall className="size-4" /> {demoPhone}
+                </a>
+              </Button>
+            ) : null}
           </div>
           {callState === "live" && (
             <Button variant="ghost" onClick={call.stop}>

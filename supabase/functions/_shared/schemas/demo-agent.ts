@@ -22,8 +22,29 @@ export const ConfirmDemoRequestSchema = z.object({
     .optional(),
 });
 
-/** SITE-3: the marketing home page's one-click "Talk to Heyloo" demo. No scrape and no confirmation card: the sample business in `handler.ts` is used as is. */
-export const InstantDemoRequestSchema = z.object({ instant: z.literal(true) });
+/**
+ * The business types a visitor can pick for the live demo (DEMO-2). A strict
+ * allowlist: it is the only thing that selects which demo tenant's agent a
+ * public request may reach, so anything else is rejected, never mapped.
+ * Mirrored (as plain data) by `apps/web/src/components/demo/demo-verticals.ts`.
+ */
+export const DEMO_VERTICALS = [
+  "auto",
+  "dental",
+  "vet",
+  "legal",
+  "real_estate",
+  "motel",
+  "restaurant",
+  "generic",
+] as const;
+export type DemoVertical = (typeof DEMO_VERTICALS)[number];
+
+/** SITE-3 / DEMO-2: the marketing site's one-click "Talk to Heyloo" demo. No scrape and no confirmation card; `vertical` picks the demo tenant (default `auto`, what SITE-3 builds sent implicitly). */
+export const InstantDemoRequestSchema = z.object({
+  instant: z.literal(true),
+  vertical: z.enum(DEMO_VERTICALS).default("auto"),
+});
 
 export const DemoAgentRequestSchema = z.union([
   ConfirmDemoRequestSchema,

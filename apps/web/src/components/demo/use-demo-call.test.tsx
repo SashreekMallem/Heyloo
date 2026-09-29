@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEMO_CALL_MARGIN_MS, DEMO_CALL_MAX_MS, demoCallLimitMs } from "./demo-call-limits";
+import { DEMO_CALL_MARGIN_MS, DEMO_CALL_MAX_MS, demoCallLimits } from "./demo-call-limits";
 import {
   type DemoCallGrant,
   DemoCallGrantError,
@@ -86,7 +86,8 @@ describe("useDemoCall: a normal call", () => {
   it("asks for the mic, then a token, then connects, then is live with the countdown running", async () => {
     const { result, client, fetchGrant } = setup();
     expect(result.current.phase).toBe("idle");
-    expect(result.current.remainingMs).toBe(demoCallLimitMs());
+    // The countdown starts from the full 30 seconds.
+    expect(result.current.remainingMs).toBe(30_000);
 
     act(() => result.current.start());
     await settle();
@@ -94,12 +95,13 @@ describe("useDemoCall: a normal call", () => {
     expect(fetchGrant).toHaveBeenCalledTimes(1);
     expect(client.startCall).toHaveBeenCalledWith({ accessToken: "tok_1" });
     expect(result.current.phase).toBe("live");
+    expect(result.current.remainingMs).toBe(30_000);
 
     await act(async () => {
       vi.advanceTimersByTime(10_000);
     });
-    expect(result.current.remainingMs).toBeLessThanOrEqual(demoCallLimitMs() - 9_750);
-    expect(result.current.remainingMs).toBeGreaterThan(demoCallLimitMs() - 10_500);
+    expect(result.current.remainingMs).toBeLessThanOrEqual(20_250);
+    expect(result.current.remainingMs).toBeGreaterThan(19_500);
   });
 
   it("shows the live transcript from the SDK's update events, and who is talking", async () => {
@@ -129,29 +131,45 @@ describe("useDemoCall: a normal call", () => {
     expect(result.current.transcript).toHaveLength(2);
   });
 
-  it("hangs up on its own at the hard time limit, and says so", async () => {
+  it("hangs up on its own at 28 seconds, and says so", async () => {
     const { result, client } = setup();
     act(() => result.current.start());
     await settle();
 
+    // Still on the call just before the hang-up.
     await act(async () => {
-      vi.advanceTimersByTime(demoCallLimitMs() + 500);
+      vi.advanceTimersByTime(27_500);
+    });
+    expect(result.current.phase).toBe("live");
+    expect(client.stopCall).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(750);
     });
     expect(result.current.phase).toBe("ended");
     expect(result.current.endReason).toBe("time-limit");
-    expect(result.current.remainingMs).toBe(0);
-    expect(client.stopCall).toHaveBeenCalled();
+    expect(client.stopCall).toHaveBeenCalledTimes(1);
   });
 
-  it("uses the server's ceiling when it sends one, minus the margin", async () => {
-    const { result } = setup({ grant: async () => ({ token: "t", maxCallMs: 30_000 }) });
-    act(() => result.current.start());
+  it("honors a lower server ceiling but never a higher one", async () => {
+    const lower = setup({ grant: async () => ({ token: "t", maxCallMs: 20_000 }) });
+    act(() => lower.result.current.start());
     await settle();
-    expect(result.current.remainingMs).toBeLessThanOrEqual(30_000 - DEMO_CALL_MARGIN_MS);
+    expect(lower.result.current.remainingMs).toBe(20_000);
+    await act(async () => {
+      vi.advanceTimersByTime(20_000 - DEMO_CALL_MARGIN_MS + 300);
+    });
+    expect(lower.result.current.endReason).toBe("time-limit");
+
+    // An older edge build that still says two minutes must not stretch the demo.
+    const older = setup({ grant: async () => ({ token: "t", maxCallMs: 120_000 }) });
+    act(() => older.result.current.start());
+    await settle();
+    expect(older.result.current.remainingMs).toBe(30_000);
     await act(async () => {
       vi.advanceTimersByTime(30_000 - DEMO_CALL_MARGIN_MS + 300);
     });
-    expect(result.current.endReason).toBe("time-limit");
+    expect(older.result.current.endReason).toBe("time-limit");
   });
 
   it("ends on the visitor's hang-up and on the far side hanging up", async () => {
@@ -318,10 +336,14 @@ describe("parseTranscriptUpdate", () => {
 });
 
 describe("demo call limits", () => {
-  it("mirrors the two-minute server ceiling and ends the browser call a few seconds early", () => {
-    expect(DEMO_CALL_MAX_MS).toBe(120_000);
-    expect(demoCallLimitMs()).toBe(DEMO_CALL_MAX_MS - DEMO_CALL_MARGIN_MS);
-    expect(demoCallLimitMs(0)).toBe(demoCallLimitMs());
-    expect(demoCallLimitMs(5_000)).toBe(10_000);
+  it("mirrors the 30 second server ceiling and hangs up 2 seconds early, at 28 s", () => {
+    expect(DEMO_CALL_MAX_MS).toBe(30_000);
+    expect(DEMO_CALL_MARGIN_MS).toBe(2_000);
+    expect(demoCallLimits()).toEqual({ ceilingMs: 30_000, hangupMs: 28_000 });
+    expect(demoCallLimits(0)).toEqual(demoCallLimits());
+    expect(demoCallLimits(30_000)).toEqual(demoCallLimits());
+    expect(demoCallLimits(120_000)).toEqual(demoCallLimits());
+    expect(demoCallLimits(20_000)).toEqual({ ceilingMs: 20_000, hangupMs: 18_000 });
+    expect(demoCallLimits(5_000)).toEqual({ ceilingMs: 10_000, hangupMs: 8_000 });
   });
 });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { demoCallLimitMs } from "./demo-call-limits";
+import { demoCallLimits } from "./demo-call-limits";
 import type { DemoWebCall } from "./web-call";
 
 /**
@@ -26,6 +26,7 @@ export type DemoCallErrorReason =
   | "no-mic"
   | "rate-limited"
   | "unavailable"
+  | "business-unavailable"
   | "failed";
 
 export type DemoCallEndReason = "hangup" | "time-limit" | "remote";
@@ -46,7 +47,7 @@ export interface DemoCallGrant {
 
 /** Thrown by `fetchGrant` to steer the error state. */
 export class DemoCallGrantError extends Error {
-  constructor(readonly reason: "rate-limited" | "unavailable") {
+  constructor(readonly reason: "rate-limited" | "unavailable" | "business-unavailable") {
     super(reason);
     this.name = "DemoCallGrantError";
   }
@@ -77,7 +78,7 @@ export interface DemoCallView {
   transcript: TranscriptLine[];
   /** True while the agent is speaking (the SDK's `agent_start_talking` / `agent_stop_talking`). */
   agentTalking: boolean;
-  /** Milliseconds left on the hard limit while live; the full limit before that. */
+  /** The visible countdown: milliseconds left of the demo limit (30 s) while live, the full limit before that. The call is hung up `DEMO_CALL_MARGIN_MS` before it reaches zero. */
   remainingMs: number;
   start: () => void;
   stop: () => void;
@@ -130,7 +131,7 @@ export function useDemoCall({ fetchGrant, loadClient }: UseDemoCallOptions): Dem
   const [endReason, setEndReason] = useState<DemoCallEndReason | null>(null);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [agentTalking, setAgentTalking] = useState(false);
-  const [remainingMs, setRemainingMs] = useState(demoCallLimitMs());
+  const [remainingMs, setRemainingMs] = useState(demoCallLimits().ceilingMs);
 
   const clientRef = useRef<DemoWebClient | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -198,7 +199,7 @@ export function useDemoCall({ fetchGrant, loadClient }: UseDemoCallOptions): Dem
     setEndReason(null);
     setTranscript([]);
     setAgentTalking(false);
-    setRemainingMs(demoCallLimitMs());
+    setRemainingMs(demoCallLimits().ceilingMs);
 
     void (async () => {
       if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
@@ -230,8 +231,8 @@ export function useDemoCall({ fetchGrant, loadClient }: UseDemoCallOptions): Dem
       }
       if (!aliveRef.current || finishedRef.current) return;
 
-      const limitMs = demoCallLimitMs(grant.maxCallMs);
-      setRemainingMs(limitMs);
+      const { ceilingMs, hangupMs } = demoCallLimits(grant.maxCallMs);
+      setRemainingMs(ceilingMs);
       try {
         const client = await (loadClientRef.current ?? loadRetellClient)();
         if (!aliveRef.current || finishedRef.current) return;
@@ -242,13 +243,11 @@ export function useDemoCall({ fetchGrant, loadClient }: UseDemoCallOptions): Dem
           setPhase("live");
           clearTimer();
           timerRef.current = setInterval(() => {
-            const left = limitMs - (Date.now() - startedAt);
-            if (left <= 0) {
-              setRemainingMs(0);
-              finish("time-limit");
-            } else {
-              setRemainingMs(left);
-            }
+            // The clock counts down the whole ceiling (0:30); the hang-up
+            // comes `DEMO_CALL_MARGIN_MS` before it reaches zero.
+            const elapsed = Date.now() - startedAt;
+            setRemainingMs(Math.max(0, ceilingMs - elapsed));
+            if (elapsed >= hangupMs) finish("time-limit");
           }, 250);
         });
         client.on("call_ended", () => finish("remote"));

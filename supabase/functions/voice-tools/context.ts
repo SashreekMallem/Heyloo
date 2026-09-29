@@ -147,6 +147,8 @@ interface PayloadResolution {
   manualMode: boolean;
   phoneNumberId: string | null;
   via: "agent_id" | "to_number" | "test_harness_tenant_id";
+  /** DEMO-2: `tenants.is_test` for the resolved tenant (the public demo tenants). A real call's row comes from `voice-events` (which folds this in); this covers a tool call that beats that webhook and so creates the row itself. */
+  tenantIsTest?: boolean;
   /** HOTPATH: the call_logs row already stored under this resolution's
    * upsert key, when the resolving query fetched it in the same statement
    * (`null` = fetched, none exists); `undefined` = not fetched, the caller
@@ -189,8 +191,13 @@ async function resolveTenantFromPayload(
   placeholder: boolean,
 ): Promise<PayloadResolution | null> {
   if (call.agent_id) {
-    const rows = await sql<{ tenant_id: string; vertical: string; manual_mode: boolean }>`
-      select ac.tenant_id, t.vertical, t.manual_mode
+    const rows = await sql<{
+      tenant_id: string;
+      vertical: string;
+      manual_mode: boolean;
+      is_test?: boolean | null;
+    }>`
+      select ac.tenant_id, t.vertical, t.manual_mode, t.is_test
       from public.agent_configs ac
       join public.tenants t on t.id = ac.tenant_id
       where ac.retell_agent_id = ${call.agent_id}
@@ -204,6 +211,7 @@ async function resolveTenantFromPayload(
         manualMode: row.manual_mode,
         phoneNumberId: null,
         via: "agent_id",
+        tenantIsTest: row.is_test === true,
       };
     }
   }
@@ -274,8 +282,9 @@ async function resolveTenantFromPayload(
       vertical: string;
       manual_mode: boolean;
       phone_number_id: string;
+      is_test?: boolean | null;
     }>`
-      select pn.tenant_id, t.vertical, t.manual_mode, pn.id as phone_number_id
+      select pn.tenant_id, t.vertical, t.manual_mode, pn.id as phone_number_id, t.is_test
       from public.phone_numbers pn
       join public.tenants t on t.id = pn.tenant_id
       where pn.e164 = ${toNumber} and pn.released_at is null
@@ -289,6 +298,7 @@ async function resolveTenantFromPayload(
         manualMode: row.manual_mode,
         phoneNumberId: row.phone_number_id,
         via: "to_number",
+        tenantIsTest: row.is_test === true,
       };
     }
   }
@@ -516,7 +526,8 @@ export async function resolveCallContext(
         call.direction === "outbound" ? "outbound" : "inbound";
       const channel: "phone" | "web_voice" =
         call.call_type === "phone_call" ? "phone" : "web_voice";
-      const isTestCall = placeholder || resolved.via === "test_harness_tenant_id";
+      const isTestCall =
+        placeholder || resolved.via === "test_harness_tenant_id" || resolved.tenantIsTest === true;
 
       // CALL-6: a placeholder id is keyed per-agent (or per-tenant, if
       // agent_id itself is absent) so it can never collide with a

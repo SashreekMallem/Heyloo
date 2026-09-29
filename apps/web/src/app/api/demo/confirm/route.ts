@@ -18,7 +18,7 @@ const confirmSchema = z.object({
 interface ConfirmDemoResponse {
   demo_session_id: string;
   retell_call_token: string;
-  demo_phone_e164: string;
+  demo_phone_e164?: string;
   agent_summary: { business_name: string; hours_detected: string; services_detected: string[] };
   error?: string;
 }
