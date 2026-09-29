@@ -3,6 +3,7 @@
 import { formatCentsUSD } from "@heyloo/canonical-types";
 import { DataState, DataTable, PageHeader, StatusBadge } from "@heyloo/ui";
 import type { ColumnDef } from "@tanstack/react-table";
+import { useMarginControls } from "@/components/admin/margin-controls";
 import { useRouter } from "@/i18n/navigation";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
 
@@ -55,21 +56,26 @@ const columns: ColumnDef<TenantMarginRow, unknown>[] = [
 
 export default function PerCustomerMarginPage() {
   const router = useRouter();
+  const { period, includeTest, qs, controls } = useMarginControls({ withPeriod: true });
   const query = useAdminQuery<{ rows: TenantMarginRow[] }>(
     "per-customer-margin",
-    [],
-    "admin-cockpit/per-customer-margin",
+    [period, includeTest],
+    `admin-cockpit/per-customer-margin${qs}`,
   );
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Margin by customer"
-        description="Revenue, cost, and margin health for every active customer."
+        description="Paid revenue, cost, and margin health for every customer, worst first."
+        actions={controls}
       />
       <DataState
         query={query}
-        empty={{ title: "No customer margin data yet" }}
+        empty={{
+          title: "No customer margin data yet",
+          isEmpty: (data) => (data?.rows?.length ?? 0) === 0,
+        }}
         render={(data) => (
           <DataTable
             columns={columns}

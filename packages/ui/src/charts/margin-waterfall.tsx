@@ -28,12 +28,49 @@ export interface MarginWaterfallProps {
   height?: number;
 }
 
-interface Bucket {
+export interface WaterfallBucket {
   label: string;
-  base: number; // invisible base offset
-  value: number; // visible bar height
   kind: WaterfallSegmentKind;
+  /** Signed change this segment contributes (a `total` is its absolute amount). */
+  delta: number;
+  /** Running total AFTER this segment. */
   runningTotal: number;
+  /** Invisible stack offset (signed): positive above zero, negative below. */
+  base: number;
+  /** Visible height above zero (>= 0). */
+  pos: number;
+  /** Visible height below zero (<= 0). */
+  neg: number;
+}
+
+/**
+ * Bars span [lo, hi] between the running total before and after a segment.
+ * The old implementation clamped the invisible base at 0, so once the running
+ * total went negative (e.g. a period with cost but no paid revenue) every
+ * subtract bar was drawn upward from zero instead of hanging below it.
+ * Splitting each bar into an above-zero part and a below-zero part lets Recharts
+ * stack the positive and negative sides independently, so a bar that starts
+ * above zero and ends below it renders as one continuous bar.
+ */
+export function buildWaterfallBuckets(segments: WaterfallSegment[]): WaterfallBucket[] {
+  let running = 0;
+  return segments.map((segment) => {
+    const start = segment.kind === "total" ? 0 : running;
+    const delta = segment.kind === "subtract" ? -segment.amount : segment.amount;
+    const end = segment.kind === "total" ? segment.amount : running + delta;
+    running = end;
+    const lo = Math.min(start, end);
+    const hi = Math.max(start, end);
+    return {
+      label: segment.label,
+      kind: segment.kind,
+      delta: segment.kind === "total" ? segment.amount : delta,
+      runningTotal: end,
+      base: lo >= 0 ? lo : hi <= 0 ? hi : 0,
+      pos: Math.max(hi, 0) - Math.max(lo, 0),
+      neg: Math.min(lo, 0) - Math.min(hi, 0),
+    };
+  });
 }
 
 /**
@@ -48,32 +85,7 @@ export function MarginWaterfall({
   onSegmentClick,
   height = 320,
 }: MarginWaterfallProps) {
-  const buckets = useMemo<Bucket[]>(() => {
-    let running = 0;
-    return segments.map((segment) => {
-      if (segment.kind === "total") {
-        const bucket: Bucket = {
-          label: segment.label,
-          base: 0,
-          value: segment.amount,
-          kind: segment.kind,
-          runningTotal: segment.amount,
-        };
-        running = segment.amount;
-        return bucket;
-      }
-      const delta = segment.kind === "add" ? segment.amount : -segment.amount;
-      const base = delta >= 0 ? running : running + delta;
-      running += delta;
-      return {
-        label: segment.label,
-        base: Math.max(0, base),
-        value: Math.abs(delta),
-        kind: segment.kind,
-        runningTotal: running,
-      };
-    });
-  }, [segments]);
+  const buckets = useMemo<WaterfallBucket[]>(() => buildWaterfallBuckets(segments), [segments]);
 
   if (buckets.length === 0) {
     return (
@@ -109,42 +121,55 @@ export function MarginWaterfall({
           width={70}
         />
         <Tooltip
-          formatter={(_value, _name, item) => {
-            const payload = (item as { payload?: Bucket }).payload;
-            return payload ? [formatCentsUSD(payload.value), payload.label] : ["", ""];
-          }}
-          contentStyle={{
-            background: "var(--color-popover)",
-            border: "1px solid var(--color-border)",
-            borderRadius: 8,
-            fontSize: 12,
+          content={({ active, payload }) => {
+            const bucket = active
+              ? (payload?.[0]?.payload as WaterfallBucket | undefined)
+              : undefined;
+            if (!bucket) return null;
+            return (
+              <div
+                style={{
+                  background: "var(--color-popover)",
+                  border: "1px solid var(--color-border)",
+                  borderRadius: 8,
+                  fontSize: 12,
+                  padding: "6px 10px",
+                }}
+              >
+                {bucket.label}: {formatCentsUSD(bucket.delta)}
+              </div>
+            );
           }}
         />
         <Bar dataKey="base" stackId="waterfall" fill="transparent" isAnimationActive={false} />
-        <Bar
-          dataKey="value"
-          stackId="waterfall"
-          radius={[4, 4, 4, 4]}
-          onClick={(_data, index) => {
-            const segment = segments[index];
-            if (segment) onSegmentClick?.(segment);
-          }}
-          cursor={onSegmentClick ? "pointer" : undefined}
-        >
-          {buckets.map((bucket, index) => (
-            <Cell
-              // biome-ignore lint/suspicious/noArrayIndexKey: waterfall buckets are a fixed ordered sequence; label alone may repeat
-              key={`${bucket.label}-${index}`}
-              fill={
-                bucket.kind === "total"
-                  ? "var(--color-foreground)"
-                  : bucket.kind === "add"
-                    ? "var(--color-success)"
-                    : "var(--color-destructive)"
-              }
-            />
-          ))}
-        </Bar>
+        {(["pos", "neg"] as const).map((key) => (
+          <Bar
+            key={key}
+            dataKey={key}
+            stackId="waterfall"
+            radius={[4, 4, 4, 4]}
+            isAnimationActive={false}
+            onClick={(_data, index) => {
+              const segment = segments[index];
+              if (segment) onSegmentClick?.(segment);
+            }}
+            cursor={onSegmentClick ? "pointer" : undefined}
+          >
+            {buckets.map((bucket, index) => (
+              <Cell
+                // biome-ignore lint/suspicious/noArrayIndexKey: waterfall buckets are a fixed ordered sequence; label alone may repeat
+                key={`${bucket.label}-${index}`}
+                fill={
+                  bucket.kind === "total"
+                    ? "var(--color-foreground)"
+                    : bucket.kind === "add"
+                      ? "var(--color-success)"
+                      : "var(--color-destructive)"
+                }
+              />
+            ))}
+          </Bar>
+        ))}
       </BarChart>
     </ResponsiveContainer>
   );

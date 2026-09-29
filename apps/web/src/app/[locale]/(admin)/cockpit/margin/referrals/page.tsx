@@ -8,7 +8,8 @@ import { useAdminQuery } from "@/lib/hooks/use-admin-query";
 interface PartnerPnlRow {
   partner_id: string;
   partner_name: string;
-  clicks: number;
+  /** null = link clicks are not tracked yet. */
+  clicks: number | null;
   signups: number;
   qualified: number;
   paid: number;
@@ -21,7 +22,7 @@ const columns: ColumnDef<PartnerPnlRow, unknown>[] = [
   {
     accessorKey: "clicks",
     header: "Clicks",
-    cell: ({ row }) => <span className="tabular-nums">{row.original.clicks}</span>,
+    cell: ({ row }) => <span className="tabular-nums">{row.original.clicks ?? "—"}</span>,
   },
   {
     accessorKey: "signups",

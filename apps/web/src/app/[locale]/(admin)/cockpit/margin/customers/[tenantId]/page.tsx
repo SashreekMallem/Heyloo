@@ -1,16 +1,40 @@
 "use client";
 
 import { formatCentsUSD } from "@heyloo/canonical-types";
-import { Callout, DataState, DataTable, PageHeader } from "@heyloo/ui";
+import { Callout, DataState, DataTable, MetricCard, PageHeader } from "@heyloo/ui";
 import type { ColumnDef } from "@tanstack/react-table";
 import { use } from "react";
+import { useMarginControls } from "@/components/admin/margin-controls";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
 
 interface CallCostRow {
   call_id: string;
-  cost_cents: number;
-  billed_cents: number;
-  delta_cents: number;
+  started_at: string;
+  duration_seconds: number;
+  /** null = the provider never reported a cost for this call (unknown, not zero). */
+  cost_cents: number | null;
+  billed_cents: number | null;
+  delta_cents: number | null;
+  cost_source: string | null;
+  is_test: boolean;
+}
+
+interface TenantMarginDetail {
+  tenant: { id: string; name: string; vertical: string; is_test: boolean };
+  summary: {
+    revenue_cents: number;
+    cost_cents: number;
+    margin_cents: number;
+    margin_pct: number | null;
+    health: string;
+    diagnosis_reason: string | null;
+  };
+  calls: CallCostRow[];
+  suggestedAction: string | null;
+}
+
+function money(cents: number | null): string {
+  return cents === null ? "—" : formatCentsUSD(cents);
 }
 
 const columns: ColumnDef<CallCostRow, unknown>[] = [
@@ -20,24 +44,33 @@ const columns: ColumnDef<CallCostRow, unknown>[] = [
     cell: ({ row }) => <span className="font-mono text-small">{row.original.call_id}</span>,
   },
   {
+    accessorKey: "started_at",
+    header: "Started",
+    cell: ({ row }) => new Date(row.original.started_at).toLocaleString(),
+  },
+  {
     accessorKey: "cost_cents",
     header: "Cost",
-    cell: ({ row }) => (
-      <span className="tabular-nums">{formatCentsUSD(row.original.cost_cents)}</span>
-    ),
+    cell: ({ row }) => <span className="tabular-nums">{money(row.original.cost_cents)}</span>,
   },
   {
     accessorKey: "billed_cents",
     header: "Billed",
-    cell: ({ row }) => (
-      <span className="tabular-nums">{formatCentsUSD(row.original.billed_cents)}</span>
-    ),
+    cell: ({ row }) => <span className="tabular-nums">{money(row.original.billed_cents)}</span>,
   },
   {
     accessorKey: "delta_cents",
     header: "Delta",
+    cell: ({ row }) => <span className="tabular-nums">{money(row.original.delta_cents)}</span>,
+  },
+  {
+    accessorKey: "cost_source",
+    header: "Cost source",
     cell: ({ row }) => (
-      <span className="tabular-nums">{formatCentsUSD(row.original.delta_cents)}</span>
+      <span className="text-small text-muted-foreground">
+        {row.original.cost_source ?? "unknown"}
+        {row.original.is_test ? " · test" : ""}
+      </span>
     ),
   },
 ];
@@ -48,26 +81,48 @@ export default function TenantMarginDetailPage({
   params: Promise<{ tenantId: string }>;
 }) {
   const { tenantId } = use(params);
-  const query = useAdminQuery<{ calls: CallCostRow[]; suggestedAction: string | null }>(
+  const { period, qs, controls } = useMarginControls({ withPeriod: true, withTestToggle: false });
+  // A single tenant's page always shows all of that tenant's data (the
+  // include-test switch only matters on the cross-tenant pages).
+  const query = useAdminQuery<TenantMarginDetail>(
     "per-customer-margin-detail",
-    [tenantId],
-    `admin-cockpit/per-customer-margin/${tenantId}`,
+    [tenantId, period],
+    `admin-cockpit/per-customer-margin/${tenantId}${qs}`,
   );
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Tenant margin detail"
+        title={query.data?.tenant.name ?? "Tenant margin detail"}
         description="Per-call cost vs. billed for this customer."
+        actions={controls}
       />
       <DataState
         query={query}
         empty={{
-          title: "No per-call data for this tenant",
-          isEmpty: (data) => (data?.calls?.length ?? 0) === 0,
+          title: "Tenant not found",
+          isEmpty: (data) => !data?.summary,
         }}
         render={(data) => (
           <>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <MetricCard
+                label="Paid revenue"
+                value={data.summary.revenue_cents}
+                format="currency"
+              />
+              <MetricCard label="Cost" value={data.summary.cost_cents} format="currency" />
+              <MetricCard label="Margin" value={data.summary.margin_cents} format="currency" />
+              {/* No paid revenue -> no margin % (never a fabricated 0%). */}
+              {data.summary.margin_pct !== null && (
+                <MetricCard label="Margin %" value={data.summary.margin_pct} format="percent" />
+              )}
+            </div>
+            {data.summary.diagnosis_reason && (
+              <Callout tone="warning" title="Diagnosis">
+                {data.summary.diagnosis_reason}
+              </Callout>
+            )}
             {data.suggestedAction && (
               <Callout tone="info" title="Suggested action">
                 {data.suggestedAction}

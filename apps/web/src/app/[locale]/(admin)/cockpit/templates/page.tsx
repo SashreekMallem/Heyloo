@@ -8,7 +8,9 @@ import { useAdminQuery } from "@/lib/hooks/use-admin-query";
 interface TemplateRow {
   vertical: string;
   version: number;
-  updated_at: string;
+  /** agent_templates has no updated_at column; the row's created_at is the version's publish time. */
+  updated_at?: string;
+  created_at?: string;
 }
 
 const columns: ColumnDef<TemplateRow, unknown>[] = [
@@ -27,7 +29,10 @@ const columns: ColumnDef<TemplateRow, unknown>[] = [
   {
     accessorKey: "updated_at",
     header: "Last updated",
-    cell: ({ row }) => new Date(row.original.updated_at).toLocaleString(),
+    cell: ({ row }) => {
+      const ts = row.original.updated_at ?? row.original.created_at;
+      return ts ? new Date(ts).toLocaleString() : "—";
+    },
   },
 ];
 

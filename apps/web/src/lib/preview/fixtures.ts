@@ -1020,11 +1020,29 @@ export const API_FIXTURE_MATCHERS: ApiFixtureMatcher[] = [
     method: "GET",
     pattern: /^\/api\/admin\/admin-cockpit\/per-customer-margin\/([^/]+)$/,
     build: () => ({
+      tenant: {
+        id: "preview-tenant",
+        name: "Riverside Auto Repair",
+        vertical: "auto",
+        is_test: false,
+      },
+      summary: {
+        revenue_cents: 29900,
+        cost_cents: 5400,
+        margin_cents: 24500,
+        margin_pct: 81.9,
+        health: "healthy",
+        diagnosis_reason: null,
+      },
       calls: Array.from({ length: 5 }, (_, i) => ({
         call_id: `call-${i + 1}`,
+        started_at: `2026-09-2${i + 1}T15:00:00Z`,
+        duration_seconds: 180 + i * 10,
         cost_cents: 180 + i * 12,
         billed_cents: 250,
         delta_cents: 250 - (180 + i * 12),
+        cost_source: "retell_call_ended",
+        is_test: false,
       })),
       suggestedAction:
         "Cost per call is trending up — consider moving this tenant to the Growth plan.",

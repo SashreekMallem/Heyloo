@@ -1,5 +1,6 @@
 "use client";
 
+import { formatCentsUSD } from "@heyloo/canonical-types";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,6 +20,12 @@ import {
   MetricCard,
   PageHeader,
   StatusBadge,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
   Textarea,
 } from "@heyloo/ui";
 import { use, useState } from "react";
@@ -53,9 +60,59 @@ interface TenantDetailResponse {
   metrics: TenantMetrics;
 }
 
+interface RecentCall {
+  call_id: string;
+  started_at: string;
+  duration_seconds: number;
+  cost_cents: number | null;
+  cost_source: string | null;
+  is_test: boolean;
+}
+
+function RecentCalls({ calls, loading }: { calls: RecentCall[] | undefined; loading: boolean }) {
+  if (loading) return <p className="text-small text-muted-foreground">Loading…</p>;
+  if (!calls || calls.length === 0) {
+    return <p className="text-small text-muted-foreground">No calls this quarter.</p>;
+  }
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Started</TableHead>
+          <TableHead>Duration</TableHead>
+          <TableHead>Cost</TableHead>
+          <TableHead>Cost source</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {calls.slice(0, 10).map((c) => (
+          <TableRow key={c.call_id}>
+            <TableCell>{new Date(c.started_at).toLocaleString()}</TableCell>
+            <TableCell className="tabular-nums">{c.duration_seconds}s</TableCell>
+            <TableCell className="tabular-nums">
+              {c.cost_cents === null ? "—" : formatCentsUSD(c.cost_cents)}
+            </TableCell>
+            <TableCell className="text-muted-foreground">
+              {c.cost_source ?? "unknown"}
+              {c.is_test ? " · test" : ""}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
 export default function TenantDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const query = useAdminQuery<TenantDetailResponse>("tenant-detail", [id], `admin-tenants/${id}`);
+  // Read-only observability: this tenant's recent calls with provider cost
+  // (same route as the margin drill-down — includes test calls, flagged).
+  const callsQuery = useAdminQuery<{ calls: RecentCall[] }>(
+    "tenant-recent-calls",
+    [id],
+    `admin-cockpit/per-customer-margin/${id}?period=quarter`,
+  );
   const [impersonateOpen, setImpersonateOpen] = useState(false);
   const [suspendOpen, setSuspendOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -148,9 +205,7 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
           <CardTitle className="text-base">Recent calls</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-small text-muted-foreground">
-            Read-only observability view — pending backend endpoint.
-          </p>
+          <RecentCalls calls={callsQuery.data?.calls} loading={callsQuery.isLoading} />
         </CardContent>
       </Card>
 
