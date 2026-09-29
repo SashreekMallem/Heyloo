@@ -25,6 +25,10 @@ declare namespace NodeJS {
     readonly SUPABASE_URL: string;
     readonly SUPABASE_SECRET_KEY: string;
     readonly APP_BASE_URL?: string;
+    // SITE-3: the shared demo phone number (same name as the api-demo-agent
+    // edge function secret); shown on the home page's live demo as the
+    // phone fallback. Optional: unset simply hides the phone line.
+    readonly DEMO_PHONE_E164?: string;
     readonly STRIPE_PUBLISHABLE_KEY?: string;
     readonly SENTRY_DSN?: string;
     readonly NEXT_RUNTIME?: "nodejs" | "edge";

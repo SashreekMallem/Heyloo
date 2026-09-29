@@ -13,7 +13,13 @@ import { env } from "./env";
  */
 export async function callEdgeFunction<TBody>(
   name: string,
-  init: { method: "GET" | "POST" | "PATCH"; body?: unknown; accessToken?: string },
+  init: {
+    method: "GET" | "POST" | "PATCH";
+    body?: unknown;
+    accessToken?: string;
+    /** Abort (the returned promise rejects) after this many ms. Unset = no client-side timeout. */
+    timeoutMs?: number;
+  },
 ): Promise<{ status: number; body: TBody }> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (init.accessToken) headers["authorization"] = `Bearer ${init.accessToken}`;
@@ -22,6 +28,7 @@ export async function callEdgeFunction<TBody>(
     method: init.method,
     headers,
     body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+    signal: init.timeoutMs !== undefined ? AbortSignal.timeout(init.timeoutMs) : undefined,
   });
 
   const body = (await res.json().catch(() => ({}))) as TBody;
