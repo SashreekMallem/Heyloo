@@ -2,21 +2,21 @@ import { describe, expect, it, vi } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import type { StripeEvent } from "../_shared/schemas/stripe-event.ts";
 import type { SqlClient } from "../_shared/types.ts";
-import { type StripeEventDeps, StripeEventDeferred, processStripeEvent } from "./handler.ts";
+import { processStripeEvent, StripeEventDeferred, type StripeEventDeps } from "./handler.ts";
 import {
   BALANCE_TXN,
   BALANCE_TXN_ID,
   CHARGE_ID,
   CUSTOMER_ID,
-  SUBSCRIPTION_ID,
-  T0,
-  T1,
-  TENANT_ID,
   chargeSucceeded,
   checkoutSessionCompleted,
   invoicePaid,
   invoicePaymentFailed,
   isoDay,
+  SUBSCRIPTION_ID,
+  T0,
+  T1,
+  TENANT_ID,
 } from "./stripe-fixtures.ts";
 
 const logger = createLogger();
@@ -75,13 +75,17 @@ function makeDb() {
     const text = strings.join(" ").replace(/\s+/g, " ");
 
     if (text.includes("select id from public.tenants where stripe_customer_id")) {
-      return [...tenants.values()].filter((t) => t.stripe_customer_id === v[0]).map((t) => ({ id: t.id }));
+      return [...tenants.values()]
+        .filter((t) => t.stripe_customer_id === v[0])
+        .map((t) => ({ id: t.id }));
     }
     if (text.includes("select id from public.tenants where id =")) {
       return tenants.has(v[0] as string) ? [{ id: v[0] as string }] : [];
     }
     if (text.includes("select id from public.tenants where stripe_subscription_id")) {
-      return [...tenants.values()].filter((t) => t.stripe_subscription_id === v[0]).map((t) => ({ id: t.id }));
+      return [...tenants.values()]
+        .filter((t) => t.stripe_subscription_id === v[0])
+        .map((t) => ({ id: t.id }));
     }
     if (text.includes("update public.tenants set status = 'active', stripe_customer_id")) {
       // checkout.session.completed activation: [customer, subscription, tenantId]
@@ -107,7 +111,15 @@ function makeDb() {
     // --- billing_invoices ---------------------------------------------------
     if (text.includes("update public.billing_invoices set stripe_invoice_id")) {
       // attach: [invoiceId, status, total, discount, tenantId, ps, pe]
-      const [invoiceId, status, total, discount, tenantId, ps, pe] = v as [string, string, number, number, string, string, string];
+      const [invoiceId, status, total, discount, tenantId, ps, pe] = v as [
+        string,
+        string,
+        number,
+        number,
+        string,
+        string,
+        string,
+      ];
       const row = invoices.find(
         (r) =>
           r.tenant_id === tenantId &&
@@ -139,7 +151,16 @@ function makeDb() {
       return [];
     }
     if (text.includes("insert into public.billing_invoices")) {
-      const [tenantId, ps, pe, invoiceId, base, discount, total, status] = v as [string, string, string, string, number, number, number, string];
+      const [tenantId, ps, pe, invoiceId, base, discount, total, status] = v as [
+        string,
+        string,
+        string,
+        string,
+        number,
+        number,
+        number,
+        string,
+      ];
       const existing = invoices.find((r) => r.stripe_invoice_id === invoiceId);
       if (existing) {
         if (!(existing.status === "paid" && status !== "paid")) {
@@ -169,24 +190,42 @@ function makeDb() {
       if (row && !(row.status === "paid" && status !== "paid")) row.status = status;
       return [];
     }
-    if (text.includes("update public.tenants set status = 'active'") && text.includes("'past_due'")) return [];
+    if (text.includes("update public.tenants set status = 'active'") && text.includes("'past_due'"))
+      return [];
     if (text.includes("insert into public.messages_outbound")) return [];
 
     // --- payment_processing_events -----------------------------------------
     if (text.includes("insert into public.payment_processing_events")) {
-      const [tenantId, chargeId, btId, method, fee, net] = v as [string, string, string | null, string, number, number];
+      const [tenantId, chargeId, btId, method, fee, net] = v as [
+        string,
+        string,
+        string | null,
+        string,
+        number,
+        number,
+      ];
       const existing = fees.find((f) => f.stripe_charge_id === chargeId);
       if (existing) {
         existing.fee_cents = fee;
         existing.net_cents = net;
         return [];
       }
-      fees.push({ tenant_id: tenantId, stripe_charge_id: chargeId, stripe_balance_transaction_id: btId, method, fee_cents: fee, net_cents: net });
+      fees.push({
+        tenant_id: tenantId,
+        stripe_charge_id: chargeId,
+        stripe_balance_transaction_id: btId,
+        method,
+        fee_cents: fee,
+        net_cents: net,
+      });
       return [];
     }
 
     // --- webhook_events (deferred replay) -----------------------------------
-    if (text.includes("from public.webhook_events") && text.includes("processing_error like 'deferred:%'")) {
+    if (
+      text.includes("from public.webhook_events") &&
+      text.includes("processing_error like 'deferred:%'")
+    ) {
       return [...webhookEvents.values()]
         .filter(
           (w) =>
@@ -231,7 +270,9 @@ function makeDb() {
 function makeDeps(overrides: Partial<StripeEventDeps> = {}): StripeEventDeps {
   return {
     invokeProvisioning: vi.fn(async () => ({ ok: true })),
-    fetchBalanceTransaction: vi.fn(async (id: string) => (id === BALANCE_TXN_ID ? BALANCE_TXN : null)),
+    fetchBalanceTransaction: vi.fn(async (id: string) =>
+      id === BALANCE_TXN_ID ? BALANCE_TXN : null,
+    ),
     ...overrides,
   };
 }
@@ -244,7 +285,9 @@ describe("E: first payment's processing fee (charge.succeeded ordering)", () => 
     await db.deliver(chargeSucceeded(), deps);
     // Tenant has no stripe_customer_id yet: nothing recorded, no 0-fee placeholder.
     expect(db.fees).toHaveLength(0);
-    expect(db.webhookEvents.get("evt_3ChargeSucceeded")?.processing_error).toBe("deferred:tenant_unresolved");
+    expect(db.webhookEvents.get("evt_3ChargeSucceeded")?.processing_error).toBe(
+      "deferred:tenant_unresolved",
+    );
 
     await db.deliver(checkoutSessionCompleted(), deps);
 
@@ -294,7 +337,9 @@ describe("E: first payment's processing fee (charge.succeeded ordering)", () => 
     const failing = makeDeps({ fetchBalanceTransaction: vi.fn(async () => null) });
     await db.deliver(chargeSucceeded(), failing);
     expect(db.fees).toHaveLength(0);
-    expect(db.webhookEvents.get("evt_3ChargeSucceeded")?.processing_error).toBe("deferred:fee_unavailable");
+    expect(db.webhookEvents.get("evt_3ChargeSucceeded")?.processing_error).toBe(
+      "deferred:fee_unavailable",
+    );
 
     // The next invoice.paid for the customer replays it (Stripe reachable again).
     await db.deliver(invoicePaid({ eventId: "evt_next" }), makeDeps());
@@ -309,7 +354,9 @@ describe("E: first payment's processing fee (charge.succeeded ordering)", () => 
     const noStripe: StripeEventDeps = { invokeProvisioning: async () => ({ ok: true }) };
     await db.deliver(chargeSucceeded(), noStripe);
     expect(db.fees).toHaveLength(0);
-    expect(db.webhookEvents.get("evt_3ChargeSucceeded")?.processing_error).toBe("deferred:fee_unavailable");
+    expect(db.webhookEvents.get("evt_3ChargeSucceeded")?.processing_error).toBe(
+      "deferred:fee_unavailable",
+    );
   });
 
   it("is idempotent: a re-delivered charge event and a second replay never double-count the fee", async () => {
@@ -456,7 +503,10 @@ describe("D: paid invoices reach billing_invoices (invoice.paid ordering)", () =
 
   it("an invoice for a customer/subscription that is not a tenant is left alone (no row, no throw)", async () => {
     const db = makeDb();
-    await db.deliver(invoicePaid({ customer: "cus_stranger", subscription: "sub_stranger", tenantId: null }), makeDeps());
+    await db.deliver(
+      invoicePaid({ customer: "cus_stranger", subscription: "sub_stranger", tenantId: null }),
+      makeDeps(),
+    );
     expect(db.invoices).toHaveLength(0);
   });
 });

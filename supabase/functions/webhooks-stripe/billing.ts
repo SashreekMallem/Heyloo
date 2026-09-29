@@ -114,8 +114,7 @@ export function invoicePeriod(invoice: Rec): { start: string; end: string } | nu
     const p = periodOf(l);
     return p !== null && p.end > p.start && isSubscriptionLine(l);
   });
-  const chosen =
-    (spanning ? periodOf(spanning) : null) ?? (lines[0] ? periodOf(lines[0]) : null);
+  const chosen = (spanning ? periodOf(spanning) : null) ?? (lines[0] ? periodOf(lines[0]) : null);
   if (chosen) return chosen;
   const start = isoDate(invoice["period_start"]);
   const end = isoDate(invoice["period_end"]);
@@ -131,7 +130,9 @@ export function parseInvoice(obj: Rec): InvoiceFacts | null {
   const parent = rec(rec(obj["parent"])?.["subscription_details"]);
   const legacyDetails = rec(obj["subscription_details"]);
   const subscriptionId =
-    str(parent?.["subscription"]) ?? str(obj["subscription"]) ?? str(legacyDetails?.["subscription"]);
+    str(parent?.["subscription"]) ??
+    str(obj["subscription"]) ??
+    str(legacyDetails?.["subscription"]);
 
   const lines = Array.isArray(rec(obj["lines"])?.["data"])
     ? (rec(obj["lines"])?.["data"] as unknown[])
@@ -345,8 +346,10 @@ export async function recordCharge(
     logger.warn("stripe_fee_non_usd", { charge_id: chargeId, currency: fee.currency });
   }
 
-  const btId = str(charge["balance_transaction"]) ?? str(rec(charge["balance_transaction"])?.["id"]);
-  const method = rec(charge["payment_method_details"])?.["type"] === "us_bank_account" ? "ach" : "card";
+  const btId =
+    str(charge["balance_transaction"]) ?? str(rec(charge["balance_transaction"])?.["id"]);
+  const method =
+    rec(charge["payment_method_details"])?.["type"] === "us_bank_account" ? "ach" : "card";
   const created = typeof charge["created"] === "number" ? (charge["created"] as number) : null;
   const occurredAt = created ? new Date(created * 1000).toISOString() : new Date().toISOString();
 
@@ -383,7 +386,8 @@ export async function replayDeferredCharges(
       limit 50
     `;
     for (const row of rows) {
-      const payload = typeof row.payload === "string" ? (JSON.parse(row.payload) as unknown) : row.payload;
+      const payload =
+        typeof row.payload === "string" ? (JSON.parse(row.payload) as unknown) : row.payload;
       const charge = rec(rec(rec(payload)?.["data"])?.["object"]);
       if (!charge) continue;
       const outcome = await recordCharge(sql, logger, charge, deps);

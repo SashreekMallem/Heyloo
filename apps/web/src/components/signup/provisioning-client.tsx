@@ -15,7 +15,7 @@ const STEP_ORDER: { key: string; label: string }[] = [
   { key: "tenant_finalize", label: "Payment confirmed" },
   { key: "agent_compile", label: "AI agent compiled" },
   { key: "retell_number_provision", label: "Phone number provisioned" },
-  { key: "billing_wiring", label: "Billing meter created" },
+  { key: "billing_wiring", label: "Billing connected" },
   { key: "publish_agent", label: "Ready" },
 ];
 
@@ -54,6 +54,9 @@ function Inner({ tenantId }: { tenantId: string }) {
 
   useEffect(() => {
     if (allSucceeded) {
+      // The tenant is active and the line is live: the signup draft cookie has
+      // done its job (it was kept through checkout so a cancel could resume).
+      void fetch("/api/signup/draft", { method: "DELETE" }).catch(() => undefined);
       const timer = setTimeout(() => router.push("/signup/forwarding"), 1500);
       return () => clearTimeout(timer);
     }

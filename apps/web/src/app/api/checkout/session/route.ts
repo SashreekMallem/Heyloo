@@ -1,7 +1,8 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { callEdgeFunction } from "@/lib/edge-functions";
-import { decodeSignupDraft, SIGNUP_DRAFT_COOKIE } from "@/lib/signup/draft-cookie";
+import { SIGNUP_DRAFT_COOKIE } from "@/lib/signup/draft-cookie";
+import { resolveSignupDraft } from "@/lib/signup/resolve-draft";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 import { buildApiCheckoutRequest } from "./build-request";
 
@@ -60,7 +61,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
 
   const cookieStore = await cookies();
-  const draft = decodeSignupDraft(cookieStore.get(SIGNUP_DRAFT_COOKIE.name)?.value);
+  // Cookie first; else the copy saved on the user at signUp (email confirmed in
+  // another browser, or the cookie expired).
+  const draft = resolveSignupDraft(cookieStore.get(SIGNUP_DRAFT_COOKIE.name)?.value, user);
   if (!draft) return NextResponse.json({ error: "missing_draft" }, { status: 400 });
 
   let json: unknown;
@@ -94,7 +97,11 @@ export async function POST(request: Request) {
   // fresh tenant_id/role claim before the redirect back from Stripe lands
   // on a page that needs it (FRONTEND_SPEC.md §0.1's "one claim source").
   await supabase.auth.refreshSession();
-  cookieStore.delete(SIGNUP_DRAFT_COOKIE.name);
+  // The draft cookie is deliberately KEPT here (it used to be deleted right
+  // after the session was created): if the customer cancels at Stripe, Checkout
+  // returns to /signup/plan, which needs the draft to render instead of
+  // bouncing to a blank step 1. It is cleared when the tenant becomes active
+  // (`DELETE /api/signup/draft` from the provisioning step) or by its TTL.
 
   return NextResponse.json({ url: result.checkout_url });
 }

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+  <body style="margin:0;padding:0;background:#f5f5f4;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f4;padding:32px 16px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#ffffff;border-radius:12px;padding:32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1c1917;">
+            <tr>
+              <td>
+                <p style="margin:0 0 4px;font-size:14px;font-weight:600;letter-spacing:0.02em;color:#57534e;">Heyloo</p>
+                <h1 style="margin:0 0 16px;font-size:22px;line-height:1.3;">Confirm your new email address</h1>
+                <p style="margin:0 0 24px;font-size:16px;line-height:1.5;">
+                  You asked to change the email address on your Heyloo account to
+                  {{ .NewEmail }}. Confirm the change with the button below.
+                </p>
+                <p style="margin:0 0 24px;">
+                  <a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&amp;type=email_change&amp;next=/dashboard"
+                     style="display:inline-block;background:#1c1917;color:#ffffff;text-decoration:none;font-size:16px;font-weight:600;padding:12px 24px;border-radius:8px;">
+                    Confirm new email
+                  </a>
+                </p>
+                <p style="margin:0 0 8px;font-size:13px;line-height:1.5;color:#57534e;">
+                  If the button doesn&rsquo;t work, paste this link into your browser:
+                </p>
+                <p style="margin:0 0 24px;font-size:13px;line-height:1.5;word-break:break-all;color:#57534e;">
+                  {{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&amp;type=email_change&amp;next=/dashboard
+                </p>
+                <p style="margin:0;font-size:13px;line-height:1.5;color:#78716c;">
+                  Didn&rsquo;t ask for this? Ignore this email and your address stays the same.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

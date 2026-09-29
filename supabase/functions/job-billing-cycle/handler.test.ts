@@ -161,21 +161,15 @@ describe("billOneTenant", () => {
       return Promise.resolve([{ id: "inv_1" }]);
     }) as SqlClient;
     let meterReported = false;
-    await billOneTenant(
-      sql,
-      { ...row, stripe_invoiced: true },
-      "2026-09-01",
-      "2026-10-01",
-      {
-        stripeFetch: (() => {
-          meterReported = true;
-          return Promise.resolve(new Response("{}", { status: 200 }));
-        }) as never,
-        stripeSecretKey: "sk_test",
-        billingMeterEventName: "voice_minutes",
-        logger,
-      },
-    );
+    await billOneTenant(sql, { ...row, stripe_invoiced: true }, "2026-09-01", "2026-10-01", {
+      stripeFetch: (() => {
+        meterReported = true;
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }) as never,
+      stripeSecretKey: "sk_test",
+      billingMeterEventName: "voice_minutes",
+      logger,
+    });
     expect(meterReported).toBe(true); // overage still reaches Stripe
     const insert = calls.at(-1);
     expect(insert?.text).toContain("'void'");

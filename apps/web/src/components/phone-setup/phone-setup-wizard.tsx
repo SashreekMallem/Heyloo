@@ -91,6 +91,24 @@ export function PhoneSetupWizard({
     return <PortInForm onBack={() => setStage("carrier")} />;
   }
 
+  // Never render forwarding codes without a number: "*71" alone would send the
+  // customer's calls nowhere (SIGNUP-BILL-FIX C). The number is bought by the
+  // provisioning saga, so until it exists there is nothing to forward to.
+  if (!forwardingNumber) {
+    return (
+      <div className="mx-auto max-w-lg space-y-4 text-center" data-testid="number-not-ready">
+        <p className="font-medium">Your phone number isn&apos;t ready yet</p>
+        <p className="text-sm text-muted-foreground">
+          We&apos;re still setting it up. Forwarding codes appear here as soon as your number is
+          assigned, usually within a minute.
+        </p>
+        <Button variant="outline" onClick={() => router.refresh()}>
+          Check again
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto max-w-lg space-y-6">
       <WizardStepper

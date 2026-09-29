@@ -86,7 +86,10 @@ export function invoiceObject(
       currency: "usd",
       description: "One-time setup fee",
       metadata: {},
-      parent: { type: "invoice_item_details", invoice_item_details: { invoice_item: "ii_1", subscription: null } },
+      parent: {
+        type: "invoice_item_details",
+        invoice_item_details: { invoice_item: "ii_1", subscription: null },
+      },
       period: { start: periodStart, end: periodStart },
     });
   }
@@ -99,10 +102,16 @@ export function invoiceObject(
     metadata: tenantId ? { tenant_id: tenantId } : {},
     parent: {
       type: "subscription_item_details",
-      subscription_item_details: { subscription: overrides.subscription ?? SUBSCRIPTION_ID, proration: false },
+      subscription_item_details: {
+        subscription: overrides.subscription ?? SUBSCRIPTION_ID,
+        proration: false,
+      },
     },
     period: { start: periodStart, end: periodEnd },
-    pricing: { type: "price_details", price_details: { price: "price_base", product: "prod_base" } },
+    pricing: {
+      type: "price_details",
+      price_details: { price: "price_base", product: "prod_base" },
+    },
     quantity: 1,
   });
   return {
@@ -117,7 +126,13 @@ export function invoiceObject(
     currency: "usd",
     customer: overrides.customer ?? CUSTOMER_ID,
     customer_email: "owner@example.com",
-    lines: { object: "list", data: lines, has_more: false, total_count: lines.length, url: "/v1/invoices/x/lines" },
+    lines: {
+      object: "list",
+      data: lines,
+      has_more: false,
+      total_count: lines.length,
+      url: "/v1/invoices/x/lines",
+    },
     livemode: false,
     metadata: {},
     parent: {
@@ -133,8 +148,9 @@ export function invoiceObject(
     status: paid ? "paid" : "open",
     subtotal: total + (overrides.discountCents ?? 0),
     total,
-    total_discount_amounts:
-      overrides.discountCents ? [{ amount: overrides.discountCents, discount: "di_1" }] : [],
+    total_discount_amounts: overrides.discountCents
+      ? [{ amount: overrides.discountCents, discount: "di_1" }]
+      : [],
   };
 }
 
@@ -161,7 +177,12 @@ export function invoicePaymentFailed(
 }
 
 export function chargeSucceeded(
-  overrides: { id?: string; eventId?: string; customer?: string | null; balanceTransaction?: string } = {},
+  overrides: {
+    id?: string;
+    eventId?: string;
+    customer?: string | null;
+    balanceTransaction?: string;
+  } = {},
 ): StripeEvent {
   return {
     id: overrides.eventId ?? "evt_3ChargeSucceeded",

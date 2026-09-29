@@ -40,7 +40,18 @@ export const runtime = "nodejs";
  * `next` is trusted only as a same-origin relative path (never an
  * absolute/external URL) to avoid turning this into an open redirect.
  */
+/**
+ * SIGNUP-BILL-FIX A: `"email"` is the CURRENT documented `type` for a signup
+ * confirmation link (supabase.com/docs/guides/auth/server-side/
+ * email-based-auth-with-pkce-flow-for-ssr, fetched 2026-09-29: the template
+ * link is `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email`
+ * and the route passes `type` straight to `verifyOtp`). `"signup"` stays
+ * accepted for links minted before the template change and for the legacy
+ * GoTrue type name. Supabase's `EmailOtpType` covers `signup | invite |
+ * magiclink | recovery | email_change | email`.
+ */
 const VALID_TYPES = new Set<EmailOtpType>([
+  "email",
   "signup",
   "invite",
   "magiclink",
@@ -48,19 +59,47 @@ const VALID_TYPES = new Set<EmailOtpType>([
   "email_change",
 ]);
 
-function safeNext(raw: string | null, fallback: string): string {
+/** Where a link with no `next` goes: a fresh signup resumes the wizard (which
+ * itself hands a fully set-up tenant on to the dashboard), everything else
+ * lands on the dashboard. */
+function defaultNext(type: string | null): string {
+  return type === "email" || type === "signup" ? "/signup/resume" : "/dashboard";
+}
+
+/** `next` is trusted only as a same-origin relative path. The resolved URL is
+ * re-checked against the request origin because a leading backslash (or other
+ * URL-parser quirks) can still escape to another host once resolved. */
+function safeNext(raw: string | null, fallback: string, origin: string): string {
   if (!raw) return fallback;
   if (!raw.startsWith("/") || raw.startsWith("//")) return fallback;
-  return raw;
+  try {
+    return new URL(raw, origin).origin === origin ? raw : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const tokenHash = url.searchParams.get("token_hash");
   const type = url.searchParams.get("type");
-  const next = safeNext(url.searchParams.get("next"), "/dashboard");
+  const code = url.searchParams.get("code");
+  const next = safeNext(url.searchParams.get("next"), defaultNext(type), url.origin);
   const errorRedirect = new URL("/login", url.origin);
   errorRedirect.searchParams.set("toast", "confirm_failed");
+
+  // PKCE `code` links: what GoTrue's own `{{ .ConfirmationURL }}` produces when
+  // the project still uses the stock email templates and the browser that
+  // signed up is the one opening the link (it holds the code verifier). Kept so
+  // signup works before this repo's templates are applied to the live project
+  // (scripts/apply-auth-templates.ts). Such a link carries no `type`; the
+  // signup form puts `next=/signup/resume` in its `emailRedirectTo`.
+  if (code && !tokenHash) {
+    const supabase = await createSupabaseServerComponentClient();
+    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    if (error) return NextResponse.redirect(errorRedirect);
+    return NextResponse.redirect(new URL(next, url.origin));
+  }
 
   if (!tokenHash || !type || !VALID_TYPES.has(type as EmailOtpType)) {
     return NextResponse.redirect(errorRedirect);
