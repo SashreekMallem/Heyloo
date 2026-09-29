@@ -46,6 +46,40 @@ describe("renderTemplate", () => {
     expect(result.body).toBe('Jordan (+15551234567) left a message: "Call me back"');
   });
 
+  it("INTAKE-Q-1: appends the owner's custom questions and answers to a message alert", () => {
+    const result = renderTemplate("take_message", {
+      caller_name: "Jordan",
+      caller_phone: "+15551234567",
+      message_text: "Call me back",
+      custom_answers: [
+        { question: "How did you hear about us?", answer: "A friend" },
+        { question: "Gate code:", answer: "4471" },
+        { question: "", answer: "dropped: no question" },
+        { question: 5, answer: "dropped: not text" },
+      ],
+    });
+    expect(result.body).toBe(
+      'Jordan (+15551234567) left a message: "Call me back"\nYour questions:\n' +
+        "- How did you hear about us: A friend\n- Gate code: 4471",
+    );
+  });
+
+  it("INTAKE-Q-1: appends answers to the new-booking owner alert, clipped, and only when present", () => {
+    const long = "x".repeat(400);
+    const result = renderTemplate("owner_new_booking", {
+      caller_name: "Jordan",
+      caller_phone: "+15551234567",
+      start_local: "Mon Jan 5, 3:00 PM",
+      custom_answers: [{ question: "Q?", answer: long }],
+    });
+    expect(result.body).toContain("New booking from Jordan");
+    expect(result.body).toContain("Your questions:\n- Q: ");
+    expect(result.body.length).toBeLessThan(300);
+    expect(renderTemplate("owner_new_booking", { caller_name: "Jordan" }).body).not.toContain(
+      "Your questions",
+    );
+  });
+
   it("renders dental_intake_link with the one-time intake URL", () => {
     const result = renderTemplate("dental_intake_link", {
       url: "https://app.heyloo.com/intake/abc123",

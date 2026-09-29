@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import { enqueueAdapterPush } from "../../_shared/adapter-push.ts";
+import { alertCustomAnswers } from "../../_shared/custom-questions.ts";
 import { issueDentalIntakeToken } from "../../_shared/dental-intake.ts";
 import { bookingIdempotencyKey } from "../../_shared/idempotency.ts";
 import { enqueueOwnerAlertBestEffort } from "../../_shared/owner-alerts.ts";
@@ -751,6 +752,8 @@ async function runPostCommitEffects(
             start_local: formatLocalHuman(input.startAt, input.timezone),
             ...(input.offeringName ? { service: input.offeringName } : {}),
             ...(input.pendingDeposit ? { note: "awaiting deposit" } : {}),
+            // INTAKE-Q-1: the owner's custom questions and what the caller answered.
+            ...alertCustomAnswers(input.structuredPayload),
           },
           relatedCallId: ctx.callLogId,
           relatedBookingId: input.bookingId,

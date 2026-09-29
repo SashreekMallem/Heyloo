@@ -119,6 +119,8 @@ describe("compileTemplate — conversation_flow", () => {
       business_facts: expect.stringContaining("nothing extra"),
       voicemail_message: "",
       booking_mode_text: expect.stringContaining("Normal"),
+      // INTAKE-Q-1
+      custom_questions_text: "(no custom questions)",
       transfer_policy_text: expect.stringContaining("No live transfer"),
       cancellation_policy_text: expect.any(String),
     });
@@ -128,6 +130,7 @@ describe("compileTemplate — conversation_flow", () => {
       "{{business_facts}}",
       "{{voicemail_message}}",
       "{{booking_mode_text}}",
+      "{{custom_questions_text}}",
       "{{transfer_policy_text}}",
       "{{cancellation_policy_text}}",
     ]) {
@@ -153,7 +156,16 @@ describe("compileTemplate — conversation_flow", () => {
         name: "create_booking",
         description: "books a slot",
         url: "https://example.com/voice-tools",
-        parameters: { properties: {} },
+        // INTAKE-Q-1: create_booking (and take_message) carry the custom-answers parameter.
+        parameters: {
+          type: "object",
+          properties: {
+            structured_payload: {
+              type: "object",
+              properties: { custom_answers: expect.objectContaining({ type: "array" }) },
+            },
+          },
+        },
       },
     ]);
   });

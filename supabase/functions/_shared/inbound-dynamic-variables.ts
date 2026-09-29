@@ -38,6 +38,7 @@ import {
   computeGreetingHoursContext,
   computeUpcomingWeekdayDates,
 } from "./business-hours.ts";
+import { resolveCustomQuestionsText } from "./custom-questions.ts";
 import type { VoiceInboundResponse } from "./schemas/voice-inbound.ts";
 import type { Logger, SqlClient } from "./types.ts";
 
@@ -334,6 +335,9 @@ export async function buildInboundDynamicVariables(params: {
     business_facts: settings.business_facts,
     voicemail_message: settings.voicemail_message,
     booking_mode_text: settings.booking_mode_text,
+    // INTAKE-Q-1: the owner's custom intake questions (sanitized, ordered,
+    // active only), resolved per call so an edit is live on the next call.
+    custom_questions_text: resolveCustomQuestionsText(overrides),
     ...verticalTokens,
     ...(typeof overrides["manager_name"] === "string"
       ? { manager_name: overrides["manager_name"] as string }

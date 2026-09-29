@@ -105,6 +105,7 @@ export const COMPILER_DEFAULT_DYNAMIC_VARIABLES: Readonly<Record<string, string>
   business_facts: "(nothing extra on file)",
   voicemail_message: "",
   booking_mode_text: "Normal — you can book, reschedule and cancel appointments as usual.",
+  custom_questions_text: "(no custom questions)",
   transfer_policy_text:
     "No live transfer number is set. Do not offer or attempt a transfer: take a message instead.",
   cancellation_policy_text:

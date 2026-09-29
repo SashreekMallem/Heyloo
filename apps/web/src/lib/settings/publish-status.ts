@@ -40,7 +40,7 @@
  * file and fails on drift); bump both whenever a compile of the same template
  * would produce different agent output.
  */
-export const CURRENT_AGENT_COMPILER_VERSION = 1;
+export const CURRENT_AGENT_COMPILER_VERSION = 2;
 
 export type PublishReason =
   | "never_published"
@@ -69,7 +69,7 @@ export const PUBLISH_REASON_TEXT: Record<PublishReason, string> = {
   platform_update:
     "Your agent was published before recent improvements — publish once so your live settings (like the transfer number and language) reach every call.",
   compiler_outdated:
-    "Your agent was published before recent improvements — publish once so it picks up the newest settings support (FAQ answers, special instructions, call routing and more).",
+    "Your agent was published before recent improvements — publish once so it picks up the newest settings support (FAQ answers, special instructions, call routing, custom questions and more).",
 };
 
 /** The language-change stamp written by the Language tab (absent on older rows). */
@@ -152,6 +152,28 @@ export function computePublishStatus(input: PublishStatusInput): PublishStatus {
   }
 
   return { publishedAt: input.publishedAt, pending: reasons.length > 0, reasons };
+}
+
+/** INTAKE-Q-1: the first compiler version whose agents can ask the owner's custom intake questions. */
+export const CUSTOM_QUESTIONS_MIN_COMPILER_VERSION = 2;
+
+/**
+ * INTAKE-Q-1: whether the PUBLISHED agent already knows how to ask custom
+ * questions (its prompt was compiled by a version that has the block). Edits
+ * to the question list are live on the next call only when this is true;
+ * otherwise the owner must publish once. A database with no stamp column
+ * (`undefined`) is "unknown" and counts as yes, matching `computePublishStatus`.
+ */
+export function agentAsksCustomQuestions(input: {
+  publishedAt: string | null;
+  compiledWithVersion?: number | null;
+}): boolean {
+  if (!input.publishedAt) return false;
+  if (input.compiledWithVersion === undefined) return true;
+  return (
+    input.compiledWithVersion !== null &&
+    input.compiledWithVersion >= CUSTOM_QUESTIONS_MIN_COMPILER_VERSION
+  );
 }
 
 /** React Query key for `GET /api/tenant/agent/publish-status` — under the `agent_configs` prefix every agent-settings save already invalidates. */

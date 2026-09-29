@@ -443,6 +443,46 @@ describe("Deno <-> Node parity: SETTINGS-2 owner-info block and compiler version
     }
   });
 
+  it("INTAKE-Q-1: both compilers give create_booking and take_message the identical custom_answers parameter (and leave other tools alone)", async () => {
+    const deno = await loadDenoCompiler();
+    interface ToolLike {
+      name: string;
+      parameters: unknown;
+    }
+    const toolsOf = (body: unknown): ToolLike[] => {
+      const b = body as {
+        tools?: ToolLike[];
+        general_tools?: ToolLike[];
+        states?: Array<{ tools?: ToolLike[] }>;
+      };
+      return [
+        ...(b.tools ?? []),
+        ...(b.general_tools ?? []),
+        ...(b.states ?? []).flatMap((s) => s.tools ?? []),
+      ];
+    };
+    for (const target of ["conversation_flow", "multi_prompt", "single_prompt"] as const) {
+      const template = { ...PARITY_TEMPLATE, compile_target: target };
+      const denoTools = toolsOf(deno.compileTemplate(template, TOOL_WEBHOOK_URL).flow.body);
+      const nodeBody =
+        target === "conversation_flow"
+          ? compileNodeConversationFlow(template, TOOL_WEBHOOK_URL)
+          : target === "multi_prompt"
+            ? compileNodeMultiPrompt(template, TOOL_WEBHOOK_URL)
+            : compileNodeSinglePrompt(template, TOOL_WEBHOOK_URL);
+      const nodeTools = toolsOf(nodeBody);
+      for (const name of ["create_booking", "take_message", "check_availability"]) {
+        const d = denoTools.find((t) => t.name === name);
+        const n = nodeTools.find((t) => t.name === name);
+        expect(d, `deno ${target} ${name}`).toBeDefined();
+        expect(n, `node ${target} ${name}`).toBeDefined();
+        expect(n?.parameters, `${target} ${name}`).toEqual(d?.parameters);
+        const hasAnswers = JSON.stringify(n?.parameters).includes("custom_answers");
+        expect(hasAnswers, `${target} ${name}`).toBe(name !== "check_availability");
+      }
+    }
+  });
+
   it("every compile target of both compilers puts the owner-info block in the global prompt", async () => {
     const deno = await loadDenoCompiler();
     for (const target of ["conversation_flow", "multi_prompt", "single_prompt"] as const) {

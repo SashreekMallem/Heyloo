@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  agentAsksCustomQuestions,
   CURRENT_AGENT_COMPILER_VERSION,
   computePublishStatus,
   languageChangedAt,
@@ -211,6 +212,20 @@ describe("SETTINGS-2: compiler-version stamp", () => {
       compiledWithVersion: null,
     });
     expect(status.reasons).toEqual(["never_published"]);
+  });
+
+  it("INTAKE-Q-1: an agent published on compiler v1 shows 'Changes pending' and does not yet ask custom questions", () => {
+    const status = computePublishStatus({ ...base, compiledWithVersion: 1 });
+    expect(status.pending).toBe(true);
+    expect(status.reasons).toEqual(["compiler_outdated"]);
+    expect(PUBLISH_REASON_TEXT.compiler_outdated).toMatch(/custom questions/);
+    const publishedAt = base.publishedAt;
+    expect(agentAsksCustomQuestions({ publishedAt, compiledWithVersion: 1 })).toBe(false);
+    expect(agentAsksCustomQuestions({ publishedAt, compiledWithVersion: null })).toBe(false);
+    expect(agentAsksCustomQuestions({ publishedAt: null, compiledWithVersion: 2 })).toBe(false);
+    expect(agentAsksCustomQuestions({ publishedAt, compiledWithVersion: 2 })).toBe(true);
+    // A database with no stamp column is "unknown", treated like the badge does: not flagged.
+    expect(agentAsksCustomQuestions({ publishedAt, compiledWithVersion: undefined })).toBe(true);
   });
 
   it("the portal's expected version equals the compiler's AGENT_COMPILER_VERSION (drift guard)", () => {

@@ -22,7 +22,7 @@ describe("GET /api/tenant/agent/publish-status", () => {
         published_at: "2026-09-29T00:00:00Z",
         compiled_config: { a: "{{language}} {{transfer_number}}" },
         transfer_number: "+16105550122",
-        compiled_with_version: 1,
+        compiled_with_version: 2,
       },
       error: null,
     });

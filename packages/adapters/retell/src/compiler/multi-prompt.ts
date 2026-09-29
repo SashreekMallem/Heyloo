@@ -26,6 +26,7 @@
  */
 
 import type { AgentTemplate } from "@heyloo/canonical-types";
+import { withCustomAnswersParameter } from "./custom-answers.js";
 import {
   buildOpeningLine,
   COMPILER_DEFAULT_DYNAMIC_VARIABLES,
@@ -99,11 +100,11 @@ export function compileMultiPrompt(
       url: toolWebhookUrl,
       // `properties` is REQUIRED per retell-typescript-sdk's `CustomTool.
       // Parameters` — default an omitted one to `{}` (RETELL-VERIFY).
-      parameters: {
+      parameters: withCustomAnswersParameter(tool.name, {
         type: "object",
         properties: tool.parameters.properties ?? {},
         ...(tool.parameters.required !== undefined ? { required: tool.parameters.required } : {}),
-      },
+      }),
     };
     return functionTool;
   });

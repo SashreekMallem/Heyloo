@@ -1,3 +1,8 @@
+import {
+  applyCustomAnswers,
+  type CustomQuestion,
+  resolveCustomQuestions,
+} from "../_shared/custom-questions.ts";
 import type { GeocodeFetch } from "../_shared/providers/geocode.ts";
 import type { StripeFetch } from "../_shared/providers/stripe.ts";
 import { fallbackEnvelope, missingFieldsEnvelope, toolEnvelope } from "../_shared/responses.ts";
@@ -227,12 +232,13 @@ export function isKnownTool(name: string): boolean {
  * pure object manipulation over data already in hand (`ctx` was already
  * resolved for this call; `args` already parsed).
  */
-function applyIntakeGate<T extends Record<string, unknown>>(
+async function applyIntakeGate<T extends Record<string, unknown>>(
+  deps: DispatchDeps,
   ctx: CallContext,
   tool: "create_booking" | "create_order" | "take_message",
   args: T,
   phoneField: "customer" | "caller_phone",
-): { ok: true; args: T } | { ok: false; envelope: ToolResultEnvelope } {
+): Promise<{ ok: true; args: T } | { ok: false; envelope: ToolResultEnvelope }> {
   let next: T = args;
   if (phoneField === "customer") {
     const customer = args["customer"] as Record<string, unknown> | undefined;
@@ -243,10 +249,50 @@ function applyIntakeGate<T extends Record<string, unknown>>(
     next = { ...args, caller_phone: ctx.callerNumber };
   }
   const missing = getMissingRequiredFields(ctx.vertical, tool, next);
+
+  // INTAKE-Q-1: the owner's custom questions (bookings and messages only).
+  // Built-in misses are reported first, in the same envelope, then the owner's
+  // required questions — so the model asks everything still needed in one go.
+  if (tool !== "create_order") {
+    const questions = await loadCustomQuestions(deps, ctx);
+    const custom = applyCustomAnswers(tool, questions, next);
+    next = custom.args as T;
+    missing.push(...custom.missing);
+  }
   if (missing.length > 0) {
     return { ok: false, envelope: missingFieldsEnvelope(missing) };
   }
   return { ok: true, args: next };
+}
+
+/**
+ * INTAKE-Q-1: the tenant's active custom intake questions, from
+ * `agent_configs.dynamic_variable_overrides.custom_questions` — one indexed
+ * single-row read (`agent_configs.tenant_id`), only on the two write tools that
+ * can carry them (create_booking, take_message), scoped by the verified call
+ * context's tenant, never by args. Fails OPEN on a read error (warn + `[]`): an
+ * unreadable optional owner config must not block a real booking or message
+ * (Rule 2 graceful fallback); the built-in required fields are unaffected.
+ */
+async function loadCustomQuestions(
+  deps: DispatchDeps,
+  ctx: CallContext,
+): Promise<CustomQuestion[]> {
+  try {
+    const rows = await deps.sql<{ custom_questions: unknown }>`
+      select dynamic_variable_overrides -> 'custom_questions' as custom_questions
+      from public.agent_configs
+      where tenant_id = ${ctx.tenantId}
+      limit 1
+    `;
+    return resolveCustomQuestions({ custom_questions: rows[0]?.custom_questions });
+  } catch (err) {
+    deps.logger.warn("voice_tools_custom_questions_read_failed", {
+      tenant_id: ctx.tenantId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
 }
 
 export async function dispatchTool(
@@ -305,7 +351,7 @@ async function runTool(
           message: MANUAL_MODE_BOOKING_MESSAGE,
         });
       }
-      const gated = applyIntakeGate(ctx, "create_booking", parsed.data, "customer");
+      const gated = await applyIntakeGate(deps, ctx, "create_booking", parsed.data, "customer");
       if (!gated.ok) return gated.envelope;
       return toolEnvelope(await createBookingWithinBudget(deps, ctx, gated.args, startedAt));
     }
@@ -341,7 +387,7 @@ async function runTool(
     case "take_message": {
       const parsed = TakeMessageArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
-      const gated = applyIntakeGate(ctx, "take_message", parsed.data, "caller_phone");
+      const gated = await applyIntakeGate(deps, ctx, "take_message", parsed.data, "caller_phone");
       if (!gated.ok) return gated.envelope;
       return toolEnvelope(await takeMessage(sql, ctx, gated.args, { logger, defer: deps.defer }));
     }
@@ -360,7 +406,7 @@ async function runTool(
           message: MANUAL_MODE_ORDER_MESSAGE,
         });
       }
-      const gated = applyIntakeGate(ctx, "create_order", parsed.data, "customer");
+      const gated = await applyIntakeGate(deps, ctx, "create_order", parsed.data, "customer");
       if (!gated.ok) return gated.envelope;
       return toolEnvelope(
         await createOrder(sql, ctx, gated.args, logger, {

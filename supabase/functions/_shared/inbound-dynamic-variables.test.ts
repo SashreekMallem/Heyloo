@@ -284,6 +284,44 @@ describe("buildInboundDynamicVariables: SETTINGS-2 owner settings", () => {
     expect(vars.voicemail_message).toBe("We call back within a day.");
   });
 
+  it("INTAKE-Q-1: custom questions are always a string: 'none' text by default, ordered numbered lines when set", async () => {
+    expect((await build({})).custom_questions_text).toBe("(no custom questions)");
+    const vars = await build({
+      dynamicVariableOverrides: {
+        custom_questions: [
+          {
+            id: "q_b",
+            label: "Second?",
+            required: false,
+            applies_to: "message",
+            position: 1,
+            active: true,
+          },
+          {
+            id: "q_a",
+            label: "First?",
+            required: true,
+            applies_to: "both",
+            position: 0,
+            active: true,
+          },
+          {
+            id: "q_off",
+            label: "Hidden?",
+            required: true,
+            applies_to: "both",
+            position: 2,
+            active: false,
+          },
+        ],
+      },
+    });
+    expect(vars.custom_questions_text).toBe(
+      '1. [id q_a] "First?" — asked for bookings and messages — REQUIRED\n' +
+        '2. [id q_b] "Second?" — asked for messages only — optional',
+    );
+  });
+
   it("Manual Mode reaches the agent as an instruction to take messages", async () => {
     const vars = await build({ manualMode: true });
     expect(vars.booking_mode_text).toContain("MANUAL MODE IS ON");

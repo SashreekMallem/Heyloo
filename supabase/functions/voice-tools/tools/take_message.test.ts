@@ -57,6 +57,23 @@ describe("takeMessage", () => {
     expect(result).toEqual({ recorded: true });
   });
 
+  it("INTAKE-Q-1: custom answers are stored on the call row and included in the owner alert payload", async () => {
+    const { sql, calls } = recordingSql(OWNER_CONTACT);
+    const answers = [{ question_id: "q_a", question: "Gate code?", answer: "4471" }];
+    await takeMessage(
+      sql,
+      ctx,
+      { ...args, structured_payload: { custom_answers: answers } },
+      deps(),
+    );
+    const update = calls.find((c) => c.text.includes("update public.call_logs"));
+    expect(update?.values).toContainEqual(expect.objectContaining({ custom_answers: answers }));
+    const insert = calls.find((c) => c.text.includes("insert into public.messages_outbound"));
+    expect(insert?.values[4]).toMatchObject({
+      custom_answers: [{ question: "Gate code?", answer: "4471" }],
+    });
+  });
+
   it("merges structured_payload into call_logs.structured_booking_payload (GAP_REGISTER.md §2 Legal item 4)", async () => {
     let capturedPayload: unknown;
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {

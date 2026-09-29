@@ -43,6 +43,38 @@ export interface RenderedMessage {
   body: string;
 }
 
+const CUSTOM_ANSWERS_MAX_ENTRIES = 10;
+const CUSTOM_ANSWERS_QUESTION_MAX = 80;
+const CUSTOM_ANSWERS_ANSWER_MAX = 160;
+
+function clip(text: string, max: number): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1).trimEnd()}…` : oneLine;
+}
+
+/**
+ * INTAKE-Q-1: the owner's custom intake questions and the caller's answers
+ * (`payload.custom_answers`, `[{question, answer}]`) as a short trailing block,
+ * `""` when there are none. Plain text, one line per question, each side clipped
+ * so an SMS stays readable; the email path HTML-escapes the whole body
+ * (`email-body.ts`), so caller-supplied answers can never inject markup.
+ */
+function customAnswersBlock(payload: Record<string, unknown>): string {
+  const raw = payload["custom_answers"];
+  if (!Array.isArray(raw)) return "";
+  const lines: string[] = [];
+  for (const entry of raw) {
+    if (lines.length >= CUSTOM_ANSWERS_MAX_ENTRIES) break;
+    if (!entry || typeof entry !== "object") continue;
+    const { question, answer } = entry as Record<string, unknown>;
+    if (typeof question !== "string" || typeof answer !== "string") continue;
+    const q = clip(question, CUSTOM_ANSWERS_QUESTION_MAX).replace(/[?:.\s]+$/, "");
+    const a = clip(answer, CUSTOM_ANSWERS_ANSWER_MAX);
+    if (q && a) lines.push(`- ${q}: ${a}`);
+  }
+  return lines.length > 0 ? `\nYour questions:\n${lines.join("\n")}` : "";
+}
+
 export function renderTemplate(
   templateKey: string,
   payload: Record<string, unknown>,
@@ -67,7 +99,7 @@ export function renderTemplate(
       return {
         // Subject only used when the owner alert goes out by email.
         subject: `New message from ${callerName}`,
-        body: `${callerName} (${callerPhone}) left a message: "${str("message_text")}"${callbackWindow ? ` — callback window: ${callbackWindow}` : ""}`,
+        body: `${callerName} (${callerPhone}) left a message: "${str("message_text")}"${callbackWindow ? ` — callback window: ${callbackWindow}` : ""}${customAnswersBlock(payload)}`,
       };
     }
     // MESSAGING-1 owner alerts (_shared/owner-alerts.ts) — enqueued by
@@ -78,7 +110,7 @@ export function renderTemplate(
       const service = str("service");
       return {
         subject: `New booking: ${callerName}`,
-        body: `New booking from ${callerName}${str("caller_phone") ? ` (${str("caller_phone")})` : ""}${service ? ` for ${service}` : ""}${str("start_local") ? ` on ${str("start_local")}` : ""}${str("note") ? ` (${str("note")})` : ""}.`,
+        body: `New booking from ${callerName}${str("caller_phone") ? ` (${str("caller_phone")})` : ""}${service ? ` for ${service}` : ""}${str("start_local") ? ` on ${str("start_local")}` : ""}${str("note") ? ` (${str("note")})` : ""}.${customAnswersBlock(payload)}`,
       };
     }
     case "owner_new_order": {

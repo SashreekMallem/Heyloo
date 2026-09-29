@@ -1,4 +1,5 @@
 import { recordCallCost } from "../_shared/call-cost.ts";
+import { alertCustomAnswers } from "../_shared/custom-questions.ts";
 import { enqueueOwnerAlert } from "../_shared/owner-alerts.ts";
 import { normalizeE164 } from "../_shared/phone.ts";
 import { enqueue, QUEUE_NAMES } from "../_shared/queue.ts";
@@ -465,8 +466,10 @@ async function enqueueCallOwnerAlerts(
     customer_name: string | null;
     service: string | null;
     timezone: string | null;
+    structured_payload?: unknown;
   }>`
-    select b.id, b.start_at, c.name as customer_name, o.name as service, t.timezone
+    select b.id, b.start_at, c.name as customer_name, o.name as service, t.timezone,
+      b.structured_payload
     from public.bookings b
     join public.tenants t on t.id = b.tenant_id
     left join public.customers c on c.id = b.customer_id
@@ -499,6 +502,8 @@ async function enqueueCallOwnerAlerts(
         ...base,
         start_local: formatLocal(booking.start_at, booking.timezone),
         ...(booking.service ? { service: booking.service } : {}),
+        // INTAKE-Q-1: same custom-question answers the voice tool's alert carries.
+        ...alertCustomAnswers(booking.structured_payload),
       },
       relatedCallId: row.id,
       relatedBookingId: booking.id,
