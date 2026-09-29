@@ -1,68 +1,23 @@
-"use client";
+import { PageHeader } from "@heyloo/ui/layout/page-header";
+import { PayoutSettingsForm } from "@/components/partner/payout-settings-form";
+import { requirePartnerSession } from "@/lib/auth/require-partner-session";
 
-import { type ReferralPayoutMethod, referralPayoutMethodSchema } from "@heyloo/canonical-types";
-import {
-  Button,
-  Card,
-  CardContent,
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-  Input,
-  PageHeader,
-} from "@heyloo/ui";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
-import { toast } from "sonner";
-import { supabaseBrowserClient } from "@/lib/supabase/browser";
+export default async function PartnerSettingsPage() {
+  const { supabase, partner } = await requirePartnerSession("/portal/settings");
 
-export default function PartnerSettingsPage() {
-  const form = useForm<ReferralPayoutMethod>({
-    resolver: zodResolver(referralPayoutMethodSchema),
-    defaultValues: { paypal_email: "" },
-  });
-
-  async function onSubmit(values: ReferralPayoutMethod) {
-    const {
-      data: { user },
-    } = await supabaseBrowserClient.auth.getUser();
-    if (!user) return;
-    const { error } = await supabaseBrowserClient
-      .from("referral_partners")
-      .update({ paypal_email: values.paypal_email, payout_method: "paypal" })
-      .eq("user_id", user.id);
-    if (error) toast.error("Couldn't save — please try again.");
-    else toast.success("Saved");
-  }
+  // Read through the partner's own RLS-bound session (same as every other
+  // portal page). `paypal_email` is deliberately not in
+  // `requirePartnerSession`'s shared select: only this page needs it.
+  const { data: row } = await supabase
+    .from("referral_partners")
+    .select("paypal_email")
+    .eq("id", partner.id)
+    .maybeSingle();
 
   return (
     <div className="max-w-md space-y-6">
       <PageHeader title="Settings" description="Where we send your commission payouts." />
-      <Card>
-        <CardContent className="pt-6">
-          <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-              <FormField
-                control={form.control}
-                name="paypal_email"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>PayPal email</FormLabel>
-                    <FormControl>
-                      <Input type="email" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <Button type="submit">Save</Button>
-            </form>
-          </Form>
-        </CardContent>
-      </Card>
+      <PayoutSettingsForm partnerId={partner.id} initialEmail={row?.paypal_email ?? ""} />
     </div>
   );
 }
