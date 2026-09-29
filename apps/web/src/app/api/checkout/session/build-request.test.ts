@@ -87,4 +87,18 @@ describe("buildApiCheckoutRequest", () => {
     );
     expect("white_glove" in bodyWithFalse).toBe(false);
   });
+
+  it("PT-01: includes referral_code only when a partner code is supplied", () => {
+    const draft = { business_type: "auto", business_name: "Joe's Garage" };
+    const withCode = buildApiCheckoutRequest(
+      draft,
+      "joe@example.com",
+      undefined,
+      false,
+      "ABCD2345",
+    );
+    expect(withCode.referral_code).toBe("ABCD2345");
+    const without = buildApiCheckoutRequest(draft, "joe@example.com");
+    expect("referral_code" in without).toBe(false);
+  });
 });
