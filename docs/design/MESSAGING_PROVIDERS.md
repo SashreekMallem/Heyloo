@@ -327,6 +327,13 @@ Auth --POST--> auth-send-email
 | `reauthentication` | no link, the 6-digit `token` only | n/a |
 | `*_notification` (7 types, only if enabled in the project) | no link, a short notice | n/a |
 
+`email_changed_notification` is addressed to `email_data.old_email` (the
+address the account had BEFORE the change), not to `user.email`: by then
+`user.email` is the new address, and the point of the notice is to warn the
+previous one (confirmed against the supabase/auth mailer source, which sends it
+to `oldEmail`). Without a usable `old_email` nothing is sent and the hook
+answers 400. The other six notifications go to `user.email`.
+
 Links are `{site_url}/auth/confirm?token_hash=<hash>&type=<type>&next=<path>`,
 the same shape as `supabase/templates/*.html`. `next` is the `next` of the
 app's own `redirect_to` (`<origin>/auth/confirm?next=...`) when it is a safe

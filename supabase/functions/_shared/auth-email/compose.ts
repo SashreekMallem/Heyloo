@@ -50,6 +50,9 @@ export const zAuthEmailHookPayload = z.object({
     redirect_to: zOptionalString,
     email_action_type: z.string().min(1),
     site_url: zOptionalString,
+    // Only sent with `email_changed_notification`: the address the account had
+    // BEFORE the change (see `composeAuthEmails`).
+    old_email: zOptionalString,
   }),
 });
 export type AuthEmailHookPayload = z.infer<typeof zAuthEmailHookPayload>;
@@ -243,7 +246,8 @@ const NOTIFICATIONS: Record<string, { subject: string; heading: string; body: st
   email_changed_notification: {
     subject: "Your Heyloo email address was changed",
     heading: "Your email address was changed",
-    body: "The email address on your Heyloo account was just changed.",
+    // `{old}` / `{new}` are replaced with the (escaped) previous and current address.
+    body: "The email address on your Heyloo account was just changed from {old} to {new}.",
   },
   phone_changed_notification: {
     subject: "Your Heyloo phone number was changed",
@@ -303,9 +307,10 @@ interface Rendered {
 
 function render(
   content: Content,
-  values: { newEmail?: string; link?: string; code?: string },
+  values: { newEmail?: string; oldEmail?: string; link?: string; code?: string },
 ): Rendered {
-  const withNew = (text: string) => text.replaceAll("{new}", values.newEmail ?? "");
+  const withNew = (text: string) =>
+    text.replaceAll("{new}", values.newEmail ?? "").replaceAll("{old}", values.oldEmail ?? "");
   const paragraphs = content.paragraphs.map(withNew);
 
   const htmlParts: string[] = [
@@ -353,7 +358,10 @@ function render(
   return { subject: content.subject, html, text: `${textParts.join("\n\n")}\n` };
 }
 
-function renderNotification(type: string): Rendered | null {
+function renderNotification(
+  type: string,
+  values: { newEmail?: string; oldEmail?: string } = {},
+): Rendered | null {
   const entry = NOTIFICATIONS[type];
   if (!entry) return null;
   return render(
@@ -363,7 +371,7 @@ function renderNotification(type: string): Rendered | null {
       paragraphs: [entry.body],
       footer: NOTIFICATION_FOOTER,
     },
-    {},
+    values,
   );
 }
 
@@ -393,6 +401,25 @@ export function composeAuthEmails(payload: AuthEmailHookPayload): ComposeResult 
     return { ok: false, reason: "user has no deliverable email address" };
   }
 
+  const need = (what: string): ComposeResult => ({
+    ok: false,
+    reason: `${type}: missing ${what}`,
+  });
+
+  // `email_changed_notification` is the one notification that does NOT go to
+  // `user.email`: by the time it fires the account already carries the NEW
+  // address, so `user.email` is the address an attacker would have just set.
+  // GoTrue sends it to `email_data.old_email` (the previous address) so the
+  // rightful owner learns of the change; sending it to the new address would
+  // defeat its purpose. Fail closed (no email) rather than notify the wrong one.
+  if (type === "email_changed_notification") {
+    if (!EMAIL_SHAPE.safeParse(data.old_email).success) return need("email_data.old_email");
+    return single(
+      data.old_email,
+      renderNotification(type, { oldEmail: data.old_email, newEmail: user.email }) as Rendered,
+    );
+  }
+
   const notification = renderNotification(type);
   if (notification) {
     return { ok: true, emails: [{ slot: "primary", to: user.email, ...notification }] };
@@ -403,10 +430,6 @@ export function composeAuthEmails(payload: AuthEmailHookPayload): ComposeResult 
     siteUrl && hash
       ? buildConfirmLink(siteUrl, hash, otpType, resolveNext(otpType, data.redirect_to, siteUrl))
       : null;
-  const need = (what: string): ComposeResult => ({
-    ok: false,
-    reason: `${type}: missing ${what}`,
-  });
 
   switch (type) {
     case "signup": {

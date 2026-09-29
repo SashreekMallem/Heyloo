@@ -327,4 +327,41 @@ describe("inputs and failures", () => {
     expect(email.subject).toBe("Your Heyloo password was changed");
     expect(email.html).not.toContain("/auth/confirm");
   });
+
+  it("email_changed_notification goes to the OLD address, never the new one", () => {
+    // user.email is already the NEW address when this fires (GoTrue sends the
+    // notice to email_data.old_email so the rightful owner learns of the change).
+    const result = composeAuthEmails(
+      payload("email_changed_notification", {
+        user: { email: "attacker@example.net" },
+        data: { old_email: "owner@example.com" },
+      }),
+    );
+    const email = only(result);
+    expect(email.to).toBe("owner@example.com");
+    expect(email.text).toContain("from owner@example.com to attacker@example.net");
+    expect(email.html).not.toContain("/auth/confirm");
+  });
+
+  it("email_changed_notification without a usable old_email sends nothing", () => {
+    for (const old_email of ["", "not-an-email"]) {
+      const result = composeAuthEmails(
+        payload("email_changed_notification", { data: { old_email } }),
+      );
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  it("escapes address text in the email_changed_notification body", () => {
+    const email = only(
+      composeAuthEmails(
+        payload("email_changed_notification", {
+          user: { email: "o'brien@example.net" },
+          data: { old_email: "owner@example.com" },
+        }),
+      ),
+    );
+    expect(email.html).not.toContain("o'brien");
+    expect(email.html).toContain("o&#39;brien@example.net");
+  });
 });
