@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import type { SqlClient } from "../_shared/types.ts";
-import { billOneTenant, computeInvoiceAmounts, previousCalendarMonth } from "./handler.ts";
+import {
+  billOneTenant,
+  computeInvoiceAmounts,
+  findTenantsForBilling,
+  previousCalendarMonth,
+} from "./handler.ts";
 
 const logger = createLogger();
 
@@ -55,6 +60,23 @@ describe("previousCalendarMonth", () => {
       periodStart: "2025-12-01",
       periodEnd: "2026-01-01",
     });
+  });
+});
+
+describe("findTenantsForBilling", () => {
+  it("only treats the job's own (Stripe-less) drafts as already-billed, and flags tenants whose period Stripe already invoiced", async () => {
+    const calls: { text: string; values: unknown[] }[] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join(" "), values });
+      return Promise.resolve([]);
+    }) as SqlClient;
+    await findTenantsForBilling(sql, "2026-09-01", "2026-10-01");
+    const text = calls[0]?.text ?? "";
+    expect(text).toContain("bi.stripe_invoice_id is null");
+    expect(text).toContain("as stripe_invoiced");
+    expect(text).toContain("si.stripe_invoice_id is not null");
+    // overlap test, never counting a zero-length one-off invoice period
+    expect(text).toContain("si.period_end > si.period_start");
   });
 });
 
@@ -130,6 +152,34 @@ describe("billOneTenant", () => {
     expect(insertCall?.text).toContain("'draft'");
     expect(insertCall?.values).toContain(2000);
     expect(insertCall?.values).toContain(11900);
+  });
+
+  it("does not add a second draft for a period Stripe already invoiced: writes a void marker, still reports the meter (SIGNUP-BILL-FIX D)", async () => {
+    const calls: { text: string; values: unknown[] }[] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join(" "), values });
+      return Promise.resolve([{ id: "inv_1" }]);
+    }) as SqlClient;
+    let meterReported = false;
+    await billOneTenant(
+      sql,
+      { ...row, stripe_invoiced: true },
+      "2026-09-01",
+      "2026-10-01",
+      {
+        stripeFetch: (() => {
+          meterReported = true;
+          return Promise.resolve(new Response("{}", { status: 200 }));
+        }) as never,
+        stripeSecretKey: "sk_test",
+        billingMeterEventName: "voice_minutes",
+        logger,
+      },
+    );
+    expect(meterReported).toBe(true); // overage still reaches Stripe
+    const insert = calls.at(-1);
+    expect(insert?.text).toContain("'void'");
+    expect(insert?.text).not.toContain("'draft'");
   });
 
   it("returns false when the invoice already exists (idempotent no-op on conflict)", async () => {

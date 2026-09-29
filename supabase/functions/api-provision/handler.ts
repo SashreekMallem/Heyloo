@@ -56,11 +56,16 @@ async function recordStep(
   status: "in_progress" | "succeeded" | "failed",
   error?: string,
 ): Promise<void> {
+  // `attempts` counts how many times a step was STARTED: only an
+  // `in_progress` write is a new attempt. Counting the `succeeded`/`failed`
+  // write of the same attempt too made every clean step read attempts = 2.
+  const newAttempt = status === "in_progress" ? 1 : 0;
   await sql`
     insert into public.provisioning_runs (tenant_id, step, status, error, attempts, updated_at)
     values (${tenantId}, ${step}, ${status}, ${error ?? null}, 1, now())
     on conflict (tenant_id, step) do update set
-      status = excluded.status, error = excluded.error, attempts = provisioning_runs.attempts + 1, updated_at = now()
+      status = excluded.status, error = excluded.error,
+      attempts = provisioning_runs.attempts + ${newAttempt}, updated_at = now()
   `;
 }
 

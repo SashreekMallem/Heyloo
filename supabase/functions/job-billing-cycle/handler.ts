@@ -49,6 +49,11 @@ interface TenantBillingRow {
   included_minutes: number;
   overage_cents_per_minute: number;
   billable_minutes: number;
+  /** True when Stripe already issued an invoice whose service period overlaps
+   * the period being billed (SIGNUP-BILL-FIX D): the Stripe invoice, written by
+   * `webhooks-stripe` on `invoice.paid`, is the revenue record, so this job must
+   * not add a second, competing draft for the same money. */
+  stripe_invoiced?: boolean;
 }
 
 export function previousCalendarMonth(now: Date): { periodStart: string; periodEnd: string } {
@@ -79,14 +84,21 @@ export async function findTenantsForBilling(
       coalesce((
         select sum(ud.billable_minutes) from public.usage_daily ud
         where ud.tenant_id = t.id and ud.date >= ${periodStart}::date and ud.date < ${periodEnd}::date
-      ), 0) as billable_minutes
+      ), 0) as billable_minutes,
+      exists (
+        select 1 from public.billing_invoices si
+        where si.tenant_id = t.id and si.stripe_invoice_id is not null
+          and si.period_end > si.period_start
+          and si.period_start < ${periodEnd}::date and si.period_end > ${periodStart}::date
+      ) as stripe_invoiced
     from public.tenants t
     join public.platform_settings pc on pc.key = 'price_card_' || t.vertical
     where t.deleted_at is null
       and t.status in ('active', 'past_due')
       and not exists (
         select 1 from public.billing_invoices bi
-        where bi.tenant_id = t.id and bi.period_start = ${periodStart}::date and bi.period_end = ${periodEnd}::date
+        where bi.tenant_id = t.id and bi.stripe_invoice_id is null
+          and bi.period_start = ${periodStart}::date and bi.period_end = ${periodEnd}::date
       )
   `;
 }
@@ -155,6 +167,29 @@ export async function billOneTenant(
     });
   }
 
+  if (row.stripe_invoiced) {
+    // Stripe already invoiced this period (its own invoice row carries the
+    // revenue): keep our usage computation as a `void` marker so the tenant is
+    // not re-processed (and its meter event re-reported) on every daily run,
+    // but never as a draft/paid receivable that would double the revenue.
+    const marker = await sql<{ id: string }>`
+      insert into public.billing_invoices (
+        tenant_id, period_start, period_end, base_fee_cents, included_minutes,
+        overage_minutes, overage_cents, total_cents, status
+      ) values (
+        ${row.tenant_id}, ${periodStart}::date, ${periodEnd}::date, ${row.base_cents}, ${row.included_minutes},
+        ${overageMinutes}, ${overageCents}, ${totalCents}, 'void'
+      )
+      on conflict (tenant_id, period_start, period_end) where stripe_invoice_id is null do nothing
+      returning id
+    `;
+    deps.logger.info("billing_cycle_period_already_invoiced_by_stripe", {
+      tenant_id: row.tenant_id,
+      period_start: periodStart,
+    });
+    return marker.length > 0;
+  }
+
   const inserted = await sql<{ id: string }>`
     insert into public.billing_invoices (
       tenant_id, period_start, period_end, base_fee_cents, included_minutes,
@@ -163,7 +198,7 @@ export async function billOneTenant(
       ${row.tenant_id}, ${periodStart}::date, ${periodEnd}::date, ${row.base_cents}, ${row.included_minutes},
       ${overageMinutes}, ${overageCents}, ${totalCents}, 'draft'
     )
-    on conflict (tenant_id, period_start, period_end) do nothing
+    on conflict (tenant_id, period_start, period_end) where stripe_invoice_id is null do nothing
     returning id
   `;
   return inserted.length > 0;

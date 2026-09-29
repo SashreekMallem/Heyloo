@@ -113,10 +113,12 @@ function makeFakeDb() {
       if (t) t.status = mapped;
       return [];
     }
-    if (text.includes("update public.billing_invoices set status = 'paid'")) {
-      const [stripeInvoiceId] = values as [string];
+    if (text.includes("update public.billing_invoices set status =")) {
+      // status-sync of a row we already hold — values: [status, stripeInvoiceId, status]
+      // (never downgrades a paid row).
+      const [status, stripeInvoiceId] = values as [string, string];
       const inv = billingInvoices.get(stripeInvoiceId);
-      if (inv) inv.status = "paid";
+      if (inv && !(inv.status === "paid" && status !== "paid")) inv.status = status;
       return [];
     }
     if (
@@ -127,12 +129,6 @@ function makeFakeDb() {
       const [customerId] = values as [string];
       const t = findTenantByCustomer(customerId);
       if (t && t.status === "past_due") t.status = "active";
-      return [];
-    }
-    if (text.includes("update public.billing_invoices set status = 'past_due'")) {
-      const [stripeInvoiceId] = values as [string];
-      const inv = billingInvoices.get(stripeInvoiceId);
-      if (inv) inv.status = "past_due";
       return [];
     }
     if (text.includes("select id from public.tenants where stripe_customer_id")) {
