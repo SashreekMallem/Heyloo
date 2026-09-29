@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
@@ -69,7 +69,11 @@ describe("supabase/templates/*.html", () => {
     const toml = readFileSync(resolve(repoRoot, "supabase/config.toml"), "utf8");
     for (const spec of mod.AUTH_TEMPLATES) {
       expect(toml).toContain(`[auth.email.template.${spec.key}]`);
-      expect(toml).toContain(`content_path = "./templates/${spec.file}"`);
+      // Supabase resolves content_path from the PROJECT ROOT, not supabase/
+      // (supabase.com/docs/guides/local-development/customizing-email-templates);
+      // "./templates/..." made every `supabase functions deploy` fail with ENOENT.
+      expect(toml).toContain(`content_path = "./supabase/templates/${spec.file}"`);
+      expect(existsSync(resolve(repoRoot, "supabase/templates", spec.file))).toBe(true);
       expect(toml).toContain(`subject = "${spec.subject}"`);
     }
   });

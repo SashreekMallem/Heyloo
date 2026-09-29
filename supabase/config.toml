@@ -48,23 +48,23 @@ additional_redirect_urls = ["http://localhost:3000/**"]
 # (Management API); this block is for local parity only.
 [auth.email.template.confirmation]
 subject = "Confirm your Heyloo account"
-content_path = "./templates/confirmation.html"
+content_path = "./supabase/templates/confirmation.html"
 
 [auth.email.template.recovery]
 subject = "Reset your Heyloo password"
-content_path = "./templates/recovery.html"
+content_path = "./supabase/templates/recovery.html"
 
 [auth.email.template.invite]
 subject = "You're invited to Heyloo"
-content_path = "./templates/invite.html"
+content_path = "./supabase/templates/invite.html"
 
 [auth.email.template.magic_link]
 subject = "Your Heyloo sign-in link"
-content_path = "./templates/magic_link.html"
+content_path = "./supabase/templates/magic_link.html"
 
 [auth.email.template.email_change]
 subject = "Confirm your new Heyloo email address"
-content_path = "./templates/email_change.html"
+content_path = "./supabase/templates/email_change.html"
 
 # Custom Access Token Hook (tenant_id/role/platform_admin/referral_partner_id
 # in app_metadata) — SYSTEM_DESIGN §2/§6, CLAUDE.md Rule 2, BACKEND_SPEC
