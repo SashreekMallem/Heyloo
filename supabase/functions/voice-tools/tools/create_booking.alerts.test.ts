@@ -146,6 +146,35 @@ describe("createBooking - owner alert (VOICE-ALERTS-1)", () => {
     ).toBe(true);
   });
 
+  it("INTAKE-Q-1: the alert carries the owner's custom questions and the caller's answers, and they are stored on the booking row", async () => {
+    const { sql, calls } = makeSql();
+    const deferred: (() => Promise<void>)[] = [];
+    const customAnswers = [
+      { question_id: "q_a", question: "Gate code?", answer: "4471" },
+      { question_id: "q_b", question: "Any pets?", answer: "One dog" },
+    ];
+    await createBooking(
+      sql,
+      ctx,
+      { ...args, structured_payload: { reason: "Consult", custom_answers: customAnswers } },
+      {
+        logger,
+        appBaseUrl: "https://app.example",
+        defer: (_label, task) => deferred.push(task),
+      },
+    );
+    await Promise.all(deferred.map((t) => t()));
+    const insert = calls.find((c) => c.text.includes("insert into public.messages_outbound"));
+    expect(insert?.values[4]).toMatchObject({
+      custom_answers: [
+        { question: "Gate code?", answer: "4471" },
+        { question: "Any pets?", answer: "One dog" },
+      ],
+    });
+    const write = calls.find((c) => c.text.includes("create_booking:write"));
+    expect(JSON.stringify(write?.values)).toContain('"custom_answers"');
+  });
+
   it("emails the owner when texting alerts are off (tenant delivery preferences respected)", async () => {
     const { sql, calls } = makeSql({
       "public.agent_configs ac": [

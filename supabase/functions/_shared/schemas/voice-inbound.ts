@@ -94,6 +94,9 @@ export const VoiceInboundDynamicVariablesSchema = z.object({
   // call can never promise a text.
   sms_enabled: z.string(),
   texting_policy_text: z.string(),
+  // INTAKE-Q-1: the owner's custom intake questions, one numbered line each
+  // ("(no custom questions)" when none) — `_shared/custom-questions.ts`.
+  custom_questions_text: z.string(),
   // GAP_REGISTER §1.3 — per-vertical `{{token}}`s every compiled prompt may
   // reference (packages/templates/src/red-team/prompt-lint.ts's
   // ALLOWED_DYNAMIC_VARIABLES), always resolved with a safe default by

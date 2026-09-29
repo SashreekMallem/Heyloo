@@ -1,5 +1,13 @@
 import { faqItemSchema, verticalDetailsSchema } from "@heyloo/canonical-types";
 import { z } from "zod";
+import {
+  CUSTOM_QUESTION_APPLIES_TO,
+  CUSTOM_QUESTION_HINT_MAX_CHARS,
+  CUSTOM_QUESTION_ID_PATTERN,
+  CUSTOM_QUESTION_LABEL_MAX_CHARS,
+  CUSTOM_QUESTIONS_MAX,
+  questionWordingProblem,
+} from "./custom-questions";
 import { PHONE_ERROR_MESSAGE, zOptionalPhone, zPhoneFormField } from "./phone";
 import { isValidTimezone } from "./timezone";
 
@@ -153,6 +161,62 @@ export const faqRequestSchema = z
       MAX_FAQ_CHARS,
     { message: "Your FAQ is too long — shorten some answers.", path: ["items"] },
   );
+
+/**
+ * INTAKE-Q-1: the owner's custom intake questions (`POST
+ * /api/tenant/agent/questions`). The whole list is saved at once; `position`
+ * is the array order (reordering = sending the list in the new order), and a
+ * question with no `id` is new (the route assigns one). Server-side limits
+ * match the database CHECK (migration 20260930230000) and the runtime reader
+ * (`supabase/functions/_shared/custom-questions.ts`).
+ */
+const customQuestionTextField = (max: number, what: string) =>
+  z
+    .string()
+    .transform((value) => value.replace(/\s+/g, " ").trim())
+    .pipe(z.string().max(max, `Keep ${what} under ${max} characters.`));
+
+export const customQuestionInputSchema = z.object({
+  id: z.string().regex(CUSTOM_QUESTION_ID_PATTERN, "That question id isn't valid.").optional(),
+  label: customQuestionTextField(CUSTOM_QUESTION_LABEL_MAX_CHARS, "the question")
+    .pipe(z.string().min(1, "Write the question the AI should ask."))
+    .superRefine((value, ctx) => {
+      const problem = questionWordingProblem(value);
+      if (problem) ctx.addIssue({ code: "custom", message: problem });
+    }),
+  hint: customQuestionTextField(CUSTOM_QUESTION_HINT_MAX_CHARS, "the answer hint")
+    .superRefine((value, ctx) => {
+      const problem = value ? questionWordingProblem(value) : null;
+      if (problem) ctx.addIssue({ code: "custom", message: problem });
+    })
+    .nullish()
+    .transform((value) => (value ? value : undefined)),
+  required: z.boolean(),
+  applies_to: z.enum(CUSTOM_QUESTION_APPLIES_TO),
+  active: z.boolean().default(true),
+});
+
+export const customQuestionsRequestSchema = z
+  .object({
+    questions: z
+      .array(customQuestionInputSchema)
+      .max(CUSTOM_QUESTIONS_MAX, `Keep it to ${CUSTOM_QUESTIONS_MAX} custom questions.`),
+  })
+  .superRefine((value, ctx) => {
+    const seen = new Set<string>();
+    value.questions.forEach((question, index) => {
+      if (!question.id) return;
+      if (seen.has(question.id)) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Each question needs its own id.",
+          path: ["questions", index, "id"],
+        });
+      }
+      seen.add(question.id);
+    });
+  });
+export type CustomQuestionsRequest = z.infer<typeof customQuestionsRequestSchema>;
 
 /** Booking-window rules — `tenants.booking_min_notice_minutes` / `booking_horizon_days` (migration 20260929120000). */
 export const bookingRulesRequestSchema = z.object({

@@ -15,7 +15,13 @@ import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
  */
 
 export type TenantGuardResult =
-  | { ok: true; supabase: SupabaseServerClient; tenantId: string }
+  | {
+      ok: true;
+      supabase: SupabaseServerClient;
+      tenantId: string;
+      /** Owner/admin (or an impersonating platform admin): the caller may change settings. Lets a read route tell the page whether to render read-only. */
+      canWrite: boolean;
+    }
   | { ok: false; response: NextResponse };
 
 async function guard(requireWriter: boolean): Promise<TenantGuardResult> {
@@ -33,18 +39,15 @@ async function guard(requireWriter: boolean): Promise<TenantGuardResult> {
   if (!claims.tenant_id) {
     return { ok: false, response: NextResponse.json({ error: "forbidden" }, { status: 403 }) };
   }
-  if (
-    requireWriter &&
-    claims.role !== "owner" &&
-    claims.role !== "admin" &&
-    claims.platform_admin !== true
-  ) {
+  const canWrite =
+    claims.role === "owner" || claims.role === "admin" || claims.platform_admin === true;
+  if (requireWriter && !canWrite) {
     return {
       ok: false,
       response: NextResponse.json({ error: "owner_or_admin_required" }, { status: 403 }),
     };
   }
-  return { ok: true, supabase, tenantId: claims.tenant_id };
+  return { ok: true, supabase, tenantId: claims.tenant_id, canWrite };
 }
 
 /** Any signed-in member of a tenant (reads). */

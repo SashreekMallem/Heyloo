@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { alertCustomAnswers } from "../../_shared/custom-questions.ts";
 import { normalizeE164 } from "../../_shared/phone.ts";
 import type { TakeMessageArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { SqlClient } from "../../_shared/types.ts";
@@ -83,6 +84,8 @@ export async function takeMessage(
       caller_phone: callerPhone ?? null,
       message_text: args.message_text,
       callback_window: args.callback_window ?? null,
+      // INTAKE-Q-1: the owner's custom questions and what the caller answered.
+      ...alertCustomAnswers(structuredPayload),
       ...(Object.keys(structuredPayload).length > 0
         ? { structured_payload: structuredPayload }
         : {}),

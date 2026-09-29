@@ -115,6 +115,7 @@ export const COMPILER_DEFAULT_DYNAMIC_VARIABLES: Readonly<Record<string, string>
     "the booking or order is confirmed, read back the day, time and key details once and say it " +
     "is confirmed. If the caller wants it in writing or asks for a link, tell them someone from " +
     "the team will follow up.",
+  custom_questions_text: "(no custom questions)",
   transfer_policy_text:
     "No live transfer number is set. Do not offer or attempt a transfer: take a message instead.",
   cancellation_policy_text:

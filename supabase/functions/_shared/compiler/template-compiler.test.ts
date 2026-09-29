@@ -122,6 +122,8 @@ describe("compileTemplate — conversation_flow", () => {
       // MSG-3: texting defaults to OFF for calls that never run /voice-inbound.
       sms_enabled: "false",
       texting_policy_text: expect.stringContaining("Text messages are NOT available"),
+      // INTAKE-Q-1
+      custom_questions_text: "(no custom questions)",
       transfer_policy_text: expect.stringContaining("No live transfer"),
       cancellation_policy_text: expect.any(String),
     });
@@ -132,6 +134,7 @@ describe("compileTemplate — conversation_flow", () => {
       "{{voicemail_message}}",
       "{{booking_mode_text}}",
       "{{texting_policy_text}}",
+      "{{custom_questions_text}}",
       "{{transfer_policy_text}}",
       "{{cancellation_policy_text}}",
     ]) {
@@ -157,7 +160,16 @@ describe("compileTemplate — conversation_flow", () => {
         name: "create_booking",
         description: "books a slot",
         url: "https://example.com/voice-tools",
-        parameters: { properties: {} },
+        // INTAKE-Q-1: create_booking (and take_message) carry the custom-answers parameter.
+        parameters: {
+          type: "object",
+          properties: {
+            structured_payload: {
+              type: "object",
+              properties: { custom_answers: expect.objectContaining({ type: "array" }) },
+            },
+          },
+        },
       },
     ]);
   });

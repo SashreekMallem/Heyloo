@@ -1,4 +1,5 @@
 import { decryptSecret, encryptSecret } from "../_shared/crypto.ts";
+import { readStoredCustomAnswers } from "../_shared/custom-questions.ts";
 import { createAirtableRecord } from "../_shared/providers/airtable.ts";
 import {
   createEzyVetAppointment,
@@ -219,6 +220,8 @@ interface BookingRow {
   customer_email: string | null;
   offering_metadata: Record<string, unknown> | null;
   resource_metadata: Record<string, unknown> | null;
+  /** INTAKE-Q-1: `bookings.structured_payload` (carries `custom_answers`). Optional so older test rows still type. */
+  structured_payload?: Record<string, unknown> | null;
 }
 
 async function loadBookingForPush(
@@ -231,7 +234,8 @@ async function loadBookingForPush(
       b.id, b.status, b.start_at, b.end_at, b.notes, b.party_size,
       c.name as customer_name, c.phone_e164 as customer_phone, c.email as customer_email,
       o.metadata as offering_metadata,
-      r.metadata as resource_metadata
+      r.metadata as resource_metadata,
+      b.structured_payload
     from public.bookings b
     left join public.customers c on c.id = b.customer_id
     left join public.offerings o on o.id = b.offering_id
@@ -977,12 +981,24 @@ async function pushToGoogleCalendar(
 // ---------------------------------------------------------------------------
 
 function airtableFieldsForBooking(booking: BookingRow): Record<string, unknown> {
+  // INTAKE-Q-1: the owner's custom-question answers ride in the existing
+  // `Notes` field (Airtable rejects a field the base doesn't have, so a new
+  // column is not safe to add unasked).
+  const answers = readStoredCustomAnswers(booking.structured_payload);
+  const notes = [
+    booking.notes ?? "",
+    ...(answers.length > 0
+      ? ["Custom questions:", ...answers.map((a) => `${a.question} ${a.answer}`)]
+      : []),
+  ]
+    .filter((part) => part.length > 0)
+    .join("\n");
   return {
     "Customer Name": booking.customer_name ?? "Phone caller",
     Phone: booking.customer_phone ?? "",
     Start: booking.start_at,
     End: booking.end_at,
-    Notes: booking.notes ?? "",
+    Notes: notes,
   };
 }
 

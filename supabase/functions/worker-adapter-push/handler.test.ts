@@ -870,6 +870,50 @@ describe("pushToAdapter: airtable", () => {
     expect(capturedUrl).toContain("Bookings");
   });
 
+  it("INTAKE-Q-1: puts the owner's custom-question answers in the existing Notes field (never a new column the base may not have)", async () => {
+    const sql = makeSql([
+      { when: "from public.adapter_connections", rows: [CONNECTION_ROW] },
+      {
+        when: "from public.bookings b",
+        rows: [
+          {
+            ...BOOKING_ROW,
+            notes: "Bring the key",
+            structured_payload: {
+              custom_answers: [{ question_id: "q_a", question: "Gate code?", answer: "4471" }],
+            },
+          },
+        ],
+      },
+      { when: "insert into public.adapter_sync_state", rows: [] },
+    ]);
+    let body = "";
+    const deps: AdapterPushDeps = {
+      ...DEPS,
+      fetchImpl: (async (_url: unknown, init?: { body?: string }) => {
+        body = String(init?.body ?? "");
+        return jsonResponse({ id: "rec789" });
+      }) as unknown as typeof fetch,
+    };
+    const result = await pushToAdapter(
+      sql,
+      {
+        tenant_id: "t1",
+        adapter: "airtable",
+        entity_type: "booking",
+        entity_id: "booking_5",
+        idempotency_key: "k1",
+        attempt: 0,
+      },
+      createLogger(),
+      deps,
+    );
+    expect(result).toBe(true);
+    const fields = (JSON.parse(body) as { fields: Record<string, unknown> }).fields;
+    expect(fields["Notes"]).toBe("Bring the key\nCustom questions:\nGate code? 4471");
+    expect(Object.keys(fields).sort()).toEqual(["Customer Name", "End", "Notes", "Phone", "Start"]);
+  });
+
   it("pushes an order to Airtable too (a generic base supports both entity types)", async () => {
     const orderRow = {
       id: "order_5",

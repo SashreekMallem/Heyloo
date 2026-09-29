@@ -112,6 +112,7 @@
  */
 
 import type { AgentState, AgentTemplate, Transition } from "@heyloo/canonical-types";
+import { withCustomAnswersParameter } from "./custom-answers.js";
 import {
   buildOpeningLine,
   COMPILER_DEFAULT_DYNAMIC_VARIABLES,
@@ -404,11 +405,11 @@ export function compileConversationFlow(
       // `properties` is REQUIRED per retell-typescript-sdk's `CustomTool.
       // Parameters` even though the canonical `JsonSchemaObject` allows
       // omitting it for template-authoring convenience — default to `{}`.
-      parameters: {
+      parameters: withCustomAnswersParameter(tool.name, {
         type: "object",
         properties: tool.parameters.properties ?? {},
         ...(tool.parameters.required !== undefined ? { required: tool.parameters.required } : {}),
-      },
+      }),
       ...(singleLockedToolNames.has(tool.name)
         ? { speak_during_execution: true, speak_after_execution: true }
         : {}),

@@ -113,3 +113,49 @@ describe("CallDetailClient — recording (DASH-1)", () => {
     expect(requested).toContain("/api/tenant/calls/call-1/recording?channel=stereo");
   });
 });
+
+describe("CallDetailClient — custom question answers (INTAKE-Q-1)", () => {
+  it("shows the caller's answers to the owner's questions in their own card, not as [object Object] in 'Captured on the call'", () => {
+    render(
+      <CallDetailClient
+        call={{
+          ...BASE,
+          structuredPayload: {
+            reason: "Consult",
+            custom_answers: [
+              { question_id: "q_a", question: "What is the gate code?", answer: "4471" },
+              { question_id: "q_b", question: "Any pets?", answer: "One dog" },
+            ],
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText("Answers to your questions")).toBeInTheDocument();
+    expect(screen.getByText("What is the gate code?")).toBeInTheDocument();
+    expect(screen.getByText("4471")).toBeInTheDocument();
+    expect(screen.getByText("Any pets?")).toBeInTheDocument();
+    expect(screen.getByText("One dog")).toBeInTheDocument();
+    expect(screen.getByText("Captured on the call")).toBeInTheDocument();
+    expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument();
+  });
+
+  it("renders nothing extra when there are no answers", () => {
+    render(<CallDetailClient call={{ ...BASE, structuredPayload: { reason: "Consult" } }} />);
+    expect(screen.queryByText("Answers to your questions")).not.toBeInTheDocument();
+  });
+
+  it("shows only the answers card when the payload holds nothing else", () => {
+    render(
+      <CallDetailClient
+        call={{
+          ...BASE,
+          structuredPayload: {
+            custom_answers: [{ question_id: "q_a", question: "Any pets?", answer: "None" }],
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText("Answers to your questions")).toBeInTheDocument();
+    expect(screen.queryByText("Captured on the call")).not.toBeInTheDocument();
+  });
+});

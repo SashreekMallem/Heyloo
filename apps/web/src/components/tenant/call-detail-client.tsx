@@ -16,7 +16,9 @@ import {
 } from "@heyloo/ui";
 import { AudioPlayer } from "@heyloo/ui/audio-player";
 import { useEffect, useState } from "react";
+import { CustomAnswersList } from "@/components/tenant/custom-answers";
 import { Link } from "@/i18n/navigation";
+import { readCustomAnswers, withoutCustomAnswers } from "@/lib/settings/custom-questions";
 
 export interface CallDetailData {
   id: string;
@@ -159,23 +161,37 @@ export function CallDetailClient({ call }: { call: CallDetailData }) {
         </Card>
       )}
 
-      {call.structuredPayload && keyValueEntries(call.structuredPayload).length > 0 && (
+      {call.structuredPayload && readCustomAnswers(call.structuredPayload).length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Captured on the call</CardTitle>
+            <CardTitle className="text-base">Answers to your questions</CardTitle>
           </CardHeader>
           <CardContent>
-            <dl className="space-y-1 text-sm">
-              {keyValueEntries(call.structuredPayload).map(([label, value]) => (
-                <div key={label} className="flex justify-between gap-2">
-                  <dt className="capitalize text-muted-foreground">{label}</dt>
-                  <dd className="text-right">{value}</dd>
-                </div>
-              ))}
-            </dl>
+            <CustomAnswersList payload={call.structuredPayload} />
           </CardContent>
         </Card>
       )}
+
+      {call.structuredPayload &&
+        keyValueEntries(withoutCustomAnswers(call.structuredPayload)).length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Captured on the call</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <dl className="space-y-1 text-sm">
+                {keyValueEntries(withoutCustomAnswers(call.structuredPayload)).map(
+                  ([label, value]) => (
+                    <div key={label} className="flex justify-between gap-2">
+                      <dt className="capitalize text-muted-foreground">{label}</dt>
+                      <dd className="text-right">{value}</dd>
+                    </div>
+                  ),
+                )}
+              </dl>
+            </CardContent>
+          </Card>
+        )}
 
       {call.extractedEntities && keyValueEntries(call.extractedEntities).length > 0 && (
         <Card>

@@ -38,6 +38,7 @@ import {
   computeGreetingHoursContext,
   computeUpcomingWeekdayDates,
 } from "./business-hours.ts";
+import { resolveCustomQuestionsText } from "./custom-questions.ts";
 import type { VoiceInboundResponse } from "./schemas/voice-inbound.ts";
 import { resolveTextingVariables } from "./sms-availability.ts";
 import type { Logger, SqlClient } from "./types.ts";
@@ -339,6 +340,9 @@ export async function buildInboundDynamicVariables(params: {
     // this with the tenant's real per-call state; every other caller (the batch-test
     // harness) runs the agent exactly as a tenant with no texting would.
     ...resolveTextingVariables(false),
+    // INTAKE-Q-1: the owner's custom intake questions (sanitized, ordered,
+    // active only), resolved per call so an edit is live on the next call.
+    custom_questions_text: resolveCustomQuestionsText(overrides),
     ...verticalTokens,
     ...(typeof overrides["manager_name"] === "string"
       ? { manager_name: overrides["manager_name"] as string }
