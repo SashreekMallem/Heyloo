@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { tenantDateKey, tenantDateKeyDaysAgo, tenantDayStartIso, tenantMidnightIso } from "./tz";
+import {
+  shiftDateKey,
+  tenantDateKey,
+  tenantDateKeyDaysAgo,
+  tenantDayStartIso,
+  tenantMidnightIso,
+} from "./tz";
 
 describe("tenant-local day helpers (F-02 / F-21)", () => {
   it("uses the tenant's local date, not the UTC date", () => {
@@ -37,5 +43,13 @@ describe("tenant-local day helpers (F-02 / F-21)", () => {
     expect(tenantDateKeyDaysAgo("America/New_York", 0, instant)).toBe("2026-09-29");
     expect(tenantDateKeyDaysAgo("America/New_York", 6, instant)).toBe("2026-09-23");
     expect(tenantDateKeyDaysAgo("UTC", 30, new Date("2026-03-05T00:00:00Z"))).toBe("2026-02-03");
+  });
+});
+
+describe("shiftDateKey", () => {
+  it("shifts calendar days across month/year boundaries", () => {
+    expect(shiftDateKey("2026-09-30", 1)).toBe("2026-10-01");
+    expect(shiftDateKey("2026-01-01", -1)).toBe("2025-12-31");
+    expect(shiftDateKey("2026-02-27", 2)).toBe("2026-03-01");
   });
 });

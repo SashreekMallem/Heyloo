@@ -7,6 +7,8 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  formatDuration,
+  formatPhoneDisplay,
   PageHeader,
   type StateTraceEntry,
   StateTraceViewer,
@@ -22,6 +24,11 @@ import { readCustomAnswers, withoutCustomAnswers } from "@/lib/settings/custom-q
 
 export interface CallDetailData {
   id: string;
+  /** E.164 caller number (`call_logs.caller_number`). */
+  callerNumber: string | null;
+  startedAt: string | null;
+  /** The tenant customer whose number matches `callerNumber`, when there is one. */
+  customer: { id: string; name: string | null } | null;
   classification: string | null;
   transcript: TranscriptTurn[];
   stateTrace: StateTraceEntry[];
@@ -47,13 +54,43 @@ const SENTIMENT_VARIANT: Record<string, "success" | "secondary" | "destructive">
   negative: "destructive",
 };
 
-function keyValueEntries(payload: Record<string, unknown>): [string, string][] {
-  return Object.entries(payload)
-    .filter(([, v]) => v !== null && v !== undefined && v !== "")
-    .map(([k, v]): [string, string] => [
-      k.replace(/_/g, " "),
-      Array.isArray(v) ? v.join(", ") : typeof v === "boolean" ? (v ? "Yes" : "No") : String(v),
-    ]);
+/** Keys that are internal identifiers (`booking_id`, `question_id`, `id`, ...): noise to the owner. */
+function isIdKey(key: string): boolean {
+  return /(^|_)id$/i.test(key) || /Id$/.test(key);
+}
+
+function formatValue(v: unknown): string {
+  if (Array.isArray(v)) return v.map(formatValue).join(", ");
+  if (typeof v === "boolean") return v ? "Yes" : "No";
+  if (v !== null && typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+/**
+ * Payload -> readable label/value rows: nested objects are flattened into
+ * "parent child" labels (never "[object Object]"), id fields are hidden and
+ * empty values are skipped (QA-1 F-18).
+ */
+export function keyValueEntries(payload: Record<string, unknown>, prefix = ""): [string, string][] {
+  const rows: [string, string][] = [];
+  for (const [k, v] of Object.entries(payload)) {
+    if (v === null || v === undefined || v === "" || isIdKey(k)) continue;
+    const label = `${prefix}${k.replace(/_/g, " ")}`;
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      rows.push(...keyValueEntries(v as Record<string, unknown>, `${label} `));
+    } else {
+      rows.push([label, formatValue(v)]);
+    }
+  }
+  return rows;
+}
+
+/** Why there is no recording, worded by the reason we can actually infer (QA-1 F-18). */
+export function noRecordingMessage(durationSeconds: number | null): string {
+  if (durationSeconds == null || durationSeconds < 10) {
+    return "No recording — the call ended before there was anything to record.";
+  }
+  return "No recording is available for this call. If you expected one, contact support and quote the call ID.";
 }
 
 interface RecordingSignedState {
@@ -119,7 +156,29 @@ export function CallDetailClient({ call }: { call: CallDetailData }) {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Call detail"
+        title={
+          call.customer?.name?.trim() ||
+          (call.callerNumber ? formatPhoneDisplay(call.callerNumber) : "Unknown caller")
+        }
+        description={
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            {call.customer?.name?.trim() && call.callerNumber && (
+              <span>{formatPhoneDisplay(call.callerNumber)}</span>
+            )}
+            <span>
+              {call.startedAt ? new Date(call.startedAt).toLocaleString() : "Call in progress"}
+            </span>
+            {call.durationSeconds != null && <span>{formatDuration(call.durationSeconds)}</span>}
+            {call.customer && (
+              <Link
+                href={`/dashboard/customers/${call.customer.id}`}
+                className="text-accent-text underline underline-offset-2"
+              >
+                View customer
+              </Link>
+            )}
+          </span>
+        }
         actions={
           <>
             {call.urgencyFlag && <Badge variant="destructive">Urgent</Badge>}
@@ -217,7 +276,10 @@ export function CallDetailClient({ call }: { call: CallDetailData }) {
             <CardTitle className="text-base">Linked booking</CardTitle>
           </CardHeader>
           <CardContent>
-            <Link href="/dashboard/bookings" className="text-sm underline">
+            <Link
+              href={`/dashboard/bookings?booking=${encodeURIComponent(call.linkedBookingId)}`}
+              className="text-sm underline"
+            >
               View booking
             </Link>
           </CardContent>
@@ -237,7 +299,7 @@ export function CallDetailClient({ call }: { call: CallDetailData }) {
           )}
           {call.recordingStatus === "none" && (
             <p className="text-sm text-muted-foreground">
-              No recording for this call (by design — very short/spam calls aren&apos;t archived).
+              {noRecordingMessage(call.durationSeconds)}
             </p>
           )}
           {call.recordingStatus === "ready" && recording.status === "loading" && (

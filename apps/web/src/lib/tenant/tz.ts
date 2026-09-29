@@ -90,3 +90,9 @@ export function tenantDateKeyDaysAgo(
   const shifted = new Date(Date.UTC(y, m - 1, d - days));
   return shifted.toISOString().slice(0, 10);
 }
+
+/** `YYYY-MM-DD` shifted by `days` calendar days (pure date arithmetic, no zone involved). */
+export function shiftDateKey(dateKey: string, days: number): string {
+  const [y, m, d] = dateKey.split("-").map(Number) as [number, number, number];
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+}

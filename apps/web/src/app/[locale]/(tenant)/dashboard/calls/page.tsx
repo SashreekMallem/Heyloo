@@ -5,6 +5,11 @@ import { requireTenantSession } from "@/lib/auth/require-tenant-session";
 export const metadata: Metadata = { title: "Calls — Heyloo" };
 
 export default async function CallsPage() {
-  const { tenant } = await requireTenantSession("/dashboard/calls");
-  return <CallsListClient tenantId={tenant.id} />;
+  const { supabase, tenant } = await requireTenantSession("/dashboard/calls");
+  const { data: tenantRow } = await supabase
+    .from("tenants")
+    .select("timezone")
+    .eq("id", tenant.id)
+    .maybeSingle();
+  return <CallsListClient tenantId={tenant.id} tenantTz={tenantRow?.timezone ?? "UTC"} />;
 }
