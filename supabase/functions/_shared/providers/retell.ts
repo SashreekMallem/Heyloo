@@ -396,6 +396,31 @@ export async function getPhoneNumber(
 }
 
 /**
+ * DELETE /delete-phone-number/{phone_number} (NUMBERS-1, RETELL-VERIFY:
+ * confirmed against docs.retellai.com/api-references/delete-phone-number
+ * 2026-09-29 — path param `phone_number` in E.164, bearer auth, responses
+ * 204 (deleted), 401, 422 ("asset not found"), 500). NOTE the documented
+ * "not found" status is 422, NOT 404 as this repo previously assumed
+ * (job-offboarding/retell-delete.ts, now removed), so callers must not
+ * treat a 422 as "already gone" on its own: re-read the number with
+ * `getPhoneNumber` and only then conclude it no longer exists. For a
+ * Retell-purchased number this also releases the number and stops its
+ * monthly charge; for an imported (`custom`) number it only un-imports it.
+ */
+export async function deletePhoneNumber(
+  fetchImpl: RetellFetch,
+  apiKey: string,
+  phoneNumberE164: string,
+) {
+  return retellRequest(
+    fetchImpl,
+    apiKey,
+    `/delete-phone-number/${encodeURIComponent(phoneNumberE164)}`,
+    { method: "DELETE" },
+  );
+}
+
+/**
  * PATCH /update-phone-number/{phone_number} (CALL-1, RETELL-VERIFY:
  * confirmed live against `docs.retellai.com/api-references/update-phone-number`
  * 2026-09-20 — same confirmed shape as `importPhoneNumber` above:

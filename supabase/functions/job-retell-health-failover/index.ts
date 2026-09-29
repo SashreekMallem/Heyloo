@@ -2,8 +2,9 @@
 // by pg_cron (BACKEND_SPEC §8, G5) via pg_net.http_post.
 import { timingSafeEqual } from "../_shared/crypto.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { missingEnv, requireEnv } from "../_shared/deno/env.ts";
+import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
+import { createPhoneNumberRegistry } from "../_shared/providers/phone-numbers/registry.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { runHealthCheckCycle } from "./handler.ts";
 
@@ -13,16 +14,26 @@ const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
 // integration elsewhere) — stays required at module scope, unchanged.
 const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
 
-// Twilio + failover-URL are the OPTIONAL-integration secrets here (OPS-1,
-// docs/BUILD_NOTES.md): the Twilio account and the failover voice URL are
-// not provisioned yet, so read them lazily inside the handler, after the
-// cron-secret check, so the job skips cleanly instead of crashing cold-start
-// every 2 minutes.
-const OPTIONAL_VARS = [
-  "TWILIO_ACCOUNT_SID",
-  "TWILIO_AUTH_TOKEN",
-  "RETELL_FAILOVER_VOICE_URL",
-] as const;
+// NUMBERS-1: Twilio and the failover URL are OPTIONAL. The probe and the
+// incident flag always run; Retell-native numbers (both live numbers today)
+// are skipped with an ops alert by handler.ts, and Twilio-imported numbers
+// are only diverted when Twilio + the failover URL are configured. The old
+// all-or-nothing "not configured" skip meant no health probing at all on a
+// platform with only Retell-native numbers (OPS-1 precedent otherwise kept:
+// nothing here crashes cold-start).
+const TWILIO_ACCOUNT_SID = optionalEnv("TWILIO_ACCOUNT_SID");
+const TWILIO_AUTH_TOKEN = optionalEnv("TWILIO_AUTH_TOKEN");
+const FAILOVER_VOICE_URL = optionalEnv("RETELL_FAILOVER_VOICE_URL");
+const DEMO_AGENT_ID = optionalEnv("DEMO_AGENT_ID");
+
+const numbers = createPhoneNumberRegistry({
+  retellFetch: fetch,
+  retellApiKey: RETELL_API_KEY,
+  protectedAgentIds: DEMO_AGENT_ID ? [DEMO_AGENT_ID] : [],
+  twilioFetch: fetch,
+  twilioAccountSid: TWILIO_ACCOUNT_SID,
+  twilioAuthToken: TWILIO_AUTH_TOKEN,
+});
 
 Deno.serve(async (req: Request) => {
   const provided = req.headers.get("x-cron-secret");
@@ -30,22 +41,11 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "unauthorized" }, { status: 401 });
   }
 
-  const missing = missingEnv(OPTIONAL_VARS);
-  if (missing.length > 0) {
-    logger.warn("job_skipped_not_configured", { missing });
-    return jsonResponse({ skipped: "not_configured", missing }, { status: 200 });
-  }
-  const TWILIO_ACCOUNT_SID = requireEnv("TWILIO_ACCOUNT_SID");
-  const TWILIO_AUTH_TOKEN = requireEnv("TWILIO_AUTH_TOKEN");
-  const FAILOVER_VOICE_URL = requireEnv("RETELL_FAILOVER_VOICE_URL");
-
   const sql = getSql();
   const action = await runHealthCheckCycle(sql, {
     retellFetch: fetch,
     retellApiKey: RETELL_API_KEY,
-    twilioFetch: fetch,
-    twilioAccountSid: TWILIO_ACCOUNT_SID,
-    twilioAuthToken: TWILIO_AUTH_TOKEN,
+    numbers,
     failoverVoiceUrl: FAILOVER_VOICE_URL,
     logger,
   });
