@@ -115,12 +115,16 @@ export function countsAsBreakerFailure(outcome: DispatchOutcome | undefined): bo
 /** HOTPATH: the model-facing answers for a create_booking deadline. Both are
  * `confirmed: false`, so the agent can never tell the caller "booked" from
  * them; both say a retry is safe, which is true because the booking is
- * idempotent on (call_id, start) — a retry after a late commit returns the
- * existing booking instead of inserting a second one. */
+ * idempotent on (call_id, start instant) — a retry after a late commit
+ * returns the existing booking instead of inserting a second one, even if
+ * the retry writes the same time in a different format
+ * (`createBookingIdempotencyKey`). HOTPATH-REVIEW: the pending message used
+ * to promise a confirmation "by text"; nothing sends one, so it now matches
+ * the generic fallback's "someone will follow up to confirm". */
 export const BOOKING_NOT_COMPLETED_MESSAGE =
   "The booking was NOT made: the system took too long and nothing was saved. Tell the caller you need one more moment, then call create_booking again with exactly the same details. Retrying is safe and can never double-book.";
 export const BOOKING_PENDING_MESSAGE =
-  "The booking could NOT be confirmed yet, so do not tell the caller it is booked. You may call create_booking once more with exactly the same details (it can never double-book); if that also fails, tell the caller the team will confirm the appointment by text shortly.";
+  "The booking could NOT be confirmed yet, so do not tell the caller it is booked. You may call create_booking once more with exactly the same details (it can never double-book); if that also fails, take the caller's details and tell them someone from the team will follow up to confirm.";
 
 export type BookingTimeoutResult = {
   confirmed: false;

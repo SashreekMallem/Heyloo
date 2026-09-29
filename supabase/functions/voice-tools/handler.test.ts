@@ -366,13 +366,20 @@ function singleConnectionSql(opts: {
   writeThrowsAfterCommit?: Error;
   verifyHangs?: boolean;
   contextDelayMs?: number;
-}): { sql: SqlClient; texts: string[]; state: { bookingCommitted: boolean } } {
+}): {
+  sql: SqlClient;
+  texts: string[];
+  bound: { text: string; values: unknown[] }[];
+  state: { bookingCommitted: boolean };
+} {
   const texts: string[] = [];
+  const bound: { text: string; values: unknown[] }[] = [];
   const state = { bookingCommitted: false };
   let tail: Promise<unknown> = Promise.resolve();
-  const sql = ((strings: TemplateStringsArray) => {
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join(" ");
     texts.push(text);
+    bound.push({ text, values });
     const run = async (): Promise<unknown[]> => {
       if (text.includes("from public.call_logs") && text.includes("retell_call_id")) {
         await sleep(opts.contextDelayMs ?? 0);
@@ -408,7 +415,7 @@ function singleConnectionSql(opts: {
     tail = p.catch(() => undefined);
     return p;
   }) as SqlClient;
-  return { sql, texts, state };
+  return { sql, texts, bound, state };
 }
 
 function bookingDeps(sql: SqlClient, extra: Partial<DispatchDeps> = {}): DispatchDeps {
@@ -607,5 +614,40 @@ describe("dispatchTool — create_booking deadline (HOTPATH)", () => {
       dispatchTool(bookingDeps(sql), REAL_CALL, "create_booking", BOOKING_ARGS),
     ).rejects.toThrow("statement timeout");
     expect(texts.some((t) => t.includes("create_booking:verify"))).toBe(true);
+  });
+});
+
+describe("dispatchTool — create_booking time arguments (HOTPATH-REVIEW)", () => {
+  it("an unparseable start is answered invalid_time before any create_booking statement, so it never reaches the client-side serializer", async () => {
+    const { sql, texts } = singleConnectionSql({});
+    const telemetry: NonNullable<DispatchDeps["telemetry"]> = { tenantId: null };
+    const result = await dispatchTool(
+      bookingDeps(sql, { telemetry }),
+      REAL_CALL,
+      "create_booking",
+      { ...BOOKING_ARGS, start: "tomorrow" },
+    );
+    expect(result.result).toMatchObject({ confirmed: false, reason: "invalid_time" });
+    expect(texts.some((t) => t.includes("create_booking:"))).toBe(false);
+    expect(telemetry.outcome).toBe("ok");
+  });
+
+  it("the deadline recovery looks up the SAME normalized key the write used, whatever format the start was written in", async () => {
+    const { sql, bound, state } = singleConnectionSql({ writeDelayMs: 80 });
+    const result = await dispatchTool(bookingDeps(sql), REAL_CALL, "create_booking", {
+      ...BOOKING_ARGS,
+      start: "2026-10-15T10:00:00-04:00",
+      end: "2026-10-15T10:30:00-04:00",
+    });
+    expect(state.bookingCommitted).toBe(true);
+    expect(result.result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
+    const key = `${REAL_CALL}:2026-10-15T14:00:00.000Z`;
+    expect(bound.find((b) => b.text.includes("create_booking:write"))?.values).toContain(key);
+    expect(bound.find((b) => b.text.includes("create_booking:verify"))?.values).toContain(key);
+  });
+
+  it("the pending answer never promises a specific confirmation channel nothing sends", () => {
+    expect(BOOKING_PENDING_MESSAGE).not.toMatch(/by text|text message|sms/i);
+    expect(BOOKING_PENDING_MESSAGE).toContain("do not tell the caller it is booked");
   });
 });

@@ -10,7 +10,75 @@ export interface PostgresConnectOptions {
   idle_timeout: number;
   connect_timeout: number;
   connection?: { statement_timeout: number };
+  /** `hot_path` only: postgres.js custom type overrides (see
+   * `HOT_PATH_DATE_TYPE`). Absent for the default profile. */
+  types?: { date: PostgresDateType };
 }
+
+/** The shape of a postgres.js 3.4.9 custom type (`types/index.d.ts`
+ * `PostgresType`: `to`, `from`, `serialize`, `parse`). */
+export interface PostgresDateType {
+  to: number;
+  from: number[];
+  serialize: (value: unknown) => string;
+  parse: (raw: string) => Date;
+}
+
+/**
+ * HOTPATH-REVIEW (docs/BUILD_NOTES.md): the value sent for a date-typed
+ * parameter that JavaScript cannot parse. Postgres rejects it for `date`,
+ * `timestamp` and `timestamptz` with SQLSTATE 22007, an ordinary server-side
+ * error. It is deliberately NOT the caller's raw string: Postgres accepts
+ * special inputs such as `tomorrow`, `today` and `now`, so passing the raw
+ * text through would silently book or move something to a time nobody
+ * chose.
+ */
+export const UNPARSEABLE_TIMESTAMP_SENTINEL = "Invalid Date";
+
+/**
+ * HOTPATH-REVIEW: postgres.js's own serializer for OIDs 1082/1114/1184,
+ * except that it never throws.
+ *
+ * The stock one (postgres@3.4.9 `src/types.js`, `date.serialize`) is
+ * `(x instanceof Date ? x : new Date(x)).toISOString()`, which throws a
+ * `RangeError` for any string JS cannot parse (`"tomorrow"`, `"10:30 AM"`).
+ * The throw happens inside the client, while it builds the Bind message.
+ * When the statement is already prepared on the connection and another
+ * statement is still in flight, postgres.js 3.4.9 then (reproduced against
+ * a real Postgres 16 and in `db-options.test.ts`):
+ *  - rejects the in-flight statement, which did nothing wrong, with the
+ *    `RangeError`;
+ *  - hands the next statement's result to the bad statement;
+ *  - hangs every later statement on that connection.
+ * Nothing recovers it: `idle_timeout` never fires on a busy connection, and
+ * `max_lifetime` waits for the stuck queue to drain. With
+ * `HOT_PATH_MAX_CONNECTIONS = 1`, that one connection is the whole
+ * isolate's database, so every later tool call on the isolate hits the hard
+ * abort. The tools reject unparseable times before binding
+ * (`voice-tools/tools/time-args.ts`); this is the backstop for any path
+ * that does not.
+ *
+ * Valid values serialize byte-for-byte as they do today.
+ */
+export function serializeTimestampParam(value: unknown): string {
+  try {
+    const date = value instanceof Date ? value : new Date(value as string | number);
+    if (!Number.isNaN(date.getTime())) return date.toISOString();
+  } catch {
+    // e.g. a Symbol, or an object whose valueOf throws: treated as unparseable.
+  }
+  return UNPARSEABLE_TIMESTAMP_SENTINEL;
+}
+
+/** HOTPATH-REVIEW: postgres.js's built-in `date` type (same `to`/`from`/`parse`
+ * as postgres@3.4.9 `src/types.js`) with the non-throwing serializer above.
+ * Only the `hot_path` profile sets it. */
+export const HOT_PATH_DATE_TYPE: PostgresDateType = {
+  to: 1184,
+  from: [1082, 1114, 1184],
+  serialize: serializeTimestampParam,
+  parse: (raw: string) => new Date(raw),
+};
 
 /**
  * `"default"` — every job/worker/webhook/API function (unchanged).
@@ -56,6 +124,12 @@ export type ConnectionProfile = "default" | "hot_path";
  * `prepare: false` postgres.js still describes every parameterized
  * statement first (`describeFirst = parameters.length && !q.prepared`), so
  * every statement would cost 2 round trips on every call.
+ *
+ * HOTPATH-REVIEW: a single connection also means a single point of
+ * failure. A client-side serializer throw poisons the connection (see
+ * `serializeTimestampParam`), and with one connection that takes down the
+ * whole isolate. That is why the hot path also replaces the date
+ * serializer (`HOT_PATH_DATE_TYPE`).
  */
 export const HOT_PATH_MAX_CONNECTIONS = 1;
 
@@ -80,11 +154,13 @@ export function buildConnectionOptions(opts?: {
   statementTimeoutMs?: number;
   profile?: ConnectionProfile;
 }): PostgresConnectOptions {
+  const hotPath = opts?.profile === "hot_path";
   const base: PostgresConnectOptions = {
     prepare: true,
-    max: opts?.profile === "hot_path" ? HOT_PATH_MAX_CONNECTIONS : 5,
+    max: hotPath ? HOT_PATH_MAX_CONNECTIONS : 5,
     idle_timeout: 20,
     connect_timeout: 5,
+    ...(hotPath ? { types: { date: HOT_PATH_DATE_TYPE } } : {}),
   };
   if (opts?.statementTimeoutMs === undefined) {
     return base;

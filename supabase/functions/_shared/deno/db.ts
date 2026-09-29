@@ -72,7 +72,10 @@ export function markDbConnectionUsed(): void {
  *
  * `profile: "hot_path"` (HOTPATH, `voice-tools` only) caps the pool at one
  * connection — see `HOT_PATH_MAX_CONNECTIONS`'s doc comment for the
- * measured reason. Same rule as the timeout: the first caller's options win.
+ * measured reason — and (HOTPATH-REVIEW) replaces postgres.js's date
+ * serializer with one that never throws (`HOT_PATH_DATE_TYPE`), because a
+ * client-side throw poisons the connection and one connection is all the
+ * isolate has. Same rule as the timeout: the first caller's options win.
  *
  * The connection-option object itself is built by
  * `../db-options.ts#buildConnectionOptions` (covered by this package's

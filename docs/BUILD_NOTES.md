@@ -7619,3 +7619,144 @@ opening node, `begin_message`).
 ### Gates
 
 `pnpm lint`, `pnpm typecheck`, `cd supabase/functions && pnpm run test` (see commit).
+
+## HOTPATH-REVIEW (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — hostile review of HOTPATH (32e1dc0): one blocker and one major found and fixed, plus two minors; safe to deploy with this commit
+
+Scope: the `hotpath` package only (`_shared/deno/db.ts`, `_shared/db-options.ts`,
+`_shared/tool-stats.ts`, `voice-tools/**`, migration). No deploy, no DDL, no
+production writes. Live checks were read-only (catalog queries through the
+Management API). The two defects below were reproduced with the real
+postgres.js 3.4.9 client against a throwaway local Postgres 16.13 built from
+the live DDL of `tenants/customers/resources/offerings/bookings/
+availability_slots/agent_configs/call_logs/tool_health` plus the live
+`fn_touch_customer` and `fn_invalidate_availability_on_booking` triggers.
+Citations: `docs/VERIFY.md` HOTPATH-REVIEW.
+
+### What held up
+
+- FIFO on the single connection: confirmed in the postgres.js source (the
+  global `queries` queue drains into the one connection in order) and live on
+  PG16. The deadline's verify read runs after any in-flight write.
+- `create_booking:write` (customer upsert + booking insert in one CTE) runs
+  correctly on PG16 with the live triggers: consent and structured_payload
+  are stored as jsonb objects, `lifetime_bookings` is incremented by the
+  AFTER trigger, and a 23P01 rolls back the customer write too.
+- `tool_health.stages`: the 42703 fallback works on a real server, and
+  stages is stored as a jsonb object once the column exists.
+- Idempotency across isolates: `bookings_idempotency_unique (tenant_id,
+  idempotency_key)` makes a concurrent retry on another isolate wait on the
+  uncommitted row and then replay it (23505 -> race winner).
+- The abort flag is checked with no `await` between the check and the write,
+  and postgres.js enqueues the write in a microtask, so the deadline timer
+  cannot slip in between.
+
+### Defects
+
+1. **BLOCKER: one bad time string could take down the whole isolate's
+   database access.** postgres.js serializes a date/timestamp parameter with
+   `new Date(x).toISOString()`, which throws for a string JavaScript cannot
+   parse ("tomorrow", "10:30 AM"). The tools bind model-supplied strings
+   straight into timestamptz parameters (check_availability `date_range`,
+   create_booking `start`/`end`; the tool schemas are plain `z.string()`).
+   When that statement is already prepared on the connection and another
+   statement is in flight, postgres.js 3.4.9 rejects the innocent in-flight
+   statement, hands the next statement's row to the bad one, and hangs every
+   later statement on that connection for good (`end()`/`max_lifetime` waits
+   for the stuck queue). HOTPATH's `max: 1` turned that from one bad
+   connection out of five into the isolate's only connection, and made
+   pipelining the normal case (the previous request's telemetry insert and
+   the deferred post-commit writes are exactly such in-flight statements).
+   Result: every later tool call on the isolate hits the hard abort. The
+   fixer's `invalid_time` mapping (22007) could not help, because the throw
+   happens in the client before Postgres sees anything.
+   **Fixed, two layers:**
+   - `voice-tools/tools/time-args.ts` (new): create_booking and
+     check_availability parse and normalize their times before any SQL. An
+     unparseable or backwards range is answered as `reason: "invalid_time"`
+     with a model-facing instruction, and zero statements are issued. Only
+     the normalized ISO string is bound, which is byte-for-byte what
+     postgres.js would have sent, so nothing about what is stored changes.
+     A zero-length booking is also rejected, since it could never collide in
+     the exclusion constraint. An empty availability window keeps its old
+     behavior (it is queried and gets a nearest alternative).
+   - `_shared/db-options.ts`: the `hot_path` profile replaces the date
+     serializer (`HOT_PATH_DATE_TYPE`, same OIDs and parse as the stock one)
+     with one that never throws. An unparseable value becomes the sentinel
+     `Invalid Date`, which Postgres rejects with an ordinary 22007. It is not
+     the raw text, because Postgres accepts `tomorrow`/`today`/`now` as
+     inputs. This also covers update_booking and join_waitlist, which were
+     not touched otherwise. The default profile (every other function) is
+     unchanged.
+   Tests: `_shared/db-options.test.ts` reproduces the poisoning with the real
+   client and the stock serializer, then shows the hot-path profile keeps
+   every statement completing, and pins the serializer to the stock one for
+   valid values. Also `voice-tools/tools/time-args.test.ts`,
+   `check_availability.test.ts`, `create_booking.test.ts` and
+   `handler.test.ts` (no statement is issued for a bad time).
+
+2. **MAJOR: a reformatted retry double-booked the caller or told them their
+   own slot was taken.** The idempotency key was `call_id:` + the RAW start
+   string. HOTPATH changed check_availability to return local-offset strings
+   (`...T10:00:00-04:00`) and added deadline answers that tell the model to
+   retry, promising "it can never double-book". A retry that writes the same
+   instant in another format (UTC) missed the replay. Reproduced on PG16:
+   with the same resource it answered `slot_taken` for the caller's own
+   booking; with `resource_id` omitted, tier 3 picked the next free resource
+   and wrote a **second booking for the same caller at the same time**.
+   **Fixed:** `createBookingIdempotencyKey` keys on the normalized instant,
+   which is what postgres.js stores anyway. It is shared by the write, the
+   preflight replay and the deadline verify. Keys are unchanged for the UTC
+   `...000Z` strings check_availability used to return, so rows written
+   before this change still replay. After the fix, the same PG16 run replays
+   the original booking in both cases and leaves exactly one row.
+
+3. **MINOR: the spring-forward motel night was unbookable after midnight.**
+   A day-length slot was `>= interval '1 day'` (= 24 h), and the DST night
+   is 23 h (PG16: `23:00:00`), so from local midnight that night was neither
+   offered nor bookable (`start_in_past`). **Fixed:** `>= interval '23
+   hours'` in both check_availability queries and the create_booking
+   preflight.
+
+4. **MINOR: the `confirmation_pending` answer promised a confirmation "by
+   text", and nothing sends one.** Reworded to match the generic fallback
+   ("someone from the team will follow up to confirm").
+
+### Residual risks (not defects today, recorded for the owner)
+
+- A single connection is a single point of failure for any **client-side**
+  bind error. Besides dates, postgres.js throws the same way for an
+  `undefined` bind (reproduced: same poisoning). Every expression bound in
+  voice-tools today was checked and none can be `undefined` (all optional
+  args use `?? null` or are guarded). If that ever changes, postgres.js's
+  documented `transform: { undefined: null }` is the switch. It was not
+  adopted, because it turns a would-be error into a silent NULL write.
+- create_booking can now wait up to 6 s in the worst case (before: 1.5 s
+  plus an untrue fallback). The compiled create_booking tool only gets
+  `speak_during_execution` when it is a state's single locked tool (compiler
+  package), so that wait can be silent.
+- update_booking and lookup_customer still return UTC times while
+  check_availability and create_booking now return local-offset times. Each value is self-describing, but the model sees mixed forms in
+  one call.
+- `stagesColumnMissing` is memoized per isolate. If the migration is applied
+  after the deploy, isolates that saw 42703 keep writing rows without
+  `stages` until they recycle. Apply the migration first for immediate
+  stages data.
+
+### Deploy verdict
+
+Safe to deploy **with this commit** (not 32e1dc0 alone: the blocker was
+introduced by its `max: 1`). Deploy set and owner actions are unchanged from
+HOTPATH, updated for MESSAGING-1's rename: `voice-tools`, `api-text-chat`,
+`webhooks-sms` and `webhooks-twilio-sms` (both reach `_shared/text-agent`,
+which imports create_booking and check_availability, through
+`_shared/deno/sms-webhook-deps.ts`); migration
+`20260929124500_tool_health_stages.sql`, preferably first; the
+`VOICE_TOOLS_WEBHOOK_URL` region pin plus a republish. `db-options.ts`'s default profile is untouched, so the other
+functions still only pick up no-ops.
+
+### Gates
+
+In an isolated worktree of `origin` (rebased onto RETELLCFG, 6b992bb)
+plus only this package's files: `pnpm lint` exit 0 (46 warnings, baseline),
+`pnpm typecheck` exit 0, `supabase/functions` `pnpm run test` 136 files /
+1518 tests green.

@@ -3,6 +3,7 @@ import type { CheckAvailabilityArgsSchema } from "../../_shared/schemas/voice-to
 import type { SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
 import { toTenantLocalIso } from "./local-time.ts";
+import { normalizeTimeRange } from "./time-args.ts";
 
 type Args = z.infer<typeof CheckAvailabilityArgsSchema>;
 
@@ -28,7 +29,10 @@ interface SlotRow {
  * tables are commonly taken for "in 15 minutes". Day-length slots (motel
  * nights, which run local-midnight to local-midnight) are handled by the
  * `day slot` branch of the cutoff instead: tonight's room is still bookable
- * at 8 pm even though its slot started at midnight.
+ * at 8 pm even though its slot started at midnight. HOTPATH-REVIEW: a
+ * day-length slot is `>= interval '23 hours'`, not `'1 day'` (= 24 h),
+ * because the spring-forward night is 23 hours long and was otherwise never
+ * offered after local midnight (same threshold as create_booking).
  */
 export const DEFAULT_MIN_NOTICE_MINUTES = 30;
 const MIN_NOTICE_MINUTES_BY_VERTICAL: Record<string, number> = { restaurant: 15 };
@@ -41,7 +45,15 @@ export interface CheckAvailabilityResult {
   slots: { start: string; end: string; resource_id: string }[];
   none_available: boolean;
   nearest_alternative?: { start: string; end: string };
+  /** HOTPATH-REVIEW: set only when the date range could not be read, in
+   * which case nothing was queried. */
+  reason?: "invalid_time";
+  message?: string;
 }
+
+/** HOTPATH-REVIEW: the model-facing instruction for `reason: "invalid_time"`. */
+export const INVALID_DATE_RANGE_MESSAGE =
+  "The date range could not be read, so availability was NOT checked. Call check_availability again with date_range.start and date_range.end as full ISO 8601 timestamps with a UTC offset (for example 2026-09-29T00:00:00-04:00), with end not before start.";
 
 /**
  * BACKEND_SPEC §7.2.1 — pure read against the precomputed
@@ -83,17 +95,32 @@ export async function checkAvailability(
 
   const noticeMinutes = minNoticeMinutes(ctx.vertical);
 
+  // HOTPATH-REVIEW (`time-args.ts`): never bind a time JavaScript cannot
+  // parse; bind the normalized form, which is what postgres.js would send
+  // for a valid input anyway.
+  const range = normalizeTimeRange(args.date_range.start, args.date_range.end, {
+    allowEmpty: true,
+  });
+  if (!range) {
+    return {
+      slots: [],
+      none_available: true,
+      reason: "invalid_time",
+      message: INVALID_DATE_RANGE_MESSAGE,
+    };
+  }
+
   const rows = await sql<SlotRow>`
     select resource_id, lower(slot_range) as slot_start, upper(slot_range) as slot_end,
       (select timezone from public.tenants where id = ${ctx.tenantId}) as tz
     from public.availability_slots
     where tenant_id = ${ctx.tenantId}
       and is_available = true
-      and slot_range && tstzrange(${args.date_range.start}, ${args.date_range.end})
+      and slot_range && tstzrange(${range.start}, ${range.end})
       and (
         lower(slot_range) >= now() + make_interval(mins => ${noticeMinutes}::int)
         or (
-          upper(slot_range) - lower(slot_range) >= interval '1 day'
+          upper(slot_range) - lower(slot_range) >= interval '23 hours'
           and upper(slot_range) > now() + make_interval(mins => ${noticeMinutes}::int)
         )
       )
@@ -121,11 +148,11 @@ export async function checkAvailability(
       from public.availability_slots
       where tenant_id = ${ctx.tenantId}
         and is_available = true
-        and lower(slot_range) >= ${args.date_range.end}
+        and lower(slot_range) >= ${range.end}
         and (
           lower(slot_range) >= now() + make_interval(mins => ${noticeMinutes}::int)
           or (
-            upper(slot_range) - lower(slot_range) >= interval '1 day'
+            upper(slot_range) - lower(slot_range) >= interval '23 hours'
             and upper(slot_range) > now() + make_interval(mins => ${noticeMinutes}::int)
           )
         )

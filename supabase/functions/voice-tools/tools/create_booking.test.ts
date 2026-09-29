@@ -6,6 +6,7 @@ import {
   createBooking,
   createBookingIdempotencyKey,
   findCommittedBooking,
+  INVALID_TIME_MESSAGE,
   START_IN_PAST_MESSAGE,
 } from "./create_booking.ts";
 
@@ -386,15 +387,19 @@ describe("createBooking — idempotency, races and errors", () => {
     await expect(createBooking(sql, ctx, args)).rejects.toThrow("connection reset");
   });
 
-  it("HOTPATH: an unparseable start/end (Postgres 22007) is an actionable invalid_time answer, not a generic failure", async () => {
+  it("HOTPATH: a time the server rejects (Postgres 22007) is still an actionable invalid_time answer, not a generic failure", async () => {
     const { sql } = makeSql([
       {
         match: PREFLIGHT,
         reply: { throws: { code: "22007", message: "invalid input syntax for type timestamp" } },
       },
     ]);
-    const result = await createBooking(sql, ctx, { ...args, start: "next tuesday at 3" });
-    expect(result).toEqual({ confirmed: false, reason: "invalid_time" });
+    const result = await createBooking(sql, ctx, args);
+    expect(result).toEqual({
+      confirmed: false,
+      reason: "invalid_time",
+      message: INVALID_TIME_MESSAGE,
+    });
   });
 });
 
@@ -415,7 +420,10 @@ describe("createBooking — HOTPATH past starts and timeout safety", () => {
     await createBooking(sql, ctx, args);
     const text = textsMatching(PREFLIGHT)[0]?.text ?? "";
     expect(text).toContain("< now()");
-    expect(text).toContain(">= interval '1 day'");
+    // HOTPATH-REVIEW: 23 hours, so the 23-hour spring-forward motel night
+    // still counts as a day-length booking.
+    expect(text).toContain(">= interval '23 hours'");
+    expect(text).not.toContain("interval '1 day'");
     expect(text).toContain("date_trunc('day', now() at time zone (select timezone from tn))");
   });
 
@@ -805,6 +813,88 @@ describe("createBooking — structured_payload runtime validation (GAP_REGISTER.
     // Regression (CALL-3 jsonb double-encoding fix): bound as the raw object.
     expect(typeof inserted).not.toBe("string");
     expect(inserted).toEqual({ vehicle_make: "Honda" });
+  });
+});
+
+describe("createBooking — HOTPATH-REVIEW time arguments", () => {
+  it("answers invalid_time for a start JavaScript cannot parse, before ANY statement (the stock serializer would throw inside the client)", async () => {
+    const { sql, calls } = makeSql(bookingRoutes({}));
+    for (const start of ["tomorrow", "10:30 AM", "Sep 29 2026 10am"]) {
+      const result = await createBooking(sql, ctx, { ...args, start });
+      expect(result).toEqual({
+        confirmed: false,
+        reason: "invalid_time",
+        message: INVALID_TIME_MESSAGE,
+      });
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("answers invalid_time for an unparseable end, a backwards range, and a zero-length booking (which would never collide in the exclusion constraint)", async () => {
+    const { sql, calls } = makeSql(bookingRoutes({}));
+    for (const bad of [
+      { start: args.start, end: "later" },
+      { start: args.end, end: args.start },
+      { start: args.start, end: args.start },
+    ]) {
+      const result = await createBooking(sql, ctx, { ...args, ...bad });
+      expect(result).toMatchObject({ confirmed: false, reason: "invalid_time" });
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("binds the normalized instant (what postgres.js would send anyway) in the preflight and the write, never the raw string", async () => {
+    const { sql, textsMatching } = makeSql(bookingRoutes({}));
+    await createBooking(sql, ctx, {
+      ...args,
+      start: "2026-01-15T09:00:00-05:00",
+      end: "2026-01-15T09:30:00-05:00",
+    });
+    const preflight = textsMatching(PREFLIGHT)[0]?.values ?? [];
+    expect(preflight).toContain("2026-01-15T14:00:00.000Z");
+    expect(preflight).not.toContain("2026-01-15T09:00:00-05:00");
+    const write = textsMatching(WRITE)[0]?.values ?? [];
+    expect(write).toContain("2026-01-15T14:00:00.000Z");
+    expect(write).toContain("2026-01-15T14:30:00.000Z");
+    expect(write).not.toContain("2026-01-15T09:00:00-05:00");
+  });
+
+  it("the idempotency key is the same for the same instant however it is written, so a reformatted retry is a replay (live-reproduced before: slot_taken for the caller's own booking, or a second booking on another resource)", () => {
+    const local = createBookingIdempotencyKey(ctx, { start: "2026-01-15T09:00:00-05:00" });
+    expect(createBookingIdempotencyKey(ctx, { start: "2026-01-15T14:00:00Z" })).toBe(local);
+    expect(createBookingIdempotencyKey(ctx, { start: "2026-01-15T14:00:00.000Z" })).toBe(local);
+    // Unchanged for the UTC form check_availability used to return, so keys
+    // written before this change still match.
+    expect(local).toBe("call_1:2026-01-15T14:00:00.000Z");
+    // Different instant, different key.
+    expect(createBookingIdempotencyKey(ctx, { start: "2026-01-15T09:00:00-04:00" })).not.toBe(
+      local,
+    );
+  });
+
+  it("a retry with the same instant in another format finds the first booking in the preflight replay and never writes again", async () => {
+    const firstKey = createBookingIdempotencyKey(ctx, { start: "2026-01-15T09:00:00-05:00" });
+    const { sql, calls } = makeSql([
+      {
+        match: PREFLIGHT,
+        reply: (values) => ({
+          rows: [
+            values.includes(firstKey)
+              ? {
+                  ...PREFLIGHT_OK,
+                  replay_id: "booking_1",
+                  replay_start: args.start,
+                  replay_end: args.end,
+                }
+              : PREFLIGHT_OK,
+          ],
+        }),
+      },
+      { match: WRITE, reply: { rows: [WRITTEN] } },
+    ]);
+    const result = await createBooking(sql, ctx, { ...args, resource_id: undefined });
+    expect(result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
+    expect(calls.some((c) => c.text.includes(WRITE))).toBe(false);
   });
 });
 

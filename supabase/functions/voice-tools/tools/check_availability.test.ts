@@ -4,6 +4,7 @@ import type { CallContext } from "../context.ts";
 import {
   checkAvailability,
   DEFAULT_MIN_NOTICE_MINUTES,
+  INVALID_DATE_RANGE_MESSAGE,
   minNoticeMinutes,
 } from "./check_availability.ts";
 
@@ -170,7 +171,10 @@ describe("checkAvailability — HOTPATH: never offers a slot that has already st
     await checkAvailability(sql, { ...ctx, vertical: "auto" }, { date_range: dateRange });
     const window = calls[0];
     expect(window?.text).toContain("lower(slot_range) >= now() + make_interval(mins =>");
-    expect(window?.text).toContain("upper(slot_range) - lower(slot_range) >= interval '1 day'");
+    // HOTPATH-REVIEW: 23 hours, so the 23-hour spring-forward motel night
+    // still counts as a day-length slot after local midnight.
+    expect(window?.text).toContain("upper(slot_range) - lower(slot_range) >= interval '23 hours'");
+    expect(window?.text).not.toContain("interval '1 day'");
     expect(window?.text).toContain("upper(slot_range) > now() + make_interval(mins =>");
     expect(window?.values.filter((v) => v === 30)).toHaveLength(2);
   });
@@ -229,5 +233,58 @@ describe("checkAvailability — HOTPATH: never offers a slot that has already st
       start: "2026-01-17T10:00:00-08:00",
       end: "2026-01-17T10:30:00-08:00",
     });
+  });
+});
+
+describe("checkAvailability — HOTPATH-REVIEW: time arguments are parsed before any SQL", () => {
+  function recordingSql(): { sql: SqlClient; calls: { text: string; values: unknown[] }[] } {
+    const calls: { text: string; values: unknown[] }[] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join(" "), values });
+      return Promise.resolve([]);
+    }) as SqlClient;
+    return { sql, calls };
+  }
+
+  it("answers invalid_time with an instruction and issues NO statement for a date JavaScript cannot parse (the stock serializer would throw inside the client)", async () => {
+    for (const date_range of [
+      { start: "today", end: "2026-01-16T00:00:00Z" },
+      { start: "2026-01-15T00:00:00Z", end: "tonight" },
+      { start: "2026-01-16T00:00:00Z", end: "2026-01-15T00:00:00Z" },
+    ]) {
+      const { sql, calls } = recordingSql();
+      const result = await checkAvailability(sql, ctx, { date_range });
+      expect(result).toEqual({
+        slots: [],
+        none_available: true,
+        reason: "invalid_time",
+        message: INVALID_DATE_RANGE_MESSAGE,
+      });
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it("binds the normalized instants (what postgres.js would send anyway), never the raw strings", async () => {
+    const { sql, calls } = recordingSql();
+    await checkAvailability(sql, ctx, {
+      date_range: { start: "2026-01-15T00:00:00-05:00", end: "2026-01-16T00:00:00-05:00" },
+    });
+    expect(calls[0]?.values).toContain("2026-01-15T05:00:00.000Z");
+    expect(calls[0]?.values).toContain("2026-01-16T05:00:00.000Z");
+    expect(calls[1]?.values).toContain("2026-01-16T05:00:00.000Z");
+    for (const call of calls) {
+      expect(call.values).not.toContain("2026-01-15T00:00:00-05:00");
+      expect(call.values).not.toContain("2026-01-16T00:00:00-05:00");
+    }
+  });
+
+  it("still answers an empty window (the same date twice) by querying, as before, so the nearest alternative is offered", async () => {
+    const { sql, calls } = recordingSql();
+    const result = await checkAvailability(sql, ctx, {
+      date_range: { start: "2026-01-15", end: "2026-01-15" },
+    });
+    expect(calls).toHaveLength(2);
+    expect(result.reason).toBeUndefined();
+    expect(result.none_available).toBe(true);
   });
 });

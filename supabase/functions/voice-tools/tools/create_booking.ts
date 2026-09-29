@@ -8,6 +8,7 @@ import type { CreateBookingArgsSchema } from "../../_shared/schemas/voice-tools.
 import type { Logger, SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
 import { toTenantLocalIso } from "./local-time.ts";
+import { normalizeInstant, normalizeTimeRange } from "./time-args.ts";
 
 type Args = z.infer<typeof CreateBookingArgsSchema>;
 
@@ -60,6 +61,10 @@ export type CreateBookingResult =
 /** HOTPATH: the model-facing instruction for `reason: "start_in_past"`. */
 export const START_IN_PAST_MESSAGE =
   "That time has already passed, so it was NOT booked. Call check_availability again and offer the caller one of the upcoming times it returns.";
+
+/** HOTPATH-REVIEW: the model-facing instruction for `reason: "invalid_time"`. */
+export const INVALID_TIME_MESSAGE =
+  "The start or end time could not be read, so it was NOT booked. Call create_booking again with start and end as full ISO 8601 timestamps, exactly as check_availability returned them, with end after start.";
 
 const EXCLUSION_VIOLATION = "23P01";
 const UNIQUE_VIOLATION = "23505";
@@ -141,7 +146,16 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * `createBooking` and `voice-tools/handler.ts`'s timeout recovery, so the
  * recovery looks for exactly the row the write would have created. */
 export function createBookingIdempotencyKey(ctx: CallContext, args: Pick<Args, "start">): string {
-  return bookingIdempotencyKey(ctx.retellCallId, args.start);
+  // HOTPATH-REVIEW: keyed on the normalized instant, not the raw string, so
+  // a retry that writes the same time differently (the local-offset form
+  // check_availability now returns vs. UTC) is still a replay. Keyed on the
+  // raw string otherwise, it missed the replay and, reproduced against a
+  // real Postgres 16, either answered slot_taken for the caller's own
+  // booking or, with resource_id omitted, booked the caller a second time
+  // on another resource. The normalized form is what postgres.js stores
+  // anyway (`time-args.ts`), and it equals the old key for the UTC `...Z`
+  // strings check_availability used to return.
+  return bookingIdempotencyKey(ctx.retellCallId, normalizeInstant(args.start) ?? args.start);
 }
 
 interface BookingRow {
@@ -188,7 +202,10 @@ function confirmedResult(row: BookingRow, tz: string | null | undefined): Create
  *    day-length booking (a motel night, local midnight to local midnight)
  *    the check is "check-in date before today in the tenant's timezone"
  *    instead, since tonight's slot started at midnight but is still
- *    bookable in the evening.
+ *    bookable in the evening. HOTPATH-REVIEW: "day-length" is `>= interval '23 hours'`,
+ *    not `'1 day'` (= 24 h): the spring-forward night is 23 hours long, so
+ *    with `'1 day'` that night was rejected as `start_in_past` from local
+ *    midnight on. check_availability's cutoff uses the same threshold.
  *  - `tz`: `tenants.timezone`, for rendering the returned times.
  *  - `deposit_overrides`: motel-only `agent_configs.dynamic_variable_overrides`
  *    (GAP_REGISTER.md §2 Motel item 4); NULL for every other vertical.
@@ -249,7 +266,7 @@ async function preflight(
         where id = ${offeringId}::uuid and tenant_id = ${ctx.tenantId} and active
       ) end as offering_ok,
       case
-        when ${args.end}::timestamptz - ${args.start}::timestamptz >= interval '1 day'
+        when ${args.end}::timestamptz - ${args.start}::timestamptz >= interval '23 hours'
           then ${args.start}::timestamptz < (
             date_trunc('day', now() at time zone (select timezone from tn))
               at time zone (select timezone from tn)
@@ -357,13 +374,22 @@ export async function findCommittedBooking(
 export async function createBooking(
   sql: SqlClient,
   ctx: CallContext,
-  args: Args,
+  input: Args,
   deps?: CreateBookingDeps,
 ): Promise<CreateBookingResult> {
-  const phone = normalizeE164(args.customer.phone);
+  const phone = normalizeE164(input.customer.phone);
   if (!phone) {
     return { confirmed: false, reason: "invalid_phone" };
   }
+  // HOTPATH-REVIEW (`time-args.ts`): an unparseable or backwards start/end
+  // is answered here, before any SQL. From here on only the normalized
+  // values are bound; they are byte-for-byte what postgres.js would have
+  // sent for a valid input, so nothing about what is stored changes.
+  const when = normalizeTimeRange(input.start, input.end);
+  if (!when) {
+    return { confirmed: false, reason: "invalid_time", message: INVALID_TIME_MESSAGE };
+  }
+  const args: Args = { ...input, start: when.start, end: when.end };
   const offeringId = args.offering_id ?? null;
   if (offeringId && !UUID_RE.test(offeringId)) {
     // EDGE_AUDIT B1: a non-UUID offering id can never be one of this
@@ -381,7 +407,7 @@ export async function createBooking(
     pre = await preflight(sql, ctx, args, idempotencyKey, exactResourceId, offeringId);
   } catch (err) {
     if (isPgError(err, INVALID_DATETIME_FORMAT) || isPgError(err, DATETIME_FIELD_OVERFLOW)) {
-      return { confirmed: false, reason: "invalid_time" };
+      return { confirmed: false, reason: "invalid_time", message: INVALID_TIME_MESSAGE };
     }
     throw err;
   }
@@ -546,7 +572,7 @@ export async function createBooking(
       return { confirmed: false, reason: "slot_taken" };
     }
     if (isPgError(err, INVALID_DATETIME_FORMAT) || isPgError(err, DATETIME_FIELD_OVERFLOW)) {
-      return { confirmed: false, reason: "invalid_time" };
+      return { confirmed: false, reason: "invalid_time", message: INVALID_TIME_MESSAGE };
     }
     throw err;
   }
