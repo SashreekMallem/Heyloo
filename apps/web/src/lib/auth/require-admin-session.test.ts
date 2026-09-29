@@ -15,6 +15,7 @@ vi.mock("next/navigation", () => ({
 let mockUser: unknown = null;
 // SIGNUP-1: claims now come from `auth.getClaims()`, not `user.app_metadata`.
 let mockClaimsAppMetadata: unknown = {};
+let mockJwtAal: string | undefined;
 let aalResult: unknown = { data: { currentLevel: "aal1", nextLevel: "aal2" } };
 let factorsResult: unknown = { data: { totp: [] } };
 
@@ -24,7 +25,7 @@ vi.mock("@/lib/supabase/server", () => ({
       getUser: () => Promise.resolve({ data: { user: mockUser } }),
       getClaims: () =>
         Promise.resolve({
-          data: { claims: { app_metadata: mockClaimsAppMetadata } },
+          data: { claims: { aal: mockJwtAal, app_metadata: mockClaimsAppMetadata } },
           error: null,
         }),
       mfa: {
@@ -54,11 +55,38 @@ describe("requireAdminSession", () => {
     expect(dest).toBe(`/login?next=${encodeURIComponent("/cockpit/tenants")}`);
   });
 
-  it("redirects to the no_access toast when the caller has no platform_admin claim", async () => {
+  it("redirects to /no-access when the caller has no platform_admin claim", async () => {
     mockUser = { id: "u1", app_metadata: {} };
     mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
     const dest = await redirectedTo(requireAdminSession("/cockpit"));
-    expect(dest).toBe("/?toast=no_access");
+    expect(dest).toBe("/no-access");
+  });
+
+  it("SEC-01: an aal1 admin token (admin_mfa_required marker, no platform_admin) is routed to the challenge, not no-access", async () => {
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { admin_mfa_required: true };
+    mockJwtAal = "aal1";
+    factorsResult = { data: { totp: [{ status: "verified" }] } };
+    aalResult = { data: { currentLevel: "aal1", nextLevel: "aal2" } };
+    const dest = await redirectedTo(requireAdminSession("/cockpit"));
+    expect(dest).toBe(`/mfa/challenge?next=${encodeURIComponent("/cockpit")}`);
+  });
+
+  it("SEC-01: an aal1 admin with no verified factor is routed to enrollment", async () => {
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { admin_mfa_required: true };
+    factorsResult = { data: { totp: [] } };
+    const dest = await redirectedTo(requireAdminSession("/cockpit"));
+    expect(dest).toBe("/mfa/enroll");
+  });
+
+  it("SEC-01: never returns a session for an aal2 session whose token lacks the platform_admin claim", async () => {
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { admin_mfa_required: true };
+    factorsResult = { data: { totp: [{ status: "verified" }] } };
+    aalResult = { data: { currentLevel: "aal2", nextLevel: "aal2" } };
+    const dest = await redirectedTo(requireAdminSession("/cockpit"));
+    expect(dest).toBe(`/mfa/challenge?next=${encodeURIComponent("/cockpit")}`);
   });
 
   it("redirects to MFA enrollment when platform_admin has no verified TOTP factor", async () => {
@@ -91,6 +119,6 @@ describe("requireAdminSession", () => {
     mockUser = { id: "u1", app_metadata: { platform_admin: true } };
     mockClaimsAppMetadata = {};
     const dest = await redirectedTo(requireAdminSession("/cockpit"));
-    expect(dest).toBe("/?toast=no_access");
+    expect(dest).toBe("/no-access");
   });
 });

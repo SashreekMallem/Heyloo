@@ -2,7 +2,8 @@ import "server-only";
 
 import { redirect } from "next/navigation";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
-import { claimsFromSupabaseClient } from "./claims";
+import { sessionAssuranceFromSupabaseClient } from "./claims";
+import { NO_ACCESS_PATH } from "./role-home";
 
 /**
  * Guard #2 for `(admin)` (FRONTEND_SPEC.md §0.1/§0.2) — platform_admin
@@ -18,8 +19,11 @@ export async function requireAdminSession(nextPath: string) {
   if (!user) redirect(`/login?next=${encodeURIComponent(nextPath)}`);
 
   // SIGNUP-1 fix (docs/BUILD_NOTES.md): see claims.ts's doc comment.
-  const claims = await claimsFromSupabaseClient(supabase);
-  if (!claims.platform_admin) redirect("/?toast=no_access");
+  // SEC-01: `platform_admin` is present only on an aal2 token; a platform
+  // admin below aal2 carries `admin_mfa_required` instead, which routes them
+  // to MFA rather than "no access".
+  const { claims, adminMfaRequired } = await sessionAssuranceFromSupabaseClient(supabase);
+  if (!claims.platform_admin && !adminMfaRequired) redirect(NO_ACCESS_PATH);
 
   const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
   const { data: factorsData } = await supabase.auth.mfa.listFactors();
@@ -27,6 +31,9 @@ export async function requireAdminSession(nextPath: string) {
 
   if (!hasVerifiedFactor) redirect("/mfa/enroll");
   if (aal?.currentLevel !== "aal2") redirect(`/mfa/challenge?next=${encodeURIComponent(nextPath)}`);
+  // aal2 session but a token minted before the step-up (no `platform_admin`
+  // claim yet): fail closed rather than render admin pages on a stale token.
+  if (!claims.platform_admin) redirect(`/mfa/challenge?next=${encodeURIComponent(nextPath)}`);
 
   return { supabase, user, claims };
 }

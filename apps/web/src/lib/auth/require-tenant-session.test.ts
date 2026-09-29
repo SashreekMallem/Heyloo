@@ -63,19 +63,19 @@ describe("requireTenantSession", () => {
     expect(dest).toBe(`/login?next=${encodeURIComponent("/dashboard/calls")}`);
   });
 
-  it("redirects to the no_access toast when the caller has no tenant_id claim", async () => {
+  it("redirects to /no-access when the caller has no tenant_id claim", async () => {
     mockUser = { id: "u1", app_metadata: {} };
     mockClaimsAppMetadata = { platform_admin: true };
     const dest = await redirectedTo(requireTenantSession("/dashboard"));
-    expect(dest).toBe("/?toast=no_access");
+    expect(dest).toBe("/no-access");
   });
 
-  it("redirects to the no_access toast when the tenant_id claim doesn't resolve to a real tenant row", async () => {
+  it("redirects to /no-access when the tenant_id claim doesn't resolve to a real tenant row", async () => {
     mockUser = { id: "u1", app_metadata: {} };
     mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
     tenantResult = { data: null, error: null };
     const dest = await redirectedTo(requireTenantSession("/dashboard"));
-    expect(dest).toBe("/?toast=no_access");
+    expect(dest).toBe("/no-access");
   });
 
   it("returns the session, claims, and tenant row for a valid tenant member", async () => {
@@ -91,6 +91,6 @@ describe("requireTenantSession", () => {
     mockUser = { id: "u1", app_metadata: { tenant_id: "stale-tenant" } };
     mockClaimsAppMetadata = {};
     const dest = await redirectedTo(requireTenantSession("/dashboard"));
-    expect(dest).toBe("/?toast=no_access");
+    expect(dest).toBe("/no-access");
   });
 });

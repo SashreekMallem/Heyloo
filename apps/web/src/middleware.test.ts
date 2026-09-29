@@ -8,6 +8,8 @@ let mockUser: unknown = null;
 // Custom Access Token Hook never writes to). This mock's shape matches
 // that fix; see middleware.ts / claims.ts's doc comments for the full story.
 let mockClaimsAppMetadata: unknown = {};
+let mockAal: string | undefined;
+let mockNextLevel: string = "aal1";
 
 vi.mock("@supabase/ssr", () => ({
   createServerClient: () => ({
@@ -15,9 +17,13 @@ vi.mock("@supabase/ssr", () => ({
       getUser: () => Promise.resolve({ data: { user: mockUser } }),
       getClaims: () =>
         Promise.resolve({
-          data: { claims: { app_metadata: mockClaimsAppMetadata } },
+          data: { claims: { aal: mockAal, app_metadata: mockClaimsAppMetadata } },
           error: null,
         }),
+      mfa: {
+        getAuthenticatorAssuranceLevel: () =>
+          Promise.resolve({ data: { currentLevel: mockAal ?? "aal1", nextLevel: mockNextLevel } }),
+      },
     },
   }),
 }));
@@ -61,8 +67,7 @@ describe("middleware — guard #1 redirect matrix (FRONTEND_SPEC.md §0.1)", () 
     const res = await middleware(req("/dashboard/calls"));
     expect(res.status).toBe(307);
     const location = new URL(res.headers.get("location") ?? "");
-    expect(location.pathname).toBe("/");
-    expect(location.searchParams.get("toast")).toBe("no_access");
+    expect(location.pathname).toBe("/no-access");
   });
 
   it("passes a tenant member through to /dashboard", async () => {
@@ -78,7 +83,7 @@ describe("middleware — guard #1 redirect matrix (FRONTEND_SPEC.md §0.1)", () 
     const res = await middleware(req("/dashboard/calls"));
     expect(res.status).toBe(307);
     const location = new URL(res.headers.get("location") ?? "");
-    expect(location.searchParams.get("toast")).toBe("no_access");
+    expect(location.pathname).toBe("/no-access");
   });
 
   it("redirects an unauthenticated caller away from /cockpit to /login", async () => {
@@ -97,12 +102,13 @@ describe("middleware — guard #1 redirect matrix (FRONTEND_SPEC.md §0.1)", () 
     const res = await middleware(req("/cockpit"));
     expect(res.status).toBe(307);
     const location = new URL(res.headers.get("location") ?? "");
-    expect(location.searchParams.get("toast")).toBe("no_access");
+    expect(location.pathname).toBe("/no-access");
   });
 
-  it("passes a platform_admin through to /cockpit (AAL2 step-up is the layout's job, per §0.2)", async () => {
+  it("passes an aal2 platform_admin through to /cockpit", async () => {
     mockUser = { id: "u1", app_metadata: {} };
     mockClaimsAppMetadata = { platform_admin: true };
+    mockAal = "aal2";
     const res = await middleware(req("/cockpit"));
     expect(res.headers.get("location")).toBeNull();
   });
@@ -113,7 +119,7 @@ describe("middleware — guard #1 redirect matrix (FRONTEND_SPEC.md §0.1)", () 
     const res = await middleware(req("/portal/payouts"));
     expect(res.status).toBe(307);
     const location = new URL(res.headers.get("location") ?? "");
-    expect(location.searchParams.get("toast")).toBe("no_access");
+    expect(location.pathname).toBe("/no-access");
   });
 
   it("passes a referral partner through to /portal", async () => {
@@ -123,7 +129,74 @@ describe("middleware — guard #1 redirect matrix (FRONTEND_SPEC.md §0.1)", () 
     expect(res.headers.get("location")).toBeNull();
   });
 
-  it("leaves public auth routes (/login, /mfa/*, /reset-password) unguarded regardless of session", async () => {
+  it("AUTH-11/COCKPIT-F19: steps an aal1 admin with a verified factor up at the challenge, preserving the requested path and query", async () => {
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { admin_mfa_required: true };
+    mockAal = "aal1";
+    mockNextLevel = "aal2";
+    const res = await middleware(req("/cockpit/tenants?status=active"));
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.pathname).toBe("/mfa/challenge");
+    expect(location.searchParams.get("next")).toBe("/cockpit/tenants?status=active");
+  });
+
+  it("SEC-01: sends an aal1 admin with no verified factor to enrollment (never to no-access)", async () => {
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { admin_mfa_required: true };
+    mockAal = "aal1";
+    mockNextLevel = "aal1";
+    const res = await middleware(req("/cockpit"));
+    expect(new URL(res.headers.get("location") ?? "").pathname).toBe("/mfa/enroll");
+  });
+
+  it("AUTH-12: keeps the full deep link (path + query) in next and drops stray params", async () => {
+    mockUser = null;
+    mockClaimsAppMetadata = {};
+    mockAal = undefined;
+    const res = await middleware(req("/dashboard/billing?x=1"));
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.pathname).toBe("/login");
+    expect([...location.searchParams.keys()]).toEqual(["next"]);
+    expect(location.searchParams.get("next")).toBe("/dashboard/billing?x=1");
+    expect(location.search).toBe("?next=%2Fdashboard%2Fbilling%3Fx%3D1");
+  });
+
+  it("AUTH-09: bounces a signed-in visitor off /login to their role home", async () => {
+    mockUser = { id: "u1", app_metadata: {} };
+    const cases: [Record<string, unknown>, string][] = [
+      [{ tenant_id: "t1", role: "owner" }, "/dashboard"],
+      [{ referral_partner_id: "p1" }, "/portal"],
+      [{ platform_admin: true }, "/cockpit"],
+      [{ admin_mfa_required: true }, "/cockpit"],
+      [{}, "/no-access"],
+    ];
+    for (const [claims, home] of cases) {
+      mockClaimsAppMetadata = claims;
+      const res = await middleware(req("/login"));
+      expect(res.status).toBe(307);
+      expect(new URL(res.headers.get("location") ?? "").pathname).toBe(home);
+    }
+  });
+
+  it("AUTH-09: a signed-in visitor on /login goes to a safe next, but never to an external one", async () => {
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
+    const ok = await middleware(req("/login?next=%2Fdashboard%2Fcalls"));
+    expect(new URL(ok.headers.get("location") ?? "").pathname).toBe("/dashboard/calls");
+    const evil = await middleware(req("/login?next=https%3A%2F%2Fexample.org%2Fphish"));
+    expect(new URL(evil.headers.get("location") ?? "").origin).toBe("http://localhost:3000");
+    expect(new URL(evil.headers.get("location") ?? "").pathname).toBe("/dashboard");
+  });
+
+  it("AUTH-04: a signed-in visitor still sees /login when it carries a failed-email-link notice", async () => {
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
+    const res = await middleware(req("/login?toast=confirm_failed"));
+    expect(res.headers.get("location")).toBeNull();
+  });
+
+  it("leaves public auth routes (/login, /mfa/*, /reset-password) unguarded for an anonymous visitor", async () => {
     mockUser = null;
     mockClaimsAppMetadata = {};
     for (const path of ["/login", "/mfa/enroll", "/reset-password"]) {

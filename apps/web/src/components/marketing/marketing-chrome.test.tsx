@@ -35,6 +35,32 @@ function withIntl(node: ReactNode) {
   );
 }
 
+describe("MarketingHeader — signed-in visitor (AUTH-09, PT-10)", () => {
+  it("shows 'Your account' (still routed via /login, which bounces to the role home) instead of 'Log in' when a session cookie exists", async () => {
+    const cookie = vi
+      .spyOn(document, "cookie", "get")
+      .mockReturnValue("theme=dark; sb-abcdef-auth-token=base64-session");
+    try {
+      render(withIntl(<MarketingHeader />));
+      const primary = screen.getByRole("navigation", { name: "Primary" });
+      expect(await within(primary).findByRole("link", { name: "Your account" })).toHaveAttribute(
+        "href",
+        "/login",
+      );
+      expect(within(primary).queryByRole("link", { name: "Log in" })).toBeNull();
+    } finally {
+      cookie.mockRestore();
+    }
+  });
+
+  it("keeps 'Log in' for an anonymous visitor", () => {
+    render(withIntl(<MarketingHeader />));
+    const primary = screen.getByRole("navigation", { name: "Primary" });
+    expect(within(primary).getByRole("link", { name: "Log in" })).toBeInTheDocument();
+    expect(within(primary).queryByRole("link", { name: "Your account" })).toBeNull();
+  });
+});
+
 describe("MarketingHeader", () => {
   it("links the four chapters, the demo, sign-up and log in", () => {
     render(withIntl(<MarketingHeader />));

@@ -29,11 +29,24 @@ export function AppShell({
 }: AppShellProps) {
   return (
     <SidebarProvider>
+      {/* MAP-08: first tab stop; lets keyboard users skip the sidebar's ~20 links. */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+      >
+        Skip to content
+      </a>
       {sidebar}
       <div className={cn("flex min-h-svh min-w-0 flex-1 flex-col", className)}>
         {topBar}
         {banner}
-        <main className="min-w-0 flex-1 overflow-x-hidden p-4 pb-20 md:pb-4">{children}</main>
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="min-w-0 flex-1 focus:outline-none overflow-x-hidden p-4 pb-20 md:pb-4"
+        >
+          {children}
+        </main>
         {mobileTabBar}
       </div>
     </SidebarProvider>

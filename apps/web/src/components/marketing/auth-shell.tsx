@@ -17,7 +17,7 @@ export interface AuthShellProps {
  */
 export function AuthShell({ title, description, children, footer }: AuthShellProps) {
   return (
-    <div className="flex min-h-svh flex-col items-center justify-center bg-background px-4 py-12">
+    <main className="flex min-h-svh flex-col items-center justify-center bg-background px-4 py-12">
       <Link
         href="/"
         className="mb-8 flex items-center gap-2 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
@@ -39,6 +39,6 @@ export function AuthShell({ title, description, children, footer }: AuthShellPro
       </div>
 
       {footer && <div className="mt-6 text-center text-small text-muted-foreground">{footer}</div>}
-    </div>
+    </main>
   );
 }

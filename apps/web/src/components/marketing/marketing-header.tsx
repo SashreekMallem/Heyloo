@@ -2,8 +2,12 @@
 
 import { ThemeToggle } from "@heyloo/ui";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { Link } from "@/i18n/navigation";
+import { hasSupabaseSessionCookie } from "@/lib/auth/session-cookie";
+
+/** The session cookie is not observable; the snapshot is simply read once per render. */
+const subscribeNever = () => () => {};
 
 /**
  * The marketing header: wordmark, the four home chapters, the demo link and
@@ -20,6 +24,18 @@ export function MarketingHeader() {
   const t = useTranslations("Nav");
   const [open, setOpen] = useState(false);
   const close = () => setOpen(false);
+  // AUTH-09/PT-10: a signed-in visitor sees "Your account" instead of "Log
+  // in". Cheap client-side cookie-presence check — no Supabase client in the
+  // marketing bundle (perf budget), and the page stays statically rendered.
+  // `/login` bounces a signed-in visitor to their role home (middleware).
+  // `useSyncExternalStore`: the server (and hydration) snapshot is `false`, the
+  // client snapshot reads the cookie, so there is no hydration mismatch.
+  const signedIn = useSyncExternalStore(
+    subscribeNever,
+    () => hasSupabaseSessionCookie(document.cookie),
+    () => false,
+  );
+  const loginLabel = signedIn ? t("account") : t("login");
 
   const chapters = [
     { href: "/#call", label: t("call") },
@@ -41,7 +57,7 @@ export function MarketingHeader() {
             </Link>
           ))}
           <Link href="/login" prefetch={false}>
-            {t("login")}
+            {loginLabel}
           </Link>
         </nav>
         <div className="hdr-cta">
@@ -93,7 +109,7 @@ export function MarketingHeader() {
             {t("demo")}
           </Link>
           <Link href="/login" prefetch={false} onClick={close}>
-            {t("login")}
+            {loginLabel}
           </Link>
           <div className="hdr-theme">
             <ThemeToggle />
