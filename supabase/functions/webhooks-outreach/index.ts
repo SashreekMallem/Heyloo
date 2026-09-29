@@ -9,6 +9,7 @@ import { timingSafeEqual } from "../_shared/crypto.ts";
 import { runInBackground } from "../_shared/deno/background.ts";
 import { getSql } from "../_shared/deno/db.ts";
 import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { resolveLlmFromEnv } from "../_shared/deno/llm.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { NormalizedOutreachEventSchema } from "../_shared/schemas/outreach-event.ts";
@@ -17,9 +18,6 @@ import { processOutreachEvent } from "./handler.ts";
 
 const logger = createLogger({ fn: "webhooks-outreach" });
 const OUTREACH_WEBHOOK_SECRET = requireEnv("OUTREACH_WEBHOOK_SECRET");
-const ANTHROPIC_API_KEY = optionalEnv("ANTHROPIC_API_KEY");
-const ANTHROPIC_CLASSIFY_MODEL =
-  optionalEnv("ANTHROPIC_OUTREACH_CLASSIFY_MODEL") ?? "claude-haiku-4-5";
 const SMARTLEAD_API_KEY = optionalEnv("SMARTLEAD_API_KEY");
 
 /**
@@ -141,16 +139,11 @@ Deno.serve(async (req: Request) => {
   runInBackground(
     async () => {
       try {
+        // LLM-1: resolved lazily; no provider configured = replies stay
+        // unclassified (the admin "unclassified" queue), never an error.
+        const llm = resolveLlmFromEnv();
         await processOutreachEvent(sql, event, {
-          ...(ANTHROPIC_API_KEY
-            ? {
-                anthropic: {
-                  fetchImpl: fetch,
-                  apiKey: ANTHROPIC_API_KEY,
-                  model: ANTHROPIC_CLASSIFY_MODEL,
-                },
-              }
-            : {}),
+          ...(llm.ok ? { llm: llm.client } : {}),
           ...(SMARTLEAD_API_KEY
             ? { smartlead: { fetchImpl: fetch, apiKey: SMARTLEAD_API_KEY } }
             : {}),

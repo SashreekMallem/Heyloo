@@ -1,11 +1,5 @@
 import { recordCacEvent, recordPipelineCost } from "../_shared/outreach-cost.ts";
-import type { AnthropicFetch } from "../_shared/providers/anthropic.ts";
-import {
-  batchResultText,
-  createMessage,
-  getMessageBatch,
-  getMessageBatchResults,
-} from "../_shared/providers/anthropic.ts";
+import type { LlmClient } from "../_shared/providers/llm/types.ts";
 import type { SmartleadFetch } from "../_shared/providers/smartlead.ts";
 import { addLeadsToCampaign } from "../_shared/providers/smartlead.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
@@ -13,31 +7,35 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
 /**
  * `job-outreach-personalize-collect` — COLLECT phase (BACKEND_SPEC §1.8,
  * T8 build step 2). Polls every in-flight research batch (`job-outreach-
- * personalize`'s submit phase); once a batch's `processing_status` reaches
- * `"ended"`, applies the sonnet "hook" write for each lead and pushes the
- * result into Smartlead.
+ * personalize`'s submit phase); once a batch has finished, applies the
+ * quality-tier "hook" write for each lead and pushes the result into
+ * Smartlead. Provider-neutral since LLM-1: the batch is read through the LLM
+ * port from whichever vendor issued its id (a batch submitted before a
+ * provider switch is still collected); the hook is written by the current one.
  *
- * The hook-writing step runs as a plain synchronous `claude-sonnet-5` call
- * per lead rather than a second Batches round-trip (a deliberate scope
+ * The hook-writing step runs as a plain synchronous quality-tier call
+ * per lead rather than a second batch round-trip (a deliberate scope
  * decision, docs/BUILD_NOTES.md T8 entry): by the time a research batch
  * has ended, the set of leads needing a hook is already bounded to that
  * one batch (<= the submit job's own per-run cap), and a third
  * submit-then-poll stage would add real operational complexity for a
  * marginal cost saving on an already-cheap, short prompt. This still uses
- * the Batches API for the genuinely bulk, independently-parallel half of
- * the pipeline (the research pass, MASTER_PLAN's own "haiku research"
+ * the batch API for the genuinely bulk, independently-parallel half of
+ * the pipeline (the research pass, MASTER_PLAN's own "cheap research"
  * step) — "Batches API for bulk" per this build's own instruction, applied
  * where it actually earns its keep.
  *
- * Failure handling matches API_AND_FLOWS.md A.5 exactly: a `refusal`/error
- * on the hook call (or an errored/expired/canceled batch result for the
+ * Failure handling matches API_AND_FLOWS.md A.5 exactly: a refused/errored call
+ * on the hook (or an errored/expired/canceled batch result for the
  * research step) falls back to a generic, non-personalized opener rather
  * than ever blocking the send.
  */
 export interface PersonalizeCollectDeps {
-  anthropicFetch: AnthropicFetch;
-  anthropicApiKey: string;
-  personalizeModel: string;
+  /** The LLM port for the hook write (quality tier) — the CURRENT provider. */
+  llm: LlmClient;
+  /** The client that can read the batch being collected (its issuing vendor);
+   * defaults to `llm`. */
+  batchLlm?: LlmClient;
   smartleadFetch: SmartleadFetch;
   smartleadApiKey: string;
   canSpamFooter: string;
@@ -92,7 +90,7 @@ function strongestComplaintSnippet(evidence: unknown): string | null {
 /** The literal opener pattern this task's own instruction names verbatim
  * ("One of your reviews mentions calling three times and getting
  * voicemail…") — used both as the strong, structured FALLBACK opener when
- * a high-scoring lead's Anthropic hook call fails (never worse than the
+ * a high-scoring lead's LLM hook call fails (never worse than the
  * generic opener for a lead this promising) and folded into the hook
  * prompt itself as the pattern to follow. */
 function complaintOpener(snippet: string): string {
@@ -181,34 +179,46 @@ export async function collectResearchBatch(
   batchId: string,
   deps: PersonalizeCollectDeps,
 ): Promise<{ collected: number; ended: boolean }> {
-  const batch = await getMessageBatch(deps.anthropicFetch, deps.anthropicApiKey, batchId);
+  const batch = await (deps.batchLlm ?? deps.llm).batch.get(batchId);
   if (!batch.ok) {
     deps.logger.error("outreach_personalize_collect_batch_status_failed", {
       batch_id: batchId,
-      status: batch.status,
+      kind: batch.error.kind,
+      status: batch.error.status,
     });
     return { collected: 0, ended: false };
   }
-  if (batch.processingStatus !== "ended" || !batch.resultsUrl) {
+  if (batch.status.state === "in_progress") {
     return { collected: 0, ended: false };
   }
 
-  const results = await getMessageBatchResults(
-    deps.anthropicFetch,
-    deps.anthropicApiKey,
-    batch.resultsUrl,
-  );
+  // A batch that failed / expired / was cancelled has no results at all: every
+  // lead in it falls back to the generic opener below rather than blocking the
+  // send (API_AND_FLOWS.md A.5) — and is collected, not polled forever.
+  const researchByLead = new Map<string, string | null>();
+  if (batch.status.state === "succeeded") {
+    for (const item of batch.status.results) researchByLead.set(item.key, item.text);
+  } else {
+    deps.logger.warn("outreach_personalize_collect_batch_failed", {
+      batch_id: batchId,
+      reason: batch.status.reason,
+    });
+  }
+
+  // Iterate the leads this batch was submitted for (results are keyed by lead
+  // id and arrive in any order, so a lead missing from them still gets its
+  // generic opener instead of staying queued forever).
+  const leadRows = await sql<LeadForHookRow>`
+    select id, company_name, contact_name, email, phone_complaint_score, phone_complaint_evidence
+    from public.leads
+    where enrichment ->> 'research_batch_id' = ${batchId}
+      and status = 'queued'
+      and enrichment -> 'personalization' is null
+  `;
   const now = deps.now ?? new Date();
   let collected = 0;
 
-  for (const line of results) {
-    const leadRows = await sql<LeadForHookRow>`
-      select id, company_name, contact_name, email, phone_complaint_score, phone_complaint_evidence
-      from public.leads where id = ${line.custom_id}
-    `;
-    const lead = leadRows[0];
-    if (!lead) continue;
-
+  for (const lead of leadRows) {
     // OUTREACH-2: a lead `job-outreach-review-score` scored at/above
     // threshold gets its strongest phone-complaint snippet worked into the
     // opener (Flow 5 step 3, task step 3's own literal example phrasing).
@@ -219,7 +229,7 @@ export async function collectResearchBatch(
       ? strongestComplaintSnippet(lead.phone_complaint_evidence)
       : null;
 
-    const research = batchResultText(line);
+    const research = researchByLead.get(lead.id) ?? null;
     let openingLine: string;
     if (research) {
       const complaintInstruction = complaintSnippet
@@ -227,14 +237,17 @@ export async function collectResearchBatch(
           `a natural reference to that specific complaint (quote or closely paraphrase: "${complaintSnippet}") ` +
           `rather than the research context below, since it's a stronger, more specific hook.`
         : "";
-      const hook = await createMessage(deps.anthropicFetch, deps.anthropicApiKey, {
-        model: deps.personalizeModel,
-        maxTokens: 120,
+      const hook = await deps.llm.generateText({
+        tier: "quality",
+        maxOutputTokens: 120,
+        temperature: 0.7,
+        timeoutMs: 20_000,
+        maxRetries: 1,
         system:
           "Write ONE short, natural cold-email opening line (max 30 words, no greeting, no " +
           "signature) referencing the specific research context given. Return ONLY the line " +
           `itself, nothing else.${complaintInstruction}`,
-        userMessage: `Company: ${lead.company_name ?? "their business"}\nResearch: ${research}`,
+        input: `Company: ${lead.company_name ?? "their business"}\nResearch: ${research}`,
       });
       openingLine =
         hook.ok && hook.text

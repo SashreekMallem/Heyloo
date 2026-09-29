@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { fakeLlm } from "../_shared/providers/llm/test-support.ts";
+import { llmFailure } from "../_shared/providers/llm/types.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import { findLeadsNeedingResearch, submitResearchBatch } from "./handler.ts";
 
@@ -36,16 +38,12 @@ describe("findLeadsNeedingResearch", () => {
 });
 
 describe("submitResearchBatch", () => {
-  it("submits one batch covering every lead and stamps research_batch_id", async () => {
+  it("submits one batch covering every lead (key = lead id) and stamps research_batch_id", async () => {
     const { sql, calls } = makeSql();
-    const anthropicFetch = vi.fn(
-      async () =>
-        ({
-          ok: true,
-          status: 200,
-          json: async () => ({ id: "batch_123" }),
-        }) as unknown as Response,
-    ) as never;
+    const llm = fakeLlm({
+      batch: { submit: async () => ({ ok: true, batchId: "batches/abc123" }) },
+    });
+    const submit = vi.spyOn(llm.batch, "submit");
 
     const result = await submitResearchBatch(
       sql,
@@ -60,51 +58,50 @@ describe("submitResearchBatch", () => {
         { id: "l2", vertical: "legal", company_name: "Beta", contact_name: null, enrichment: {} },
       ],
       {
-        anthropicFetch,
-        anthropicApiKey: "key",
-        researchModel: "claude-haiku-4-5",
+        llm,
         fetchUrl: async () => "<html><body>We fix cars fast.</body></html>",
         logger: makeLogger(),
       },
     );
 
     expect(result.submitted).toBe(2);
-    expect(result.batchId).toBe("batch_123");
+    expect(result.batchId).toBe("batches/abc123");
     expect(calls.some((c) => c.text.includes("research_batch_id"))).toBe(true);
+    const sent = submit.mock.calls[0]?.[0];
+    expect(sent?.tier).toBe("fast");
+    expect(sent?.requests.map((r) => r.key)).toEqual(["l1", "l2"]);
+    expect(sent?.requests[0]?.input).toContain("We fix cars fast.");
+    expect(sent?.requests[1]?.input).toContain("(no website text available)");
+    // Scraped site text is framed as untrusted data.
+    expect(sent?.requests[0]?.system).toContain("untrusted data");
   });
 
   it("does nothing when there are no leads to submit", async () => {
     const { sql } = makeSql();
+    const llm = fakeLlm();
     const result = await submitResearchBatch(sql, [], {
-      anthropicFetch: vi.fn() as never,
-      anthropicApiKey: "key",
-      researchModel: "claude-haiku-4-5",
+      llm,
       fetchUrl: async () => null,
       logger: makeLogger(),
     });
     expect(result.submitted).toBe(0);
   });
 
-  it("logs and returns 0 submitted when the batch API call fails", async () => {
-    const { sql } = makeSql();
-    const anthropicFetch = vi.fn(
-      async () => ({ ok: false, status: 500, json: async () => ({}) }) as unknown as Response,
-    ) as never;
+  it("logs and returns 0 submitted, stamping nothing, when the batch API call fails", async () => {
+    const { sql, calls } = makeSql();
+    const llm = fakeLlm({
+      batch: { submit: async () => llmFailure("unavailable", 500, "boom", true) },
+    });
     const logger = makeLogger();
 
     const result = await submitResearchBatch(
       sql,
       [{ id: "l1", vertical: "legal", company_name: "Acme", contact_name: null, enrichment: {} }],
-      {
-        anthropicFetch,
-        anthropicApiKey: "key",
-        researchModel: "claude-haiku-4-5",
-        fetchUrl: async () => null,
-        logger,
-      },
+      { llm, fetchUrl: async () => null, logger },
     );
 
     expect(result.submitted).toBe(0);
     expect(logger.error).toHaveBeenCalled();
+    expect(calls.some((c) => c.text.includes("research_batch_id"))).toBe(false);
   });
 });

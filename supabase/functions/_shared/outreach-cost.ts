@@ -25,7 +25,7 @@ export type PipelineCostCategory =
   | "ai_personalization"
   | "sender_fee"
   | "domain_warmup"
-  // OUTREACH-2: Outscraper Reviews + Anthropic classification spend for
+  // OUTREACH-2: Outscraper Reviews + LLM classification spend for
   // the phone-complaint scoring pass (job-outreach-review-score) — added
   // via a widened `pipeline_costs_category_check` CHECK constraint,
   // 20260911140000_leads_phone_complaint_score.sql.
