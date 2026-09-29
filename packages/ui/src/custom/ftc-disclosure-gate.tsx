@@ -8,6 +8,7 @@ import { Label } from "../primitives/label.js";
 
 export interface FTCDisclosureGateProps {
   policyVersion: string;
+  /** Must surface its own failures to the user; a rejection just re-enables the button. */
   onAcknowledge: (policyVersion: string) => void | Promise<void>;
 }
 
@@ -44,8 +45,18 @@ export function FTCDisclosureGate({ policyVersion, onAcknowledge }: FTCDisclosur
             disabled={!checked || submitting}
             onClick={async () => {
               setSubmitting(true);
-              await onAcknowledge(policyVersion);
-              setSubmitting(false);
+              // A rejected `onAcknowledge` (network error) must not leave the
+              // button disabled forever: the partner has to be able to retry
+              // without reloading (PT-03). Reporting the error to the user is
+              // the caller's job, so it is swallowed here rather than
+              // surfacing as an unhandled rejection.
+              try {
+                await onAcknowledge(policyVersion);
+              } catch {
+                // reported by the caller
+              } finally {
+                setSubmitting(false);
+              }
             }}
           >
             Acknowledge and continue
