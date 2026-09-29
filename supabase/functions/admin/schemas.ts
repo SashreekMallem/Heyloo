@@ -80,6 +80,23 @@ export const AdminCommissionVerticalOverrideSchema = z.object({
   duration_months: z.number().int().positive().nullable().optional(),
 });
 
+/**
+ * `PATCH admin-tenants/:id` (COCKPIT-F16). Unknown keys (the page also sends
+ * `tenant_id`) are ignored; every editable field is bounded before it reaches
+ * SQL. `reason` is required by the handler when pausing/cancelling and is
+ * stored in the audit row.
+ */
+export const TENANT_STATUSES = ["trialing", "active", "past_due", "paused", "canceled"] as const;
+
+export const AdminTenantPatchSchema = z.object({
+  status: z.enum(TENANT_STATUSES).optional(),
+  usage_hard_cap_minutes: z.number().int().min(0).max(1_000_000).nullable().optional(),
+  manual_mode: z.boolean().optional(),
+  retention_days: z.number().int().min(1).max(3650).optional(),
+  // A blank reason counts as absent; the handler answers `reason_required` when one is needed.
+  reason: z.string().trim().max(1000).optional(),
+});
+
 export const AdminSupportRequestUpdateSchema = z.object({
   status: z.enum(["open", "pending", "resolved", "closed"]).optional(),
   priority: z.enum(["low", "medium", "high", "urgent"]).optional(),

@@ -85,6 +85,7 @@ describe("routeAdminRequest — tenants group", () => {
           status: "active",
           plan_code: "standard",
           created_at: "2026-09-01T00:00:00Z",
+          stripe_subscription_id: "sub_1",
           base_cents: "29900",
           revenue_cents: "29900",
           margin_cents: "29662",
@@ -112,14 +113,21 @@ describe("routeAdminRequest — tenants group", () => {
     expect(tenants).toHaveLength(2);
     expect(tenants[0]?.mrr_cents).toBe(29900);
     expect(tenants[0]?.margin_pct).toBeCloseTo(99.2, 1);
-    expect(tenants[1]?.mrr_cents).toBe(0);
+    // COCKPIT-F14: no live subscription -> no MRR (null), not 0 and not the list price.
+    expect(tenants[1]?.mrr_cents).toBeNull();
     expect(tenants[1]?.margin_pct).toBeNull();
   });
 
   it("returns { tenant, metrics } on GET /admin-tenants/:id, computing MRR/margin/minutes rather than reading them off `tenants`", async () => {
     const { sql } = makeSql({
       "select * from public.tenants where id": [
-        { id: T1, name: "Acme", vertical: "auto", status: "active" },
+        {
+          id: T1,
+          name: "Acme",
+          vertical: "auto",
+          status: "active",
+          stripe_subscription_id: "sub_1",
+        },
       ],
       "from public.fn_margin_by_tenant": [{ revenue_cents: "20000", margin_cents: "15000" }],
       "from public.platform_settings where key": [{ base_cents: "29900" }],
@@ -133,7 +141,12 @@ describe("routeAdminRequest — tenants group", () => {
     };
     expect(body.tenant.id).toBe(T1);
     // MRR = the plan's base fee (billing tenant), not paid-invoices-so-far.
-    expect(body.metrics).toEqual({ mrr_cents: 29900, margin_pct: 75, minutes_used: 340 });
+    expect(body.metrics).toEqual({
+      mrr_cents: 29900,
+      list_price_cents: 29900,
+      margin_pct: 75,
+      minutes_used: 340,
+    });
   });
 
   it("GET /admin-tenants/:id returns zeroed metrics (not a crash) when the tenant has no margin/usage rows yet", async () => {
@@ -143,7 +156,12 @@ describe("routeAdminRequest — tenants group", () => {
     const result = await routeAdminRequest(sql, baseCtx({ path: `/admin-tenants/${T2}` }), logger);
     expect(result.status).toBe(200);
     const body = result.body as { metrics: { mrr_cents: number; margin_pct: number } };
-    expect(body.metrics).toEqual({ mrr_cents: 0, margin_pct: 0, minutes_used: 0 });
+    expect(body.metrics).toEqual({
+      mrr_cents: null,
+      list_price_cents: 0,
+      margin_pct: null,
+      minutes_used: 0,
+    });
   });
 
   it("patches allowed fields and writes an admin_actions audit row", async () => {

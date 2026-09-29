@@ -33,6 +33,7 @@ import {
   AdminReferralSettingSchema,
   AdminSupportRequestNoteSchema,
   AdminSupportRequestUpdateSchema,
+  AdminTenantPatchSchema,
   OutreachCampaignCreateSchema,
   PlatformPricingTableSchema,
   VERTICALS,
@@ -143,6 +144,11 @@ function isImpersonationSelfServicePath(path: string): boolean {
   );
 }
 
+/** A tenant that is actually being billed: a Stripe subscription exists AND it is in a billing status. */
+function hasLiveSubscription(status: string, subscriptionId: string | null): boolean {
+  return !!subscriptionId && (status === "active" || status === "past_due");
+}
+
 async function handleTenants(
   sql: SqlClient,
   ctx: AdminRequestContext,
@@ -165,11 +171,12 @@ async function handleTenants(
       status: string;
       plan_code: string | null;
       created_at: string;
+      stripe_subscription_id: string | null;
       base_cents: unknown;
       revenue_cents: unknown;
       margin_cents: unknown;
     }>`
-      select t.id, t.name, t.vertical, t.status, t.plan_code, t.created_at,
+      select t.id, t.name, t.vertical, t.status, t.plan_code, t.created_at, t.stripe_subscription_id,
              (ps.value->>'base_cents')::numeric as base_cents,
              m.revenue_cents, m.margin_cents
       from public.tenants t
@@ -194,8 +201,13 @@ async function handleTenants(
             status: r.status,
             plan_code: r.plan_code,
             created_at: r.created_at,
-            mrr_cents:
-              r.status === "active" || r.status === "past_due" ? toNumber(r.base_cents) : 0,
+            // COCKPIT-F14: MRR only for a tenant with a live Stripe subscription;
+            // a tenant without one has no recurring revenue, whatever its plan's
+            // list price says (`list_price_cents`, shown separately).
+            mrr_cents: hasLiveSubscription(r.status, r.stripe_subscription_id)
+              ? toNumber(r.base_cents)
+              : null,
+            list_price_cents: toNumber(r.base_cents),
             margin_pct: revenue > 0 ? (toNumber(r.margin_cents) / revenue) * 100 : null,
           };
         }),
@@ -242,12 +254,21 @@ async function handleTenants(
       select (value->>'base_cents')::numeric as base_cents
       from public.platform_settings where key = ${`price_card_${String(tenant["vertical"])}`}
     `;
-    const billing = tenant["status"] === "active" || tenant["status"] === "past_due";
+    const listPriceCents = toNumber(baseRows[0]?.base_cents);
 
     const metrics = {
-      mrr_cents: billing ? toNumber(baseRows[0]?.base_cents) : 0,
-      margin_pct: revenueCents > 0 ? (marginCents / revenueCents) * 100 : 0,
-      minutes_used: Number(minutesRows[0]?.minutes_used ?? 0),
+      // COCKPIT-F14: null (not 0, not the list price) without a live subscription.
+      mrr_cents: hasLiveSubscription(
+        String(tenant["status"]),
+        (tenant["stripe_subscription_id"] as string | null | undefined) ?? null,
+      )
+        ? listPriceCents
+        : null,
+      list_price_cents: listPriceCents,
+      // COCKPIT-F12: no paid revenue means no margin, never a fabricated 0.0%.
+      margin_pct: revenueCents > 0 ? (marginCents / revenueCents) * 100 : null,
+      // Rounded to one decimal (was "3.567").
+      minutes_used: Math.round(Number(minutesRows[0]?.minutes_used ?? 0) * 10) / 10,
     };
 
     return { status: 200, body: { tenant, metrics } };
@@ -259,19 +280,24 @@ async function handleTenants(
     )[0];
     if (!before) return { status: 404, body: { error: "tenant_not_found" } };
 
-    const patch = (ctx.body ?? {}) as Record<string, unknown>;
-    const allowedFields = new Set([
-      "status",
-      "usage_hard_cap_minutes",
-      "manual_mode",
-      "retention_days",
-    ]);
+    // COCKPIT-F16: validate before the values reach SQL (an unknown status or a
+    // fractional cap used to hit the CHECK / int cast as a 500).
+    const parsed = AdminTenantPatchSchema.safeParse(ctx.body ?? {});
+    if (!parsed.success) {
+      return { status: 422, body: { error: "invalid_tenant_patch", issues: parsed.error.issues } };
+    }
+    const { reason, ...fields } = parsed.data;
     const updates: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(patch)) {
-      if (allowedFields.has(key)) updates[key] = value;
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== undefined) updates[key] = value;
     }
     if (Object.keys(updates).length === 0)
       return { status: 422, body: { error: "no_valid_fields" } };
+    // Pausing or cancelling a customer stops their phone answering: it needs a
+    // recorded reason (resuming does not).
+    if ((updates["status"] === "paused" || updates["status"] === "canceled") && !reason) {
+      return { status: 422, body: { error: "reason_required" } };
+    }
 
     if ("status" in updates) {
       await sql`update public.tenants set status = ${updates["status"] as string} where id = ${tenantId}`;
@@ -296,7 +322,8 @@ async function handleTenants(
         targetType: "tenant",
         targetId: tenantId,
         before,
-        after,
+        // The reason is not a tenants column: it lives only in this audit row.
+        after: reason ? { ...after, reason } : after,
         ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
         ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
       });
