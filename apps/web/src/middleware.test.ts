@@ -78,7 +78,47 @@ describe("middleware — guard #1 redirect matrix (FRONTEND_SPEC.md §0.1)", () 
     const res = await middleware(req("/dashboard/calls"));
     expect(res.status).toBe(307);
     const location = new URL(res.headers.get("location") ?? "");
-    expect(location.searchParams.get("toast")).toBe("no_access");
+    // No tenant claim and not an admin/partner: a customer mid-signup (F-02).
+    expect(location.pathname).toBe("/signup/resume");
+  });
+
+  it("F-02: resumes a confirmed, tenantless customer at /signup/resume instead of the no-access toast", async () => {
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = {};
+    const res = await middleware(req("/dashboard"));
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.pathname).toBe("/signup/resume");
+    expect(location.searchParams.get("toast")).toBeNull();
+  });
+
+  it("F-13: bounces a signed-in tenant member off /login to the dashboard, or a same-origin next", async () => {
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
+    const plain = await middleware(req("/login"));
+    expect(new URL(plain.headers.get("location") ?? "").pathname).toBe("/dashboard");
+    const withNext = await middleware(req("/login?next=/dashboard/calls"));
+    expect(new URL(withNext.headers.get("location") ?? "").pathname).toBe("/dashboard/calls");
+    const evil = await middleware(req("/login?next=//evil.example"));
+    expect(new URL(evil.headers.get("location") ?? "").pathname).toBe("/dashboard");
+  });
+
+  it("F-13: sends a signed-in tenant member from /signup step 1 to /signup/resume, leaves later steps alone", async () => {
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
+    const step1 = await middleware(req("/signup"));
+    expect(new URL(step1.headers.get("location") ?? "").pathname).toBe("/signup/resume");
+    const plan = await middleware(req("/signup/plan"));
+    expect(plan.headers.get("location")).toBeNull();
+  });
+
+  it("F-13: a signed-in user with no tenant can still use /login and /signup", async () => {
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = {};
+    for (const path of ["/login", "/signup"]) {
+      const res = await middleware(req(path));
+      expect(res.headers.get("location")).toBeNull();
+    }
   });
 
   it("redirects an unauthenticated caller away from /cockpit to /login", async () => {
