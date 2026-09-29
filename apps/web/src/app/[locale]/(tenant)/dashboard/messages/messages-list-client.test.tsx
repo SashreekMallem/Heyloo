@@ -28,7 +28,7 @@ vi.mock("@/lib/supabase/browser", () => ({
 import { MessagesListClient } from "./messages-list-client";
 
 function renderClient() {
-  const client = new QueryClient();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <MessagesListClient tenantId="t1" />
@@ -153,5 +153,90 @@ describe("MessagesListClient", () => {
     };
     renderClient();
     expect(await screen.findByText("No messages yet")).toBeInTheDocument();
+  });
+
+  it("does not show failed / queued / pending-verification system SMS as sent in the inbox (QA-1 F-03)", async () => {
+    tables = {
+      messages_inbound: {
+        data: [
+          {
+            from_e164: "+15552010199",
+            body: "Can I move my appointment?",
+            handled: true,
+            created_at: "2026-01-01T10:00:00Z",
+          },
+        ],
+        error: null,
+      },
+      messages_outbound: {
+        data: [
+          {
+            recipient: "+15552010199",
+            template_key: "booking_cancelled",
+            payload: {},
+            status: "failed",
+            created_at: "2026-01-01T11:00:00Z",
+          },
+          {
+            recipient: "+15552010199",
+            template_key: "something_unlabelled",
+            payload: {},
+            status: "pending_verification",
+            created_at: "2026-01-01T12:00:00Z",
+          },
+          {
+            // A thread that only ever had an undelivered system message: hidden.
+            recipient: "+15559990000",
+            template_key: "booking_confirmation",
+            payload: {},
+            status: "queued",
+            created_at: "2026-01-01T12:00:00Z",
+          },
+        ],
+        error: null,
+      },
+      text_conversations: { data: [], error: null },
+      customers: { data: [], error: null },
+    };
+    renderClient();
+    // Preview stays on the last message that really happened.
+    expect(await screen.findByText("Can I move my appointment?")).toBeInTheDocument();
+    expect(screen.queryByText(/Cancellation notice sent/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/System message sent/)).not.toBeInTheDocument();
+    expect(screen.queryByText("(555) 999-0000")).not.toBeInTheDocument();
+  });
+
+  it("shows a delivered system message as the preview", async () => {
+    tables = {
+      messages_inbound: { data: [], error: null },
+      messages_outbound: {
+        data: [
+          {
+            recipient: "+15552010199",
+            template_key: "booking_confirmation",
+            payload: {},
+            status: "delivered",
+            created_at: "2026-01-01T12:00:00Z",
+          },
+        ],
+        error: null,
+      },
+      text_conversations: { data: [], error: null },
+      customers: { data: [], error: null },
+    };
+    renderClient();
+    expect(await screen.findByText("Booking confirmation sent")).toBeInTheDocument();
+  });
+
+  it("surfaces a load error instead of the 'No messages yet' empty state", async () => {
+    tables = {
+      messages_inbound: { data: null, error: { message: "boom" } },
+      messages_outbound: { data: [], error: null },
+      text_conversations: { data: [], error: null },
+      customers: { data: [], error: null },
+    };
+    renderClient();
+    await screen.findByText(/boom|went wrong|try again/i);
+    expect(screen.queryByText("No messages yet")).not.toBeInTheDocument();
   });
 });

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { describeOutboundMessage } from "./outbound-preview";
+import {
+  describeOutboundMessage,
+  isConversationTemplate,
+  isOutboundDelivered,
+  undeliveredReason,
+} from "./outbound-preview";
 
 describe("describeOutboundMessage", () => {
   it("returns the verbatim body for an owner's own reply", () => {
@@ -47,5 +52,47 @@ describe("describeOutboundMessage", () => {
       text: "System message sent",
       isVerbatim: false,
     });
+  });
+});
+
+describe("delivery-aware labels (QA-1 F-03)", () => {
+  it("only sent/delivered count as delivered", () => {
+    expect(isOutboundDelivered("sent")).toBe(true);
+    expect(isOutboundDelivered("delivered")).toBe(true);
+    for (const s of ["queued", "failed", "bounced", "pending_verification", null, undefined]) {
+      expect(isOutboundDelivered(s)).toBe(false);
+    }
+  });
+
+  it("never labels a failed / queued / pending-verification system message as 'sent'", () => {
+    expect(describeOutboundMessage("booking_confirmation", {}, "failed").text).toBe(
+      "Booking confirmation - not sent - delivery failed",
+    );
+    expect(describeOutboundMessage("booking_cancelled", {}, "queued").text).toBe(
+      "Cancellation notice - queued - waiting to send",
+    );
+    expect(describeOutboundMessage("something_new", {}, "pending_verification").text).toBe(
+      "System message - not sent - texting is pending verification",
+    );
+    expect(describeOutboundMessage("booking_confirmation", {}, "delivered").text).toBe(
+      "Booking confirmation sent",
+    );
+  });
+
+  it("labels the templates that used to fall through to 'System message sent'", () => {
+    expect(describeOutboundMessage("waitlist_slot_opened", {}, "sent").text).toBe(
+      "Waitlist opening notice sent",
+    );
+    expect(describeOutboundMessage("weekly_value_summary", {}, "sent").text).toBe(
+      "Weekly summary sent",
+    );
+  });
+
+  it("explains reasons and identifies conversation templates", () => {
+    expect(undeliveredReason("sent")).toBeNull();
+    expect(undeliveredReason("bounced")).toContain("failed");
+    expect(isConversationTemplate("owner_reply")).toBe(true);
+    expect(isConversationTemplate("take_message")).toBe(true);
+    expect(isConversationTemplate("booking_confirmation")).toBe(false);
   });
 });

@@ -168,4 +168,136 @@ describe("MessageThreadClient", () => {
     ).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("Type a reply…")).not.toBeInTheDocument();
   });
+
+  it("renders failed / queued / pending-verification system SMS as muted events, not 'You' bubbles that say 'sent' (QA-1 F-03)", async () => {
+    tables = {
+      customers: { data: { name: null, sms_opt_out: false }, error: null },
+      text_conversations: { data: null, error: null },
+      messages_inbound: { data: [], error: null },
+      messages_outbound: {
+        data: [
+          {
+            id: "o1",
+            template_key: "booking_confirmation",
+            payload: {},
+            status: "failed",
+            created_at: "2026-01-01T10:00:00Z",
+          },
+          {
+            id: "o2",
+            template_key: "booking_cancelled",
+            payload: {},
+            status: "pending_verification",
+            created_at: "2026-01-01T11:00:00Z",
+          },
+          {
+            id: "o3",
+            template_key: "owner_reply",
+            payload: { body: "See you at 3" },
+            status: "failed",
+            created_at: "2026-01-01T12:00:00Z",
+          },
+          {
+            id: "o4",
+            template_key: "payment_link",
+            payload: {},
+            status: "delivered",
+            created_at: "2026-01-01T13:00:00Z",
+          },
+        ],
+        error: null,
+      },
+    };
+    renderClient("+15551234567");
+    expect(await screen.findByText(/Booking confirmation - not sent/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Cancellation notice - not sent - texting is pending verification/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Booking confirmation sent/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Cancellation notice sent/)).not.toBeInTheDocument();
+    // Only the real owner reply is a "You" bubble, flagged as undelivered.
+    expect(screen.getAllByText("You")).toHaveLength(1);
+    expect(screen.getByText("See you at 3")).toBeInTheDocument();
+    expect(screen.getByText("not sent - delivery failed")).toBeInTheDocument();
+    // A delivered system template is a muted event too.
+    expect(screen.getByText(/Payment link sent/)).toBeInTheDocument();
+    expect(screen.getAllByTestId("system-event")).toHaveLength(3);
+  });
+
+  it("does not save a transcript row or a phantom 'You' message when the SMS send fails (QA-1 F-11)", async () => {
+    tables = {
+      customers: { data: { name: null, sms_opt_out: false }, error: null },
+      text_conversations: {
+        data: { id: "conv1", channel: "sms", status: "open", customer_id: null },
+        error: null,
+      },
+      text_conversation_messages: { data: [], error: null },
+    };
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ error: "send_failed" }), { status: 500 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderClient("+15551234567");
+    await user.type(await screen.findByPlaceholderText("Type a reply…"), "On my way");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(insertSpy).not.toHaveBeenCalled();
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("saves the transcript row after a successful send and pauses the AI (status human) on the first reply (QA-1 F-11)", async () => {
+    tables = {
+      customers: { data: { name: null, sms_opt_out: false }, error: null },
+      text_conversations: {
+        data: { id: "conv1", channel: "sms", status: "open", customer_id: null },
+        error: null,
+      },
+      text_conversation_messages: { data: [], error: null },
+    };
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderClient("+15551234567");
+    await user.type(await screen.findByPlaceholderText("Type a reply…"), "On my way");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(insertSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ conversation_id: "conv1", author: "human", body: "On my way" }),
+      ),
+    );
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledWith({ status: "human" }));
+  });
+
+  it("shows an empty state with no composer for a non-E.164 thread URL (QA-1 F-22)", async () => {
+    renderClient("abc");
+    expect(await screen.findByText("That isn't a valid phone number")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Type a reply…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+  });
+
+  it("shows an empty state (no composer) for a valid number with no conversation, history or customer (QA-1 F-22)", async () => {
+    tables = {
+      customers: { data: null, error: null },
+      text_conversations: { data: null, error: null },
+      messages_inbound: { data: [], error: null },
+      messages_outbound: { data: [], error: null },
+    };
+    renderClient("+15550001111");
+    expect(await screen.findByText("No messages with this number yet")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Type a reply…")).not.toBeInTheDocument();
+  });
+
+  it("still offers the composer for an existing customer with no history yet", async () => {
+    tables = {
+      customers: { data: { name: "Jamie", sms_opt_out: false }, error: null },
+      text_conversations: { data: null, error: null },
+      messages_inbound: { data: [], error: null },
+      messages_outbound: { data: [], error: null },
+    };
+    renderClient("+15550001111");
+    expect(await screen.findByPlaceholderText("Type a reply…")).toBeInTheDocument();
+  });
 });
