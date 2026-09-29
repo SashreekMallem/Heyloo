@@ -316,6 +316,16 @@ export async function createPhoneCall(
     override_agent_id: string;
     retell_llm_dynamic_variables: Record<string, string> & { disclosure_line: string };
     metadata?: Record<string, unknown>;
+    /**
+     * HARNESS-1: docs.retellai.com/api-references/create-phone-call
+     * (fetched 2026-09-29) — `agent_override.agent` is "Override agent
+     * configuration settings. Any properties specified here will override
+     * the base agent configuration for this call" and accepts `language`
+     * and `max_call_duration_ms` (60_000..7_200_000); `general_prompt` is
+     * NOT overridable here (it lives on the Retell LLM), hence the
+     * scenario prompt travels as a dynamic variable instead.
+     */
+    agent_override?: { agent?: { language?: string; max_call_duration_ms?: number } };
   },
 ) {
   if (

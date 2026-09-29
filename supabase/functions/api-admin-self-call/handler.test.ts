@@ -4,6 +4,8 @@ import type { RetellFetch } from "../_shared/providers/retell.ts";
 import type { SqlClient } from "../_shared/types.ts";
 import {
   runSelfCall,
+  SCENARIO_DEFAULT_DURATION_S,
+  SCENARIO_MAX_PROMPT_CHARS,
   SELF_CALL_CALLEE_NUMBER,
   SELF_CALL_CALLER_NUMBER,
   validateRequest,
@@ -357,5 +359,219 @@ describe("hardcoded numbers", () => {
   it("never changes without a deliberate, reviewed edit", () => {
     expect(SELF_CALL_CALLER_NUMBER).toBe("+16105383920");
     expect(SELF_CALL_CALLEE_NUMBER).toBe("+12602354330");
+  });
+});
+
+describe("validateRequest — scenario (HARNESS-1)", () => {
+  it("accepts a full scenario and passes it through", () => {
+    expect(
+      validateRequest({
+        scenario: { caller_prompt: "You are Ana.", max_duration_s: 90, language: "es" },
+      }),
+    ).toEqual({
+      ok: true,
+      data: {
+        action: "run",
+        scenario: { caller_prompt: "You are Ana.", max_duration_s: 90, language: "es" },
+      },
+    });
+  });
+
+  it("defaults language to en and duration to the default", () => {
+    expect(validateRequest({ scenario: { caller_prompt: "Hi" } })).toEqual({
+      ok: true,
+      data: {
+        action: "run",
+        scenario: {
+          caller_prompt: "Hi",
+          max_duration_s: SCENARIO_DEFAULT_DURATION_S,
+          language: "en",
+        },
+      },
+    });
+  });
+
+  it.each([
+    [{ caller_prompt: "" }, "invalid_scenario_caller_prompt"],
+    [{ caller_prompt: "   " }, "invalid_scenario_caller_prompt"],
+    [{ caller_prompt: 5 }, "invalid_scenario_caller_prompt"],
+    [{}, "invalid_scenario_caller_prompt"],
+    [
+      { caller_prompt: "x".repeat(SCENARIO_MAX_PROMPT_CHARS + 1) },
+      "scenario_caller_prompt_too_long",
+    ],
+    [{ caller_prompt: "x", max_duration_s: 241 }, "invalid_scenario_max_duration_s"],
+    [{ caller_prompt: "x", max_duration_s: 30 }, "invalid_scenario_max_duration_s"],
+    [{ caller_prompt: "x", max_duration_s: 90.5 }, "invalid_scenario_max_duration_s"],
+    [{ caller_prompt: "x", max_duration_s: "90" }, "invalid_scenario_max_duration_s"],
+    [{ caller_prompt: "x", language: "fr" }, "invalid_scenario_language"],
+    [{ caller_prompt: "x", to_number: "+15555550100" }, "invalid_scenario_unknown_field"],
+  ])("rejects %j", (scenario, error) => {
+    expect(validateRequest({ scenario })).toEqual({ ok: false, error });
+  });
+
+  it("accepts the exact max prompt length and max duration", () => {
+    const r = validateRequest({
+      scenario: { caller_prompt: "x".repeat(SCENARIO_MAX_PROMPT_CHARS), max_duration_s: 240 },
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects non-object scenarios", () => {
+    expect(validateRequest({ scenario: "hi" })).toEqual({ ok: false, error: "invalid_scenario" });
+    expect(validateRequest({ scenario: null })).toEqual({ ok: false, error: "invalid_scenario" });
+    expect(validateRequest({ scenario: [] })).toEqual({ ok: false, error: "invalid_scenario" });
+  });
+});
+
+describe("runSelfCall — scenario (HARNESS-1)", () => {
+  const scenarioDeps = (fetch: RetellFetch) => ({
+    retellFetch: fetch,
+    retellApiKey: "key",
+    logger,
+    pollIntervalMs: 1,
+    sleep: async () => {},
+  });
+
+  it("creates a separate cached scenario agent and sends prompt, language, duration cap; numbers stay hardcoded", async () => {
+    const { sql, calls: sqlCalls } = makeSql({
+      "select t.id as tenant_id, t.name as business_name": [CALLEE_TENANT_FIXTURE],
+    });
+    const bodies: Record<string, unknown> = {};
+    const { fetch } = makeRetellFetch([
+      (url, init) => {
+        if (init?.body && typeof init.body === "string") {
+          bodies[`${init.method} ${url.replace("https://api.retellai.com", "")}`] = JSON.parse(
+            init.body,
+          );
+        }
+        return undefined;
+      },
+      ...HAPPY_PATH_RESPONDERS,
+    ]);
+
+    const result = await runSelfCall(
+      sql,
+      {
+        scenario: {
+          caller_prompt: "You are Ana, your battery is dead.",
+          max_duration_s: 120,
+          language: "es",
+        },
+      },
+      scenarioDeps(fetch),
+    );
+    expect(result.status).toBe(200);
+
+    const llm = bodies["POST /create-retell-llm"] as { general_prompt: string };
+    expect(llm.general_prompt.startsWith("{{scenario_prompt}}")).toBe(true);
+
+    const placed = bodies["POST /v2/create-phone-call"] as {
+      from_number: string;
+      to_number: string;
+      retell_llm_dynamic_variables: Record<string, string>;
+      agent_override: { agent: { language: string; max_call_duration_ms: number } };
+      metadata: Record<string, unknown>;
+    };
+    expect(placed.from_number).toBe(SELF_CALL_CALLER_NUMBER);
+    expect(placed.to_number).toBe(SELF_CALL_CALLEE_NUMBER);
+    expect(placed.retell_llm_dynamic_variables["scenario_prompt"]).toBe(
+      "You are Ana, your battery is dead.",
+    );
+    expect(placed.retell_llm_dynamic_variables["disclosure_line"]).toBeTruthy();
+    expect(placed.agent_override).toEqual({
+      agent: { language: "es-ES", max_call_duration_ms: 120_000 },
+    });
+    expect(placed.metadata).toMatchObject({ task_id: "HARNESS-1", scenario: true });
+
+    // The scenario agent is cached under its OWN platform_settings key.
+    expect(
+      sqlCalls.some(
+        (c) =>
+          c.text.includes("insert into public.platform_settings") &&
+          c.values[0] === "self_call_scenario_caller_agent",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not send agent_override or scenario_prompt for the default (no scenario) run", async () => {
+    const { sql } = makeSql({
+      "select t.id as tenant_id, t.name as business_name": [CALLEE_TENANT_FIXTURE],
+    });
+    let placedBody: {
+      retell_llm_dynamic_variables?: Record<string, string>;
+      metadata?: Record<string, unknown>;
+    } = {};
+    const { fetch } = makeRetellFetch([
+      (url, init) => {
+        if (url.includes("/v2/create-phone-call") && typeof init?.body === "string") {
+          placedBody = JSON.parse(init.body);
+        }
+        return undefined;
+      },
+      ...HAPPY_PATH_RESPONDERS,
+    ]);
+    await runSelfCall(sql, { action: "run" }, scenarioDeps(fetch));
+    expect(placedBody).not.toHaveProperty("agent_override");
+    expect(placedBody.retell_llm_dynamic_variables).not.toHaveProperty("scenario_prompt");
+    expect(placedBody.metadata).toMatchObject({ task_id: "SELFCALL-1" });
+  });
+
+  it("reuses the cached scenario agent without creating a new one", async () => {
+    const { sql } = makeSql({
+      "select t.id as tenant_id, t.name as business_name": [CALLEE_TENANT_FIXTURE],
+      "select value from public.platform_settings": [
+        { value: { agent_id: "agent_scn_1", llm_id: "llm_scn_1" } },
+      ],
+    });
+    const { fetch, calls } = makeRetellFetch([
+      (url, init) =>
+        url.includes("/get-agent/agent_scn_1") && init?.method === "GET"
+          ? { status: 200, body: { agent_id: "agent_scn_1", version: 1 } }
+          : undefined,
+      ...HAPPY_PATH_RESPONDERS,
+    ]);
+    await runSelfCall(sql, { scenario: { caller_prompt: "Hi" } }, scenarioDeps(fetch));
+    expect(calls.some((c) => c.startsWith("POST") && c.includes("/create-agent"))).toBe(false);
+    expect(calls.some((c) => c.includes("/v2/create-phone-call"))).toBe(true);
+  });
+
+  it("returns 422 for an invalid scenario without touching Retell", async () => {
+    const { sql } = makeSql();
+    const { fetch, calls } = makeRetellFetch([]);
+    const result = await runSelfCall(
+      sql,
+      { scenario: { caller_prompt: "x", max_duration_s: 999 } },
+      scenarioDeps(fetch),
+    );
+    expect(result.status).toBe(422);
+    expect(calls).toEqual([]);
+  });
+
+  it("surfaces the caller leg's combined cost in cents", async () => {
+    const { sql } = makeSql({
+      "select t.id as tenant_id, t.name as business_name": [CALLEE_TENANT_FIXTURE],
+    });
+    const { fetch } = makeRetellFetch([
+      (url, init) =>
+        url.includes("/v2/get-call/") && init?.method === "GET"
+          ? {
+              status: 200,
+              body: {
+                call_status: "ended",
+                duration_ms: 60_000,
+                call_cost: { combined_cost: 12.5 },
+              },
+            }
+          : undefined,
+      ...HAPPY_PATH_RESPONDERS,
+    ]);
+    const result = await runSelfCall(
+      sql,
+      { scenario: { caller_prompt: "Hi" } },
+      scenarioDeps(fetch),
+    );
+    const body = result.body as { caller_leg: { combined_cost_cents: number | null } };
+    expect(body.caller_leg.combined_cost_cents).toBe(12.5);
   });
 });
