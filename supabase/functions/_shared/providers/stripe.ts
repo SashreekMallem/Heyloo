@@ -242,6 +242,27 @@ export async function createCheckoutSession(
   });
 }
 
+/**
+ * POST /v1/billing_portal/sessions — a Stripe-hosted Customer Portal session
+ * (update payment method, invoices). Confirmed against
+ * docs.stripe.com/api/customer_portal/sessions/create (Rule 1, fetched
+ * 2026-09-29): `customer` (existing customer id) and `return_url` are the
+ * params used here; the response's `url` is the redirect target. If no
+ * `configuration` is passed Stripe uses the account's default portal
+ * configuration, which must have been saved once in the Stripe Dashboard
+ * (docs/VERIFY.md) — otherwise Stripe answers 400.
+ */
+export async function createBillingPortalSession(
+  fetchImpl: StripeFetch,
+  secretKey: string,
+  params: { customerId: string; returnUrl: string },
+) {
+  return stripeRequest(fetchImpl, secretKey, "POST", "/billing_portal/sessions", {
+    customer: params.customerId,
+    return_url: params.returnUrl,
+  });
+}
+
 export async function retrieveBalanceTransaction(
   fetchImpl: StripeFetch,
   secretKey: string,

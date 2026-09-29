@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TenantIdProvider } from "@/lib/tenant/tenant-context";
 
@@ -162,5 +163,66 @@ describe("BillingPage text conversations usage tile", () => {
     renderPage();
     await screen.findByText("No invoices yet");
     expect(invoicesChain?.["neq"]).toHaveBeenCalledWith("status", "void");
+  });
+});
+
+describe("BillingPage Manage payment method (QA-1 F-12)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    usageDailyRows = [];
+  });
+
+  function stubFetch(portal: () => Response | Promise<Response>) {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      String(input) === "/api/billing/portal" ? portal() : Response.json({ included_minutes: 100 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("redirects to the Stripe-hosted portal url when the endpoint returns one", async () => {
+    stubFetch(() => Response.json({ url: "https://billing.stripe.com/p/session/abc" }));
+    const location = { href: "http://localhost/dashboard/billing" };
+    vi.stubGlobal("location", location);
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Manage payment method" }));
+    await waitFor(() => expect(location.href).toBe("https://billing.stripe.com/p/session/abc"));
+  });
+
+  it("shows an inline explanation with an email-support link (not a vanishing toast) when the portal is unavailable", async () => {
+    stubFetch(() => Response.json({ error: "portal_unavailable" }, { status: 502 }));
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Manage payment method" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("The billing portal is temporarily unavailable.");
+    expect(screen.getByRole("link", { name: "Email support" })).toHaveAttribute(
+      "href",
+      expect.stringContaining("mailto:support@heyloo.com"),
+    );
+  });
+
+  it("explains a non-owner and a no-billing-account state distinctly", async () => {
+    stubFetch(() => Response.json({ error: "not_tenant_owner" }, { status: 403 }));
+    const user = userEvent.setup();
+    const { unmount } = renderPage();
+    await user.click(await screen.findByRole("button", { name: "Manage payment method" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Only the account owner");
+    unmount();
+
+    stubFetch(() => Response.json({ error: "no_billing_account" }, { status: 409 }));
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Manage payment method" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("no billing account yet");
+  });
+
+  it("survives a non-JSON error body (e.g. the function is not deployed: 404 HTML)", async () => {
+    stubFetch(() => new Response("<html>not found</html>", { status: 404 }));
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Manage payment method" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("temporarily unavailable");
   });
 });

@@ -289,6 +289,14 @@ verify_jwt = true
 [functions.api-team-invite]
 verify_jwt = true
 
+# api-billing-portal (QA-1 F-12): tenant-owner JWT-authenticated (verify_jwt =
+# true, tenant_id + caller user id from the JWT only) — additionally
+# re-verifies the caller's own memberships.role is 'owner' itself (handler.ts)
+# before minting a Stripe Billing Portal session for the tenant's own
+# stripe_customer_id ("Manage payment method" on the Billing page).
+[functions.api-billing-portal]
+verify_jwt = true
+
 # api-text-chat (Cluster T text-agent engine): PUBLIC — called directly,
 # cross-origin, from an arbitrary tenant's own website (the embeddable
 # widget's chat mode; docs/audit/CHANNELS_REQUESTS.md item 4). verify_jwt =
