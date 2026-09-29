@@ -67,8 +67,8 @@ describe("Agent -> Questions page (INTAKE-Q-1)", () => {
     expect(screen.queryByDisplayValue("The vehicle's make")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Question 1")).toHaveValue("How did you hear about us?");
     expect(screen.getByLabelText("Answer hint 2")).toHaveValue("four digits");
-    // The verbatim note.
-    expect(screen.getByText(/asked word for word/i)).toBeInTheDocument();
+    // The wording note (owner words; faithful translation on other-language calls).
+    expect(screen.getByText(/translates the question faithfully/i)).toBeInTheDocument();
   });
 
   it("adds, edits and saves a question; the POST body is the whole list in order with required + applies_to", async () => {

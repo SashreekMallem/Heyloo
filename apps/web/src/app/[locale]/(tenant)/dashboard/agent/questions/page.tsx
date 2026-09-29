@@ -213,10 +213,10 @@ function QuestionsForm({ tenantId, data }: { tenantId: string; data: QuestionsRe
         <CardHeader>
           <CardTitle>Your custom questions</CardTitle>
           <CardDescription>
-            Extra questions your AI asks every caller who books or leaves a message, one at a time.
-            Questions are asked word for word — including on Spanish calls — so write them in the
-            language your callers speak. Answers are saved with the booking or message, shown on the
-            call and booking pages, and included in your alerts. Up to {CUSTOM_QUESTIONS_MAX}.
+            Extra questions your AI asks every caller who books or leaves a message, one at a time,
+            in your words. On a call in another language it translates the question faithfully, and
+            it never changes what you asked. Answers are saved with the booking or message, shown on
+            the call and booking pages, and included in your alerts. Up to {CUSTOM_QUESTIONS_MAX}.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -349,7 +349,7 @@ function QuestionsForm({ tenantId, data }: { tenantId: string; data: QuestionsRe
                     </div>
                     {row.required && (
                       <Badge variant="warning">
-                        A booking or message can&apos;t be saved without an answer
+                        Asked until answered (a caller who refuses is recorded as declined)
                       </Badge>
                     )}
                   </div>
@@ -394,9 +394,9 @@ function QuestionsForm({ tenantId, data }: { tenantId: string; data: QuestionsRe
           )}
 
           <p className="text-xs text-muted-foreground">
-            Use required sparingly: if a caller won&apos;t answer a required question, your AI
-            can&apos;t finish that booking or message. Turn a question off with Active to keep it
-            without asking it.
+            Use required sparingly: your AI asks a required question twice, then records the
+            caller&apos;s refusal as &ldquo;Declined to answer&rdquo; so the booking or message
+            isn&apos;t lost. Turn a question off with Active to keep it without asking it.
           </p>
 
           {canEdit && (

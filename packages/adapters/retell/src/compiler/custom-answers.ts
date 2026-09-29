@@ -24,7 +24,11 @@ const CUSTOM_ANSWERS_PROPERTY = {
     type: "object",
     properties: {
       question_id: { type: "string" },
-      answer: { type: "string", description: "What the caller said, in a few words." },
+      answer: {
+        type: "string",
+        description:
+          'What the caller said, in a few words. If the caller refuses a REQUIRED question after you asked twice, use exactly "declined".',
+      },
     },
     required: ["question_id", "answer"],
   },

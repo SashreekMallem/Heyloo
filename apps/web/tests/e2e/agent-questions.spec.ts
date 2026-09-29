@@ -53,7 +53,7 @@ test.describe("questions page as a tenant owner", () => {
     // Built-in questions (the generic vertical): read-only text, not inputs.
     await expect(page.getByText("What your AI already asks")).toBeVisible();
     await expect(page.getByText("The reason for the call")).toBeVisible();
-    await expect(page.getByText(/asked word for word/i)).toBeVisible();
+    await expect(page.getByText(/translates the question faithfully/i)).toBeVisible();
 
     // The fixture agent was never published, so it can't ask questions yet: say so.
     await expect(page.getByText("Publish once to turn this on")).toBeVisible();
