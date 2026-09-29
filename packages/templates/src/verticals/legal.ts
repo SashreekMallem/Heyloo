@@ -67,7 +67,9 @@ function legalTransferToHumanStates(): AgentState[] {
         "they've described — using the same labeled-line format you always use for intake, " +
         "even if it's incomplete. This is the only record of it once the transfer happens, so " +
         "never skip it, even for a caller who wants to be connected immediately. Once " +
-        "take_message has been called, let the caller know you're connecting them now.",
+        "take_message has been called, move on to connecting them — but never tell the caller " +
+        "yourself that you are connecting or transferring them: a real transfer announces " +
+        "itself, and if no live line is available the next step says so honestly.",
       allowed_tools: ["take_message"],
       is_terminal: false,
     },
@@ -75,9 +77,12 @@ function legalTransferToHumanStates(): AgentState[] {
       id: "transfer_to_human_connect",
       name: "Transfer to human (connect)",
       prompt_fragment:
-        "The intake message has been recorded — now connect the caller. " +
+        "The intake message has been recorded — now connect the caller if a live line is " +
+        "available. " +
         WARM_TRANSFER_FRAGMENT +
-        " Use transfer_call.",
+        " Never tell the caller yourself that you are connecting them — transfer_call " +
+        "announces the connection itself; if no live line is available, say so honestly and " +
+        "let them know an attorney will call them back.",
       allowed_tools: ["transfer_call"],
       is_terminal: true,
     },
@@ -175,7 +180,9 @@ const rawStates: AgentState[] = [
   {
     id: "greeting",
     name: "Greeting",
-    prompt_fragment: "Greet the caller and ask what brings them in today.",
+    prompt_fragment:
+      "The caller has already been greeted by your opening line. Find out what brings them " +
+      "in today.",
     allowed_tools: [],
   },
   {
@@ -185,7 +192,9 @@ const rawStates: AgentState[] = [
       "Ask for the caller's full name, then their phone number, confirming each. You may call " +
       "lookup_customer with the number they're calling from to check whether they're an " +
       "existing client — if so, greet them as a returning client, but still complete the rest " +
-      "of intake in full (a prior relationship never skips the conflict check).",
+      "of intake in full (a prior relationship never skips the conflict check)." +
+      " If the caller is a recognized returning caller (a name or number is on file — see " +
+      "Caller history), confirm what's on file instead of asking for it again.",
     allowed_tools: ["lookup_customer"],
   },
   {

@@ -2,8 +2,39 @@
 
 exports[`compileConversationFlow > matches the golden-file snapshot for the auto vertical fixture 1`] = `
 {
+  "default_dynamic_variables": {
+    "caller_greeting": "",
+    "transfer_number": "",
+  },
   "global_prompt": "You are the friendly front-desk assistant for an auto repair shop.",
   "nodes": [
+    {
+      "edges": [
+        {
+          "destination_node_id": "collect_vehicle",
+          "id": "opening_edge_greeting_collect_vehicle_0",
+          "transition_condition": {
+            "prompt": "wants_to_book_service",
+            "type": "prompt",
+          },
+        },
+      ],
+      "else_edge": {
+        "destination_node_id": "greeting",
+        "id": "edge_opening_else",
+        "transition_condition": {
+          "prompt": "Else",
+          "type": "prompt",
+        },
+      },
+      "id": "__opening",
+      "instruction": {
+        "text": "Thanks for calling Joe's Auto Repair, this is their AI assistant — this call may be recorded. {{caller_greeting}} How can I help you today?",
+        "type": "static_text",
+      },
+      "name": "Opening — AI and recording disclosure",
+      "type": "conversation",
+    },
     {
       "edges": [
         {
@@ -17,7 +48,7 @@ exports[`compileConversationFlow > matches the golden-file snapshot for the auto
       ],
       "id": "greeting",
       "instruction": {
-        "text": "Thanks for calling Joe's Auto Repair, this is their AI assistant — this call may be recorded.
+        "text": "Your first turn in this call has ALREADY been spoken, word for word: "Thanks for calling Joe's Auto Repair, this is their AI assistant — this call may be recorded. {{caller_greeting}} How can I help you today?" — it greeted the caller (welcoming a recognized returning caller back by name) and gave the AI and call-recording disclosure. Do not greet the caller again, re-introduce yourself, or repeat that line; respond directly to what the caller just said. If they ask whether they are talking to a real person, say plainly that you are an AI assistant and that the call may be recorded.
 
 Greet the caller and ask how you can help today.",
         "type": "prompt",
@@ -174,7 +205,7 @@ Greet the caller and ask how you can help today.",
       "type": "end",
     },
   ],
-  "start_node_id": "greeting",
+  "start_node_id": "__opening",
   "start_speaker": "agent",
   "tools": [
     {

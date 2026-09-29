@@ -96,3 +96,121 @@ describe("compileAndCreateAgent — language", () => {
     expect((agentCall?.body as { language?: string })?.language).toBe("en-US");
   });
 });
+
+/**
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): what actually reaches Retell for a real
+ * tenant — the compiled flow's first utterance is the static opening line
+ * (disclosure verbatim, in the tenant's language), and the tenant's own
+ * business/assistant names are compiled into `default_dynamic_variables` so
+ * a web call that never runs `voice-inbound` never speaks a raw
+ * `{{business_name}}`.
+ */
+const STANDARD_DISCLOSURE =
+  "Thanks for calling {{business_name}}. This is {{assistant_name}}, their AI assistant — this call may be recorded.";
+
+function deps(requests: { url: string; body: unknown }[]): CompileAndPublishDeps {
+  return {
+    retellFetch: makeCapturingRetellFetch(requests),
+    retellApiKey: "key",
+    voiceToolsWebhookUrl: "https://example.supabase.co/functions/v1/voice-tools",
+    eventsWebhookUrl: "https://example.supabase.co/functions/v1/voice-events",
+    logger: createLogger(),
+  };
+}
+
+describe("compileAndCreateAgent — static opening line + default dynamic variables (DISCLOSE-1)", () => {
+  it("sends a conversation flow whose start node speaks the disclosure verbatim, with the tenant's names as defaults", async () => {
+    const requests: { url: string; body: unknown }[] = [];
+    const sql = makeSql({
+      "as tools_ok\n    from public.agent_templates": [],
+      "select at.* from public.agent_templates": [
+        { ...HEALTHY_TEMPLATE_ROW, disclosure_line: STANDARD_DISCLOSURE },
+      ],
+      "as language_primary": [
+        { language_primary: "en", business_name: "Riverside Auto Repair", assistant_name: "Nova" },
+      ],
+    });
+    const outcome = await compileAndCreateAgent(sql, "tenant_en", "auto", deps(requests));
+    expect(outcome.ok).toBe(true);
+
+    const flow = requests.find((r) => r.url.includes("/create-conversation-flow"))?.body as {
+      start_node_id: string;
+      nodes: Array<{ id: string; instruction?: { type: string; text: string } }>;
+      default_dynamic_variables: Record<string, string>;
+    };
+    const start = flow.nodes.find((n) => n.id === flow.start_node_id);
+    expect(start?.instruction).toEqual({
+      type: "static_text",
+      text: `${STANDARD_DISCLOSURE} {{caller_greeting}} How can I help you today?`,
+    });
+    expect(flow.default_dynamic_variables).toMatchObject({
+      business_name: "Riverside Auto Repair",
+      assistant_name: "Nova",
+      caller_greeting: "",
+      transfer_number: "",
+      language: "en",
+    });
+  });
+
+  it("a Spanish tenant's agent opens with the vetted Spanish disclosure literal and a Spanish default assistant name", async () => {
+    const requests: { url: string; body: unknown }[] = [];
+    const sql = makeSql({
+      "as tools_ok\n    from public.agent_templates": [],
+      "select at.* from public.agent_templates": [
+        { ...HEALTHY_TEMPLATE_ROW, disclosure_line: STANDARD_DISCLOSURE },
+      ],
+      "as language_primary": [
+        { language_primary: "es", business_name: "Anyservice Co", assistant_name: null },
+      ],
+    });
+    const outcome = await compileAndCreateAgent(sql, "tenant_es", "auto", deps(requests));
+    expect(outcome.ok).toBe(true);
+    const flow = requests.find((r) => r.url.includes("/create-conversation-flow"))?.body as {
+      start_node_id: string;
+      nodes: Array<{ id: string; instruction?: { type: string; text: string } }>;
+      default_dynamic_variables: Record<string, string>;
+    };
+    const start = flow.nodes.find((n) => n.id === flow.start_node_id);
+    expect(start?.instruction?.type).toBe("static_text");
+    expect(start?.instruction?.text).toContain("esta llamada puede ser grabada");
+    expect(flow.default_dynamic_variables["assistant_name"]).toBe("el asistente virtual");
+    expect(flow.default_dynamic_variables["language"]).toBe("es");
+  });
+
+  it("a retell-llm (multi_prompt) template sends begin_message + start_speaker agent on create-retell-llm", async () => {
+    const requests: { url: string; body: unknown }[] = [];
+    const sql = makeSql({
+      "as tools_ok\n    from public.agent_templates": [],
+      "select at.* from public.agent_templates": [
+        {
+          ...HEALTHY_TEMPLATE_ROW,
+          compile_target: "multi_prompt",
+          disclosure_line: STANDARD_DISCLOSURE,
+        },
+      ],
+    });
+    const fetchWithLlm = (async (url: string, init?: RequestInit) => {
+      requests.push({ url, body: init?.body ? JSON.parse(init.body as string) : undefined });
+      if (url.includes("/create-retell-llm")) {
+        return new Response(JSON.stringify({ llm_id: "llm_1" }), { status: 201 });
+      }
+      if (url.includes("/create-agent")) {
+        return new Response(JSON.stringify({ agent_id: "agent_1", version: 1 }), { status: 201 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as CompileAndPublishDeps["retellFetch"];
+    const outcome = await compileAndCreateAgent(sql, "tenant_llm", "legal", {
+      ...deps(requests),
+      retellFetch: fetchWithLlm,
+    });
+    expect(outcome.ok).toBe(true);
+    const llm = requests.find((r) => r.url.includes("/create-retell-llm"))?.body as {
+      begin_message?: string;
+      start_speaker?: string;
+    };
+    expect(llm.begin_message).toBe(
+      `${STANDARD_DISCLOSURE} {{caller_greeting}} How can I help you today?`,
+    );
+    expect(llm.start_speaker).toBe("agent");
+  });
+});

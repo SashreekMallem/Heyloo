@@ -100,6 +100,17 @@ export interface RetellTransferCallTool {
   description?: string;
   transfer_destination: RetellTransferDestination;
   transfer_option: RetellTransferOption;
+  /**
+   * DISCLOSE-1 (docs/BUILD_NOTES.md, mirrors `supabase/functions/_shared/
+   * compiler/template-compiler.ts`): the tool itself announces the
+   * connection while it transfers — the only place a compiled agent is told
+   * to say it is connecting. RETELL-VERIFIED (docs.retellai.com/
+   * api-references/create-retell-llm + retell-sdk 5.64.0
+   * `LlmCreateParams.TransferCallTool`, 2026-09-29).
+   */
+  speak_during_execution?: boolean;
+  execution_message_type?: "prompt" | "static_text";
+  execution_message_description?: string;
 }
 
 export type RetellTransferDestination =
@@ -176,12 +187,37 @@ export interface RetellGlobalNodeSetting {
   condition: string;
 }
 
+/**
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): a `"conversation"` node's instruction is
+ * `NodeInstructionPrompt | NodeInstructionStaticText` (RETELL-VERIFIED,
+ * docs.retellai.com/api-references/create-conversation-flow + retell-sdk
+ * 5.64.0, 2026-09-29) — `static_text` is spoken verbatim ("The agent says
+ * your exact sentence first", docs.retellai.com/build/conversation-flow/
+ * conversation-node). A `"subagent"` node's instruction is prompt-only.
+ */
+export type RetellNodeInstruction =
+  | { type: "prompt"; text: string }
+  | { type: "static_text"; text: string };
+
+/**
+ * DISCLOSE-1: "The fallback. It fires when no other condition matches, so
+ * the flow never gets stuck" (docs.retellai.com/build/conversation-flow/
+ * transition-condition); retell-sdk `ElseEdge` requires `id` and the
+ * literal prompt "Else".
+ */
+export interface RetellElseEdge {
+  id: string;
+  destination_node_id: string;
+  transition_condition: { type: "prompt"; prompt: "Else" };
+}
+
 export interface RetellConversationNode {
   id: string;
   type: "conversation";
   name: string;
-  instruction: { type: "prompt"; text: string };
+  instruction: RetellNodeInstruction;
   edges: RetellFlowEdge[];
+  else_edge?: RetellElseEdge;
   global_node_setting?: RetellGlobalNodeSetting;
 }
 
@@ -208,6 +244,9 @@ export interface RetellTransferCallNode {
   };
   name?: string;
   global_node_setting?: RetellGlobalNodeSetting;
+  /** DISCLOSE-1: the transfer node — the only node that ACTUALLY transfers — is the only one told to announce the connection, while it does so. RETELL-VERIFIED: `speak_during_execution` "If true, will speak during execution"; `instruction` "What to say when transferring the call, only used when speak during execution" (docs.retellai.com/api-references/create-conversation-flow, 2026-09-29). */
+  speak_during_execution?: boolean;
+  instruction?: { type: "prompt"; text: string };
 }
 
 /**
@@ -278,6 +317,8 @@ export interface RetellConversationFlowRequest {
   start_speaker: "agent";
   nodes: RetellConversationFlowNode[];
   tools: RetellFunctionTool[];
+  /** DISCLOSE-1: defaults for every variable the compiler itself references (e.g. `{{caller_greeting}}` in the static opening line) — RETELL-VERIFIED field (`default_dynamic_variables?: {[key: string]: string} | null`, retell-sdk 5.64.0 `ConversationFlowCreateParams`). */
+  default_dynamic_variables?: Record<string, string>;
   /**
    * NOT set by this compiler (see this file's header comment) — `agents.ts`
    * attaches the REQUIRED `model_choice: {model, type:"cascading"}` object
@@ -305,7 +346,23 @@ export interface RetellMultiPromptState {
   tools: RetellStateTool[];
 }
 
-export interface RetellMultiPromptRequest {
+/**
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): the retell-llm fields that make the
+ * static opening line the agent's first utterance. RETELL-VERIFIED
+ * (docs.retellai.com/api-references/create-retell-llm + retell-sdk 5.64.0
+ * `LlmCreateParams`, 2026-09-29): `begin_message` — "First utterance said by
+ * the agent in the call. If not set, LLM will dynamically generate a
+ * message"; `start_speaker` — "Must be either 'user' or 'agent'";
+ * `default_dynamic_variables` — "injected ... when specific values are not
+ * provided in a request".
+ */
+export interface RetellLlmOpeningFields {
+  begin_message: string;
+  start_speaker: "agent";
+  default_dynamic_variables?: Record<string, string>;
+}
+
+export interface RetellMultiPromptRequest extends RetellLlmOpeningFields {
   general_prompt: string;
   starting_state: string;
   states: RetellMultiPromptState[];
@@ -322,7 +379,7 @@ export interface RetellMultiPromptRequest {
 // Single-prompt (Retell LLM, no states) target
 // ---------------------------------------------------------------------------
 
-export interface RetellSinglePromptRequest {
+export interface RetellSinglePromptRequest extends RetellLlmOpeningFields {
   general_prompt: string;
   general_tools: RetellStateTool[];
   model?: string;

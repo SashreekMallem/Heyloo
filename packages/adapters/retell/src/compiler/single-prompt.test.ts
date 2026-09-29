@@ -11,10 +11,14 @@ describe("compileSinglePrompt", () => {
     ).toMatchSnapshot();
   });
 
-  it("prepends disclosure_line verbatim as the very first line of general_prompt", () => {
+  it("DISCLOSE-1: speaks disclosure_line verbatim as the static begin_message; general_prompt opens by saying it was already spoken", () => {
     const result = compileSinglePrompt(REAL_ESTATE_SINGLE_PROMPT_TEMPLATE, TOOL_WEBHOOK_URL);
+    expect(result.begin_message).toBe(
+      `${REAL_ESTATE_SINGLE_PROMPT_TEMPLATE.disclosure_line} {{caller_greeting}} How can I help you today?`,
+    );
+    expect(result.start_speaker).toBe("agent");
     expect(
-      result.general_prompt.startsWith(REAL_ESTATE_SINGLE_PROMPT_TEMPLATE.disclosure_line),
+      result.general_prompt.startsWith("Your first turn in this call has ALREADY been spoken"),
     ).toBe(true);
   });
 

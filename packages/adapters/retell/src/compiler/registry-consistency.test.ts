@@ -55,8 +55,10 @@ import {
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
 import { compileConversationFlow } from "./conversation-flow.js";
+import { firstUtterance } from "./disclosure-gate.js";
 import { compileMultiPrompt } from "./multi-prompt.js";
 import { compileSinglePrompt } from "./single-prompt.js";
+import type { RetellFlowRequest } from "./types.js";
 
 const TOOL_WEBHOOK_URL = "https://example.supabase.co/functions/v1/voice-tools";
 
@@ -358,6 +360,43 @@ describe("tool-bearing states lock to a Retell SubagentNode / TransferCallNode (
         expect(node).not.toHaveProperty("tool_ids");
       }
     });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// DISCLOSE-1 (docs/BUILD_NOTES.md, CLAUDE.md Rule 2): every real template,
+// compiled to EVERY target, opens with a STATIC first utterance (a
+// `static_text` start node / a retell-llm `begin_message`) that carries its
+// disclosure_line verbatim — never a prompt the model can paraphrase (the
+// live "this call may be recorded" drop VERIFY-DEPLOY heard). Mirrors
+// `supabase/functions/_shared/compiler/vertical-seeds.test.ts` for the live
+// Deno compiler.
+// ---------------------------------------------------------------------------
+
+function compileFor(
+  template: AgentTemplate,
+  target: AgentTemplate["compile_target"],
+): RetellFlowRequest {
+  switch (target) {
+    case "conversation_flow":
+      return { kind: target, body: compileConversationFlow(template, TOOL_WEBHOOK_URL) };
+    case "multi_prompt":
+      return { kind: target, body: compileMultiPrompt(template, TOOL_WEBHOOK_URL) };
+    case "single_prompt":
+      return { kind: target, body: compileSinglePrompt(template, TOOL_WEBHOOK_URL) };
+  }
+}
+
+describe("every template x every compile target opens with a static first utterance carrying the disclosure literal (DISCLOSE-1)", () => {
+  for (const { key, template } of [...LOCAL_REGISTRY, ...REAL_REGISTRY]) {
+    for (const target of ["conversation_flow", "multi_prompt", "single_prompt"] as const) {
+      it(`${key} as ${target}`, () => {
+        const first = firstUtterance(compileFor({ ...template, compile_target: target }, target));
+        expect(first.isStatic).toBe(true);
+        expect(first.text.startsWith(template.disclosure_line)).toBe(true);
+        expect(first.text).toContain("{{caller_greeting}}");
+      });
+    }
   }
 });
 

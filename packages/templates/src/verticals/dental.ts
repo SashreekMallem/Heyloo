@@ -56,12 +56,27 @@ const SYSTEM_PROMPT = buildSystemPrompt(
   WAITLIST_OFFER_FRAGMENT,
 );
 
+const DENTAL_SAFETY_EMERGENCY_FRAGMENT =
+  "The caller describes a life-threatening emergency, a fire, a crime in progress, or " +
+  "similar immediate danger — for a dental injury, that includes bleeding that won't stop, " +
+  "swelling that is spreading or affects breathing or swallowing, or a face or mouth injury " +
+  "from an accident. Do not attempt to help beyond this and do not continue the original " +
+  "booking conversation: calmly tell them to call 911 (or their local emergency number) or " +
+  "go to the nearest emergency room right away. If they push back or ask again (for " +
+  "example whether this office could see them today instead), restate the same referral " +
+  "plainly every time and answer directly — never offer or promise an appointment, a " +
+  "callback in place of emergency care, a transfer, or that anyone is being connected. " +
+  "Once, offer to take their name and callback number so the office has a record and can " +
+  "follow up after they've been seen; if they give it, call take_message with it, then " +
+  "wish them well and end the call.";
+
 const rawStates: AgentState[] = [
   {
     id: "greeting",
     name: "Greeting",
     prompt_fragment:
-      "Greet the caller and ask how you can help — a new appointment, changing an existing " +
+      "The caller has already been greeted by your opening line. Find out how you can " +
+      "help — a new appointment, changing an existing " +
       "one, or something else.",
     allowed_tools: [],
   },
@@ -70,7 +85,9 @@ const rawStates: AgentState[] = [
     name: "Collect patient name",
     prompt_fragment:
       "Ask for the patient's full name (the person being seen, which may differ from the " +
-      "caller for a child or dependent) and confirm it.",
+      "caller for a child or dependent) and confirm it. If the caller is a recognized " +
+      "returning caller (a name is on file — see Caller history) and the patient is the " +
+      "caller themself, confirm the name on file instead of asking for it again.",
     allowed_tools: [],
   },
   {
@@ -156,7 +173,12 @@ const rawStates: AgentState[] = [
   manageBookingState(),
   transferToHumanState(),
   solicitorDeflectState(),
-  safetyEmergencyState(),
+  // DISCLOSE-1 (docs/BUILD_NOTES.md): dental's own emergency wording over
+  // the shared state (same id/tools/extraction) — restate the 911/ER
+  // referral every time the caller pushes back, never offer an appointment,
+  // a callback in place of care, or a connection, and take a message.
+  // Mirrors `supabase/functions/_shared/agent-template-seeds.ts`.
+  { ...safetyEmergencyState(), prompt_fragment: DENTAL_SAFETY_EMERGENCY_FRAGMENT },
   takeMessageFallbackState(),
 ];
 

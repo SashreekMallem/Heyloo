@@ -40,7 +40,23 @@ import {
 import type { VoiceInboundResponse } from "./schemas/voice-inbound.ts";
 import type { Logger, SqlClient } from "./types.ts";
 
-export type InboundDynamicVariables = VoiceInboundResponse["call_inbound"]["dynamic_variables"];
+/**
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): the `/voice-inbound` response's
+ * dynamic-variable shape plus the three returning-caller variables the
+ * compiled agent now references (`_shared/compiler/template-compiler.ts`:
+ * `{{caller_greeting}}` in the static opening line, `{{caller_name_on_file}}`
+ * / `{{caller_phone_on_file}}` in the global returning-caller instruction).
+ * Declared here (an intersection) rather than on the Zod response schema so
+ * this shared builder stays the single source of the values; ALWAYS strings
+ * (blank for a new caller / no caller ID), never omitted — Retell leaves an
+ * unset `{{name}}` in place but treats `""` as a value (RETELL-VERIFIED,
+ * docs.retellai.com/build/dynamic-variables, docs/VERIFY.md DISCLOSE-1).
+ */
+export type InboundDynamicVariables = VoiceInboundResponse["call_inbound"]["dynamic_variables"] & {
+  caller_greeting: string;
+  caller_name_on_file: string;
+  caller_phone_on_file: string;
+};
 
 /** Everything `voice-inbound/handler.ts`'s own DB row (or an equivalent
  * synthetic one built by the admin test harness / `simulate` action)
@@ -69,34 +85,85 @@ interface RecentCustomerRow {
 }
 
 /**
- * G28 callback continuity — looks up `customers` by `tenant_id` +
- * `phone_e164` (indexed, single-row) and returns a short, non-sensitive
- * summary line, never raw PII beyond the caller's own first name (which
- * they already know is theirs). `fromNumber` must already be normalized
- * E.164 (or `null` — no caller number to look up, the common case for a
- * placeholder/batch-test call with no `heyloo_test_caller_number` set).
- *
- * CALL-9: ALWAYS returns a real sentence, never `undefined`/empty — this is
- * now wired into the compiled prompt as a live `{{caller_recent_context}}`
- * placeholder (`_shared/compiler/template-compiler.ts`), and Retell only
- * ever does literal `{{name}}` substitution (RETELL-VERIFIED,
- * docs.retellai.com/build/dynamic-variables 2026-09-21, docs/VERIFY.md
- * CALL-9): a missing/optional dynamic variable would leave a literal
- * unresolved `{{caller_recent_context}}` string in the model's own prompt
- * — the exact GAP_REGISTER §1.3 anti-pattern every other resolver in this
- * file already avoids. Before this task, `caller_recent_context` was set on
- * every response but never referenced by `{{}}` anywhere in the compiled
- * prompt, so it was completely inert for a real returning caller too —
- * fixed at the root (both ends) by this task, documented in
- * docs/BUILD_NOTES.md CALL-9.
+ * DISCLOSE-1: everything the pre-call customer lookup yields for the
+ * compiled prompt — see `resolveCallerContext`.
  */
-async function resolveCallerRecentContext(
+interface CallerContext {
+  /** `{{caller_recent_context}}` — always a real sentence (CALL-9). */
+  recentContext: string;
+  /** `{{caller_greeting}}` — "Welcome back, Devin." for a recognized caller, `""` otherwise. */
+  greeting: string;
+  /** `{{caller_name_on_file}}` — the stored name for a recognized caller, `""` otherwise. */
+  nameOnFile: string;
+  /** `{{caller_phone_on_file}}` — the caller's own E.164 number when it matched a customer, `""` otherwise. */
+  phoneOnFile: string;
+}
+
+/** DISCLOSE-1: the returning-caller greeting, per configured call language (ISO 639-1). Gender-neutral in Spanish. */
+const WELCOME_BACK: Record<string, { named: (firstName: string) => string; unnamed: string }> = {
+  en: { named: (firstName) => `Welcome back, ${firstName}.`, unnamed: "Welcome back." },
+  es: {
+    named: (firstName) => `Qué gusto saludarle de nuevo, ${firstName}.`,
+    unnamed: "Qué gusto saludarle de nuevo.",
+  },
+};
+
+/**
+ * DISCLOSE-1: a stored `customers.name` is caller-supplied speech captured
+ * on an earlier call — it is now spoken verbatim by a static line and read
+ * into the prompt, so keep only characters a name plausibly has (letters in
+ * any script, spaces, apostrophes, hyphens, periods), collapse whitespace
+ * and cap the length. Strips `{`/`}` among everything else, so a stored
+ * value can never smuggle a `{{dynamic_variable}}` into the substitution.
+ */
+export function sanitizeNameForSpeech(raw: string | null, maxLength = 60): string {
+  if (!raw) return "";
+  return raw
+    .replace(/[^\p{L}\p{M} '.-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength)
+    .trim();
+}
+
+/**
+ * G28 callback continuity — looks up `customers` by `tenant_id` +
+ * `phone_e164` (indexed, single-row) and returns what the compiled prompt
+ * needs about a returning caller: never PII beyond the caller's OWN name and
+ * the number they are calling from (the same G6 scope `lookup_customer`
+ * already returns to the model for this caller). `fromNumber` must already
+ * be normalized E.164 (or `null` — no caller number to look up, the common
+ * case for a placeholder/batch-test call with no `heyloo_test_caller_number`
+ * set).
+ *
+ * CALL-9: `recentContext` is ALWAYS a real sentence, never `undefined`/
+ * empty — it is wired into the compiled prompt as a live
+ * `{{caller_recent_context}}` placeholder (`_shared/compiler/
+ * template-compiler.ts`), and Retell only ever does literal `{{name}}`
+ * substitution (RETELL-VERIFIED, docs.retellai.com/build/dynamic-variables
+ * 2026-09-21, docs/VERIFY.md CALL-9).
+ *
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): VERIFY-DEPLOY's live self-call delivered
+ * `caller_recent_context = "Devin has booked with us before."` and the agent
+ * still re-asked name and phone — the sentence was only referenced by the
+ * start node, and nothing told later nodes what was on file. This now also
+ * yields a ready-to-speak `greeting` (spoken by the static opening line) and
+ * the name/number on file (referenced by the compiler's GLOBAL
+ * returning-caller instruction, so every node confirms instead of re-asking).
+ */
+async function resolveCallerContext(
   sql: SqlClient,
   tenantId: string,
   fromNumber: string | null,
-): Promise<string> {
+  languagePrimary: string,
+): Promise<CallerContext> {
+  const unknown = { greeting: "", nameOnFile: "", phoneOnFile: "" };
   if (!fromNumber) {
-    return "No caller ID is available for this call — treat this as a first-time caller and collect their name and phone number normally.";
+    return {
+      ...unknown,
+      recentContext:
+        "No caller ID is available for this call — treat this as a first-time caller and collect their name and phone number normally.",
+    };
   }
   const rows = await sql<RecentCustomerRow>`
     select name, last_seen_at, lifetime_bookings
@@ -106,12 +173,25 @@ async function resolveCallerRecentContext(
   `;
   const recent = rows[0];
   if (!recent) {
-    return "This is a new caller — no prior history is on file; collect their name and phone number normally.";
+    return {
+      ...unknown,
+      recentContext:
+        "This is a new caller — no prior history is on file; collect their name and phone number normally.",
+    };
   }
-  const label = recent.name ? recent.name.split(" ")[0] : "This caller";
-  return recent.lifetime_bookings > 0
-    ? `${label} has booked with us before.`
-    : `${label} has called before.`;
+  const nameOnFile = sanitizeNameForSpeech(recent.name);
+  const firstName = nameOnFile.split(" ")[0] ?? "";
+  const welcome = WELCOME_BACK[languagePrimary] ?? WELCOME_BACK["en"];
+  const label = firstName || "This caller";
+  return {
+    recentContext:
+      recent.lifetime_bookings > 0
+        ? `${label} has booked with us before.`
+        : `${label} has called before.`,
+    greeting: welcome ? (firstName ? welcome.named(firstName) : welcome.unnamed) : "",
+    nameOnFile,
+    phoneOnFile: fromNumber,
+  };
 }
 
 /**
@@ -147,6 +227,22 @@ export function resolveRetellAgentLanguage(languagePrimary: string): string {
   return RETELL_LANGUAGE_BY_SHORT_CODE[languagePrimary] ?? "en-US";
 }
 
+/**
+ * DISCLOSE-1: `{{assistant_name}}` when `agent_configs.assistant_name` is
+ * unset — spoken inside the static opening line's disclosure literal, so it
+ * must match the line's language ("Le atiende the AI assistant" would not).
+ * Also used by `_shared/provisioning/compile-and-publish.ts` for the
+ * compiled `default_dynamic_variables`.
+ */
+const DEFAULT_ASSISTANT_NAME: Record<string, string> = {
+  en: "the AI assistant",
+  es: "el asistente virtual",
+};
+
+export function defaultAssistantName(languagePrimary: string): string {
+  return DEFAULT_ASSISTANT_NAME[languagePrimary] ?? "the AI assistant";
+}
+
 export async function buildInboundDynamicVariables(params: {
   sql: SqlClient;
   logger: Logger;
@@ -159,7 +255,12 @@ export async function buildInboundDynamicVariables(params: {
 }): Promise<InboundDynamicVariables> {
   const { sql, logger, now, fromNumber, config } = params;
 
-  const callerRecentContext = await resolveCallerRecentContext(sql, config.tenantId, fromNumber);
+  const callerContext = await resolveCallerContext(
+    sql,
+    config.tenantId,
+    fromNumber,
+    config.languagePrimary,
+  );
 
   const overrides = config.dynamicVariableOverrides ?? {};
   const greetingHoursContext = computeGreetingHoursContext(
@@ -181,7 +282,7 @@ export async function buildInboundDynamicVariables(params: {
 
   const dynamicVariables: InboundDynamicVariables = {
     business_name: config.businessName,
-    assistant_name: config.assistantName ?? "the AI assistant",
+    assistant_name: config.assistantName ?? defaultAssistantName(config.languagePrimary),
     greeting_hours_context: greetingHoursContext,
     timezone: config.timezone,
     current_date: currentDateContext.date,
@@ -219,7 +320,12 @@ export async function buildInboundDynamicVariables(params: {
     ...(Array.isArray(overrides["accepted_payment_types"])
       ? { accepted_payment_types: overrides["accepted_payment_types"] as string[] }
       : {}),
-    caller_recent_context: callerRecentContext,
+    caller_recent_context: callerContext.recentContext,
+    // DISCLOSE-1: always strings (blank for a new caller / no caller ID) —
+    // see `InboundDynamicVariables`' own doc comment.
+    caller_greeting: callerContext.greeting,
+    caller_name_on_file: callerContext.nameOnFile,
+    caller_phone_on_file: callerContext.phoneOnFile,
   };
 
   return dynamicVariables;

@@ -7170,3 +7170,244 @@ plus only this package's files: `pnpm lint` exit 0 (46 warnings, baseline),
 `pnpm typecheck` clean, `supabase/functions` `pnpm run test` 122 files / 1268
 tests green. (The shared working tree also holds two other packages'
 in-progress edits, whose own tests were failing mid-edit; not touched.)
+
+## DISCLOSE-1 (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — compiler package: verbatim AI + recording disclosure, no false transfer claims, returning callers confirmed not re-asked, dental emergency scenario judgeable
+
+**Scope (owned files only):** `supabase/functions/_shared/compiler/**`,
+`packages/adapters/retell/src/compiler/**` (parity kept, one documented
+difference), `_shared/agent-template-seeds.ts`,
+`packages/templates/src/verticals/**`, `_shared/inbound-dynamic-variables.ts`,
+`_shared/test-scenarios.ts`, `_shared/provisioning/compile-and-publish.ts`
+(plus their sibling tests). Code + tests only; no deploy, no DDL. Docs cited
+in `docs/VERIFY.md` DISCLOSE-1.
+
+### Fix 1 — the disclosure is spoken verbatim (static first utterance) on every compile target
+
+**Root cause:** the disclosure only ever lived in a PROMPT — prepended to the
+start node's `instruction.text` (conversation flow), the starting state's
+`state_prompt` (multi_prompt) or `general_prompt` (single_prompt). Retell's
+model generates the first turn from that prompt, so it could, and live did,
+paraphrase "this call may be recorded" away (VERIFY-DEPLOY self-call and vet
+batch runs). The publish gate checked the prompt TEXT, so it reported
+"verified" while the spoken greeting dropped the clause.
+
+**Change:** `buildOpeningLine(disclosure_line, language)` builds one static
+line: the template's disclosure literal verbatim + `{{caller_greeting}}` +
+"How can I help you today?". Conversation flow: a new `__opening` start node
+(`type: "conversation"`, `instruction.type: "static_text"`) that copies the
+start state's edges (so the first reply routes exactly as before) and falls
+through `else_edge` ("Else") to the start state. Retell LLM (multi/single
+prompt): `begin_message` + `start_speaker: "agent"`. The start state is told
+its greeting was already spoken (no double greeting); every shipped greeting
+state's text now says the caller "has already been greeted by your opening
+line". The gate (`verifyDisclosureGate`, both compilers) now requires the
+first utterance to be STATIC and to contain the disclosure literal
+(`firstUtterance()`); a disclosure that is only in a prompt fails it.
+Spanish tenants: a compiler-owned, vetted Spanish literal of the exact shipped
+English line ("Gracias por llamar a {{business_name}}. Le atiende
+{{assistant_name}}, su asistente de inteligencia artificial; esta llamada
+puede ser grabada.") — never a model translation; any other line/language
+falls back to the English literal verbatim. `compile-and-publish.ts` passes
+the tenant's `language_config.primary` and compiles `default_dynamic_variables`
+(tenant name, assistant name, blank caller/transfer variables) so a web call
+that never runs `voice-inbound` does not speak a raw `{{business_name}}`.
+
+**Tests:** `_shared/compiler/vertical-seeds.test.ts` (new) — every vertical x
+all three compile targets x en/es: first utterance static, starts with the
+disclosure literal, carries `{{caller_greeting}}`, gate verified, both AI and
+recording clauses present (48 cases); `template-compiler.test.ts` (opening
+node shape, copied edges, else edge, already-spoken start state, global
+call-context block, LLM `begin_message`, prompt-only disclosure FAILS the gate,
+`buildOpeningLine` en/es/fallback); `compile-and-publish.test.ts` (+3: the real
+`create-conversation-flow` body's start node is static with tenant defaults;
+Spanish tenant; `create-retell-llm` gets `begin_message`); Node adapter
+`registry-consistency.test.ts` (every real template x every target static),
+`disclosure-gate.test.ts`, `conversation-flow`/`multi-prompt`/`single-prompt`
+tests + snapshots.
+
+### Fix 2 — the agent never claims a transfer that is not happening
+
+**Root cause (three layers):** (a) PUBLISH-1's transfer router was a SPEAKING
+node whose prompt said "if {{transfer_number}} is non-empty say you're
+connecting them" — the transfer-vs-fallback decision was the model's; (b)
+every transfer-only state's own authored text said "Let the caller know you're
+connecting them now, then use transfer_call" unconditionally, and QA-HOT's
+fix (keep the state's text in the router) put that sentence into the
+no-number path too; (c) vet's `emergency_referral` offered "connect you
+directly to this clinic" unconditionally and said "refer them to X at
+{{emergency_referral_phone}}" where the default phone is the phrase "a number
+we'll follow up with". Nothing forbade the claim itself.
+
+**Change (live Deno compiler):** a transfer-only state compiles to a SILENT
+Retell logic-split router (`type: "branch"`, no instruction) at the state's own
+id whose only edge is the equation `{{transfer_number}} contains "+"` ->
+`${id}__transfer`, else -> `${id}__no_transfer`. `__transfer` (native
+TransferCallNode, `{{transfer_number}}` token, warm) is now the ONLY node told
+to announce a connection, via `speak_during_execution` + instruction, while it
+really transfers; a failed transfer lands on `__no_transfer` (was: straight
+to goodbye). `__no_transfer` keeps the state's own text, then
+`NO_TRANSFER_FALLBACK_INSTRUCTION`, which starts with a hard rule ("There is
+NO live transfer on this call ... Never say or imply that you are connecting
+... that someone is joining or already on the line"), restates any emergency
+referral first ("answer any 'should I go now?' question with a clear yes"),
+then takes one message and ends. Retell-LLM targets: the `transfer_call` tool
+announces itself (`speak_during_execution`, `execution_message_*`) and the
+prompt forbids announcing a connection unless calling transfer_call in the
+same turn. Seeds: every `transfer_to_human`, vet `emergency_warm_transfer`,
+legal `transfer_to_human`/`_connect` no longer tell the model to announce;
+vet `emergency_referral` gives the referral in its first sentence, reads the
+phone only if it is a real number, offers a direct connection only when
+`{{transfer_number}}` is real, and otherwise takes the message itself (now
+granted `take_message`); vet `emergency_take_message` restates the referral
+and never duplicates a message; dental `safety_emergency` restates the
+911/ER referral every time the caller pushes back, never offers an
+appointment, callback-instead-of-care or connection, and takes one message.
+
+**Tests:** `template-compiler.test.ts` (router is a branch with the exact
+equation/else edges and no instruction; only the transfer node speaks; failed
+transfer -> fallback; fallback text carries the rules and the state's own
+text; LLM tool shape and "never announce" rule); `vertical-seeds.test.ts`
+(no shipped state tells the model to announce a connection; every
+conversation-flow vertical's transfer-only states compile to silent router +
+announcing transfer + honest fallback; every LLM vertical's transfer tool
+announces itself; vet emergency referral/fallback and dental emergency
+content); Node adapter `conversation-flow.test.ts`.
+
+### Fix 3 — a recognized returning caller is welcomed by name and confirmed, never re-asked
+
+**Root cause:** CALL-9's `caller_recent_context` instruction ("acknowledge
+... don't ask them to restate information already on file") was prepended to
+the START node only; `collect_name`/`collect_phone` and every later node never
+saw it, and nothing on file (name, number) was available to confirm — so the
+model did what those nodes say: ask. VERIFY-DEPLOY's self-call delivered
+`caller_recent_context = "Devin has booked with us before."` and the agent
+re-asked name and phone.
+
+**Change:** `buildInboundDynamicVariables` (the SAME code `voice-inbound` and
+the batch-test harness run) now also returns `caller_greeting` ("Welcome
+back, Devon." / Spanish "Qué gusto saludarle de nuevo, Devon." / "Welcome
+back." with no stored name / `""` for a new caller or no caller ID),
+`caller_name_on_file` and `caller_phone_on_file` (the caller's own E.164,
+only when it matched a `customers` row — the same G6 scope `lookup_customer`
+already returns to the model). Stored names are sanitized before they are
+spoken (`sanitizeNameForSpeech`: letters/marks/space/'/./- only, 60 chars, so
+no `{{...}}` or instructions can be smuggled in). `assistant_name` defaults
+to "el asistente virtual" for a Spanish tenant. The static opening speaks
+`{{caller_greeting}}`; the compiler's returning-caller instruction moved to
+the GLOBAL prompt (every node/state) and says: confirm the name ("I have you
+down as ...") and the number on file (last four digits) once, pass the number
+on file to tools, never ask a recognized caller for their name or phone. The
+name/phone collection states (auto, vet, dental, legal, motel, generic) say
+the same. The batch-test path gets the variables with no harness change
+(`api-admin-run-agent-tests` already spreads the builder's whole output into
+each test case's `dynamic_variables`); every `returning_caller` scenario
+(`testCallerNumber` = the seeded Taylor Reyes number) exercises them.
+
+**Tests:** `inbound-dynamic-variables.test.ts` (+8: recognized caller en/es,
+nameless record, new caller and no caller ID blank-not-omitted, no lookup
+without a number, sanitizer, Spanish assistant default);
+`template-compiler.test.ts` / `vertical-seeds.test.ts` (global instruction on
+every target/vertical); `test-scenarios.test.ts` (every vertical's
+`returning_caller` still simulates the seeded number).
+
+### Fix 4 — the dental emergency scenario can be judged
+
+**Root cause:** the `emergency_triage` persona was written to keep insisting
+on a same-day slot forever; the agent (correctly) repeated the 911/ER
+referral 5+ times and Retell's simulator aborted "as there might be a loop"
+3/3 before the judge scored it.
+
+**Change:** the persona pushes back ONCE, accepts the referral the second
+time it is given, never asks a third time, then leaves the message (name +
+555-201-0198) and ends. Intent unchanged (`writeIntent: take_message`,
+`expectedPhone` unchanged); no other scenario's intent changed.
+**Test:** `_shared/test-scenarios.test.ts` (new).
+
+### Parity (`packages/adapters/retell/src/compiler/**`)
+
+The Node compiler now emits the same `__opening` static node (identical text
+— asserted), copied edges + else edge, `begin_message`/`start_speaker` for
+multi/single prompt, the announcing transfer node/tool, the same
+`__no_transfer` fallback, and the same gate. **One documented difference:**
+the router is a `"conversation"` node (same deterministic equation + else
+edges, instruction forbids any connection claim) instead of a `"branch"`
+node, because `packages/adapters/retell/src/sdk-contract.test.ts` (outside
+this package's owned paths) narrows every node that is not
+conversation/subagent/transfer_call to `EndNode`, so a `branch` variant in
+`RetellConversationFlowNode` stops `tsc -b` compiling. `parity.test.ts` pins
+exactly that one type difference and additionally type-checks the LIVE Deno
+compiler's new node/tool shapes against retell-sdk 5.64.0's own types
+(literals typed `ConversationFlowCreateParams.BranchNode` etc., asserted
+`toEqual` the Deno output). **Follow-up (one line, not owned here):** add
+`} else if (node.type === "branch") { assertAssignable<ConversationFlowCreateParams.BranchNode>(node); }`
+to `sdk-contract.test.ts`, then switch the Node router to `type: "branch"`.
+
+### Needs deploying / owner actions
+
+- **Redeploy** (every function importing a changed shared file, computed
+  from each `index.ts`'s transitive imports): `admin`,
+  `api-admin-provision-test-tenant`, `api-admin-run-agent-tests`,
+  `api-provision`, `api-tenant-agent-publish`, `voice-inbound`.
+- **No migrations. No new secrets.**
+- **Republish every agent** (the static opening, router and prompts are baked
+  in at publish): `api-admin-provision-test-tenant` with
+  `force_recompile: true, cleanup_superseded_agent: true` for each
+  conversation-flow and LLM test tenant (`test-riverside-auto`,
+  `test-vet-lakeside`, `test-bright-dental`, `test-motel-wayfarer`,
+  `test-restaurant-trattoria`, `test-legal-firstlight`,
+  `test-realestate-cornerstone`, `test-generic-anyservice`) — this is also
+  what re-seeds each vertical's `agent_templates` row from
+  `agent-template-seeds.ts` (`ensureTemplateSeeded(..., forceReseed)`);
+  then re-attach `+12602354330` to riverside's new agent
+  (`api-admin-attach-retell-number`) as VERIFY-DEPLOY did, and republish
+  `signup-1-auto` via "Publish changes" (`api-tenant-agent-publish`).
+  Do the first republish on ONE conversation-flow tenant (vet) and confirm
+  200 before the rest: it is the live check that Retell accepts the `branch`
+  router as a global node (VERIFY.md DISCLOSE-1 item 6). Do NOT run
+  `scripts/sync-agent-templates.ts` for this: it would load the
+  `packages/templates` copy, whose shared `transferToHumanState()`
+  (`packages/templates/src/shared/utility-states.ts`, not owned here) still
+  says "Let the caller know you're connecting them now" (harmless to the live
+  compiler, which never lets that node speak on the no-number path, but
+  inconsistent — follow-up to align it).
+- **Live re-verification to run after republish:** `emergency_triage` on vet
+  (3x) and dental (3x) — expect judged results, no loop aborts, and no
+  "connecting you" with `transfer_number` blank; `transfer_request` on one
+  tenant with and without a transfer number (PUBLISH-1 steps 4-5); every
+  vertical's `returning_caller`; `spanish_caller_booking`; one real PSTN
+  self-call on riverside (listen for the verbatim recording clause and
+  "Welcome back, Devon."); one dashboard web test call (VERIFY.md item 3:
+  confirms `default_dynamic_variables` covers the static line).
+- **Owner wording decisions (SYSTEM_DESIGN §4.5):** the static line now makes
+  the shipped wording audible every time — with no `assistant_name` set it
+  says "This is the AI assistant, their AI assistant — this call may be
+  recorded." Setting `agent_configs.assistant_name` (or changing the
+  template's `disclosure_line`) fixes the repetition; the Spanish rendering
+  above needs owner/counsel sign-off.
+
+### Not fixed here (out of owned paths)
+
+- `sdk-contract.test.ts` branch arm (above) — Node router stays a
+  conversation node until then.
+- `packages/templates/src/shared/utility-states.ts` transfer wording (above).
+- `api-tenant-test-call`, `api-widget-voice-token`, `api-admin-create-web-call`
+  send only `disclosure_line` as dynamic variables; the compiled defaults
+  cover the opening line, but those calls still get no caller history,
+  dates or vertical tokens. Sending `buildInboundDynamicVariables`' output
+  there is the real fix.
+- `_shared/schemas/voice-inbound.ts` does not list the three new response
+  variables (the builder's exported type adds them; the Zod schema is only
+  used for typing, never to parse the response).
+- `agent_configs.greeting_overrides` is still unused by any code.
+
+### Gates
+
+Run on the exact committed tree in an isolated `git worktree` (the shared
+working tree also holds other agents' uncommitted in-progress files, which
+fail typecheck/tests on their own — `_shared/providers/messaging/*`,
+`webhooks-sms`, `worker-messages-outbound` — and are not part of this
+commit): `pnpm lint` exit 0 (0 errors, 46 warnings = baseline), `pnpm
+typecheck` 21/21 tasks, `cd supabase/functions && pnpm run test` 124/124
+files, 1361/1361 tests; `@heyloo/adapter-retell` 20/20 and
+`@heyloo/templates` 8/8 test files (with `templates.build.json` rebuilt so
+the real-registry checks ran against this change).

@@ -36,7 +36,7 @@ import type {
   PostCallAnalysisDataField,
 } from "../compiler/template-compiler.ts";
 import { compileTemplate as compileRetellTemplate } from "../compiler/template-compiler.ts";
-import { resolveRetellAgentLanguage } from "../inbound-dynamic-variables.ts";
+import { defaultAssistantName, resolveRetellAgentLanguage } from "../inbound-dynamic-variables.ts";
 import type { RetellFetch } from "../providers/retell.ts";
 import {
   createAgent,
@@ -166,12 +166,34 @@ export async function compileTenantTemplate(
 
   // QA-HOT: one extra indexed read (provisioning path, not the hot
   // `/voice/tools` path — no latency-budget concern), scoped to this exact
-  // tenant only (CLAUDE.md Rule 2).
-  const languageRows = await sql<{ language_primary: string }>`
-    select coalesce(language_config ->> 'primary', 'en') as language_primary
-    from public.tenants where id = ${tenantId}
+  // tenant only (CLAUDE.md Rule 2). DISCLOSE-1: the same read also returns
+  // the tenant's business name and assistant name, compiled into the flow's
+  // `default_dynamic_variables` (see below).
+  const tenantRows = await sql<{
+    language_primary: string | null;
+    business_name: string | null;
+    assistant_name: string | null;
+  }>`
+    select coalesce(t.language_config ->> 'primary', 'en') as language_primary,
+      t.name as business_name, ac.assistant_name
+    from public.tenants t
+    left join public.agent_configs ac on ac.tenant_id = t.id
+    where t.id = ${tenantId}
   `;
-  const language = resolveRetellAgentLanguage(languageRows[0]?.language_primary ?? "en");
+  const tenantRow = tenantRows[0];
+  const languagePrimary = tenantRow?.language_primary ?? "en";
+  const language = resolveRetellAgentLanguage(languagePrimary);
+  // DISCLOSE-1 (docs/BUILD_NOTES.md): the static opening line speaks
+  // `{{business_name}}`/`{{assistant_name}}` verbatim. `voice-inbound` (real
+  // phone calls) and the batch-test harness always send live values; these
+  // compile-time defaults only cover call paths that never run the inbound
+  // webhook (dashboard test calls, the website widget), which would
+  // otherwise speak a raw `{{business_name}}`. A later rename reaches phone
+  // calls immediately and these defaults on the next publish.
+  const defaultDynamicVariables: Record<string, string> = {
+    assistant_name: tenantRow?.assistant_name || defaultAssistantName(languagePrimary),
+    ...(tenantRow?.business_name ? { business_name: tenantRow.business_name } : {}),
+  };
 
   const template: CompilerAgentTemplate = {
     compile_target: row["compile_target"] as CompilerAgentTemplate["compile_target"],
@@ -190,7 +212,13 @@ export async function compileTenantTemplate(
   // literal baked in at compile time. This is exactly what makes a
   // tenant's transfer-number change take effect on the next call without
   // a republish (ONBOARD-1's live-observed gap).
-  const compiled = compileRetellTemplate(template, deps.voiceToolsWebhookUrl);
+  // DISCLOSE-1: `language` picks the static opening line's language (a
+  // Spanish tenant hears the vetted Spanish disclosure literal, never a
+  // model paraphrase — `template-compiler.ts#buildOpeningLine`).
+  const compiled = compileRetellTemplate(template, deps.voiceToolsWebhookUrl, {
+    language: languagePrimary,
+    defaultDynamicVariables,
+  });
 
   return {
     templateId: row["id"] as string,

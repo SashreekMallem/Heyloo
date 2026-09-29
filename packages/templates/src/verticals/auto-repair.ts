@@ -106,14 +106,18 @@ export const AUTO_REPAIR_TEMPLATE: AgentTemplate = {
       id: "greeting",
       name: "Greeting",
       prompt_fragment:
-        "Greet the caller warmly and ask how you can help today — a new appointment, " +
+        "The caller has already been greeted by your opening line. Find out how you can " +
+        "help today — a new appointment, " +
         "changing an existing one, a status check, or something else.",
       allowed_tools: [],
     },
     {
       id: "collect_name",
       name: "Collect name",
-      prompt_fragment: "Ask for the caller's full name and confirm it back.",
+      prompt_fragment:
+        "Ask for the caller's full name and confirm it back." +
+        " If the caller is a recognized returning caller (a name or number is on file — see " +
+        "Caller history), confirm what's on file instead of asking for it again.",
       allowed_tools: [],
     },
     {
@@ -122,7 +126,9 @@ export const AUTO_REPAIR_TEMPLATE: AgentTemplate = {
       prompt_fragment:
         "Ask for the best callback number and read it back digit by digit to confirm. Call " +
         "lookup_customer with that number — if it returns a vehicle already on file, confirm " +
-        "it back in the next step instead of asking from scratch.",
+        "it back in the next step instead of asking from scratch." +
+        " If the caller is a recognized returning caller (a name or number is on file — see " +
+        "Caller history), confirm what's on file instead of asking for it again.",
       allowed_tools: ["lookup_customer"],
     },
     {

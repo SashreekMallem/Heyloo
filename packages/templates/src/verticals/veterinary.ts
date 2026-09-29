@@ -68,7 +68,8 @@ const rawStates: AgentState[] = [
     id: "greeting",
     name: "Greeting",
     prompt_fragment:
-      "Greet the caller and ask how you can help today — a new appointment, changing an " +
+      "The caller has already been greeted by your opening line. Find out how you can " +
+      "help today — a new appointment, changing an " +
       "existing one, or something else. If they say anything suggesting the pet is in " +
       "immediate danger, do not continue this flow — go straight to the emergency referral.",
     allowed_tools: [],
@@ -80,7 +81,9 @@ const rawStates: AgentState[] = [
       "Ask for the owner's name, then their phone number, confirming each. Call " +
       "lookup_customer with the number they're calling from — if it returns a known pet, " +
       "confirm the pet's name back to the owner instead of asking their pet info from " +
-      "scratch in the next step.",
+      "scratch in the next step." +
+      " If the caller is a recognized returning caller (a name or number is on file — see " +
+      "Caller history), confirm what's on file instead of asking for it again.",
     allowed_tools: ["lookup_customer"],
   },
   {
@@ -147,11 +150,17 @@ const rawStates: AgentState[] = [
     prompt_fragment:
       `A red flag is present (${RED_FLAG_LIST}) or the caller otherwise describes an ` +
       "immediate danger to the pet's life. Do not diagnose, do not reassure, and do not " +
-      "continue any routine scheduling. Tell the caller clearly to go to emergency care now: " +
-      "refer them to {{emergency_referral_name}} at {{emergency_referral_phone}}, and ask " +
-      "whether they'd like to be connected directly to this clinic right now instead, or " +
-      "would rather head to the referral themselves — either way you'll also take a message " +
-      "so the clinic has a record of this call.",
+      "continue any routine scheduling. In your very first sentence, tell the caller clearly " +
+      "to take the pet to emergency care right now: {{emergency_referral_name}} (phone: " +
+      "{{emergency_referral_phone}} — read that out only if it is an actual phone number). " +
+      "Every time the caller asks again whether to go, answer plainly: yes, go now. A direct " +
+      "connection to this clinic is possible only when the live transfer number for this " +
+      'call — "{{transfer_number}}" — is a real phone number; only then may you offer to ' +
+      "connect them right now instead. If it is blank, never offer, promise or mention " +
+      "connecting them: take a quick message instead (their name, phone number, and the " +
+      "pet's condition) with take_message so the clinic has a record, while making sure they " +
+      "know to go now rather than wait for a callback. Never say or imply that the clinic " +
+      "team is on the line or already aware of this call.",
     // GAP_REGISTER §1.4 item 4 / vet triage bug: this state used to declare
     // BOTH take_message and transfer_call in the same allowed_tools — the
     // compiler's own contract (conversation-flow.ts header) only locks a
@@ -162,7 +171,14 @@ const rawStates: AgentState[] = [
     // no-tool triage/offer step plus two dedicated single-tool terminal
     // states below so both capabilities the prompt promises are actually
     // reachable by the model.
-    allowed_tools: [],
+    //
+    // DISCLOSE-1 (docs/BUILD_NOTES.md): take_message is granted here too —
+    // with no live transfer number this state must never offer a
+    // connection (VERIFY-DEPLOY heard "I'm connecting you to a team member
+    // now" with none configured), so it takes the record itself instead of
+    // routing through a transfer offer. Mirrors
+    // `supabase/functions/_shared/agent-template-seeds.ts`.
+    allowed_tools: ["take_message"],
     // GAP_REGISTER.md §1.1/§2 Vet item 1 — lowered by the compiler's
     // post-call-analysis pass (`packages/adapters/retell/src/compiler/
     // extraction.ts`) into Retell `post_call_analysis_data`, read back by
@@ -196,9 +212,17 @@ const rawStates: AgentState[] = [
     id: "emergency_warm_transfer",
     name: "Emergency warm transfer",
     prompt_fragment:
-      "The caller wants to be connected directly to this clinic right now. " +
+      "The caller wants to be connected directly to this clinic right now, about a pet " +
+      "emergency. This is still an active emergency, not a routine callback request: make " +
+      "sure they know to go to {{emergency_referral_name}} right now rather than wait for " +
+      "anyone, and directly answer any yes/no question they ask about whether to go (e.g. " +
+      "'should I rush to the emergency vet?' -> 'yes, go now'). " +
       WARM_TRANSFER_FRAGMENT +
-      " Let them know you're connecting them now, then use transfer_call.",
+      " Never tell the caller yourself that you are connecting them or that the clinic team " +
+      "is on the line — a real transfer announces itself. If no connection is possible, say " +
+      "so honestly, restate the emergency referral, and take a message — never end the call " +
+      "on a generic 'the team will call you back' alone while the caller is still asking " +
+      "whether to go.",
     allowed_tools: ["transfer_call"],
     is_terminal: true,
   },
@@ -207,8 +231,10 @@ const rawStates: AgentState[] = [
     name: "Emergency take message",
     prompt_fragment:
       "Take a message with the owner's name, phone number, and the pet's condition so the " +
-      "clinic has a record of this call, even though the caller is being directed to " +
-      "emergency care (or a direct transfer) rather than a routine appointment.",
+      "clinic has a record of this call — unless one was already taken earlier in this call, " +
+      "in which case don't take another. While doing so, restate that they should go to " +
+      "{{emergency_referral_name}} right now rather than wait for a callback. Never say or " +
+      "imply that the clinic team is on the line or that you are connecting them.",
     allowed_tools: ["take_message"],
     is_terminal: true,
   },

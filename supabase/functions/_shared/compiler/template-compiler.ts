@@ -119,38 +119,183 @@ interface FunctionTool {
 
 /** The one reserved tool name `transferCallTool()` always uses (`packages/templates/src/shared/tools.ts`) — never a real HTTP `/voice-tools` call, a native Retell transfer-call node instead (see `TransferCallNode` below). */
 const TRANSFER_CALL_TOOL_NAME = "transfer_call";
-/** The shared take-message tool every vertical declares (`packages/templates/src/shared/tools.ts#takeMessageTool`) — granted, compiler-side only, to a transfer-only state when no `transferNumber` is configured (CALL-4's spoken-fallback design, this file's header). */
+/** The shared take-message tool every vertical declares (`packages/templates/src/shared/tools.ts#takeMessageTool`) — granted, compiler-side only, to a transfer-only state's no-live-transfer fallback node (CALL-4's spoken-fallback design, this file's header). */
 const TAKE_MESSAGE_TOOL_NAME = "take_message";
 
+// ---------------------------------------------------------------------
+// Static opening line (DISCLOSE-1, docs/BUILD_NOTES.md)
+// ---------------------------------------------------------------------
+
 /**
- * CALL-9 (docs/BUILD_NOTES.md): prepended to the START state/node of every
- * compile target, right after `disclosure_line` — the exact same "known-
- * safe compile-time-constant text ahead of the state's own authored
- * prompt" pattern `disclosure_line` itself already uses. `voice-inbound`
- * (a real call) and `api-admin-run-agent-tests`'s batch-test harness (a
- * simulated one, via its own `heyloo_test_caller_number` dynamic variable —
- * `voice-tools/context.ts`) both ALWAYS set the `{{caller_recent_context}}`
- * dynamic variable Retell substitutes here to a real sentence, never omit
- * it (`_shared/inbound-dynamic-variables.ts#resolveCallerRecentContext`'s
- * own doc comment) — RETELL-VERIFIED live (docs.retellai.com/build/
- * dynamic-variables, docs/VERIFY.md CALL-9) that Retell only does literal
- * `{{name}}` substitution, so an always-set variable is required here to
- * avoid ever leaving a raw unresolved placeholder in the model's prompt.
- *
- * Before this task, `caller_recent_context` was assembled and sent on
- * every `/voice-inbound` response but never referenced by `{{}}` anywhere
- * in any compiled template — completely inert, for a real returning caller
- * too. This is the actual fix, not just the data-plumbing half.
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): the dynamic variable the static opening
+ * line carries for a recognized returning caller ("Welcome back, Devin.")
+ * — ALWAYS set by `_shared/inbound-dynamic-variables.ts` (empty string for
+ * a new caller / no caller ID), and defaulted to `""` in every compiled
+ * body's `default_dynamic_variables` below for call paths that never run
+ * the inbound webhook (web calls). RETELL-VERIFIED (docs.retellai.com/
+ * build/dynamic-variables, 2026-09-29, docs/VERIFY.md DISCLOSE-1): dynamic
+ * variables are substituted in "The opening message, Conversation Flow
+ * static sentences, and static messages spoken during tool execution", and
+ * "An empty string counts as a value" (no raw `{{...}}` is left behind).
  */
-const CALLER_RECENT_CONTEXT_INSTRUCTION =
-  "Caller history: {{caller_recent_context}} If this indicates a known returning caller, " +
-  "acknowledge that naturally early in the call (e.g. greet them by the first name given, if " +
-  "any) and don't ask them to restate information already on file — otherwise proceed as a " +
-  "normal first-time caller.";
+export const CALLER_GREETING_TOKEN = "{{caller_greeting}}";
+
+const DEFAULT_OPENING_LANGUAGE = "en";
+
+/** The question that closes the static opening line, per configured call language (`tenants.language_config.primary`, ISO 639-1). */
+const OPENING_QUESTION: Record<string, string> = {
+  en: "How can I help you today?",
+  es: "¿En qué puedo ayudarle hoy?",
+};
+
+/**
+ * DISCLOSE-1: compiler-owned translations of a template's EXACT English
+ * `disclosure_line` literal, keyed by that literal. The disclosure is a
+ * compiler-enforced constant (never tenant-editable, `agent_templates.
+ * disclosure_line`'s own column comment), so a spoken translation has to be
+ * one too — never model-generated (that is the paraphrase bug this task
+ * fixes: VERIFY-DEPLOY heard "this call may be recorded" dropped when the
+ * model reworded the greeting). A template whose disclosure line has no
+ * vetted translation here falls back to its original English literal
+ * verbatim (`buildOpeningLine`), never to a model translation. Every
+ * shipped template uses the one line below (`agent-template-seeds.ts`).
+ * The Spanish wording is a faithful rendering flagged for owner review in
+ * docs/BUILD_NOTES.md DISCLOSE-1 (SYSTEM_DESIGN §4.5: wording is an owner
+ * decision, presence is not).
+ */
+const DISCLOSURE_TRANSLATIONS: Record<string, Record<string, string>> = {
+  "Thanks for calling {{business_name}}. This is {{assistant_name}}, their AI assistant — this call may be recorded.":
+    {
+      es: "Gracias por llamar a {{business_name}}. Le atiende {{assistant_name}}, su asistente de inteligencia artificial; esta llamada puede ser grabada.",
+    },
+};
+
+export interface OpeningLine {
+  /** The exact static text spoken as the agent's first utterance (Retell substitutes its `{{...}}` tokens per call). */
+  text: string;
+  /** The disclosure literal `text` carries verbatim — the template's own `disclosure_line`, or its vetted translation. Empty when the template's disclosure line is empty (the publish gate then fails). */
+  disclosureLiteral: string;
+  /** The language `text` is actually in (falls back to `"en"` when no vetted translation exists). */
+  language: string;
+}
+
+/**
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): builds the static, never-model-generated
+ * first utterance for every compile target — the template's disclosure line
+ * (AI + recording notice, CLAUDE.md Rule 2 / G1-G2) verbatim, then the
+ * returning-caller greeting token, then a short "how can I help" question.
+ * Emitted as a conversation-flow `static_text` start node and as a
+ * retell-llm `begin_message` (see `compileConversationFlow`/
+ * `compileMultiPrompt`/`compileSinglePrompt`), so the disclosure is spoken
+ * word for word on every call instead of depending on the model.
+ */
+export function buildOpeningLine(
+  disclosureLine: string,
+  language: string = DEFAULT_OPENING_LANGUAGE,
+): OpeningLine {
+  const translated =
+    language === DEFAULT_OPENING_LANGUAGE
+      ? undefined
+      : DISCLOSURE_TRANSLATIONS[disclosureLine]?.[language];
+  const effectiveLanguage =
+    translated !== undefined && OPENING_QUESTION[language] !== undefined
+      ? language
+      : DEFAULT_OPENING_LANGUAGE;
+  const disclosureLiteral =
+    effectiveLanguage === language && translated ? translated : disclosureLine;
+  const question =
+    OPENING_QUESTION[effectiveLanguage] ?? OPENING_QUESTION[DEFAULT_OPENING_LANGUAGE];
+  return {
+    text: `${disclosureLiteral} ${CALLER_GREETING_TOKEN} ${question}`,
+    disclosureLiteral,
+    language: effectiveLanguage,
+  };
+}
+
+/**
+ * DISCLOSE-1: prepended to the START state/node's own instruction on every
+ * compile target. The start state is no longer what speaks first (the
+ * static opening line is), so without this the start state's own authored
+ * "Greet the caller..." prompt makes the model greet a second time.
+ */
+function openingAlreadySpokenInstruction(opening: OpeningLine): string {
+  return (
+    `Your first turn in this call has ALREADY been spoken, word for word: "${opening.text}" — ` +
+    "it greeted the caller (welcoming a recognized returning caller back by name) and gave the " +
+    "AI and call-recording disclosure. Do not greet the caller again, re-introduce yourself, or " +
+    "repeat that line; respond directly to what the caller just said. If they ask whether they " +
+    "are talking to a real person, say plainly that you are an AI assistant and that the call " +
+    "may be recorded."
+  );
+}
+
+/**
+ * CALL-9 / DISCLOSE-1 (docs/BUILD_NOTES.md): the returning-caller
+ * instruction. CALL-9 prepended a softer version of this ("Caller history:
+ * {{caller_recent_context}} ... acknowledge that naturally") to the START
+ * node only — so every later node (collect_name, collect_phone, ...) never
+ * saw it, and VERIFY-DEPLOY's live self-call heard a recognized caller asked
+ * for their name and phone again. It now lives in the GLOBAL prompt of
+ * every compile target (conversation-flow `global_prompt`, retell-llm
+ * `general_prompt`), i.e. in every node/state, and says exactly what to do:
+ * confirm what is on file, never re-ask. `{{caller_recent_context}}`,
+ * `{{caller_name_on_file}}` and `{{caller_phone_on_file}}` are ALWAYS set by
+ * `_shared/inbound-dynamic-variables.ts` (blank for a new caller) and
+ * defaulted in `default_dynamic_variables` — never a raw placeholder.
+ */
+const RETURNING_CALLER_INSTRUCTION =
+  'Caller history: {{caller_recent_context}} Name on file: "{{caller_name_on_file}}". Number ' +
+  'on file: "{{caller_phone_on_file}}". If the name or number on file is not blank, this is a ' +
+  "recognized returning caller who was already welcomed back by name in your opening line: at " +
+  "every step, CONFIRM what is on file instead of collecting it again — never ask a recognized " +
+  'caller to tell you their name or phone number. For the name, ask once, e.g. "I have you down ' +
+  'as {{caller_name_on_file}} — is that right?"; for the phone, ask once whether the number on ' +
+  "file (read back only its last four digits) is still the best number to reach them, and pass " +
+  "that full number on file to any tool that needs a phone number. Only collect a new name or " +
+  "number if the caller says what is on file is wrong or wants to use a different one. If both " +
+  "are blank, treat this as a first-time caller and collect their name and phone number normally.";
+
+/**
+ * DISCLOSE-1: compiler-constant `default_dynamic_variables` for every
+ * variable the COMPILER itself references (the static opening line, the
+ * returning-caller and language instructions, the transfer router) —
+ * RETELL-VERIFIED field on both `create-conversation-flow` and
+ * `create-retell-llm` ("Default dynamic variables ... injected ... when
+ * specific values are not provided in a request", docs/VERIFY.md
+ * DISCLOSE-1). `voice-inbound` and the batch-test harness always send real
+ * values; this only covers call paths that never run the inbound webhook
+ * (dashboard/widget web calls), where a raw `{{caller_greeting}}` would
+ * otherwise be spoken literally by a static line. `transfer_number` defaults
+ * to blank (= no live transfer, the safe side of G6). Tenant-specific
+ * defaults (`business_name`, `assistant_name`, `language`) are layered on
+ * top by the caller via `CompileConversationFlowOptions.defaultDynamicVariables`.
+ */
+const COMPILER_DEFAULT_DYNAMIC_VARIABLES: Readonly<Record<string, string>> = {
+  caller_greeting: "",
+  caller_name_on_file: "",
+  caller_phone_on_file: "",
+  caller_recent_context:
+    "No caller history is available for this call — treat this as a first-time caller and " +
+    "collect their name and phone number normally.",
+  transfer_number: "",
+  language: DEFAULT_OPENING_LANGUAGE,
+};
+
+function defaultDynamicVariablesFor(
+  options: CompileConversationFlowOptions,
+): Record<string, string> {
+  const out: Record<string, string> = { ...COMPILER_DEFAULT_DYNAMIC_VARIABLES };
+  if (options.language) out["language"] = options.language;
+  for (const [key, value] of Object.entries(options.defaultDynamicVariables ?? {})) {
+    if (typeof value === "string") out[key] = value;
+  }
+  return out;
+}
 
 /**
  * QA-HOT (docs/BUILD_NOTES.md): the SAME always-set-dynamic-variable
- * prepend pattern as `CALLER_RECENT_CONTEXT_INSTRUCTION` above, for
+ * pattern as `RETURNING_CALLER_INSTRUCTION` above (CALL-9's
+ * `caller_recent_context`; DISCLOSE-1 moved both into the global prompt), for
  * `tenants.language_config.primary` (`{{language}}`, already assembled and
  * sent on every `/voice-inbound` response by
  * `_shared/inbound-dynamic-variables.ts` — CALL-9's own header on that
@@ -181,11 +326,21 @@ const CALLER_RECENT_CONTEXT_INSTRUCTION =
  */
 const LANGUAGE_INSTRUCTION =
   'Configured call language: {{language}} (an ISO 639-1 code — "en" = English, ' +
-  '"es" = Spanish). Conduct this entire call in that language by default — greeting, the ' +
-  "AI/recording disclosure above, every question, and every confirmation — using natural, " +
-  "conversational speech, not a literal translation. If the caller speaks a different language " +
-  "than the configured one, switch to match the caller instead of insisting on the configured " +
-  "language.";
+  '"es" = Spanish). Conduct this entire call in that language by default — every question, ' +
+  "answer and confirmation — using natural, conversational speech, not a literal translation. " +
+  "If the caller speaks a different language than the configured one, switch to match the " +
+  "caller instead of insisting on the configured language, and if they ask about the AI or " +
+  "call-recording notice, repeat it plainly in their language.";
+
+/**
+ * DISCLOSE-1: the compiler-owned call-context block every compile target
+ * appends to its GLOBAL prompt (seen by every node/state, not just the
+ * start one — see `RETURNING_CALLER_INSTRUCTION`'s doc comment for the live
+ * bug start-node-only placement caused). QA-HOT's `LANGUAGE_INSTRUCTION`
+ * moved here for the same reason: a later node that never saw it had no
+ * reason to stay in the configured language.
+ */
+const GLOBAL_CALL_CONTEXT_INSTRUCTIONS = `${LANGUAGE_INSTRUCTION}\n\n${RETURNING_CALLER_INSTRUCTION}`;
 
 function toolsFor(template: CompilerAgentTemplate, toolWebhookUrl: string): FunctionTool[] {
   return template.tools.map((tool) => ({
@@ -250,11 +405,7 @@ interface ConversationNode {
   type: "conversation" | "subagent";
   name: string;
   instruction: { type: "prompt"; text: string };
-  edges: Array<{
-    id: string;
-    destination_node_id: string;
-    transition_condition: { type: "prompt"; prompt: string };
-  }>;
+  edges: PromptEdge[];
   // `global_node_setting: {condition}` — confirmed an object with a
   // REQUIRED `condition` string (VERIFY-8). See
   // packages/adapters/retell/src/compiler/types.ts for the full
@@ -265,6 +416,82 @@ interface ConversationNode {
    * flow-level `tools[].tool_id` values (== `tool.name`, CALL-1's
    * `tool_id: tool.name` convention) this node's LLM may call. */
   tool_ids?: string[];
+}
+
+interface PromptEdge {
+  id: string;
+  destination_node_id: string;
+  transition_condition: { type: "prompt"; prompt: string };
+}
+
+/**
+ * DISCLOSE-1: a deterministic (non-model) edge condition. RETELL-VERIFIED
+ * (docs.retellai.com/build/conversation-flow/transition-condition,
+ * 2026-09-29): dynamic variables are referenced as `{{name}}`; `contains` is
+ * "Whether the left value includes the right value as a substring, ignoring
+ * case"; equation conditions are "evaluated deterministically before any
+ * prompt condition". Shape confirmed against retell-sdk 5.64.0's
+ * `BranchNode.Edge.EquationCondition`.
+ */
+interface EquationEdge {
+  id: string;
+  destination_node_id: string;
+  transition_condition: {
+    type: "equation";
+    operator: "&&" | "||";
+    equations: Array<{ left: string; operator: "contains"; right: string }>;
+  };
+}
+
+/**
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): the flow's start node — speaks the
+ * static opening line (`buildOpeningLine`) word for word, never
+ * model-generated. RETELL-VERIFIED (docs.retellai.com/api-references/
+ * create-conversation-flow + retell-sdk 5.64.0 `ConversationNode.
+ * instruction: NodeInstructionPrompt | NodeInstructionStaticText`, 2026-09-29):
+ * only a `"conversation"` node accepts `static_text` (a `"subagent"` node's
+ * `instruction` is prompt-only), and a static node "says your exact
+ * sentence first" (docs.retellai.com/build/conversation-flow/
+ * conversation-node). Its `edges` are a copy of the start state's own, so
+ * the caller's first reply routes exactly as it did before this node
+ * existed; `else_edge` ("It fires when no other condition matches, so the
+ * flow never gets stuck" — docs.retellai.com/build/conversation-flow/
+ * transition-condition) hands everything else to the start state, whose
+ * own prompt then answers — the static sentence never "continues
+ * dynamically" on its own. `else_edge.transition_condition.prompt` MUST be
+ * the literal "Else" (retell-sdk `ElseEdge`).
+ */
+interface OpeningNode {
+  id: string;
+  type: "conversation";
+  name: string;
+  instruction: { type: "static_text"; text: string };
+  edges: PromptEdge[];
+  else_edge: PromptEdge;
+}
+
+/**
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): a transfer-only state's router — a
+ * Retell "logic split" node. RETELL-VERIFIED (docs.retellai.com/build/
+ * conversation-flow/logic-split-node, 2026-09-29): "the agent evaluates
+ * conditions on entry and routes silently to the next node", it "must
+ * include an else destination", and it can be a global node; retell-sdk
+ * 5.64.0 `BranchNode {id, type: "branch", else_edge (required), edges?,
+ * global_node_setting?, name?}`. Replaces PUBLISH-1's model-judged router
+ * (a speaking subagent told "if {{transfer_number}} is non-empty say you're
+ * connecting") — VERIFY-DEPLOY heard that router tell a caller "I'm
+ * connecting you to a team member now" and later "the clinic team is
+ * already on the line" with `transfer_number` blank. Whether a live
+ * transfer is possible is now decided by an equation, not the model, and
+ * the router itself never speaks.
+ */
+interface BranchNode {
+  id: string;
+  type: "branch";
+  name: string;
+  edges: EquationEdge[];
+  else_edge: PromptEdge;
+  global_node_setting?: { condition: string };
 }
 
 /**
@@ -350,8 +577,16 @@ interface TransferCallNode {
     transition_condition: { type: "prompt"; prompt: string };
   };
   global_node_setting?: { condition: string };
-  /** Unused by this compiler (never the start node, see `compileConversationFlow`'s guard) — declared only so `firstTurnText`'s `.instruction?.text` narrows across the whole node union without a discriminant check. RETELL-VERIFIED present on the real node (`"What to say when transferring the call, only used when speak during execution"`). */
-  instruction?: { type: "prompt"; text: string };
+  /**
+   * DISCLOSE-1 (docs/BUILD_NOTES.md): this node — the one that ACTUALLY
+   * transfers — is now the only place in the flow that tells the caller they
+   * are being connected. RETELL-VERIFIED (docs.retellai.com/api-references/
+   * create-conversation-flow, 2026-09-29): `speak_during_execution` "If true,
+   * will speak during execution"; `instruction` is "What to say when
+   * transferring the call, only used when speak during execution".
+   */
+  speak_during_execution: true;
+  instruction: { type: "prompt"; text: string };
 }
 
 export interface ConversationFlowBody {
@@ -360,12 +595,29 @@ export interface ConversationFlowBody {
   // retell-typescript-sdk) — always "agent": every template opens with the
   // agent's own greeting/disclosure line, never a user-speaks-first flow.
   start_speaker: "agent";
-  nodes: (ConversationNode | EndNode | TransferCallNode)[];
+  nodes: (ConversationNode | OpeningNode | BranchNode | EndNode | TransferCallNode)[];
   tools: FunctionTool[];
-  global_prompt?: string;
+  /** The template's `system_prompt` (when set) plus the compiler's global call-context block (`GLOBAL_CALL_CONTEXT_INSTRUCTIONS`) — always present now (DISCLOSE-1). */
+  global_prompt: string;
+  /** DISCLOSE-1: see `COMPILER_DEFAULT_DYNAMIC_VARIABLES`. RETELL-VERIFIED field (`default_dynamic_variables?: {[key: string]: string} | null`, retell-sdk 5.64.0 `ConversationFlowCreateParams`). */
+  default_dynamic_variables: Record<string, string>;
 }
 
 export interface CompileConversationFlowOptions {
+  /**
+   * DISCLOSE-1 (docs/BUILD_NOTES.md): the tenant's configured call language
+   * (`tenants.language_config.primary`, ISO 639-1 — `"en"`/`"es"`). Picks the
+   * static opening line's language (`buildOpeningLine`) and the
+   * `{{language}}` default. Omitted = `"en"`.
+   */
+  language?: string;
+  /**
+   * DISCLOSE-1: tenant-specific `default_dynamic_variables` (e.g.
+   * `business_name`, `assistant_name`) layered over the compiler's own
+   * constants — a safety net for call paths that never run the inbound
+   * webhook, so a static opening line never speaks a raw `{{business_name}}`.
+   */
+  defaultDynamicVariables?: Record<string, string>;
   /**
    * PUBLISH-1 (docs/BUILD_NOTES.md): no longer read by this file. Before
    * PUBLISH-1, `agent_configs.transfer_number` was resolved by the CALLER
@@ -397,28 +649,52 @@ function isTransferOnlyState(state: CompilerAgentState): boolean {
  * `TransferCallNode`'s own doc comment above). Never a real number. */
 const TRANSFER_NUMBER_TOKEN = "{{transfer_number}}";
 
+/**
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): the one rule every no-live-transfer
+ * branch starts with. VERIFY-DEPLOY's live vet transcripts: with
+ * `transfer_number` blank the agent still said "I'm connecting you to a team
+ * member at Lakeside Veterinary Clinic now" and then "the clinic team is
+ * already on the line with you" before hanging up — a transfer that never
+ * happened, on an emergency call. The previous wording only said "no live
+ * transfer line is configured", which never forbade the claim itself, and
+ * the transfer-only states' own authored text ("Let the caller know you're
+ * connecting them now, then use transfer_call") contradicted it.
+ */
+const NEVER_CLAIM_A_TRANSFER_RULE =
+  "There is NO live transfer on this call: nobody from the team can be connected right now " +
+  "(no live line is available, or the connection attempt just failed). Never say or imply that " +
+  "you are connecting, transferring or putting the caller through, that someone is joining or " +
+  "already on the line, or that the team is aware of this call right now — none of that is " +
+  "happening, and saying it could leave a caller waiting for help that is not coming.";
+
+/**
+ * DISCLOSE-1: emergency-aware core of every no-live-transfer branch —
+ * restating the emergency referral comes BEFORE the message offer, so a
+ * callback is never presented as a substitute for emergency care (QA-HOT's
+ * and VERIFY-DEPLOY's vet `emergency_triage` failures).
+ */
 const NO_TRANSFER_FALLBACK_INSTRUCTION =
-  "No live transfer line is configured for this business right now. Once, clearly and " +
-  "warmly, say so and offer to take down their name, phone number, and a short message so " +
-  "the team can call them back — never repeat that same apology/offer a third time. If they " +
-  "give a callback number, call take_message with it (fold in whatever they've already told " +
-  "you) and let them know someone will call back soon, then the call is done. If they keep " +
+  `${NEVER_CLAIM_A_TRANSFER_RULE} If the caller has described an emergency, first restate the ` +
+  "emergency referral in this same turn — exactly where to go or whom to call right now — and " +
+  'answer any "should I go now?" question with a clear yes; a callback is never a substitute ' +
+  "for emergency care. Then, once, clearly and warmly, say you can't connect them to someone " +
+  "right now and offer to take down their name, phone number, and a short message so the team " +
+  "can call them back — never repeat that same apology/offer a third time. If they give a " +
+  "callback number, call take_message with it (fold in whatever they've already told you) and " +
+  "let them know someone will call back as soon as possible, then the call is done. If they keep " +
   "insisting on a transfer or won't give a number after you've offered twice, don't keep " +
   "repeating yourself: calmly acknowledge you can't do more right now and that's the end of " +
   "what you can help with today — the call is done either way.";
 
-/** PUBLISH-1: instruction for `compileConversationFlow`'s transfer-only
- * router node (the state's own id) — a genuine runtime decision, not the
- * compile-time either/or CALL-4 originally used. The router's own
- * `hasTransferEdge` (below) carries the SAME "is a live number available"
- * condition structurally; this text is what the model actually says on
- * whichever branch the live per-call `transfer_number` dynamic variable
- * puts it on. */
-const TRANSFER_ROUTER_INSTRUCTION =
-  "The live transfer number for this business right now is: {{transfer_number}}. If that is a " +
-  "real, non-empty phone number, say once, briefly and warmly, that you're connecting them to " +
-  "a team member now — do not call take_message in that case. If it is empty/blank: " +
-  NO_TRANSFER_FALLBACK_INSTRUCTION;
+/**
+ * DISCLOSE-1: what the ONE node/tool that actually transfers says while it
+ * does so (`TransferCallNode.instruction` with `speak_during_execution`, and
+ * the retell-llm `transfer_call` tool's `execution_message_description`) —
+ * the only place a compiled agent is told to announce a connection.
+ */
+const TRANSFER_ANNOUNCEMENT_INSTRUCTION =
+  "In one short, warm sentence, tell the caller you're connecting them to a member of the team " +
+  "now. Say nothing else.";
 
 /** CALL-7 (docs/BUILD_NOTES.md): `compileMultiPrompt`/`compileSinglePrompt`
  * append this onto `NO_TRANSFER_FALLBACK_INSTRUCTION` above (conversation_
@@ -439,19 +715,36 @@ const NO_TRANSFER_FALLBACK_END_CALL_SUFFIX =
   "the call once you've reached this point — there is nothing more you can do for them on " +
   "this call, and continuing to repeat yourself helps no one.";
 
-/** PUBLISH-1: `compileMultiPrompt`/`compileSinglePrompt`'s transfer-only
- * state prompt, ALWAYS appended now — the `MultiPromptTransferCallTool`/
- * `general_tools` transfer_call entry is always granted (destination the
- * literal `{{transfer_number}}` token) alongside `take_message`
- * (structurally available from every state via `general_tools`, CALL-8),
- * so the model itself picks the right one per call from the live dynamic
- * variable's actual value — a genuine runtime decision, not the
- * compile-time either/or CALL-4/CALL-7 originally used. */
+/** PUBLISH-1/DISCLOSE-1: `compileMultiPrompt`/`compileSinglePrompt`'s
+ * transfer-only state prompt. A retell-llm agent has no logic-split node,
+ * so the transfer-vs-fallback choice stays with the model here — but the
+ * transfer_call TOOL itself now announces the connection
+ * (`speak_during_execution`), and the model is told never to announce one
+ * on its own, so the only way a caller hears "connecting you" is by a real
+ * transfer_call invocation. */
 const TRANSFER_TOOL_OR_FALLBACK_INSTRUCTION =
-  "The live transfer number for this business right now is: {{transfer_number}}. If that is a " +
-  "real, non-empty phone number, call transfer_call to connect the caller now — do not " +
-  "apologize or offer to take a message in that case. If it is empty/blank: " +
-  NO_TRANSFER_FALLBACK_INSTRUCTION;
+  'The live transfer number for this business right now is: "{{transfer_number}}". If that ' +
+  "is a real phone number, call transfer_call right away — the transfer itself tells the caller " +
+  "they're being connected, so do not announce it yourself, apologize, or offer to take a " +
+  "message in that case. If it is blank: " +
+  NO_TRANSFER_FALLBACK_INSTRUCTION +
+  " In every case, never tell the caller you are connecting, transferring or putting them " +
+  "through unless you are calling transfer_call in this same turn.";
+
+/** DISCLOSE-1: `TransferCallNode.edge` / the logic-split router's
+ * deterministic "a live number is available" test — an E.164 number always
+ * contains "+" (CLAUDE.md Rule 2: phones are E.164 at every boundary;
+ * `agent_configs.transfer_number` is the only source, G6); a blank value,
+ * or an unset variable left as the raw `{{transfer_number}}` text, never
+ * does, so both fall through to the no-transfer `else_edge`. */
+const LIVE_TRANSFER_NUMBER_EQUATION = {
+  left: TRANSFER_NUMBER_TOKEN,
+  operator: "contains" as const,
+  right: "+",
+};
+
+/** DISCLOSE-1: the static opening node's id — always the flow's `start_node_id` now. */
+const OPENING_NODE_ID = "__opening";
 
 function compileConversationFlow(
   template: CompilerAgentTemplate,
@@ -463,6 +756,7 @@ function compileConversationFlow(
   // — referenced here only so existing 3-arg call sites keep compiling
   // under `noUnusedParameters`.
   void options.transferNumber;
+  const opening = buildOpeningLine(template.disclosure_line, options.language);
   // transfer_call is never a real HTTP `/voice-tools` call (it compiles to
   // a native TransferCallNode below) — excluded from the flow's top-level
   // custom-function tools list so Retell never sees a bogus webhook tool
@@ -473,145 +767,144 @@ function compileConversationFlow(
 
   const toolsByName = new Map(tools.map((t) => [t.name, t]));
 
-  const nodesById = new Map<string, ConversationNode | TransferCallNode>();
-  for (const state of template.states) {
-    const transferOnly = isTransferOnlyState(state);
+  // The node every STATE id resolves to — what authored transitions and
+  // global intents target: a conversation/subagent node, or (for a
+  // transfer-only state) its logic-split router.
+  const nodesById = new Map<string, ConversationNode | BranchNode>();
+  // The extra nodes a transfer-only state compiles to, in emit order.
+  const transferNodes: Array<ConversationNode | TransferCallNode> = [];
+  // Which node a state's is_terminal end-edge hangs off: the state's own
+  // node, or — for a transfer-only state — its no-live-transfer fallback
+  // (the router is a silent logic split; the transfer node's only exit is
+  // its required "Transfer failed" edge).
+  const endEdgeOwner = new Map<string, ConversationNode>();
 
-    // PUBLISH-1 (docs/BUILD_NOTES.md ONBOARD-1/PUBLISH-1): a transfer-only
-    // state now ALWAYS compiles to TWO nodes — a router (this state's own
-    // id, unchanged so every existing incoming edge still resolves) and a
-    // dedicated `${state.id}__transfer` TransferCallNode whose destination
-    // is the literal `{{transfer_number}}` TOKEN (substituted by Retell
-    // per call from the live dynamic variable, never a value baked in
-    // here) — instead of the compiler deciding which ONE of those to emit
-    // from `agent_configs.transfer_number` at compile time. The router's
-    // own edge to the transfer node is itself evaluated per call, against
-    // the LIVE dynamic-variable value, so a tenant's transfer-number
-    // change (or removal) takes effect on the very next call, no
-    // republish needed — see `TransferCallNode`'s doc comment above.
-    if (transferOnly) {
+  for (const state of template.states) {
+    // DISCLOSE-1 (docs/BUILD_NOTES.md; supersedes PUBLISH-1's speaking
+    // router): a transfer-only state compiles to a silent logic-split router
+    // at the state's own id (so every existing incoming edge/global intent
+    // still resolves) that deterministically picks one of two nodes:
+    //  - `${id}__transfer`: the native TransferCallNode (destination the
+    //    literal `{{transfer_number}}` token, PUBLISH-1), which is the ONLY
+    //    node that tells the caller they're being connected — it says so
+    //    while it actually transfers (`speak_during_execution`);
+    //  - `${id}__no_transfer`: the honest fallback — the state's own
+    //    authored content (QA-HOT: e.g. vet's emergency referral) plus
+    //    `NO_TRANSFER_FALLBACK_INSTRUCTION`, which forbids claiming any
+    //    connection, restates an emergency referral first, and takes a
+    //    message. A transfer that FAILS lands here too.
+    if (isTransferOnlyState(state)) {
       const transferNodeId = `${state.id}__transfer`;
-      nodesById.set(transferNodeId, {
+      const noTransferNodeId = `${state.id}__no_transfer`;
+      nodesById.set(state.id, {
+        id: state.id,
+        type: "branch",
+        name: state.name,
+        edges: [
+          {
+            id: `edge_${state.id}_has_transfer`,
+            destination_node_id: transferNodeId,
+            transition_condition: {
+              type: "equation",
+              operator: "&&",
+              equations: [LIVE_TRANSFER_NUMBER_EQUATION],
+            },
+          },
+        ],
+        else_edge: {
+          id: `edge_${state.id}_no_transfer`,
+          destination_node_id: noTransferNodeId,
+          // RETELL-VERIFIED: an else edge's prompt MUST be the literal "Else".
+          transition_condition: { type: "prompt", prompt: "Else" },
+        },
+      });
+      transferNodes.push({
         id: transferNodeId,
         type: "transfer_call",
         name: `${state.name} — live transfer`,
         transfer_destination: { type: "predefined", number: TRANSFER_NUMBER_TOKEN },
         transfer_option: { type: "warm_transfer" },
-        // Destination filled in once the is_terminal end-node pass below
-        // creates `${state.id}__end` — every shipped transferOnly state is
-        // `is_terminal: true` (transferToHumanState()), so this always
-        // resolves; defensively falls back to the router node itself (a
-        // no-op edge Retell will reject loudly rather than silently drop)
-        // if a future template ever violates that assumption.
+        speak_during_execution: true,
+        instruction: { type: "prompt", text: TRANSFER_ANNOUNCEMENT_INSTRUCTION },
         edge: {
           id: `${state.id}_transfer_failed`,
-          destination_node_id: state.is_terminal ? `${state.id}__end` : state.id,
+          // DISCLOSE-1: a failed/unanswered transfer used to land straight on
+          // this state's goodbye end node; it now lands on the honest
+          // fallback (take a message, restate any emergency referral).
+          destination_node_id: noTransferNodeId,
           // PUBLISH-1 (docs/BUILD_NOTES.md): RETELL-VERIFIED live 2026-09-21
-          // — root cause of the live `retell_flow_create_failed` error
-          // (ONBOARD-1's own finding, re-fetched from docs.retellai.com/
-          // api-references/create-conversation-flow this session): a
-          // TransferCallNode's `edge.transition_condition` is NOT free
-          // text like every other node's edges — its JSON schema is
-          // `{type: {enum: ["prompt"]}, prompt: {enum: ["Transfer
-          // failed"]}}`, i.e. `prompt` MUST be the literal string
-          // "Transfer failed", nothing else. CALL-4 never caught this
-          // (its own test tenant never had a transfer number configured,
-          // so this node type was never actually sent to Retell before
-          // ONBOARD-1 did, live, by accident).
+          // — root cause of the live `retell_flow_create_failed` error: a
+          // TransferCallNode's `edge.transition_condition.prompt` MUST be
+          // the literal string "Transfer failed", nothing else.
           transition_condition: { type: "prompt", prompt: "Transfer failed" },
         },
       });
+      // The fallback is ALWAYS granted take_message (when the template
+      // declares it) — the whole point of this branch is taking a message.
+      const fallbackToolIds = [TAKE_MESSAGE_TOOL_NAME].filter((name) => toolsByName.has(name));
+      const noTransferNode: ConversationNode = {
+        id: noTransferNodeId,
+        type: fallbackToolIds.length > 0 ? "subagent" : "conversation",
+        name: `${state.name} — no live transfer`,
+        instruction: {
+          type: "prompt",
+          // QA-HOT (docs/BUILD_NOTES.md): the state's OWN authored content
+          // is kept (vet's `emergency_warm_transfer` must keep its
+          // emergency-hospital referral), followed by the compiler's
+          // no-transfer rules, which override any "connect them" wording.
+          text: `${state.prompt_fragment}\n\n${NO_TRANSFER_FALLBACK_INSTRUCTION}`,
+        },
+        // CALL-4 live-iteration fix: the generic is_terminal end-edge below
+        // ("the caller has nothing further to discuss") requires the CALLER
+        // to drop the topic — an adversarial caller who keeps repeating the
+        // same transfer demand never satisfies it, so the call stalls and
+        // Retell's loop-detector aborts it (docs/BUILD_NOTES.md CALL-4).
+        // This extra edge is satisfied by the AGENT's own turn instead.
+        edges: state.is_terminal
+          ? [
+              {
+                id: `edge_${state.id}_fallback_done`,
+                destination_node_id: `${state.id}__end`,
+                transition_condition: {
+                  type: "prompt",
+                  prompt:
+                    "you have already clearly told the caller you can't connect them to anyone " +
+                    "right now (restating any emergency referral) and offered to take a message " +
+                    "at least once — end here even if the caller keeps repeating the same request",
+                },
+              },
+            ]
+          : [],
+        ...(fallbackToolIds.length > 0 ? { tool_ids: fallbackToolIds } : {}),
+      };
+      transferNodes.push(noTransferNode);
+      endEdgeOwner.set(state.id, noTransferNode);
+      continue;
     }
 
     // Only tool_ids Retell actually knows about (defensive — a state
     // authoring bug referencing a name absent from template.tools would
-    // otherwise produce a tool_ids entry Retell rejects outright). The
-    // router for a transfer-only state is ALWAYS granted take_message too
-    // (needed whenever the live transfer_number turns out to be empty).
-    const requestedTools = transferOnly ? [TAKE_MESSAGE_TOOL_NAME] : (state.allowed_tools ?? []);
-    const toolIds = requestedTools.filter((name) => toolsByName.has(name));
-    // PUBLISH-1: the router's edge onto the dedicated transfer node, taken
-    // only when a live transfer number is actually available this call —
-    // a genuine runtime (per-call, model-evaluated) branch, not a
-    // compile-time one.
-    const hasTransferEdge = transferOnly
-      ? [
-          {
-            id: `edge_${state.id}_has_transfer`,
-            destination_node_id: `${state.id}__transfer`,
-            transition_condition: {
-              type: "prompt" as const,
-              prompt:
-                "The transfer_number value for this call ({{transfer_number}}) is a real, " +
-                "non-empty phone number — a live transfer number is available for this " +
-                "business right now.",
-            },
-          },
-        ]
-      : [];
-    // CALL-4 live-iteration fix: the generic is_terminal end-edge below
-    // ("the caller has nothing further to discuss") requires the CALLER to
-    // drop the topic — an adversarial caller who keeps repeating the same
-    // transfer demand after the agent has already clearly declined twice
-    // never satisfies that wording, so the call stalls at this node and
-    // Retell's own loop-detector aborts it (live-confirmed:
-    // `docs/BUILD_NOTES.md` CALL-4). This fallback node gets its own EXTRA
-    // edge to that same end node whose condition is satisfied by the
-    // AGENT's own turn instead — it doesn't need the caller's agreement.
-    const fallbackDoneEdge =
-      transferOnly && state.is_terminal
-        ? [
-            {
-              id: `edge_${state.id}_fallback_done`,
-              destination_node_id: `${state.id}__end`,
-              transition_condition: {
-                type: "prompt" as const,
-                prompt:
-                  "you have already clearly told the caller no live transfer is available and " +
-                  "offered to take a message at least once — end here even if the caller keeps " +
-                  "repeating the same request",
-              },
-            },
-          ]
-        : [];
-    nodesById.set(state.id, {
+    // otherwise produce a tool_ids entry Retell rejects outright).
+    const toolIds = (state.allowed_tools ?? []).filter((name) => toolsByName.has(name));
+    const node: ConversationNode = {
       id: state.id,
       type: toolIds.length > 0 ? "subagent" : "conversation",
       name: state.name,
-      instruction: {
-        type: "prompt",
-        // QA-HOT (docs/BUILD_NOTES.md): a transfer-only state's OWN
-        // authored `prompt_fragment` used to be discarded entirely here,
-        // replaced by the generic `TRANSFER_ROUTER_INSTRUCTION` alone —
-        // unlike `compileMultiPrompt`'s equivalent branch (below), which
-        // always keeps both. Live-observed real bug: vet's
-        // `emergency_warm_transfer` state's own content (which exists
-        // specifically to keep the emergency-hospital referral front and
-        // center) vanished the instant this state compiled, so a caller
-        // routed here with no live transfer number configured got the
-        // generic "no transfer line, let me take a message" fallback with
-        // NONE of the state's own emergency-specific instructions —
-        // confirmed via a live batch-test transcript where the agent
-        // never re-answered the caller's repeated "should I rush to the
-        // ER?" before ending the call. Now combined the same way
-        // `compileMultiPrompt`/`compileSinglePrompt` already do.
-        text: transferOnly
-          ? `${state.prompt_fragment}\n\n${TRANSFER_ROUTER_INSTRUCTION}`
-          : state.prompt_fragment,
-      },
-      edges: [...hasTransferEdge, ...fallbackDoneEdge],
+      instruction: { type: "prompt", text: state.prompt_fragment },
+      edges: [],
       ...(toolIds.length > 0 ? { tool_ids: toolIds } : {}),
-    });
+    };
+    nodesById.set(state.id, node);
+    endEdgeOwner.set(state.id, node);
   }
 
   for (const [index, transition] of template.transitions.entries()) {
     const fromNode = nodesById.get(transition.from);
-    // transfer_call nodes have no `edges` array (a single required `edge`
-    // only, set above) — no shipped template authors an outgoing
+    // A logic-split router's only edges are its own deterministic
+    // transfer/no-transfer pair — no shipped template authors an outgoing
     // transition from a transfer-only state today (it's always
-    // is_terminal), but guard it the same way the is_terminal pass below
-    // does rather than throw.
-    if (!fromNode || fromNode.type === "transfer_call" || !nodesById.has(transition.to)) continue;
+    // is_terminal), so guard rather than throw.
+    if (!fromNode || fromNode.type === "branch" || !nodesById.has(transition.to)) continue;
     fromNode.edges.push({
       id: `edge_${transition.from}_${transition.to}_${index}`,
       destination_node_id: transition.to,
@@ -626,12 +919,15 @@ function compileConversationFlow(
     const targetNode = nodesById.get(globalIntent.target_state);
     if (!targetNode) continue;
     if (globalIntent.reachable_from === "any") {
+      // RETELL-VERIFIED (DISCLOSE-1): a logic-split node "can function as a
+      // global node" (docs.retellai.com/build/conversation-flow/
+      // logic-split-node; retell-sdk `BranchNode.global_node_setting`).
       targetNode.global_node_setting = { condition: globalIntent.description };
       continue;
     }
     for (const fromStateId of globalIntent.reachable_from) {
       const fromNode = nodesById.get(fromStateId);
-      if (!fromNode || fromNode.type === "transfer_call") continue;
+      if (!fromNode || fromNode.type === "branch") continue;
       // CALL-7: same dedup guard as `compileMultiPrompt`'s live-confirmed
       // fix below (see that function's own doc comment) — not currently
       // reachable by any shipped template (every `global_intents` entry
@@ -651,16 +947,15 @@ function compileConversationFlow(
   }
 
   const startState = template.states[0];
-  const startNodeId = startState?.id ?? "";
-  if (startState) {
-    const startNode = nodesById.get(startState.id);
-    // The start state is never a transfer-only state in any shipped
-    // template (see this file's own compileTemplate doc comment history /
-    // packages/adapters/retell's identical documented assumption) — guard
-    // defensively rather than assume.
-    if (startNode && startNode.type !== "transfer_call") {
-      startNode.instruction.text = `${template.disclosure_line}\n\n${LANGUAGE_INSTRUCTION}\n\n${CALLER_RECENT_CONTEXT_INSTRUCTION}\n\n${startNode.instruction.text}`;
-    }
+  const startStateId = startState?.id ?? "";
+  const startNode = startState ? nodesById.get(startState.id) : undefined;
+  // DISCLOSE-1: the start state no longer speaks first (the static opening
+  // node does), so its own "greet the caller" prompt must not make the
+  // model greet a second time. The disclosure itself is no longer prepended
+  // here — it is spoken verbatim by the opening node, which is what the
+  // publish gate (`verifyDisclosureGate`) now checks.
+  if (startNode && startNode.type !== "branch") {
+    startNode.instruction.text = `${openingAlreadySpokenInstruction(opening)}\n\n${startNode.instruction.text}`;
   }
 
   // CALL-2: every `is_terminal` state gets its own `end` node plus one
@@ -671,8 +966,8 @@ function compileConversationFlow(
   const endNodes: EndNode[] = [];
   for (const state of template.states) {
     if (!state.is_terminal) continue;
-    const fromNode = nodesById.get(state.id);
-    if (!fromNode) continue;
+    const owner = endEdgeOwner.get(state.id);
+    if (!owner) continue;
     const endNodeId = `${state.id}__end`;
     endNodes.push({
       id: endNodeId,
@@ -684,11 +979,7 @@ function compileConversationFlow(
         text: "Thank the caller, confirm there's nothing else you can help with, and say a warm goodbye.",
       },
     });
-    // A transfer_call node's own `edge` (set above) already targets this
-    // exact end-node id — nothing further to wire onto it, and it has no
-    // `.edges` array to push onto anyway.
-    if (fromNode.type === "transfer_call") continue;
-    fromNode.edges.push({
+    owner.edges.push({
       id: `edge_${state.id}_end`,
       destination_node_id: endNodeId,
       transition_condition: {
@@ -698,6 +989,27 @@ function compileConversationFlow(
     });
   }
 
+  // DISCLOSE-1: the static opening node — built LAST so it can copy the
+  // start state's final edge set (authored transitions, explicit global
+  // intents, any end edge): the caller's first reply routes exactly as it
+  // did when the start state itself spoke first, and anything else falls
+  // through `else_edge` to the start state, which answers with its own prompt.
+  const openingNode: OpeningNode = {
+    id: OPENING_NODE_ID,
+    type: "conversation",
+    name: "Opening — AI and recording disclosure",
+    instruction: { type: "static_text", text: opening.text },
+    edges:
+      startNode && startNode.type !== "branch"
+        ? startNode.edges.map((edge) => ({ ...edge, id: `opening_${edge.id}` }))
+        : [],
+    else_edge: {
+      id: "edge_opening_else",
+      destination_node_id: startStateId,
+      transition_condition: { type: "prompt", prompt: "Else" },
+    },
+  };
+
   // CALL-4 (docs/BUILD_NOTES.md "FAQ-only calls never hang up"): a single
   // generic wrap-up escape, reachable from ANYWHERE in the flow via
   // Retell's global-node mechanism (the same mechanism every authored
@@ -705,11 +1017,9 @@ function compileConversationFlow(
   // to any one vertical's state ids. Two nodes, matching the task's own
   // "Is there anything else I can help with?" -> no -> end shape: a
   // conversation node asks the question and either loops back to the
-  // flow's start node (the caller has another request) or proceeds to a
-  // true end node (they don't). This is what closes the gap `is_terminal`
-  // end-nodes above don't cover: a state like `greeting` that answers an
-  // FAQ inline and is never itself `is_terminal` (it's also the booking
-  // entry point, so it can't always be).
+  // flow's start STATE (the caller has another request — never the static
+  // opening node, which would replay the greeting) or proceeds to a true
+  // end node (they don't).
   const WRAP_UP_NODE_ID = "__wrap_up";
   const WRAP_UP_END_NODE_ID = "__wrap_up_end";
   const wrapUpNode: ConversationNode = {
@@ -732,7 +1042,7 @@ function compileConversationFlow(
       },
       {
         id: "edge_wrap_up_to_start",
-        destination_node_id: startNodeId,
+        destination_node_id: startStateId,
         transition_condition: {
           type: "prompt",
           prompt: "The caller says yes and has another request or question",
@@ -744,14 +1054,9 @@ function compileConversationFlow(
       // condition only covered "a request was just answered", so a caller
       // who never states any business request at all (e.g. asks only
       // "are you an AI?" and then says goodbye without ever booking/
-      // asking an FAQ) had no matching edge anywhere in the flow. With
-      // nowhere to go, the model just re-rendered the start node's own
-      // instruction (disclosure line included) turn after turn — a real,
-      // visible repeated-disclosure-line loop, not simulator noise,
-      // confirmed via a live transcript that settled "Ending the
-      // conversation early as there might be a loop." Widened to also
-      // cover the caller saying goodbye / indicating they're done with
-      // NOTHING resolved yet, not only after something was.
+      // asking an FAQ) had no matching edge anywhere in the flow. Widened
+      // to also cover the caller saying goodbye / indicating they're done
+      // with NOTHING resolved yet, not only after something was.
       condition:
         "The caller's current question or request has just been fully answered or handled " +
         "(for example an FAQ about hours or pricing) and nothing else in this call is actively " +
@@ -769,14 +1074,23 @@ function compileConversationFlow(
     instruction: { type: "prompt", text: "Thank the caller and say a warm goodbye." },
   };
 
-  const body: ConversationFlowBody = {
-    start_node_id: startNodeId,
+  return {
+    start_node_id: OPENING_NODE_ID,
     start_speaker: "agent",
-    nodes: [...nodesById.values(), ...endNodes, wrapUpNode, wrapUpEndNode],
+    nodes: [
+      openingNode,
+      ...nodesById.values(),
+      ...transferNodes,
+      ...endNodes,
+      wrapUpNode,
+      wrapUpEndNode,
+    ],
     tools,
+    global_prompt: template.system_prompt
+      ? `${template.system_prompt}\n\n${GLOBAL_CALL_CONTEXT_INSTRUCTIONS}`
+      : GLOBAL_CALL_CONTEXT_INSTRUCTIONS,
+    default_dynamic_variables: defaultDynamicVariablesFor(options),
   };
-  if (template.system_prompt) body.global_prompt = template.system_prompt;
-  return body;
 }
 
 // ---------------------------------------------------------------------
@@ -795,6 +1109,53 @@ interface MultiPromptTransferCallTool {
   description?: string | undefined;
   transfer_destination: { type: "predefined"; number: string };
   transfer_option: { type: "warm_transfer" };
+  /**
+   * DISCLOSE-1 (docs/BUILD_NOTES.md): the tool itself announces the
+   * connection while it transfers — the only place a retell-llm agent is
+   * told to say it. RETELL-VERIFIED (docs.retellai.com/api-references/
+   * create-retell-llm, 2026-09-29): `speak_during_execution` "If true, will
+   * speak during execution"; `execution_message_description` "Describes
+   * what to say to user when transferring the call. Only applicable when
+   * speak_during_execution is true."; `execution_message_type` "'prompt'
+   * means the agent will use execution_message_description as a prompt to
+   * generate the message" (retell-sdk 5.64.0 `LlmCreateParams.TransferCallTool`).
+   */
+  speak_during_execution: true;
+  execution_message_type: "prompt";
+  execution_message_description: string;
+}
+
+/** DISCLOSE-1: the one native transfer_call tool shape both retell-llm targets grant. */
+function nativeTransferCallTool(description: string | undefined): MultiPromptTransferCallTool {
+  return {
+    type: "transfer_call",
+    name: TRANSFER_CALL_TOOL_NAME,
+    description,
+    transfer_destination: { type: "predefined", number: TRANSFER_NUMBER_TOKEN },
+    transfer_option: { type: "warm_transfer" },
+    speak_during_execution: true,
+    execution_message_type: "prompt",
+    execution_message_description: TRANSFER_ANNOUNCEMENT_INSTRUCTION,
+  };
+}
+
+/**
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): the retell-llm fields that make the
+ * static opening line the agent's first utterance. RETELL-VERIFIED
+ * (docs.retellai.com/api-references/create-retell-llm + retell-sdk 5.64.0
+ * `LlmCreateParams`, 2026-09-29): `begin_message` — "First utterance said by
+ * the agent in the call. If not set, LLM will dynamically generate a
+ * message" (the unset case is exactly how the recording clause got
+ * paraphrased away); `start_speaker` — "The speaker who starts the
+ * conversation ... Must be either 'user' or 'agent'"; dynamic variables are
+ * substituted in "The opening message" (docs.retellai.com/build/
+ * dynamic-variables); `default_dynamic_variables` — "injected ... when
+ * specific values are not provided in a request".
+ */
+interface RetellLlmOpeningFields {
+  begin_message: string;
+  start_speaker: "agent";
+  default_dynamic_variables: Record<string, string>;
 }
 
 interface MultiPromptState {
@@ -810,7 +1171,7 @@ interface EndCallTool {
   description?: string;
 }
 
-export interface MultiPromptBody {
+export interface MultiPromptBody extends RetellLlmOpeningFields {
   general_prompt: string;
   starting_state: string;
   states: MultiPromptState[];
@@ -881,6 +1242,7 @@ function compileMultiPrompt(
   // referenced only so existing 3-arg call sites keep compiling under
   // `noUnusedParameters`.
   void options.transferNumber;
+  const opening = buildOpeningLine(template.disclosure_line, options.language);
   // CALL-7 live-confirmed bug (docs/BUILD_NOTES.md): unlike
   // `compileConversationFlow` (CALL-4), this function NEVER special-cased
   // `transfer_call` — it compiled to an ordinary custom `/voice-tools`
@@ -932,15 +1294,7 @@ function compileMultiPrompt(
         name: state.id,
         state_prompt: `${state.prompt_fragment}\n\n${TRANSFER_TOOL_OR_FALLBACK_INSTRUCTION}${NO_TRANSFER_FALLBACK_END_CALL_SUFFIX}`,
         edges: [],
-        tools: [
-          {
-            type: "transfer_call",
-            name: TRANSFER_CALL_TOOL_NAME,
-            description: transferToolDescription,
-            transfer_destination: { type: "predefined", number: TRANSFER_NUMBER_TOKEN },
-            transfer_option: { type: "warm_transfer" },
-          },
-        ],
+        tools: [nativeTransferCallTool(transferToolDescription)],
       });
       continue;
     }
@@ -1012,12 +1366,18 @@ function compileMultiPrompt(
   if (startState) {
     const compiledStart = statesByName.get(startState.id);
     if (compiledStart) {
-      compiledStart.state_prompt = `${template.disclosure_line}\n\n${LANGUAGE_INSTRUCTION}\n\n${CALLER_RECENT_CONTEXT_INSTRUCTION}\n\n${compiledStart.state_prompt}`;
+      // DISCLOSE-1: the disclosure is now the static `begin_message`
+      // below (spoken verbatim, never model-generated); the starting state
+      // is told it has already been spoken so it never greets twice.
+      compiledStart.state_prompt = `${openingAlreadySpokenInstruction(opening)}\n\n${compiledStart.state_prompt}`;
     }
   }
 
   return {
-    general_prompt: (template.system_prompt ?? "") + END_CALL_INSTRUCTION,
+    begin_message: opening.text,
+    start_speaker: "agent",
+    default_dynamic_variables: defaultDynamicVariablesFor(options),
+    general_prompt: `${template.system_prompt ? `${template.system_prompt}\n\n` : ""}${GLOBAL_CALL_CONTEXT_INSTRUCTIONS}${END_CALL_INSTRUCTION}`,
     starting_state: startState?.id ?? "",
     states: [...statesByName.values()],
     general_tools: [
@@ -1050,7 +1410,7 @@ function compileMultiPrompt(
 // single_prompt
 // ---------------------------------------------------------------------
 
-export interface SinglePromptBody {
+export interface SinglePromptBody extends RetellLlmOpeningFields {
   general_prompt: string;
   /** CALL-7: see `MultiPromptBody#general_tools`'s own doc comment — the
    * SAME "a Retell LLM response engine never ends a call on its own"
@@ -1071,6 +1431,7 @@ function compileSinglePrompt(
   // referenced only so existing 3-arg call sites keep compiling under
   // `noUnusedParameters`.
   void options.transferNumber;
+  const opening = buildOpeningLine(template.disclosure_line, options.language);
   // CALL-7/PUBLISH-1: the SAME native-transfer-tool fix as
   // `compileMultiPrompt` above — single_prompt has no per-state tool
   // gating at all (every granted tool is always available, by this compile
@@ -1088,10 +1449,13 @@ function compileSinglePrompt(
   );
   const hasTransferCallTool = template.tools.some((t) => t.name === TRANSFER_CALL_TOOL_NAME);
 
+  // DISCLOSE-1: the disclosure is the static `begin_message` now (spoken
+  // verbatim, never model-generated) — the prompt only needs to know it has
+  // already been said, plus the global call-context block every compile
+  // target carries.
   const sections: string[] = [
-    template.disclosure_line,
-    LANGUAGE_INSTRUCTION,
-    CALLER_RECENT_CONTEXT_INSTRUCTION,
+    openingAlreadySpokenInstruction(opening),
+    GLOBAL_CALL_CONTEXT_INSTRUCTIONS,
   ];
   if (template.system_prompt) sections.push(template.system_prompt);
   for (const state of template.states) {
@@ -1113,6 +1477,9 @@ function compileSinglePrompt(
   sections.push(`## Ending the call\n${END_CALL_INSTRUCTION.trim()}`);
 
   return {
+    begin_message: opening.text,
+    start_speaker: "agent",
+    default_dynamic_variables: defaultDynamicVariablesFor(options),
     general_prompt: sections.join("\n\n"),
     general_tools: [
       ...generalTools,
@@ -1121,17 +1488,7 @@ function compileSinglePrompt(
         name: "end_call",
         description: "End the call once it's fully wrapped up.",
       },
-      ...(hasTransferCallTool
-        ? [
-            {
-              type: "transfer_call" as const,
-              name: TRANSFER_CALL_TOOL_NAME,
-              description: transferToolDescription,
-              transfer_destination: { type: "predefined" as const, number: TRANSFER_NUMBER_TOKEN },
-              transfer_option: { type: "warm_transfer" as const },
-            },
-          ]
-        : []),
+      ...(hasTransferCallTool ? [nativeTransferCallTool(transferToolDescription)] : []),
     ],
   };
 }
@@ -1145,33 +1502,55 @@ export type CompiledFlowRequest =
   | { kind: "multi_prompt"; body: MultiPromptBody }
   | { kind: "single_prompt"; body: SinglePromptBody };
 
-function firstTurnText(flow: CompiledFlowRequest): string {
+export interface FirstUtterance {
+  /** True only when Retell speaks `text` verbatim (a conversation-flow `static_text` start node, or a retell-llm `begin_message`) — never model-generated. */
+  isStatic: boolean;
+  text: string;
+}
+
+/**
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): the agent's FIRST utterance as Retell
+ * will actually produce it. Before DISCLOSE-1 the gate inspected the start
+ * node's PROMPT text (an instruction the model paraphrases — VERIFY-DEPLOY
+ * heard "this call may be recorded" dropped on live calls while this gate
+ * reported verified); it now inspects what is spoken.
+ */
+export function firstUtterance(flow: CompiledFlowRequest): FirstUtterance {
   switch (flow.kind) {
     case "conversation_flow": {
-      // The start node is always states[0] (compileConversationFlow), never
-      // a synthetic `end`/`transfer_call`/wrap-up node — `instruction` is
-      // only optional on those other union arms (declared there purely for
-      // this lookup's type-checking, never populated by this compiler).
       const startNode = flow.body.nodes.find((n) => n.id === flow.body.start_node_id);
-      return startNode?.instruction?.text ?? "";
+      if (!startNode || !("instruction" in startNode) || !startNode.instruction) {
+        return { isStatic: false, text: "" };
+      }
+      return {
+        isStatic: startNode.type === "conversation" && startNode.instruction.type === "static_text",
+        text: startNode.instruction.text,
+      };
     }
-    case "multi_prompt": {
-      const startState = flow.body.states.find((s) => s.name === flow.body.starting_state);
-      return startState?.state_prompt ?? "";
+    case "multi_prompt":
+    case "single_prompt": {
+      // RETELL-VERIFIED: an unset `begin_message` means "LLM will
+      // dynamically generate a message"; `""` means the agent waits for the
+      // user — neither speaks a disclosure verbatim.
+      const beginMessage = flow.body.begin_message;
+      return beginMessage && flow.body.start_speaker === "agent"
+        ? { isStatic: true, text: beginMessage }
+        : { isStatic: false, text: "" };
     }
-    case "single_prompt":
-      return flow.body.general_prompt;
   }
 }
 
 /** The G1/G2 disclosure publish gate: refuses to consider a compile
- * "verified" unless `disclosure_line` appears verbatim in the first turn's
- * text. Pure and non-throwing (matches T2's `verifyDisclosureGate`) — the
- * HARD refusal to call Retell lives at the caller (admin/handler.ts), which
- * must check `disclosureVerified` before ever invoking a provider. */
+ * "verified" unless the agent's first utterance is STATIC (spoken verbatim,
+ * never model-generated — DISCLOSE-1) and contains `disclosureLine`
+ * verbatim. Pure and non-throwing (matches T2's `verifyDisclosureGate`) —
+ * the HARD refusal to call Retell lives at the caller (admin/handler.ts,
+ * `_shared/provisioning/compile-and-publish.ts`), which must check
+ * `disclosureVerified` before ever invoking a provider. */
 export function verifyDisclosureGate(flow: CompiledFlowRequest, disclosureLine: string): boolean {
   if (disclosureLine.length === 0) return false;
-  return firstTurnText(flow).includes(disclosureLine);
+  const first = firstUtterance(flow);
+  return first.isStatic && first.text.includes(disclosureLine);
 }
 
 /**
@@ -1235,6 +1614,8 @@ export function buildPostCallAnalysisData(
 export interface CompiledTemplate {
   compileTarget: CompilerAgentTemplate["compile_target"];
   disclosureVerified: boolean;
+  /** DISCLOSE-1: the static first utterance this compile emits (and the disclosure literal the gate checked it for). */
+  openingLine: OpeningLine;
   flow: CompiledFlowRequest;
   /** ANALYSIS-1: see `buildPostCallAnalysisData` above. */
   postCallAnalysisData: PostCallAnalysisDataField[];
@@ -1255,9 +1636,17 @@ export function compileTemplate(
         ? { kind: "multi_prompt", body: compileMultiPrompt(template, toolWebhookUrl, options) }
         : { kind: "single_prompt", body: compileSinglePrompt(template, toolWebhookUrl, options) };
 
+  const openingLine = buildOpeningLine(template.disclosure_line, options.language);
   return {
     compileTarget: template.compile_target,
-    disclosureVerified: verifyDisclosureGate(flow, template.disclosure_line),
+    // DISCLOSE-1: checked against the literal actually spoken — the
+    // template's own disclosure line, or its vetted translation for a
+    // non-English tenant (`buildOpeningLine`); an empty template disclosure
+    // line always fails.
+    disclosureVerified:
+      template.disclosure_line.length > 0 &&
+      verifyDisclosureGate(flow, openingLine.disclosureLiteral),
+    openingLine,
     flow,
     postCallAnalysisData: buildPostCallAnalysisData(template),
   };

@@ -28,8 +28,12 @@
  */
 
 import type { AgentTemplate } from "@heyloo/canonical-types";
+import type { ConversationFlowCreateParams } from "retell-sdk/resources/conversation-flow";
+import type { LlmCreateParams } from "retell-sdk/resources/llm";
 import { describe, expect, it } from "vitest";
 import { compileConversationFlow as compileNodeConversationFlow } from "./conversation-flow.js";
+import { compileMultiPrompt as compileNodeMultiPrompt } from "./multi-prompt.js";
+import { buildOpeningLine as buildNodeOpeningLine } from "./opening.js";
 
 const DENO_TEMPLATE_COMPILER_URL = new URL(
   "../../../../../supabase/functions/_shared/compiler/template-compiler.ts",
@@ -41,16 +45,34 @@ interface DenoNode {
   type: string;
   edges?: Array<{ destination_node_id: string }>;
   edge?: { destination_node_id?: string };
+  else_edge?: { destination_node_id?: string };
+  instruction?: { type: string; text: string };
 }
 interface DenoCompiledTemplate {
-  flow: { kind: string; body: { nodes: DenoNode[]; start_node_id: string } };
+  flow: {
+    kind: string;
+    body: {
+      nodes: DenoNode[];
+      start_node_id: string;
+      begin_message?: string;
+      start_speaker?: string;
+      default_dynamic_variables?: Record<string, string>;
+      states?: Array<{ name: string; tools: unknown[] }>;
+    };
+  };
+  disclosureVerified: boolean;
+  openingLine: { text: string; disclosureLiteral: string; language: string };
 }
 interface DenoCompilerModule {
   compileTemplate: (
     template: unknown,
     toolWebhookUrl: string,
-    options?: { transferNumber?: string | null },
+    options?: { transferNumber?: string | null; language?: string },
   ) => DenoCompiledTemplate;
+  buildOpeningLine: (
+    disclosureLine: string,
+    language?: string,
+  ) => { text: string; disclosureLiteral: string; language: string };
 }
 
 async function loadDenoCompiler(): Promise<DenoCompilerModule> {
@@ -134,21 +156,39 @@ const PARITY_TEMPLATE: AgentTemplate = {
   disclosure_line: "This call may be recorded and you're speaking with an AI assistant.",
 };
 
-/** Node id -> {type, edge destination ids} — ignores edge ids/prompt wording/field ordering, only the structural shape. */
+/** Node id -> {type, edge destination ids} — ignores edge ids/prompt wording/field ordering, only the structural shape. DISCLOSE-1: an `else_edge` destination is included as `else:<id>`. */
 function shapeOf(nodes: DenoNode[]): Record<string, { type: string; edgesTo: string[] }> {
   const out: Record<string, { type: string; edgesTo: string[] }> = {};
   for (const n of nodes) {
-    const edgesTo = n.edges
-      ? n.edges.map((e) => e.destination_node_id).sort()
-      : n.edge?.destination_node_id
-        ? [n.edge.destination_node_id]
-        : [];
+    const edgesTo = [
+      ...(n.edges ?? []).map((e) => e.destination_node_id),
+      ...(n.edge?.destination_node_id ? [n.edge.destination_node_id] : []),
+      ...(n.else_edge?.destination_node_id ? [`else:${n.else_edge.destination_node_id}`] : []),
+    ].sort();
     out[n.id] = { type: n.type, edgesTo };
   }
   return out;
 }
 
-describe("Deno (live) vs. Node (packages/adapters/retell) conversation_flow compiler parity — CALL-4/PUBLISH-1", () => {
+/**
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): the ONE documented structural
+ * difference between the two compilers. The live Deno compiler emits a
+ * transfer-only state's router as a silent Retell logic-split node
+ * (`type: "branch"`); this package emits a `"conversation"` node with the
+ * identical deterministic equation edge + else edge, because typing a
+ * `"branch"` node here requires a one-line extension to
+ * `src/sdk-contract.test.ts` (outside this compiler directory). Every other
+ * node id, type and edge destination must still match exactly.
+ */
+function expectedNodeType(denoType: string): string {
+  return denoType === "branch" ? "conversation" : denoType;
+}
+
+/** The one disclosure line every shipped template uses (`agent-template-seeds.ts`) — the key of both compilers' translation tables. */
+const SHIPPED_DISCLOSURE_LINE =
+  "Thanks for calling {{business_name}}. This is {{assistant_name}}, their AI assistant — this call may be recorded.";
+
+describe("Deno (live) vs. Node (packages/adapters/retell) conversation_flow compiler parity — CALL-4/PUBLISH-1/DISCLOSE-1", () => {
   // PUBLISH-1 (docs/BUILD_NOTES.md): `options.transferNumber` no longer
   // affects the compiled output AT ALL in either compiler — a transfer-
   // only state now ALWAYS compiles to the same router + `{{transfer_number}}`
@@ -168,7 +208,9 @@ describe("Deno (live) vs. Node (packages/adapters/retell) conversation_flow comp
 
     expect(Object.keys(nodeShape).sort()).toEqual(Object.keys(denoShape).sort());
     for (const id of Object.keys(denoShape)) {
-      expect(nodeShape[id]?.type, `node '${id}' type`).toBe(denoShape[id]?.type);
+      expect(nodeShape[id]?.type, `node '${id}' type`).toBe(
+        expectedNodeType(denoShape[id]?.type ?? ""),
+      );
       expect(nodeShape[id]?.edgesTo, `node '${id}' edge destinations`).toEqual(
         denoShape[id]?.edgesTo,
       );
@@ -176,11 +218,38 @@ describe("Deno (live) vs. Node (packages/adapters/retell) conversation_flow comp
     expect(denoCompiled.flow.body.start_node_id).toBe(nodeFlow.start_node_id);
 
     // Both compilers ALWAYS emit the dedicated transfer node now, and its
-    // router (the original state id) has an edge onto it.
+    // router (the original state id) has an edge onto it — plus (DISCLOSE-1)
+    // an else edge onto the honest no-transfer fallback.
     expect(denoShape["transfer_to_human__transfer"]?.type).toBe("transfer_call");
     expect(nodeShape["transfer_to_human__transfer"]?.type).toBe("transfer_call");
     expect(denoShape["transfer_to_human"]?.edgesTo).toContain("transfer_to_human__transfer");
     expect(nodeShape["transfer_to_human"]?.edgesTo).toContain("transfer_to_human__transfer");
+    expect(denoShape["transfer_to_human"]?.edgesTo).toContain(
+      "else:transfer_to_human__no_transfer",
+    );
+    expect(denoShape["transfer_to_human"]?.type).toBe("branch");
+    // DISCLOSE-1: both start on the same static opening node.
+    expect(denoCompiled.flow.body.start_node_id).toBe("__opening");
+  });
+
+  it("DISCLOSE-1: both compilers speak the identical static opening line", async () => {
+    const denoCompiler = await loadDenoCompiler();
+    const denoCompiled = denoCompiler.compileTemplate(PARITY_TEMPLATE, TOOL_WEBHOOK_URL);
+    const nodeFlow = compileNodeConversationFlow(PARITY_TEMPLATE, TOOL_WEBHOOK_URL);
+    const denoOpening = denoCompiled.flow.body.nodes.find((n) => n.id === "__opening");
+    const nodeOpening = nodeFlow.nodes.find((n) => n.id === "__opening");
+    expect(nodeOpening?.type === "conversation" ? nodeOpening.instruction : undefined).toEqual(
+      denoOpening?.instruction,
+    );
+    expect(denoOpening?.instruction?.type).toBe("static_text");
+    for (const language of ["en", "es", "fr"]) {
+      for (const line of [PARITY_TEMPLATE.disclosure_line, SHIPPED_DISCLOSURE_LINE]) {
+        expect(buildNodeOpeningLine(line, language)).toEqual(
+          denoCompiler.buildOpeningLine(line, language),
+        );
+      }
+    }
+    expect(denoCompiled.disclosureVerified).toBe(true);
   });
 
   it("a passed transferNumber option is ignored identically by both compilers (dead back-compat input, PUBLISH-1)", async () => {
@@ -203,6 +272,135 @@ describe("Deno (live) vs. Node (packages/adapters/retell) conversation_flow comp
     const nodeWithoutOption = compileNodeConversationFlow(PARITY_TEMPLATE, TOOL_WEBHOOK_URL);
     expect(shapeOf(nodeWithOption.nodes as unknown as DenoNode[])).toEqual(
       shapeOf(nodeWithoutOption.nodes as unknown as DenoNode[]),
+    );
+  });
+});
+
+/**
+ * DISCLOSE-1 (docs/BUILD_NOTES.md, CLAUDE.md Rule 1): `src/sdk-contract.test.ts`
+ * type-checks THIS package's compiler output against the real retell-sdk
+ * types, but the LIVE compiler is the Deno one, whose output tsc cannot see
+ * from here (dynamic import, see this file's header). So the new node/field
+ * shapes the Deno compiler emits are written out below as literals TYPED
+ * against retell-sdk 5.64.0's own `ConversationFlowCreateParams`/
+ * `LlmCreateParams` (a shape mistake fails `tsc -b`), and the Deno runtime
+ * output is asserted `toEqual` to them — together, a real SDK contract check
+ * of what production actually sends.
+ */
+describe("DISCLOSE-1: the live (Deno) compiler's new shapes match retell-sdk's own types", () => {
+  const OPENING_TEXT = `${PARITY_TEMPLATE.disclosure_line} {{caller_greeting}} How can I help you today?`;
+
+  it("static opening node, logic-split router, announcing transfer node", async () => {
+    const denoCompiler = await loadDenoCompiler();
+    const compiled = denoCompiler.compileTemplate(PARITY_TEMPLATE, TOOL_WEBHOOK_URL);
+    const byId = new Map(compiled.flow.body.nodes.map((n) => [n.id, n]));
+
+    const opening: ConversationFlowCreateParams.ConversationNode = {
+      id: "__opening",
+      type: "conversation",
+      name: "Opening — AI and recording disclosure",
+      instruction: { type: "static_text", text: OPENING_TEXT },
+      edges: [
+        {
+          id: "opening_edge_greeting_check_time_0",
+          destination_node_id: "check_time",
+          transition_condition: { type: "prompt", prompt: "wants_to_book" },
+        },
+      ],
+      else_edge: {
+        id: "edge_opening_else",
+        destination_node_id: "greeting",
+        transition_condition: { type: "prompt", prompt: "Else" },
+      },
+    };
+    expect(byId.get("__opening")).toEqual(opening);
+
+    const router: ConversationFlowCreateParams.BranchNode = {
+      id: "transfer_to_human",
+      type: "branch",
+      name: "Transfer to human",
+      edges: [
+        {
+          id: "edge_transfer_to_human_has_transfer",
+          destination_node_id: "transfer_to_human__transfer",
+          transition_condition: {
+            type: "equation",
+            operator: "&&",
+            equations: [{ left: "{{transfer_number}}", operator: "contains", right: "+" }],
+          },
+        },
+      ],
+      else_edge: {
+        id: "edge_transfer_to_human_no_transfer",
+        destination_node_id: "transfer_to_human__no_transfer",
+        transition_condition: { type: "prompt", prompt: "Else" },
+      },
+      global_node_setting: { condition: "The caller explicitly asks for a human." },
+    };
+    expect(byId.get("transfer_to_human")).toEqual(router);
+
+    const transfer: ConversationFlowCreateParams.TransferCallNode = {
+      id: "transfer_to_human__transfer",
+      type: "transfer_call",
+      name: "Transfer to human — live transfer",
+      transfer_destination: { type: "predefined", number: "{{transfer_number}}" },
+      transfer_option: { type: "warm_transfer" },
+      speak_during_execution: true,
+      instruction: {
+        type: "prompt",
+        text:
+          "In one short, warm sentence, tell the caller you're connecting them to a member of " +
+          "the team now. Say nothing else.",
+      },
+      edge: {
+        id: "transfer_to_human_transfer_failed",
+        destination_node_id: "transfer_to_human__no_transfer",
+        transition_condition: { type: "prompt", prompt: "Transfer failed" },
+      },
+    };
+    expect(byId.get("transfer_to_human__transfer")).toEqual(transfer);
+
+    const flowDefaults: ConversationFlowCreateParams["default_dynamic_variables"] =
+      compiled.flow.body.default_dynamic_variables ?? null;
+    expect(flowDefaults).toMatchObject({ caller_greeting: "", transfer_number: "" });
+  });
+
+  it("retell-llm begin_message / start_speaker / announcing transfer tool", async () => {
+    const denoCompiler = await loadDenoCompiler();
+    const compiled = denoCompiler.compileTemplate(
+      { ...PARITY_TEMPLATE, compile_target: "multi_prompt" },
+      TOOL_WEBHOOK_URL,
+    );
+    const opening: Pick<LlmCreateParams, "begin_message" | "start_speaker"> = {
+      begin_message: OPENING_TEXT,
+      start_speaker: "agent",
+    };
+    expect({
+      begin_message: compiled.flow.body.begin_message,
+      start_speaker: compiled.flow.body.start_speaker,
+    }).toEqual(opening);
+
+    const transferTool: LlmCreateParams.State.TransferCallTool = {
+      type: "transfer_call",
+      name: "transfer_call",
+      description: "Warm-transfer the caller to a human.",
+      transfer_destination: { type: "predefined", number: "{{transfer_number}}" },
+      transfer_option: { type: "warm_transfer" },
+      speak_during_execution: true,
+      execution_message_type: "prompt",
+      execution_message_description:
+        "In one short, warm sentence, tell the caller you're connecting them to a member of " +
+        "the team now. Say nothing else.",
+    };
+    const transferState = compiled.flow.body.states?.find((s) => s.name === "transfer_to_human");
+    expect(transferState?.tools).toEqual([transferTool]);
+    // This package's own multi_prompt compile emits the same opening fields.
+    const nodeLlm = compileNodeMultiPrompt(
+      { ...PARITY_TEMPLATE, compile_target: "multi_prompt" },
+      TOOL_WEBHOOK_URL,
+    );
+    expect({ begin_message: nodeLlm.begin_message, start_speaker: nodeLlm.start_speaker }).toEqual(
+      opening,
     );
   });
 });

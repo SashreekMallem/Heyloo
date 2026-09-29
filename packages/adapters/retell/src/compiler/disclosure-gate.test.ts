@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { firstTurnText, verifyDisclosureGate } from "./disclosure-gate.js";
+import { firstTurnText, firstUtterance, verifyDisclosureGate } from "./disclosure-gate.js";
 import type { RetellFlowRequest } from "./types.js";
 
 const DISCLOSURE = "This call may be recorded.";
 
-function conversationFlowFixture(startText: string): RetellFlowRequest {
+function conversationFlowFixture(
+  startText: string,
+  instructionType: "prompt" | "static_text" = "static_text",
+): RetellFlowRequest {
   return {
     kind: "conversation_flow",
     body: {
@@ -15,7 +18,7 @@ function conversationFlowFixture(startText: string): RetellFlowRequest {
           id: "n1",
           type: "conversation",
           name: "Start",
-          instruction: { type: "prompt", text: startText },
+          instruction: { type: instructionType, text: startText },
           edges: [],
         },
       ],
@@ -24,53 +27,84 @@ function conversationFlowFixture(startText: string): RetellFlowRequest {
   };
 }
 
-function multiPromptFixture(startPrompt: string): RetellFlowRequest {
+function multiPromptFixture(beginMessage: string): RetellFlowRequest {
   return {
     kind: "multi_prompt",
     body: {
+      begin_message: beginMessage,
+      start_speaker: "agent",
       general_prompt: "shared context",
       starting_state: "s1",
-      states: [{ name: "s1", state_prompt: startPrompt, edges: [], tools: [] }],
+      states: [{ name: "s1", state_prompt: `${DISCLOSURE} prompt only`, edges: [], tools: [] }],
       general_tools: [],
     },
   };
 }
 
-function singlePromptFixture(generalPrompt: string): RetellFlowRequest {
-  return { kind: "single_prompt", body: { general_prompt: generalPrompt, general_tools: [] } };
+function singlePromptFixture(beginMessage: string): RetellFlowRequest {
+  return {
+    kind: "single_prompt",
+    body: {
+      begin_message: beginMessage,
+      start_speaker: "agent",
+      general_prompt: `${DISCLOSURE}\n\nrest`,
+      general_tools: [],
+    },
+  };
 }
 
-describe("firstTurnText", () => {
-  it("extracts the start node's instruction text for conversation_flow", () => {
-    expect(firstTurnText(conversationFlowFixture(`${DISCLOSURE} Hello!`))).toBe(
-      `${DISCLOSURE} Hello!`,
+describe("firstUtterance (DISCLOSE-1)", () => {
+  it("a conversation_flow static_text start node is a static first utterance", () => {
+    expect(firstUtterance(conversationFlowFixture(`${DISCLOSURE} Hello!`))).toEqual({
+      isStatic: true,
+      text: `${DISCLOSURE} Hello!`,
+    });
+  });
+
+  it("a PROMPT start node is model-generated, never static", () => {
+    expect(firstUtterance(conversationFlowFixture(`${DISCLOSURE} Hello!`, "prompt")).isStatic).toBe(
+      false,
     );
   });
 
-  it("extracts the starting_state's state_prompt for multi_prompt", () => {
-    expect(firstTurnText(multiPromptFixture(`${DISCLOSURE} Hi there.`))).toBe(
-      `${DISCLOSURE} Hi there.`,
-    );
+  it("a retell-llm begin_message is the static first utterance (multi_prompt and single_prompt)", () => {
+    expect(firstUtterance(multiPromptFixture(`${DISCLOSURE} Hi there.`))).toEqual({
+      isStatic: true,
+      text: `${DISCLOSURE} Hi there.`,
+    });
+    expect(firstTurnText(singlePromptFixture(`${DISCLOSURE} Hi.`))).toBe(`${DISCLOSURE} Hi.`);
   });
 
-  it("extracts general_prompt for single_prompt", () => {
-    expect(firstTurnText(singlePromptFixture(`${DISCLOSURE}\n\nrest`))).toBe(
-      `${DISCLOSURE}\n\nrest`,
-    );
+  it("an empty begin_message is not a static utterance (Retell: the agent then waits for the user)", () => {
+    expect(firstUtterance(multiPromptFixture("")).isStatic).toBe(false);
   });
 
-  it("returns empty string when the conversation_flow start node id doesn't resolve", () => {
+  it("returns a non-static empty utterance when the conversation_flow start node id doesn't resolve", () => {
     const flow = conversationFlowFixture("whatever");
     if (flow.kind === "conversation_flow") flow.body.start_node_id = "nonexistent";
-    expect(firstTurnText(flow)).toBe("");
+    expect(firstUtterance(flow)).toEqual({ isStatic: false, text: "" });
   });
 });
 
 describe("verifyDisclosureGate", () => {
-  it("passes when the disclosure line is present verbatim in the first turn", () => {
+  it("passes when the disclosure line is present verbatim in a STATIC first utterance", () => {
     expect(verifyDisclosureGate(conversationFlowFixture(`${DISCLOSURE} Hello!`), DISCLOSURE)).toBe(
       true,
     );
+    expect(verifyDisclosureGate(multiPromptFixture(`${DISCLOSURE} welcome`), DISCLOSURE)).toBe(
+      true,
+    );
+    expect(verifyDisclosureGate(singlePromptFixture(`${DISCLOSURE} hi`), DISCLOSURE)).toBe(true);
+  });
+
+  it("DISCLOSE-1: FAILS when the disclosure is only in a prompt the model paraphrases", () => {
+    expect(
+      verifyDisclosureGate(conversationFlowFixture(`${DISCLOSURE} Hello!`, "prompt"), DISCLOSURE),
+    ).toBe(false);
+    // The starting state's prompt and general_prompt both contain it, but
+    // with no begin_message the first utterance is model-generated.
+    expect(verifyDisclosureGate(multiPromptFixture(""), DISCLOSURE)).toBe(false);
+    expect(verifyDisclosureGate(singlePromptFixture(""), DISCLOSURE)).toBe(false);
   });
 
   it("FAILS the gate when the disclosure line is entirely absent (the case it exists to catch)", () => {
@@ -90,17 +124,5 @@ describe("verifyDisclosureGate", () => {
 
   it("fails closed when disclosure_line itself is empty", () => {
     expect(verifyDisclosureGate(conversationFlowFixture("anything at all"), "")).toBe(false);
-  });
-
-  it("passes for multi_prompt when present in the starting state only", () => {
-    expect(verifyDisclosureGate(multiPromptFixture(`${DISCLOSURE} welcome`), DISCLOSURE)).toBe(
-      true,
-    );
-  });
-
-  it("passes for single_prompt when present at the start of general_prompt", () => {
-    expect(verifyDisclosureGate(singlePromptFixture(`${DISCLOSURE}\n\nmore`), DISCLOSURE)).toBe(
-      true,
-    );
   });
 });

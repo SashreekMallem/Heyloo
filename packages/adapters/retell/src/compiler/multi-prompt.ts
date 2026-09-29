@@ -8,10 +8,11 @@
  * VERIFY-8 compiler/types.ts):
  * - Each `AgentState` becomes one Retell "state", keyed by our `StateId`
  *   slug (not the human `name` label) to guarantee uniqueness.
- * - The FIRST declared state is `starting_state`; `disclosure_line` is
- *   prepended verbatim to ITS `state_prompt` (not `general_prompt` — the
- *   disclosure gate checks the starting state specifically, since
- *   `general_prompt` is shared ambient context, not the first spoken turn).
+ * - The FIRST declared state is `starting_state`. DISCLOSE-1
+ *   (docs/BUILD_NOTES.md): `disclosure_line` is spoken verbatim as the
+ *   LLM's static `begin_message` (`opening.ts#buildOpeningLine`,
+ *   `start_speaker: "agent"`) — never a prompt the model can paraphrase —
+ *   and the starting state is told it was already said.
  * - `global_intents` add an edge from every reachable state to the target
  *   state (Retell LLM states have no separate global-node primitive the
  *   way Conversation Flow does — an edge from every applicable state is the
@@ -25,6 +26,13 @@
  */
 
 import type { AgentTemplate } from "@heyloo/canonical-types";
+import {
+  buildOpeningLine,
+  COMPILER_DEFAULT_DYNAMIC_VARIABLES,
+  NEVER_ANNOUNCE_WITHOUT_TRANSFER_INSTRUCTION,
+  openingAlreadySpokenInstruction,
+  TRANSFER_ANNOUNCEMENT_INSTRUCTION,
+} from "./opening.js";
 import type {
   RetellFunctionTool,
   RetellMultiPromptRequest,
@@ -67,6 +75,11 @@ function nativeTransferCallTool(description: string): RetellTransferCallTool {
     transfer_destination: { type: "predefined", number: "{{transfer_number}}" },
     // Warm transfer — SYSTEM_DESIGN §4.5: "warm transfers always carry a context summary".
     transfer_option: { type: "warm_transfer" },
+    // DISCLOSE-1 (mirrors template-compiler.ts): the tool announces the
+    // connection itself, only while it actually transfers.
+    speak_during_execution: true,
+    execution_message_type: "prompt",
+    execution_message_description: TRANSFER_ANNOUNCEMENT_INSTRUCTION,
   };
 }
 
@@ -103,11 +116,18 @@ export function compileMultiPrompt(
     tools.filter((t) => t.name !== TAKE_MESSAGE_TOOL_NAME).map((t) => [t.name, t]),
   );
 
+  const opening = buildOpeningLine(template.disclosure_line);
   const statesByName = new Map<string, RetellMultiPromptState>();
   for (const state of template.states) {
+    const transferOnly =
+      state.allowed_tools.length === 1 && state.allowed_tools[0] === TRANSFER_CALL_TOOL_NAME;
     statesByName.set(state.id, {
       name: state.id,
-      state_prompt: state.prompt_fragment,
+      // DISCLOSE-1 (mirrors template-compiler.ts): a transfer-only state's
+      // model may never announce a connection on its own.
+      state_prompt: transferOnly
+        ? `${state.prompt_fragment}\n\n${NEVER_ANNOUNCE_WITHOUT_TRANSFER_INSTRUCTION}`
+        : state.prompt_fragment,
       edges: [],
       tools: state.allowed_tools
         .map((t) => toolsByName.get(t))
@@ -164,11 +184,15 @@ export function compileMultiPrompt(
   if (startState) {
     const compiledStartState = statesByName.get(startState.id);
     if (compiledStartState) {
-      compiledStartState.state_prompt = `${template.disclosure_line}\n\n${compiledStartState.state_prompt}`;
+      // DISCLOSE-1: the disclosure is the static `begin_message` below now.
+      compiledStartState.state_prompt = `${openingAlreadySpokenInstruction(opening)}\n\n${compiledStartState.state_prompt}`;
     }
   }
 
   return {
+    begin_message: opening.text,
+    start_speaker: "agent",
+    default_dynamic_variables: { ...COMPILER_DEFAULT_DYNAMIC_VARIABLES },
     general_prompt: (template.system_prompt ?? "") + END_CALL_INSTRUCTION,
     starting_state: startState?.id ?? "",
     states: [...statesByName.values()],

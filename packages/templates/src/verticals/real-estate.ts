@@ -105,7 +105,8 @@ export const REAL_ESTATE_TEMPLATE: AgentTemplate = {
       id: "greeting",
       name: "Greeting",
       prompt_fragment:
-        "Greet the caller and ask how you can help — buying, selling, scheduling a showing on " +
+        "The caller has already been greeted by your opening line. Find out how you can " +
+        "help — buying, selling, scheduling a showing on " +
         "a listing they've seen, changing an existing showing, or something else.",
       allowed_tools: [],
     },

@@ -9,10 +9,15 @@ describe("compileMultiPrompt", () => {
     expect(compileMultiPrompt(LEGAL_MULTI_PROMPT_TEMPLATE, TOOL_WEBHOOK_URL)).toMatchSnapshot();
   });
 
-  it("prepends disclosure_line verbatim to the starting_state's state_prompt", () => {
+  it("DISCLOSE-1: speaks disclosure_line verbatim as the static begin_message; the starting state is told it was already spoken", () => {
     const result = compileMultiPrompt(LEGAL_MULTI_PROMPT_TEMPLATE, TOOL_WEBHOOK_URL);
+    expect(result.begin_message).toBe(
+      `${LEGAL_MULTI_PROMPT_TEMPLATE.disclosure_line} {{caller_greeting}} How can I help you today?`,
+    );
+    expect(result.start_speaker).toBe("agent");
+    expect(result.default_dynamic_variables).toEqual({ caller_greeting: "", transfer_number: "" });
     const startState = result.states.find((s) => s.name === result.starting_state);
-    expect(startState?.state_prompt).toContain(LEGAL_MULTI_PROMPT_TEMPLATE.disclosure_line);
+    expect(startState?.state_prompt).toMatch(/ALREADY been spoken/);
   });
 
   it("uses the first declared state as starting_state", () => {

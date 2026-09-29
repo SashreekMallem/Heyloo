@@ -29,6 +29,18 @@
  * `/create-conversation-flow`'s `model_choice.model` field. Both are
  * platform-available defaults, not vertical-tuned — an admin can repoint a
  * template's `voice_id`/`model` later via `admin`'s template-edit route.
+ *
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): hand-edited here (and mirrored into
+ * `packages/templates/src/verticals/*.ts`) — every greeting state now
+ * assumes the compiler's static opening line already greeted the caller;
+ * no transfer-only state tells the model to announce a connection itself
+ * (only the compiled transfer node/tool does, while really transferring);
+ * vet's emergency referral only offers a direct connection when
+ * `{{transfer_number}}` is real and otherwise takes the message itself;
+ * dental's emergency state keeps restating the 911/ER referral; the
+ * name/phone collection states confirm what is on file for a recognized
+ * returning caller. Reaches `agent_templates` only via a `force_recompile`
+ * (`ensureTemplateSeeded(..., forceReseed)`), never silently.
  */
 
 import type { CompilerAgentTemplate } from "./compiler/template-compiler.ts";
@@ -54,7 +66,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "greeting",
           name: "Greeting",
           prompt_fragment:
-            "Greet the caller warmly and ask how you can help today — a new appointment, changing an existing one, a status check, or something else.",
+            "The caller has already been greeted by your opening line. Find out how you can help today — a new appointment, changing an existing one, a status check, or something else.",
           allowed_tools: [],
           extraction: [
             {
@@ -94,7 +106,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
         {
           id: "collect_name",
           name: "Collect name",
-          prompt_fragment: "Ask for the caller's full name and confirm it back.",
+          prompt_fragment:
+            "Ask for the caller's full name and confirm it back. If the caller is a recognized returning caller (a name or number is on file — see Caller history), confirm what's on file instead of asking for it again.",
           allowed_tools: [],
           extraction: [
             {
@@ -135,7 +148,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "collect_phone",
           name: "Collect phone",
           prompt_fragment:
-            "Ask for the best callback number and read it back digit by digit to confirm. Call lookup_customer with that number — if it returns a vehicle already on file, confirm it back in the next step instead of asking from scratch.",
+            "Ask for the best callback number and read it back digit by digit to confirm. Call lookup_customer with that number — if it returns a vehicle already on file, confirm it back in the next step instead of asking from scratch. If the caller is a recognized returning caller (a name or number is on file — see Caller history), confirm what's on file instead of asking for it again.",
           allowed_tools: ["lookup_customer"],
           extraction: [
             {
@@ -471,7 +484,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "transfer_to_human",
           name: "Transfer to human",
           prompt_fragment:
-            "The caller wants a human. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Let the caller know you're connecting them now, then use transfer_call.",
+            "The caller wants a human. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Never tell the caller yourself that you are connecting or transferring them: a real transfer announces itself, and when no live line is available you must say so honestly and take a message instead.",
           allowed_tools: ["transfer_call"],
           extraction: [
             {
@@ -1038,7 +1051,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "greeting",
           name: "Greeting",
           prompt_fragment:
-            "Greet the caller and ask how you can help today — a new appointment, changing an existing one, or something else. If they say anything suggesting the pet is in immediate danger, do not continue this flow — go straight to the emergency referral.",
+            "The caller has already been greeted by your opening line. Find out how you can help today — a new appointment, changing an existing one, or something else. If they say anything suggesting the pet is in immediate danger, do not continue this flow — go straight to the emergency referral.",
           allowed_tools: [],
           extraction: [
             {
@@ -1079,7 +1092,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "collect_owner_phone",
           name: "Collect owner + phone",
           prompt_fragment:
-            "Ask for the owner's name, then their phone number, confirming each. Call lookup_customer with the number they're calling from — if it returns a known pet, confirm the pet's name back to the owner instead of asking their pet info from scratch in the next step.",
+            "Ask for the owner's name, then their phone number, confirming each. Call lookup_customer with the number they're calling from — if it returns a known pet, confirm the pet's name back to the owner instead of asking their pet info from scratch in the next step. If the caller is a recognized returning caller (a name or number is on file — see Caller history), confirm what's on file instead of asking for it again.",
           allowed_tools: ["lookup_customer"],
           extraction: [
             {
@@ -1408,8 +1421,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "emergency_referral",
           name: "Emergency referral",
           prompt_fragment:
-            "A red flag is present (bloat/a distended abdomen, a seizure, difficulty breathing, being hit by a car, eating something toxic, a male cat straining to urinate, severe bleeding, or pale/blue gums) or the caller otherwise describes an immediate danger to the pet's life. Do not diagnose, do not reassure, and do not continue any routine scheduling. Tell the caller clearly to go to emergency care now: refer them to {{emergency_referral_name}} at {{emergency_referral_phone}}, and ask whether they'd like to be connected directly to this clinic right now instead, or would rather head to the referral themselves — either way you'll also take a message so the clinic has a record of this call.",
-          allowed_tools: [],
+            "A red flag is present (bloat/a distended abdomen, a seizure, difficulty breathing, being hit by a car, eating something toxic, a male cat straining to urinate, severe bleeding, or pale/blue gums) or the caller otherwise describes an immediate danger to the pet's life. Do not diagnose, do not reassure, and do not continue any routine scheduling. In your very first sentence, tell the caller clearly to take the pet to emergency care right now: {{emergency_referral_name}} (phone: {{emergency_referral_phone}} — read that out only if it is an actual phone number). Every time the caller asks again whether to go, answer plainly: yes, go now. A direct connection to this clinic is possible only when the live transfer number for this call — \"{{transfer_number}}\" — is a real phone number; only then may you offer to connect them right now instead. If it is blank, never offer, promise or mention connecting them: take a quick message instead (their name, phone number, and the pet's condition) with take_message so the clinic has a record, while making sure they know to go now rather than wait for a callback. Never say or imply that the clinic team is on the line or already aware of this call.",
+          allowed_tools: ["take_message"],
           extraction: [
             {
               field: "emergency_detected",
@@ -1455,7 +1468,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "emergency_warm_transfer",
           name: "Emergency warm transfer",
           prompt_fragment:
-            "The caller wants to be connected directly to this clinic right now, about a pet emergency. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Let them know you're connecting them now, then use transfer_call. If no live transfer line is available this call (see below), this is still an active emergency, not a routine callback request: before or while taking a message, clearly repeat that they should go to {{emergency_referral_name}} right now rather than wait for a callback, and directly answer any yes/no question the caller asks about whether to go (e.g. 'should I rush to the emergency vet?' -> 'yes, go now') — never end the call on a generic 'the team will call you back' alone when the caller is still asking that question.",
+            "The caller wants to be connected directly to this clinic right now, about a pet emergency. This is still an active emergency, not a routine callback request: make sure they know to go to {{emergency_referral_name}} right now rather than wait for anyone, and directly answer any yes/no question they ask about whether to go (e.g. 'should I rush to the emergency vet?' -> 'yes, go now'). Every transfer to a human is a warm transfer: silently prepare a short context summary (the pet's emergency, who is calling, and what has already been discussed) so the clinic team never makes them repeat themselves. Never tell the caller yourself that you are connecting them or that the clinic team is on the line — a real transfer announces itself. If no connection is possible, say so honestly, restate the emergency referral, and take a message — never end the call on a generic 'the team will call you back' alone while the caller is still asking whether to go.",
           allowed_tools: ["transfer_call"],
           extraction: [
             {
@@ -1497,7 +1510,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "emergency_take_message",
           name: "Emergency take message",
           prompt_fragment:
-            "Take a message with the owner's name, phone number, and the pet's condition so the clinic has a record of this call, even though the caller is being directed to emergency care (or a direct transfer) rather than a routine appointment.",
+            "Take a message with the owner's name, phone number, and the pet's condition so the clinic has a record of this call — unless one was already taken earlier in this call, in which case don't take another. While doing so, restate that they should go to {{emergency_referral_name}} right now rather than wait for a callback. Never say or imply that the clinic team is on the line or that you are connecting them.",
           allowed_tools: ["take_message"],
           extraction: [
             {
@@ -1539,7 +1552,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "transfer_to_human",
           name: "Transfer to human",
           prompt_fragment:
-            "The caller wants a human. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Let the caller know you're connecting them now, then use transfer_call.",
+            "The caller wants a human. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Never tell the caller yourself that you are connecting or transferring them: a real transfer announces itself, and when no live line is available you must say so honestly and take a message instead.",
           allowed_tools: ["transfer_call"],
           extraction: [
             {
@@ -2150,7 +2163,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "greeting",
           name: "Greeting",
           prompt_fragment:
-            "Greet the caller and ask what brings them in today.\n\nHard guardrail — true in this state and every other state in this call, with no exceptions: never give legal advice, never offer an opinion on the merits or likely outcome of the caller's case, and never quote a fee beyond the configured consult fee ({{consult_fee_text}}). If pressed, say only that an attorney will review the details and follow up — never improvise around this rule.",
+            "The caller has already been greeted by your opening line. Find out what brings them in today.\n\nHard guardrail — true in this state and every other state in this call, with no exceptions: never give legal advice, never offer an opinion on the merits or likely outcome of the caller's case, and never quote a fee beyond the configured consult fee ({{consult_fee_text}}). If pressed, say only that an attorney will review the details and follow up — never improvise around this rule.",
           allowed_tools: [],
           extraction: [
             {
@@ -2195,7 +2208,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "collect_name_phone",
           name: "Collect name + phone",
           prompt_fragment:
-            "Ask for the caller's full name, then their phone number, confirming each. You may call lookup_customer with the number they're calling from to check whether they're an existing client — if so, greet them as a returning client, but still complete the rest of intake in full (a prior relationship never skips the conflict check).\n\nHard guardrail — true in this state and every other state in this call, with no exceptions: never give legal advice, never offer an opinion on the merits or likely outcome of the caller's case, and never quote a fee beyond the configured consult fee ({{consult_fee_text}}). If pressed, say only that an attorney will review the details and follow up — never improvise around this rule.",
+            "Ask for the caller's full name, then their phone number, confirming each. You may call lookup_customer with the number they're calling from to check whether they're an existing client — if so, greet them as a returning client, but still complete the rest of intake in full (a prior relationship never skips the conflict check). If the caller is a recognized returning caller (a name or number is on file — see Caller history), confirm what's on file instead of asking for it again.\n\nHard guardrail — true in this state and every other state in this call, with no exceptions: never give legal advice, never offer an opinion on the merits or likely outcome of the caller's case, and never quote a fee beyond the configured consult fee ({{consult_fee_text}}). If pressed, say only that an attorney will review the details and follow up — never improvise around this rule.",
           allowed_tools: ["lookup_customer"],
           extraction: [
             {
@@ -2529,7 +2542,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "transfer_to_human",
           name: "Transfer to human (record intake first)",
           prompt_fragment:
-            "The caller wants a human. Before connecting them, first call take_message with whatever you've already gathered this call — name, phone, matter type, the opposing party for the conflict check, urgency, referral source, and a short summary of what they've described — using the same labeled-line format you always use for intake, even if it's incomplete. This is the only record of it once the transfer happens, so never skip it, even for a caller who wants to be connected immediately. Once take_message has been called, let the caller know you're connecting them now.\n\nHard guardrail — true in this state and every other state in this call, with no exceptions: never give legal advice, never offer an opinion on the merits or likely outcome of the caller's case, and never quote a fee beyond the configured consult fee ({{consult_fee_text}}). If pressed, say only that an attorney will review the details and follow up — never improvise around this rule.",
+            "The caller wants a human. Before connecting them, first call take_message with whatever you've already gathered this call — name, phone, matter type, the opposing party for the conflict check, urgency, referral source, and a short summary of what they've described — using the same labeled-line format you always use for intake, even if it's incomplete. This is the only record of it once the transfer happens, so never skip it, even for a caller who wants to be connected immediately. Once take_message has been called, move on to connecting them — but never tell the caller yourself that you are connecting or transferring them: a real transfer announces itself, and if no live line is available the next step says so honestly.\n\nHard guardrail — true in this state and every other state in this call, with no exceptions: never give legal advice, never offer an opinion on the merits or likely outcome of the caller's case, and never quote a fee beyond the configured consult fee ({{consult_fee_text}}). If pressed, say only that an attorney will review the details and follow up — never improvise around this rule.",
           allowed_tools: ["take_message"],
           extraction: [
             {
@@ -2575,7 +2588,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "transfer_to_human_connect",
           name: "Transfer to human (connect)",
           prompt_fragment:
-            "The intake message has been recorded — now connect the caller. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Use transfer_call.\n\nHard guardrail — true in this state and every other state in this call, with no exceptions: never give legal advice, never offer an opinion on the merits or likely outcome of the caller's case, and never quote a fee beyond the configured consult fee ({{consult_fee_text}}). If pressed, say only that an attorney will review the details and follow up — never improvise around this rule.",
+            "The intake message has been recorded — now connect the caller if a live line is available. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Never tell the caller yourself that you are connecting them — transfer_call announces the connection itself; if no live line is available, say so honestly and let them know an attorney will call them back.\n\nHard guardrail — true in this state and every other state in this call, with no exceptions: never give legal advice, never offer an opinion on the merits or likely outcome of the caller's case, and never quote a fee beyond the configured consult fee ({{consult_fee_text}}). If pressed, say only that an attorney will review the details and follow up — never improvise around this rule.",
           allowed_tools: ["transfer_call"],
           extraction: [
             {
@@ -2949,7 +2962,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "greeting",
           name: "Greeting",
           prompt_fragment:
-            "Greet the caller and ask how you can help — a new appointment, changing an existing one, or something else.",
+            "The caller has already been greeted by your opening line. Find out how you can help — a new appointment, changing an existing one, or something else.",
           allowed_tools: [],
           extraction: [
             {
@@ -2990,7 +3003,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "collect_patient_name",
           name: "Collect patient name",
           prompt_fragment:
-            "Ask for the patient's full name (the person being seen, which may differ from the caller for a child or dependent) and confirm it.",
+            "Ask for the patient's full name (the person being seen, which may differ from the caller for a child or dependent) and confirm it. If the caller is a recognized returning caller (a name is on file — see Caller history) and the patient is the caller themself, confirm the name on file instead of asking for it again.",
           allowed_tools: [],
           extraction: [
             {
@@ -3244,7 +3257,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "transfer_to_human",
           name: "Transfer to human",
           prompt_fragment:
-            "The caller wants a human. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Let the caller know you're connecting them now, then use transfer_call.",
+            "The caller wants a human. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Never tell the caller yourself that you are connecting or transferring them: a real transfer announces itself, and when no live line is available you must say so honestly and take a message instead.",
           allowed_tools: ["transfer_call"],
           extraction: [
             {
@@ -3328,7 +3341,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "safety_emergency",
           name: "Safety emergency referral",
           prompt_fragment:
-            "The caller describes a life-threatening emergency, a fire, a crime in progress, or similar immediate danger. Do not attempt to help beyond this: calmly tell them to hang up and dial 911 (or their local emergency number) right away. Do not continue the original booking conversation.",
+            "The caller describes a life-threatening emergency, a fire, a crime in progress, or similar immediate danger — for a dental injury, that includes bleeding that won't stop, swelling that is spreading or affects breathing or swallowing, or a face or mouth injury from an accident. Do not attempt to help beyond this and do not continue the original booking conversation: calmly tell them to call 911 (or their local emergency number) or go to the nearest emergency room right away. If they push back or ask again (for example whether this office could see them today instead), restate the same referral plainly every time and answer directly — never offer or promise an appointment, a callback in place of emergency care, a transfer, or that anyone is being connected. Once, offer to take their name and callback number so the office has a record and can follow up after they've been seen; if they give it, call take_message with it, then wish them well and end the call.",
           allowed_tools: ["take_message"],
           extraction: [
             {
@@ -3858,7 +3871,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "greeting",
           name: "Greeting",
           prompt_fragment:
-            "Greet the caller and ask how you can help — buying, selling, scheduling a showing on a listing they've seen, changing an existing showing, or something else.",
+            "The caller has already been greeted by your opening line. Find out how you can help — buying, selling, scheduling a showing on a listing they've seen, changing an existing showing, or something else.",
           allowed_tools: [],
           extraction: [
             {
@@ -4071,7 +4084,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "transfer_to_human",
           name: "Transfer to human",
           prompt_fragment:
-            "The caller wants a human. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Let the caller know you're connecting them now, then use transfer_call.",
+            "The caller wants a human. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Never tell the caller yourself that you are connecting or transferring them: a real transfer announces itself, and when no live line is available you must say so honestly and take a message instead.",
           allowed_tools: ["transfer_call"],
           extraction: [
             {
@@ -4664,7 +4677,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "greeting",
           name: "Greeting",
           prompt_fragment:
-            "Greet the caller and ask how you can help — a new reservation, changing an existing one, or something else.",
+            "The caller has already been greeted by your opening line. Find out how you can help — a new reservation, changing an existing one, or something else.",
           allowed_tools: [],
           extraction: [
             {
@@ -4705,7 +4718,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "collect_guest_contact",
           name: "Collect guest name + phone",
           prompt_fragment:
-            "Ask for the guest's full name, then the best callback number, reading the number back digit by digit to confirm. This is the name/phone the reservation will be held under, distinct from the room dates/type — ask for it explicitly, don't assume the caller ID number is the number to use.",
+            "Ask for the guest's full name, then the best callback number, reading the number back digit by digit to confirm. This is the name/phone the reservation will be held under, distinct from the room dates/type — ask for it explicitly, don't assume the caller ID number is the number to use. If the caller is a recognized returning caller (a name or number is on file — see Caller history), confirm what's on file instead of asking for it again.",
           allowed_tools: [],
           extraction: [
             {
@@ -4993,7 +5006,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "transfer_to_human",
           name: "Transfer to human",
           prompt_fragment:
-            "The caller wants a human. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Let the caller know you're connecting them now, then use transfer_call.",
+            "The caller wants a human. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Never tell the caller yourself that you are connecting or transferring them: a real transfer announces itself, and when no live line is available you must say so honestly and take a message instead.",
           allowed_tools: ["transfer_call"],
           extraction: [
             {
@@ -5580,7 +5593,8 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
         {
           id: "greeting",
           name: "Greeting",
-          prompt_fragment: "Greet the caller.",
+          prompt_fragment:
+            "The caller has already been greeted by your opening line. Respond to what they said and find out what they need.",
           allowed_tools: [],
           extraction: [
             {
@@ -6031,7 +6045,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "transfer_to_human",
           name: "Transfer to human",
           prompt_fragment:
-            "The caller wants a human. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Let the caller know you're connecting them now, then use transfer_call.",
+            "The caller wants a human. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Never tell the caller yourself that you are connecting or transferring them: a real transfer announces itself, and when no live line is available you must say so honestly and take a message instead.",
           allowed_tools: ["transfer_call"],
           extraction: [
             {
@@ -6794,7 +6808,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "intake",
           name: "Intake",
           prompt_fragment:
-            "Collect, one at a time: the caller's name · their phone number · the reason for the call. Confirm each one back as you go. If the business can book what they need, once a time is chosen, read back the name, reason, and date/time, ask the consent question, then call create_booking with structured_payload set to the reason you captured. Otherwise take a message with a clear callback window and let them know when to expect a call back.",
+            "Collect, one at a time: the caller's name · their phone number · the reason for the call. Confirm each one back as you go. If the caller is a recognized returning caller (a name or number is on file — see Caller history), confirm what's on file instead of asking for it again. If the business can book what they need, once a time is chosen, read back the name, reason, and date/time, ask the consent question, then call create_booking with structured_payload set to the reason you captured. Otherwise take a message with a clear callback window and let them know when to expect a call back.",
           allowed_tools: [
             "check_availability",
             "create_booking",
@@ -6884,7 +6898,7 @@ export const AGENT_TEMPLATE_SEEDS: Record<Vertical, AgentTemplateSeed> = {
           id: "transfer_to_human",
           name: "Transfer to human",
           prompt_fragment:
-            "The caller wants a human. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Let the caller know you're connecting them now, then use transfer_call.",
+            "The caller wants a human. Every transfer to a human is a warm transfer: silently prepare a short context summary (who is calling, why, and what has already been discussed) so the caller is connected with that context already known and never has to repeat themselves. Never tell the caller yourself that you are connecting or transferring them: a real transfer announces itself, and when no live line is available you must say so honestly and take a message instead.",
           allowed_tools: ["transfer_call"],
           extraction: [
             {

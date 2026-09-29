@@ -14,9 +14,14 @@
  * transfer-call fallback were all live-verified and shipped in the Deno
  * compiler under CALL-2/CALL-4 but never mirrored here, docs/BUILD_NOTES.md
  * CALL-2 gap #7). Node-type decisions below now match that file's:
- * - The FIRST declared state (`template.states[0]`) is the entry node — its
- *   `id` becomes `start_node_id`, and `disclosure_line` is prepended
- *   verbatim to its instruction text (G1/G2). The start state ALWAYS
+ * - DISCLOSE-1 (docs/BUILD_NOTES.md): the flow's entry node is a static
+ *   `__opening` conversation node (`instruction.type: "static_text"`) that
+ *   speaks `disclosure_line` + `{{caller_greeting}}` + a short question
+ *   verbatim (`opening.ts#buildOpeningLine`), copies the first declared
+ *   state's edges and falls through `else_edge` to it. The FIRST declared
+ *   state (`template.states[0]`) is told its greeting was already spoken
+ *   (G1/G2: the disclosure is no longer a prompt the model can paraphrase).
+ *   The start state ALWAYS
  *   compiles to a plain `ConversationNode`, regardless of its
  *   `allowed_tools` count — never a `SubagentNode`/`TransferCallNode`: the
  *   disclosure publish gate (`disclosure-gate.ts`) only inspects a
@@ -107,6 +112,13 @@
  */
 
 import type { AgentState, AgentTemplate, Transition } from "@heyloo/canonical-types";
+import {
+  buildOpeningLine,
+  COMPILER_DEFAULT_DYNAMIC_VARIABLES,
+  NO_TRANSFER_FALLBACK_INSTRUCTION,
+  openingAlreadySpokenInstruction,
+  TRANSFER_ANNOUNCEMENT_INSTRUCTION,
+} from "./opening.js";
 import type {
   RetellConversationFlowNode,
   RetellConversationFlowRequest,
@@ -135,26 +147,32 @@ const TAKE_MESSAGE_TOOL_NAME = "take_message";
  * `{{transfer_number}}`."). Never a real number. */
 const TRANSFER_NUMBER_TOKEN = "{{transfer_number}}";
 
-const NO_TRANSFER_FALLBACK_INSTRUCTION =
-  "No live transfer line is configured for this business right now. Once, clearly and " +
-  "warmly, say so and offer to take down their name, phone number, and a short message so " +
-  "the team can call them back — never repeat that same apology/offer a third time. If they " +
-  "give a callback number, call take_message with it (fold in whatever they've already told " +
-  "you) and let them know someone will call back soon, then the call is done. If they keep " +
-  "insisting on a transfer or won't give a number after you've offered twice, don't keep " +
-  "repeating yourself: calmly acknowledge you can't do more right now and that's the end of " +
-  "what you can help with today — the call is done either way.";
-
-/** PUBLISH-1: mirrors `_shared/compiler/template-compiler.ts`'s identical
- * constant exactly — the transfer-only router node's instruction, a
- * genuine runtime decision (the live `transfer_number` dynamic variable's
- * actual value) instead of the compile-time either/or CALL-4 originally
- * used. */
+/**
+ * DISCLOSE-1 (docs/BUILD_NOTES.md): what the transfer-only state's ROUTER
+ * node says. The live Deno compiler emits that router as a silent Retell
+ * logic-split (`type: "branch"`) node; this package cannot yet (its
+ * `sdk-contract.test.ts`, outside this compiler directory, narrows every
+ * non-conversation/subagent/transfer node to `EndNode` and would stop
+ * type-checking — see docs/BUILD_NOTES.md DISCLOSE-1), so it emits a
+ * conversation node with the SAME deterministic equation edge / else edge
+ * and an instruction that forbids any connection claim. `parity.test.ts`
+ * pins exactly this one documented difference (node type only).
+ */
 const TRANSFER_ROUTER_INSTRUCTION =
-  "The live transfer number for this business right now is: {{transfer_number}}. If that is a " +
-  "real, non-empty phone number, say once, briefly and warmly, that you're connecting them to " +
-  "a team member now — do not call take_message in that case. If it is empty/blank: " +
-  NO_TRANSFER_FALLBACK_INSTRUCTION;
+  'Acknowledge the caller\'s request in a few words (for example "One moment."). Never say or ' +
+  "imply that you are connecting or transferring them — the next step decides, from this " +
+  "business's live transfer line, whether a real connection is possible, and a real transfer " +
+  "announces itself.";
+
+/** DISCLOSE-1: mirrors the Deno compiler's deterministic "a live number is available" test — an E.164 number always contains "+"; a blank or unset `{{transfer_number}}` never does. RETELL-VERIFIED equation syntax (docs.retellai.com/build/conversation-flow/transition-condition, 2026-09-29). */
+const LIVE_TRANSFER_NUMBER_EQUATION: RetellEquation = {
+  left: TRANSFER_NUMBER_TOKEN,
+  operator: "contains",
+  right: "+",
+};
+
+/** DISCLOSE-1: the static opening node's id — always the flow's `start_node_id` (mirrors template-compiler.ts). */
+const OPENING_NODE_ID = "__opening";
 
 /** CALL-4: the caller-supplied compile-time inputs this function accepts in addition to the template itself — see this file's own header comment for why `transferNumber` isn't threaded through the package's PUBLIC entry points yet. */
 export interface CompileConversationFlowOptions {
@@ -195,24 +213,53 @@ function buildEdge(transition: Transition, index: number): RetellFlowEdge {
 }
 
 /**
- * PUBLISH-1 (docs/BUILD_NOTES.md, mirrors `_shared/compiler/template-
- * compiler.ts` exactly): a transfer-only state now ALWAYS compiles to a
- * router node (kept at the state's own id, so every existing incoming edge
- * still resolves) plus a dedicated `${state.id}__transfer`
- * `TransferCallNode` — never a compile-time either/or on whether a
- * transfer number happens to be configured. The router's own edge onto
- * the transfer node is evaluated per call, against the LIVE
- * `transfer_number` dynamic variable, so a tenant's transfer-number change
- * takes effect on the very next call, no republish needed. `knownToolNames`
- * mirrors that file's `toolsByName` guard (defensive: a state authoring
- * bug referencing a name absent from `template.tools` must never leak into
- * `tool_ids`, which Retell rejects outright).
+ * DISCLOSE-1 (docs/BUILD_NOTES.md; supersedes PUBLISH-1's speaking,
+ * model-judged router — mirrors `_shared/compiler/template-compiler.ts`):
+ * a transfer-only state compiles to a router at the state's own id (so
+ * every existing incoming edge/global intent still resolves) that picks
+ * deterministically, via an equation on `{{transfer_number}}`, between:
+ *  - `${id}__transfer`: the native TransferCallNode (destination the
+ *    literal `{{transfer_number}}` token, PUBLISH-1) — the ONLY node that
+ *    tells the caller they're being connected, while it actually transfers;
+ *  - `${id}__no_transfer`: the honest fallback — the state's own authored
+ *    content plus `NO_TRANSFER_FALLBACK_INSTRUCTION` (never claim a
+ *    connection, restate an emergency referral first, take a message).
+ * A failed transfer also lands on the fallback. `knownToolNames` mirrors
+ * that file's `toolsByName` guard.
  */
 function buildTransferOnlyNodes(
   state: AgentState,
   knownToolNames: Set<string>,
-): RetellConversationFlowNode[] {
+): {
+  nodes: RetellConversationFlowNode[];
+  endEdgeOwner: RetellSubagentNode | RetellConversationNode;
+} {
   const transferNodeId = `${state.id}__transfer`;
+  const noTransferNodeId = `${state.id}__no_transfer`;
+
+  const router: RetellConversationNode = {
+    id: state.id,
+    type: "conversation",
+    name: state.name,
+    instruction: { type: "prompt", text: TRANSFER_ROUTER_INSTRUCTION },
+    edges: [
+      {
+        id: `edge_${state.id}_has_transfer`,
+        destination_node_id: transferNodeId,
+        transition_condition: {
+          type: "equation",
+          operator: "&&",
+          equations: [LIVE_TRANSFER_NUMBER_EQUATION],
+        },
+      },
+    ],
+    else_edge: {
+      id: `edge_${state.id}_no_transfer`,
+      destination_node_id: noTransferNodeId,
+      transition_condition: { type: "prompt", prompt: "Else" },
+    },
+  };
+
   const transferNode: RetellTransferCallNode = {
     id: transferNodeId,
     type: "transfer_call",
@@ -220,15 +267,11 @@ function buildTransferOnlyNodes(
     transfer_destination: { type: "predefined", number: TRANSFER_NUMBER_TOKEN },
     // Warm transfer — SYSTEM_DESIGN §4.5: "warm transfers always carry a context summary".
     transfer_option: { type: "warm_transfer" },
+    speak_during_execution: true,
+    instruction: { type: "prompt", text: TRANSFER_ANNOUNCEMENT_INSTRUCTION },
     edge: {
       id: `${state.id}_transfer_failed`,
-      // Every shipped transfer-only state is `is_terminal: true`, so
-      // `${state.id}__end` always exists once the is_terminal pass below
-      // runs; omitted (rather than an explicit `undefined`, disallowed by
-      // this workspace's `exactOptionalPropertyTypes`) for the
-      // never-happens defensive case, never a caller- or
-      // model-influenced value either way.
-      ...(state.is_terminal ? { destination_node_id: `${state.id}__end` } : {}),
+      destination_node_id: noTransferNodeId,
       // PUBLISH-1 (docs/BUILD_NOTES.md, mirrors template-compiler.ts
       // exactly): RETELL-VERIFIED live 2026-09-21 — a TransferCallNode's
       // `edge.transition_condition` is NOT free text like every other
@@ -239,28 +282,11 @@ function buildTransferOnlyNodes(
   };
 
   const toolIds = [TAKE_MESSAGE_TOOL_NAME].filter((name) => knownToolNames.has(name));
-  const hasTransferEdge: RetellFlowEdge[] = [
-    {
-      id: `edge_${state.id}_has_transfer`,
-      destination_node_id: transferNodeId,
-      transition_condition: {
-        type: "prompt",
-        prompt:
-          "The transfer_number value for this call ({{transfer_number}}) is a real, non-empty " +
-          "phone number — a live transfer number is available for this business right now.",
-      },
-    },
-  ];
-  // CALL-4 live-iteration fix (mirrors template-compiler.ts exactly): the
-  // generic is_terminal end-edge ("the caller has nothing further to
-  // discuss") requires the CALLER to drop the topic — an adversarial
-  // caller who keeps repeating the same transfer demand after the agent
-  // has already clearly declined twice never satisfies that wording, so
-  // the call stalls here and Retell's own loop-detector aborts it
-  // (live-confirmed, docs/BUILD_NOTES.md CALL-4). This router node gets
-  // its own EXTRA edge to that same end node whose condition is satisfied
-  // by the AGENT's own turn instead — it doesn't need the caller's
-  // agreement.
+  // CALL-4 live-iteration fix (mirrors template-compiler.ts exactly): an
+  // adversarial caller who keeps repeating the same transfer demand never
+  // satisfies the generic "nothing further to discuss" end edge, so this
+  // fallback gets an EXTRA edge to that same end node satisfied by the
+  // AGENT's own turn instead.
   const fallbackDoneEdges: RetellFlowEdge[] = state.is_terminal
     ? [
         {
@@ -269,43 +295,35 @@ function buildTransferOnlyNodes(
           transition_condition: {
             type: "prompt",
             prompt:
-              "you have already clearly told the caller no live transfer is available and " +
-              "offered to take a message at least once — end here even if the caller keeps " +
-              "repeating the same request",
+              "you have already clearly told the caller you can't connect them to anyone right " +
+              "now (restating any emergency referral) and offered to take a message at least " +
+              "once — end here even if the caller keeps repeating the same request",
           },
         },
       ]
     : [];
-
-  // FOLLOWUP-1 (docs/BUILD_NOTES.md QA-HOT/FOLLOWUP-1): mirrors the
-  // template-compiler.ts fix exactly. This router node's instruction used
-  // to be the generic `TRANSFER_ROUTER_INSTRUCTION` ALONE, discarding the
-  // state's OWN authored `prompt_fragment` entirely — unlike `buildNode`'s
-  // equivalent branch above, which always keeps both. Same live-observed
-  // bug QA-HOT root-caused in the Deno compiler (vet's
-  // `emergency_warm_transfer` state losing its own emergency-specific
-  // content the instant it compiled here). Now combined the same way.
-  const routerInstructionText = `${state.prompt_fragment}\n\n${TRANSFER_ROUTER_INSTRUCTION}`;
-
-  const routerNode: RetellConversationFlowNode =
+  // QA-HOT/FOLLOWUP-1: the state's OWN authored content is kept (e.g. vet's
+  // emergency referral), followed by the no-transfer rules.
+  const fallbackText = `${state.prompt_fragment}\n\n${NO_TRANSFER_FALLBACK_INSTRUCTION}`;
+  const fallback: RetellSubagentNode | RetellConversationNode =
     toolIds.length > 0
       ? ({
-          id: state.id,
+          id: noTransferNodeId,
           type: "subagent",
-          name: state.name,
-          instruction: { type: "prompt", text: routerInstructionText },
-          edges: [...hasTransferEdge, ...fallbackDoneEdges],
+          name: `${state.name} — no live transfer`,
+          instruction: { type: "prompt", text: fallbackText },
+          edges: fallbackDoneEdges,
           tool_ids: toolIds,
         } satisfies RetellSubagentNode)
       : ({
-          id: state.id,
+          id: noTransferNodeId,
           type: "conversation",
-          name: state.name,
-          instruction: { type: "prompt", text: routerInstructionText },
-          edges: [...hasTransferEdge, ...fallbackDoneEdges],
+          name: `${state.name} — no live transfer`,
+          instruction: { type: "prompt", text: fallbackText },
+          edges: fallbackDoneEdges,
         } satisfies RetellConversationNode);
 
-  return [routerNode, transferNode];
+  return { nodes: [router, transferNode, fallback], endEdgeOwner: fallback };
 }
 
 /**
@@ -354,6 +372,7 @@ export function compileConversationFlow(
   // `noUnusedParameters`.
   void options.transferNumber;
   const startState = template.states[0];
+  const opening = buildOpeningLine(template.disclosure_line);
 
   // transfer_call is never emitted into the flow's top-level custom-function
   // tools list (native node instead, whichever branch above); every other
@@ -395,17 +414,25 @@ export function compileConversationFlow(
   knownToolNames.add(TAKE_MESSAGE_TOOL_NAME); // always grantable to the no-transfer-number fallback if declared
 
   const nodesById = new Map<string, RetellConversationFlowNode>();
+  // DISCLOSE-1: which node a state's is_terminal end-edge hangs off — the
+  // state's own node, or a transfer-only state's no-transfer fallback
+  // (mirrors template-compiler.ts's `endEdgeOwner`).
+  const endEdgeOwner = new Map<string, RetellConversationFlowNode>();
   for (const state of template.states) {
     const isStart = state.id === startState?.id;
-    // PUBLISH-1: a transfer-only state (never the start state, see this
-    // file's header) compiles to TWO nodes now — see `buildTransferOnlyNodes`.
+    // DISCLOSE-1: a transfer-only state (never the start state, see this
+    // file's header) compiles to THREE nodes now — see `buildTransferOnlyNodes`.
     if (!isStart && isTransferOnlyState(state)) {
-      for (const node of buildTransferOnlyNodes(state, knownToolNames)) {
+      const built = buildTransferOnlyNodes(state, knownToolNames);
+      for (const node of built.nodes) {
         nodesById.set(node.id, node);
       }
+      endEdgeOwner.set(state.id, built.endEdgeOwner);
       continue;
     }
-    nodesById.set(state.id, buildNode(state, isStart, knownToolNames));
+    const node = buildNode(state, isStart, knownToolNames);
+    nodesById.set(state.id, node);
+    endEdgeOwner.set(state.id, node);
   }
 
   for (const [index, transition] of template.transitions.entries()) {
@@ -418,12 +445,16 @@ export function compileConversationFlow(
 
   applyGlobalIntents(nodesById, template);
 
-  const startNodeId = startState?.id ?? "";
-  if (startState) {
-    const startNode = nodesById.get(startState.id);
-    if (startNode && startNode.type === "conversation") {
-      startNode.instruction.text = `${template.disclosure_line}\n\n${startNode.instruction.text}`;
-    }
+  const startStateId = startState?.id ?? "";
+  const startNode = startState ? nodesById.get(startState.id) : undefined;
+  // DISCLOSE-1 (mirrors template-compiler.ts): the disclosure is spoken
+  // verbatim by the static opening node now, never prepended to a prompt
+  // the model could paraphrase; the start state is told it was already said.
+  if (startNode && startNode.type === "conversation") {
+    startNode.instruction = {
+      type: "prompt",
+      text: `${openingAlreadySpokenInstruction(opening)}\n\n${startNode.instruction.text}`,
+    };
   }
 
   // CALL-2/CALL-4 (mirrors template-compiler.ts): every `is_terminal` state
@@ -434,7 +465,7 @@ export function compileConversationFlow(
   const endNodes: RetellEndNode[] = [];
   for (const state of template.states) {
     if (!state.is_terminal) continue;
-    const fromNode = nodesById.get(state.id);
+    const fromNode = endEdgeOwner.get(state.id);
     if (!fromNode) continue;
     const endNodeId = `${state.id}__end`;
     endNodes.push({
@@ -459,9 +490,31 @@ export function compileConversationFlow(
     });
   }
 
+  // DISCLOSE-1 (mirrors template-compiler.ts): the static opening node,
+  // built LAST so it copies the start state's final edge set — the caller's
+  // first reply routes exactly as it did when the start state spoke first;
+  // anything else falls through `else_edge` to the start state.
+  const openingNode: RetellConversationNode = {
+    id: OPENING_NODE_ID,
+    type: "conversation",
+    name: "Opening — AI and recording disclosure",
+    instruction: { type: "static_text", text: opening.text },
+    edges:
+      startNode && (startNode.type === "conversation" || startNode.type === "subagent")
+        ? (startNode.edges ?? []).map((edge) => ({ ...edge, id: `opening_${edge.id}` }))
+        : [],
+    else_edge: {
+      id: "edge_opening_else",
+      destination_node_id: startStateId,
+      transition_condition: { type: "prompt", prompt: "Else" },
+    },
+  };
+
   // CALL-4 ("FAQ-only calls never hang up"): a single generic wrap-up
   // escape, reachable from anywhere via Retell's global-node mechanism —
-  // see this file's header comment. Mirrors template-compiler.ts exactly.
+  // see this file's header comment. Mirrors template-compiler.ts exactly
+  // (DISCLOSE-1: "yes, another request" loops back to the start STATE,
+  // never the static opening node, which would replay the greeting).
   const WRAP_UP_NODE_ID = "__wrap_up";
   const WRAP_UP_END_NODE_ID = "__wrap_up_end";
   const wrapUpNode: RetellConversationNode = {
@@ -484,7 +537,7 @@ export function compileConversationFlow(
       },
       {
         id: "edge_wrap_up_to_start",
-        destination_node_id: startNodeId,
+        destination_node_id: startStateId,
         transition_condition: {
           type: "prompt",
           prompt: "The caller says yes and has another request or question",
@@ -517,10 +570,11 @@ export function compileConversationFlow(
   };
 
   const flow: RetellConversationFlowRequest = {
-    start_node_id: startNodeId,
+    start_node_id: OPENING_NODE_ID,
     start_speaker: "agent",
-    nodes: [...nodesById.values(), ...endNodes, wrapUpNode, wrapUpEndNode],
+    nodes: [openingNode, ...nodesById.values(), ...endNodes, wrapUpNode, wrapUpEndNode],
     tools,
+    default_dynamic_variables: { ...COMPILER_DEFAULT_DYNAMIC_VARIABLES },
   };
   if (template.system_prompt) {
     flow.global_prompt = template.system_prompt;

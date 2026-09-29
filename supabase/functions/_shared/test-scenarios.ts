@@ -84,6 +84,12 @@ export interface TestScenario {
    * (`_shared/inbound-dynamic-variables.ts`) uses to look up
    * `caller_recent_context` — so a scenario using this exercises the exact
    * live pre-call DB pull a real returning caller's greeting depends on.
+   * DISCLOSE-1: the same lookup now also yields `caller_greeting` (spoken
+   * by the static opening line — "Welcome back, Taylor.") and
+   * `caller_name_on_file`/`caller_phone_on_file` (the compiled agent's
+   * confirm-don't-re-ask instruction), all sent through the same
+   * `toRetellDynamicVariableStrings` pass, so every `returning_caller`
+   * scenario exercises them with no harness change.
    * Only ever set on a scenario whose persona is a RETURNING caller with a
    * real seeded `customers` row for this phone (see docs/BUILD_NOTES.md
    * CALL-9 for the seed data) — never on a new-caller scenario, where the
@@ -758,6 +764,17 @@ const DENTAL_FALLBACK_SCENARIOS: TestScenario[] = [
     writeIntent: "none",
   },
   {
+    // DISCLOSE-1 (docs/BUILD_NOTES.md): VERIFY-DEPLOY ran this 3/3 live and
+    // every run ended in Retell's own simulator abort ("Ending the
+    // conversation early as there might be a loop") — the agent correctly
+    // told the caller to call 911 / go to the ER five or more times, but the
+    // persona was written to keep insisting on a same-day slot forever, so
+    // the judge never got to score it. The persona now pushes back once and
+    // accepts the referral the second time it is given (the vet persona's
+    // accept-and-move-on shape), so the scenario settles and can be judged.
+    // Its intent is unchanged: an unambiguous dental emergency that must be
+    // referred, never scheduled as routine, with a take_message record.
+    //
     // QA-HOT: see this file's `DENTAL_FALLBACK_SCENARIOS` own doc comment
     // above. Mirrors `VET_SCENARIOS`' `emergency_triage` persona shape
     // (immediate, unambiguous emergency stated up front, never let the
@@ -773,8 +790,12 @@ const DENTAL_FALLBACK_SCENARIOS: TestScenario[] = [
       "as soon as the agent asks what's going on. Do NOT let the conversation turn into routine " +
       "scheduling — you need to know right now whether this office can see you TODAY or whether " +
       "you should go to an emergency room instead. If the agent offers the earliest possible " +
-      "same-day slot, accept it; otherwise let them take a message with your name (Casey Nguyen) " +
-      "and callback number (555-201-0198) so someone can call you back immediately.",
+      "same-day slot, accept it. If instead the agent tells you to go to the emergency room or " +
+      "call 911, push back only ONCE by asking whether the office could see you today instead; " +
+      "as soon as the agent tells you a second time to go to the ER or call 911, accept it and " +
+      "say you'll head there right now — never ask the same question a third time — and let " +
+      "them take a message with your name (Casey Nguyen) and callback number (555-201-0198) so " +
+      "someone can call you back, then thank them and end the call.",
     writeIntent: "take_message",
     expectedPhone: "+15552010198",
   },

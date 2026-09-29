@@ -6,7 +6,8 @@
  *
  * The per-target compiler functions (conversation-flow.ts, multi-prompt.ts,
  * single-prompt.ts) are responsible for INJECTING `disclosure_line` verbatim
- * into the first turn's text as they compile. This module is the
+ * into the first turn's STATIC text as they compile (DISCLOSE-1: a
+ * `static_text` opening node / `begin_message`, `opening.ts`). This module is the
  * independent, structural self-check run afterward — belt-and-suspenders
  * against a future refactor accidentally dropping that injection. It never
  * throws itself; `compileTemplate` (index.ts) uses its result to set
@@ -16,27 +17,52 @@
 
 import type { RetellFlowRequest } from "./types.js";
 
-export function firstTurnText(flowRequest: RetellFlowRequest): string {
+/**
+ * DISCLOSE-1 (docs/BUILD_NOTES.md, mirrors `supabase/functions/_shared/
+ * compiler/template-compiler.ts#firstUtterance`): the agent's FIRST
+ * utterance as Retell will actually produce it — a conversation-flow start
+ * node's `static_text`, or a retell-llm `begin_message` with the agent
+ * speaking first. Anything else (a prompt start node, an unset
+ * `begin_message`) is model-generated and reported non-static: VERIFY-DEPLOY
+ * heard "this call may be recorded" paraphrased away on live calls whose
+ * start-node PROMPT contained it verbatim.
+ */
+export interface FirstUtterance {
+  isStatic: boolean;
+  text: string;
+}
+
+export function firstUtterance(flowRequest: RetellFlowRequest): FirstUtterance {
   switch (flowRequest.kind) {
     case "conversation_flow": {
       const startNode = flowRequest.body.nodes.find((n) => n.id === flowRequest.body.start_node_id);
-      return startNode && startNode.type === "conversation" ? startNode.instruction.text : "";
+      if (startNode?.type !== "conversation") return { isStatic: false, text: "" };
+      return {
+        isStatic: startNode.instruction.type === "static_text",
+        text: startNode.instruction.text,
+      };
     }
-    case "multi_prompt": {
-      const startState = flowRequest.body.states.find(
-        (s) => s.name === flowRequest.body.starting_state,
-      );
-      return startState?.state_prompt ?? "";
+    case "multi_prompt":
+    case "single_prompt": {
+      const { begin_message: beginMessage, start_speaker: startSpeaker } = flowRequest.body;
+      return beginMessage && startSpeaker === "agent"
+        ? { isStatic: true, text: beginMessage }
+        : { isStatic: false, text: "" };
     }
-    case "single_prompt":
-      return flowRequest.body.general_prompt;
   }
 }
 
+/** Back-compat accessor: the first utterance's text, static or not. */
+export function firstTurnText(flowRequest: RetellFlowRequest): string {
+  return firstUtterance(flowRequest).text;
+}
+
+/** The G1/G2 gate: passes only when the first utterance is STATIC and carries `disclosureLine` verbatim. */
 export function verifyDisclosureGate(
   flowRequest: RetellFlowRequest,
   disclosureLine: string,
 ): boolean {
   if (disclosureLine.length === 0) return false;
-  return firstTurnText(flowRequest).includes(disclosureLine);
+  const first = firstUtterance(flowRequest);
+  return first.isStatic && first.text.includes(disclosureLine);
 }

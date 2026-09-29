@@ -4,9 +4,9 @@
  * estate, generic — "qualification is conversational; over-structuring
  * reads as interrogation; under the ~1000-word/5-tool threshold").
  *
- * There is no graph here: `disclosure_line` is prepended verbatim as the
- * very first line of `general_prompt` (the first agent turn, by
- * definition, for a single-prompt agent); `system_prompt` (required by the
+ * There is no graph here. DISCLOSE-1 (docs/BUILD_NOTES.md): `disclosure_line`
+ * is spoken verbatim as the static `begin_message` (`opening.ts`), and
+ * `general_prompt` opens by saying it was already spoken; `system_prompt` (required by the
  * canonical schema for this target) follows; any declared `states[]` are
  * folded in as labeled guidance sections (single_prompt templates are not
  * REQUIRED to have zero states — a template author may still use them as
@@ -19,6 +19,13 @@
  */
 
 import type { AgentTemplate } from "@heyloo/canonical-types";
+import {
+  buildOpeningLine,
+  COMPILER_DEFAULT_DYNAMIC_VARIABLES,
+  NEVER_ANNOUNCE_WITHOUT_TRANSFER_INSTRUCTION,
+  openingAlreadySpokenInstruction,
+  TRANSFER_ANNOUNCEMENT_INSTRUCTION,
+} from "./opening.js";
 import type {
   RetellFunctionTool,
   RetellSinglePromptRequest,
@@ -40,6 +47,11 @@ export function compileSinglePrompt(
         description: tool.description,
         transfer_destination: { type: "predefined", number: "{{transfer_number}}" },
         transfer_option: { type: "warm_transfer" },
+        // DISCLOSE-1 (mirrors template-compiler.ts): the tool announces the
+        // connection itself, only while it actually transfers.
+        speak_during_execution: true,
+        execution_message_type: "prompt",
+        execution_message_description: TRANSFER_ANNOUNCEMENT_INSTRUCTION,
       };
       return transferTool;
     }
@@ -59,7 +71,11 @@ export function compileSinglePrompt(
     return functionTool;
   });
 
-  const sections: string[] = [template.disclosure_line];
+  // DISCLOSE-1 (docs/BUILD_NOTES.md, mirrors template-compiler.ts): the
+  // disclosure is the static `begin_message` now; the prompt only needs to
+  // know it was already spoken.
+  const opening = buildOpeningLine(template.disclosure_line);
+  const sections: string[] = [openingAlreadySpokenInstruction(opening)];
   if (template.system_prompt) {
     sections.push(template.system_prompt);
   }
@@ -73,6 +89,9 @@ export function compileSinglePrompt(
         globalIntent.target_state
       }`,
     );
+  }
+  if (template.tools.some((t) => t.name === TRANSFER_CALL_TOOL_NAME)) {
+    sections.push(`## Transferring to a human\n${NEVER_ANNOUNCE_WITHOUT_TRANSFER_INSTRUCTION}`);
   }
   // CALL-7: see `RetellEndCallTool`'s own doc comment (types.ts) — the same
   // "a Retell LLM response engine never ends a call on its own" gap applies
@@ -99,6 +118,9 @@ export function compileSinglePrompt(
   );
 
   return {
+    begin_message: opening.text,
+    start_speaker: "agent",
+    default_dynamic_variables: { ...COMPILER_DEFAULT_DYNAMIC_VARIABLES },
     general_prompt: sections.join("\n\n"),
     general_tools: [
       ...generalTools,

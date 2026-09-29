@@ -90,7 +90,9 @@ export const RESTAURANT_TEMPLATE: AgentTemplate = {
     {
       id: "greeting",
       name: "Greeting",
-      prompt_fragment: "Greet the caller.",
+      prompt_fragment:
+        "The caller has already been greeted by your opening line. Respond to what they said " +
+        "and find out what they need.",
       allowed_tools: [],
     },
     {

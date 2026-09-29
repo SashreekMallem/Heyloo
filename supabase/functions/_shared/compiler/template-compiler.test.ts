@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildOpeningLine,
   buildPostCallAnalysisData,
   type CompilerAgentTemplate,
   compileTemplate,
+  firstUtterance,
   verifyDisclosureGate,
 } from "./template-compiler.ts";
 
@@ -40,14 +42,78 @@ function baseTemplate(overrides: Partial<CompilerAgentTemplate> = {}): CompilerA
 }
 
 describe("compileTemplate — conversation_flow", () => {
-  it("prepends the disclosure line to the start node and verifies the gate", () => {
+  it("DISCLOSE-1: starts on a static_text opening node that speaks the disclosure verbatim, and the gate verifies it", () => {
     const compiled = compileTemplate(baseTemplate(), "https://example.com/voice-tools");
     expect(compiled.compileTarget).toBe("conversation_flow");
     expect(compiled.disclosureVerified).toBe(true);
     if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
     const { nodes, start_node_id } = compiled.flow.body;
-    const startNode = nodes.find((n) => n.id === start_node_id);
-    expect(startNode?.instruction?.text.startsWith(DISCLOSURE)).toBe(true);
+    expect(start_node_id).toBe("__opening");
+    const opening = nodes.find((n) => n.id === start_node_id) as
+      | {
+          type: string;
+          instruction: { type: string; text: string };
+          else_edge?: { destination_node_id: string; transition_condition: { prompt: string } };
+        }
+      | undefined;
+    expect(opening?.type).toBe("conversation");
+    expect(opening?.instruction).toEqual({
+      type: "static_text",
+      text: `${DISCLOSURE} {{caller_greeting}} How can I help you today?`,
+    });
+    // Everything the start state's own edges don't match falls through to
+    // the start state itself (whose prompt then answers) — the literal
+    // "Else" prompt is required by Retell's ElseEdge schema.
+    expect(opening?.else_edge?.destination_node_id).toBe("greeting");
+    expect(opening?.else_edge?.transition_condition.prompt).toBe("Else");
+  });
+
+  it("DISCLOSE-1: the opening node copies the start state's own edges, so the caller's first reply routes exactly as before", () => {
+    const compiled = compileTemplate(baseTemplate(), "https://example.com/voice-tools");
+    if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
+    const { nodes } = compiled.flow.body;
+    const destinations = (id: string) =>
+      (
+        nodes.find((n) => n.id === id) as { edges: Array<{ destination_node_id: string }> }
+      ).edges.map((e) => e.destination_node_id);
+    expect(destinations("__opening")).toEqual(destinations("greeting"));
+    expect(destinations("__opening")).toContain("booking");
+  });
+
+  it("DISCLOSE-1: the start state is told its greeting was already spoken (never greets twice), and no longer carries the disclosure as a prompt to paraphrase", () => {
+    const compiled = compileTemplate(baseTemplate(), "https://example.com/voice-tools");
+    if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
+    const greeting = compiled.flow.body.nodes.find((n) => n.id === "greeting") as {
+      instruction: { type: string; text: string };
+    };
+    expect(greeting.instruction.type).toBe("prompt");
+    expect(greeting.instruction.text).toMatch(/ALREADY been spoken/);
+    expect(greeting.instruction.text).toMatch(/Do not greet the caller again/);
+    expect(greeting.instruction.text.endsWith("Greet the caller.")).toBe(true);
+  });
+
+  it("DISCLOSE-1: the returning-caller and language instructions live in the GLOBAL prompt (every node), with default_dynamic_variables covering every compiler-referenced variable", () => {
+    const compiled = compileTemplate(baseTemplate(), "https://example.com/voice-tools", {
+      defaultDynamicVariables: { business_name: "Riverside Auto", assistant_name: "Nova" },
+    });
+    if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
+    const { global_prompt, default_dynamic_variables } = compiled.flow.body;
+    expect(global_prompt.startsWith("You help callers book auto repair appointments.")).toBe(true);
+    expect(global_prompt).toContain("{{caller_recent_context}}");
+    expect(global_prompt).toContain("{{caller_name_on_file}}");
+    expect(global_prompt).toContain("{{caller_phone_on_file}}");
+    expect(global_prompt).toMatch(/never ask a recognized caller to tell you their name or phone/);
+    expect(global_prompt).toContain("{{language}}");
+    expect(default_dynamic_variables).toEqual({
+      caller_greeting: "",
+      caller_name_on_file: "",
+      caller_phone_on_file: "",
+      caller_recent_context: expect.stringContaining("first-time caller"),
+      transfer_number: "",
+      language: "en",
+      business_name: "Riverside Auto",
+      assistant_name: "Nova",
+    });
   });
 
   it("gives every emitted tool a tool_id (CALL-1 gap fix: required by a live 400, docs.retellai.com/api-references/create-conversation-flow)", () => {
@@ -100,7 +166,8 @@ describe("compileTemplate — conversation_flow", () => {
     });
     const compiled = compileTemplate(template, "https://example.com/voice-tools");
     if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
-    expect(compiled.flow.body.nodes[0]).toMatchObject({
+    // nodes[0] is the static opening node (DISCLOSE-1); the state's own node follows it.
+    expect(compiled.flow.body.nodes.find((n) => n.id === "booking")).toMatchObject({
       type: "subagent",
       tool_ids: ["create_booking"],
     });
@@ -166,8 +233,11 @@ describe("compileTemplate — conversation_flow", () => {
       | undefined;
     expect(wrapUpNode?.type).toBe("conversation");
     expect(wrapUpNode?.global_node_setting?.condition).toBeTruthy();
+    // DISCLOSE-1: "yes, another request" loops back to the start STATE,
+    // never to the static opening node (which would replay the greeting).
+    expect(start_node_id).toBe("__opening");
     expect(wrapUpNode?.edges.map((e) => e.destination_node_id).sort()).toEqual(
-      ["__wrap_up_end", start_node_id].sort(),
+      ["__wrap_up_end", "greeting"].sort(),
     );
     const wrapUpEnd = nodes.find((n) => n.id === "__wrap_up_end");
     expect(wrapUpEnd?.type).toBe("end");
@@ -197,8 +267,37 @@ describe("compileTemplate — conversation_flow", () => {
           },
         ],
         tools: [],
+        global_prompt: "",
+        default_dynamic_variables: {},
       },
     };
+    expect(verifyDisclosureGate(flow, DISCLOSURE)).toBe(false);
+  });
+
+  it("DISCLOSE-1: fails the gate when the disclosure is only in a PROMPT start node — a prompt is paraphrased by the model (the live 'this call may be recorded' drop), only a static first utterance counts", () => {
+    const flow = {
+      kind: "conversation_flow" as const,
+      body: {
+        start_node_id: "a",
+        start_speaker: "agent" as const,
+        nodes: [
+          {
+            id: "a",
+            type: "conversation" as const,
+            name: "a",
+            instruction: { type: "prompt" as const, text: `${DISCLOSURE} Greet the caller.` },
+            edges: [],
+          },
+        ],
+        tools: [],
+        global_prompt: "",
+        default_dynamic_variables: {},
+      },
+    };
+    expect(firstUtterance(flow)).toEqual({
+      isStatic: false,
+      text: `${DISCLOSURE} Greet the caller.`,
+    });
     expect(verifyDisclosureGate(flow, DISCLOSURE)).toBe(false);
   });
 });
@@ -232,92 +331,140 @@ function transferTemplate(overrides: Partial<CompilerAgentTemplate> = {}): Compi
   });
 }
 
-describe("compileTemplate — conversation_flow — transfer_call (CALL-4, PUBLISH-1)", () => {
-  it("ALWAYS compiles a native transfer_call node whose destination is the literal {{transfer_number}} token, regardless of the transferNumber option — the live value is resolved by Retell per call, not baked in at compile time", () => {
-    const compiled = compileTemplate(transferTemplate(), "https://example.com/voice-tools", {
-      transferNumber: "+15551234567",
-    });
+describe("compileTemplate — conversation_flow — transfer_call (CALL-4, PUBLISH-1, DISCLOSE-1)", () => {
+  type AnyNode = {
+    id: string;
+    type: string;
+    instruction?: { type: string; text: string };
+    edges?: Array<{
+      destination_node_id: string;
+      transition_condition: { type: string; prompt?: string; equations?: unknown[] };
+    }>;
+    else_edge?: { destination_node_id: string; transition_condition: { prompt: string } };
+    edge?: { destination_node_id: string; transition_condition: { prompt: string } };
+    tool_ids?: string[];
+    transfer_destination?: { type: string; number: string };
+    transfer_option?: { type: string };
+    speak_during_execution?: boolean;
+    global_node_setting?: { condition: string };
+  };
+  function nodesOf(options?: { transferNumber?: string | null }): Map<string, AnyNode> {
+    const compiled = compileTemplate(
+      transferTemplate(),
+      "https://example.com/voice-tools",
+      options,
+    );
     if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
-    const { nodes, tools } = compiled.flow.body;
+    expect(compiled.flow.body.tools.some((t) => t.name === "transfer_call")).toBe(false);
+    return new Map(compiled.flow.body.nodes.map((n) => [n.id, n as unknown as AnyNode]));
+  }
 
-    // Never a bogus custom-function tool named transfer_call.
-    expect(tools.some((t) => t.name === "transfer_call")).toBe(false);
+  it("DISCLOSE-1: the transfer-only state's own id is a SILENT logic-split router (no instruction, never speaks) that decides deterministically with an equation on {{transfer_number}}, not the model", () => {
+    const router = nodesOf().get("transfer_to_human");
+    expect(router?.type).toBe("branch");
+    expect(router?.instruction).toBeUndefined();
+    // Still the global-intent target, so "the caller asks for a human" still lands here.
+    expect(router?.global_node_setting).toEqual({ condition: "the caller asks for a human" });
+    expect(router?.edges).toEqual([
+      {
+        id: "edge_transfer_to_human_has_transfer",
+        destination_node_id: "transfer_to_human__transfer",
+        transition_condition: {
+          type: "equation",
+          operator: "&&",
+          equations: [{ left: "{{transfer_number}}", operator: "contains", right: "+" }],
+        },
+      },
+    ]);
+    expect(router?.else_edge).toEqual({
+      id: "edge_transfer_to_human_no_transfer",
+      destination_node_id: "transfer_to_human__no_transfer",
+      transition_condition: { type: "prompt", prompt: "Else" },
+    });
+  });
 
-    const transferNode = nodes.find((n) => n.id === "transfer_to_human__transfer") as
-      | {
-          type: string;
-          transfer_destination?: { type: string; number: string };
-          transfer_option?: { type: string };
-          edge?: { destination_node_id: string };
-        }
-      | undefined;
+  it("DISCLOSE-1: ONLY the real TransferCallNode announces a connection — while it transfers (speak_during_execution); its destination stays the {{transfer_number}} token (PUBLISH-1) and a failed transfer lands on the honest fallback", () => {
+    const transferNode = nodesOf({ transferNumber: "+15551234567" }).get(
+      "transfer_to_human__transfer",
+    );
     expect(transferNode?.type).toBe("transfer_call");
-    // Never the literal number this option carried — PUBLISH-1: the option
-    // no longer affects the compiled output at all.
+    // Never the literal number the (dead, PUBLISH-1) option carried.
     expect(transferNode?.transfer_destination).toEqual({
       type: "predefined",
       number: "{{transfer_number}}",
     });
     expect(transferNode?.transfer_option).toEqual({ type: "warm_transfer" });
-    // The required "transfer failed" edge lands on this state's own end
-    // node — the same one the is_terminal pass creates.
-    expect(transferNode?.edge?.destination_node_id).toBe("transfer_to_human__end");
-    expect(nodes.some((n) => n.id === "transfer_to_human__end" && n.type === "end")).toBe(true);
-
-    // The router (kept at the original state id, so every existing edge
-    // into it still resolves) is ALWAYS also present: take_message
-    // granted, and a runtime edge onto the transfer node above.
-    const router = nodes.find((n) => n.id === "transfer_to_human") as
-      | {
-          type: string;
-          tool_ids?: string[];
-          edges?: { destination_node_id: string }[];
-          instruction?: { text: string };
-        }
-      | undefined;
-    expect(router?.type).toBe("subagent");
-    expect(router?.tool_ids).toEqual(["take_message"]);
-    expect(
-      router?.edges?.some((e) => e.destination_node_id === "transfer_to_human__transfer"),
-    ).toBe(true);
-    // QA-HOT (docs/BUILD_NOTES.md): the router's own instruction text must
-    // carry BOTH the state's own authored prompt_fragment AND the generic
-    // transfer/no-transfer-fallback instruction — previously the state's
-    // own content was silently discarded here (replaced entirely by the
-    // generic instruction), a real live bug for any vertical whose
-    // transfer-only state's own prompt matters beyond "connect them"
-    // (e.g. vet's emergency_warm_transfer, which must keep repeating its
-    // own emergency-hospital referral in the no-transfer fallback).
-    expect(router?.instruction?.text).toContain("The caller wants a human, use transfer_call.");
-    expect(router?.instruction?.text).toContain("The live transfer number for this business");
+    expect(transferNode?.speak_during_execution).toBe(true);
+    expect(transferNode?.instruction?.type).toBe("prompt");
+    expect(transferNode?.instruction?.text).toMatch(/connecting them to a member of the team now/);
+    expect(transferNode?.edge?.destination_node_id).toBe("transfer_to_human__no_transfer");
+    // Retell's TransferCallNode edge schema: the prompt MUST be this literal.
+    expect(transferNode?.edge?.transition_condition.prompt).toBe("Transfer failed");
   });
 
-  it("omitting the options argument entirely compiles the exact same router + transfer_call node pair (back-compat default, PUBLISH-1)", () => {
-    const compiled = compileTemplate(transferTemplate(), "https://example.com/voice-tools");
-    if (compiled.flow.kind !== "conversation_flow") throw new Error("wrong kind");
-    const { nodes } = compiled.flow.body;
-    expect(
-      nodes.some((n) => n.id === "transfer_to_human__transfer" && n.type === "transfer_call"),
-    ).toBe(true);
-    const router = nodes.find((n) => n.id === "transfer_to_human") as
-      | { type: string; tool_ids?: string[] }
-      | undefined;
-    expect(router?.type).toBe("subagent");
-    expect(router?.tool_ids).toEqual(["take_message"]);
+  it("DISCLOSE-1: the no-live-transfer fallback keeps the state's own text (QA-HOT), forbids claiming any connection, restates an emergency referral, takes a message, and can end the call", () => {
+    const nodes = nodesOf();
+    const fallback = nodes.get("transfer_to_human__no_transfer");
+    expect(fallback?.type).toBe("subagent");
+    expect(fallback?.tool_ids).toEqual(["take_message"]);
+    const text = fallback?.instruction?.text ?? "";
+    expect(text).toContain("The caller wants a human, use transfer_call.");
+    expect(text).toMatch(/There is NO live transfer on this call/);
+    expect(text).toMatch(
+      /Never say or imply that you are connecting, transferring or putting the caller through/,
+    );
+    expect(text).toMatch(/already on the line/);
+    expect(text).toMatch(/restate the emergency referral/);
+    expect(text).toMatch(/call take_message/);
+    expect(text).not.toMatch(/\{\{transfer_number\}\}/);
+    const destinations = fallback?.edges?.map((e) => e.destination_node_id) ?? [];
+    expect(destinations).toContain("transfer_to_human__end");
+    expect(nodes.get("transfer_to_human__end")?.type).toBe("end");
+  });
+
+  it("the transferNumber option never changes the compiled output (PUBLISH-1: the live value is resolved by Retell per call)", () => {
+    const withOption = compileTemplate(transferTemplate(), "https://example.com/voice-tools", {
+      transferNumber: "+15551234567",
+    });
+    const without = compileTemplate(transferTemplate(), "https://example.com/voice-tools");
+    expect(withOption.flow).toEqual(without.flow);
   });
 });
 
 describe("compileTemplate — multi_prompt", () => {
-  it("prepends the disclosure line to the starting state's prompt", () => {
+  it("DISCLOSE-1: speaks the disclosure verbatim as a static begin_message (agent speaks first), and the starting state is told it was already said", () => {
     const compiled = compileTemplate(
       baseTemplate({ compile_target: "multi_prompt" }),
       "https://x/y",
     );
     expect(compiled.disclosureVerified).toBe(true);
     if (compiled.flow.kind !== "multi_prompt") throw new Error("wrong kind");
+    expect(compiled.flow.body.begin_message).toBe(
+      `${DISCLOSURE} {{caller_greeting}} How can I help you today?`,
+    );
+    expect(compiled.flow.body.start_speaker).toBe("agent");
+    expect(compiled.flow.body.default_dynamic_variables["caller_greeting"]).toBe("");
     expect(compiled.flow.body.starting_state).toBe("greeting");
     const startState = compiled.flow.body.states.find((s) => s.name === "greeting");
-    expect(startState?.state_prompt.startsWith(DISCLOSURE)).toBe(true);
+    expect(startState?.state_prompt).toMatch(/ALREADY been spoken/);
+    expect(startState?.state_prompt.endsWith("Greet the caller.")).toBe(true);
+    expect(compiled.flow.body.general_prompt).toContain("{{caller_name_on_file}}");
+    expect(compiled.flow.body.general_prompt).toMatch(/end_call/);
+  });
+
+  it("DISCLOSE-1: a missing begin_message fails the gate even when the disclosure is in the starting state's prompt (an unset begin_message is model-generated)", () => {
+    const compiled = compileTemplate(
+      baseTemplate({ compile_target: "multi_prompt" }),
+      "https://x/y",
+    );
+    if (compiled.flow.kind !== "multi_prompt") throw new Error("wrong kind");
+    const { begin_message: _omitted, ...withoutBegin } = compiled.flow.body;
+    const tampered = {
+      kind: "multi_prompt" as const,
+      body: { ...withoutBegin, begin_message: "" },
+    };
+    expect(firstUtterance(tampered).isStatic).toBe(false);
+    expect(verifyDisclosureGate(tampered, DISCLOSURE)).toBe(false);
   });
 
   it("CALL-8 (docs/BUILD_PLAN.md): take_message is always reachable via general_tools, structurally available from EVERY state — not only the ones whose own allowed_tools lists it — closing a live-observed bug where a state that never granted it left the model unable to record anything before ending the call", () => {
@@ -426,9 +573,19 @@ describe("compileTemplate — multi_prompt", () => {
         // option no longer affects the compiled output at all.
         transfer_destination: { type: "predefined", number: "{{transfer_number}}" },
         transfer_option: { type: "warm_transfer" },
+        // DISCLOSE-1: the tool itself announces the connection, only while
+        // it actually transfers.
+        speak_during_execution: true,
+        execution_message_type: "prompt",
+        execution_message_description: expect.stringMatching(/connecting them/),
       },
     ]);
     expect(transferState?.state_prompt).toMatch(/take_message/);
+    // DISCLOSE-1: the model may never announce a connection on its own.
+    expect(transferState?.state_prompt).toMatch(
+      /never tell the caller you are connecting, transferring or putting them through unless you are calling transfer_call in this same turn/,
+    );
+    expect(transferState?.state_prompt).toMatch(/There is NO live transfer on this call/);
     for (const state of compiled.flow.body.states) {
       expect(state.tools.some((t) => t.type === "custom" && t.name === "transfer_call")).toBe(
         false,
@@ -464,14 +621,23 @@ describe("compileTemplate — multi_prompt", () => {
 });
 
 describe("compileTemplate — single_prompt", () => {
-  it("puts the disclosure line as the very first line of general_prompt", () => {
+  it("DISCLOSE-1: speaks the disclosure verbatim as a static begin_message; the prompt opens by saying it was already spoken", () => {
     const compiled = compileTemplate(
       baseTemplate({ compile_target: "single_prompt" }),
       "https://x/y",
     );
     expect(compiled.disclosureVerified).toBe(true);
     if (compiled.flow.kind !== "single_prompt") throw new Error("wrong kind");
-    expect(compiled.flow.body.general_prompt.startsWith(DISCLOSURE)).toBe(true);
+    expect(compiled.flow.body.begin_message).toBe(
+      `${DISCLOSURE} {{caller_greeting}} How can I help you today?`,
+    );
+    expect(compiled.flow.body.start_speaker).toBe("agent");
+    expect(
+      compiled.flow.body.general_prompt.startsWith(
+        "Your first turn in this call has ALREADY been spoken",
+      ),
+    ).toBe(true);
+    expect(compiled.flow.body.general_prompt).toContain("{{caller_phone_on_file}}");
   });
 
   it("folds global_intents into textual escape instructions", () => {
@@ -516,6 +682,9 @@ describe("compileTemplate — single_prompt", () => {
       // option no longer affects the compiled output at all.
       transfer_destination: { type: "predefined", number: "{{transfer_number}}" },
       transfer_option: { type: "warm_transfer" },
+      speak_during_execution: true,
+      execution_message_type: "prompt",
+      execution_message_description: expect.stringMatching(/connecting them/),
     });
     expect(
       compiled.flow.body.general_tools.some(
@@ -535,6 +704,51 @@ describe("compileTemplate — single_prompt", () => {
     expect(transferTool).toMatchObject({
       transfer_destination: { type: "predefined", number: "{{transfer_number}}" },
     });
+  });
+});
+
+describe("buildOpeningLine (DISCLOSE-1)", () => {
+  const STANDARD =
+    "Thanks for calling {{business_name}}. This is {{assistant_name}}, their AI assistant — this call may be recorded.";
+
+  it("English: the template's disclosure verbatim, then the returning-caller greeting token, then the question", () => {
+    expect(buildOpeningLine(STANDARD)).toEqual({
+      text: `${STANDARD} {{caller_greeting}} How can I help you today?`,
+      disclosureLiteral: STANDARD,
+      language: "en",
+    });
+  });
+
+  it("Spanish: the vetted Spanish literal of the SAME disclosure (AI + recording), never a model translation", () => {
+    const opening = buildOpeningLine(STANDARD, "es");
+    expect(opening.language).toBe("es");
+    expect(opening.disclosureLiteral).toContain("asistente de inteligencia artificial");
+    expect(opening.disclosureLiteral).toContain("esta llamada puede ser grabada");
+    expect(opening.text).toBe(
+      `${opening.disclosureLiteral} {{caller_greeting}} ¿En qué puedo ayudarle hoy?`,
+    );
+  });
+
+  it("falls back to the original English literal verbatim when no vetted translation exists (unknown line or unknown language)", () => {
+    expect(buildOpeningLine(DISCLOSURE, "es")).toEqual({
+      text: `${DISCLOSURE} {{caller_greeting}} How can I help you today?`,
+      disclosureLiteral: DISCLOSURE,
+      language: "en",
+    });
+    expect(buildOpeningLine(STANDARD, "fr").disclosureLiteral).toBe(STANDARD);
+  });
+
+  it("compileTemplate verifies the gate against the literal actually spoken for a Spanish tenant", () => {
+    const compiled = compileTemplate(
+      baseTemplate({ compile_target: "single_prompt", disclosure_line: STANDARD }),
+      "https://x/y",
+      { language: "es" },
+    );
+    expect(compiled.disclosureVerified).toBe(true);
+    expect(compiled.openingLine.language).toBe("es");
+    if (compiled.flow.kind !== "single_prompt") throw new Error("wrong kind");
+    expect(compiled.flow.body.begin_message).toContain("esta llamada puede ser grabada");
+    expect(compiled.flow.body.default_dynamic_variables["language"]).toBe("es");
   });
 });
 

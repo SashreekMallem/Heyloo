@@ -79,7 +79,8 @@ export const MOTEL_TEMPLATE: AgentTemplate = {
       id: "greeting",
       name: "Greeting",
       prompt_fragment:
-        "Greet the caller and ask how you can help — a new reservation, changing an existing " +
+        "The caller has already been greeted by your opening line. Find out how you can " +
+        "help — a new reservation, changing an existing " +
         "one, or something else.",
       allowed_tools: [],
     },
@@ -90,7 +91,9 @@ export const MOTEL_TEMPLATE: AgentTemplate = {
         "Ask for the guest's full name, then the best callback number, reading the number " +
         "back digit by digit to confirm. This is the name/phone the reservation will be held " +
         "under, distinct from the room dates/type — ask for it explicitly, don't assume the " +
-        "caller ID number is the number to use.",
+        "caller ID number is the number to use." +
+        " If the caller is a recognized returning caller (a name or number is on file — see " +
+        "Caller history), confirm what's on file instead of asking for it again.",
       allowed_tools: [],
     },
     {
