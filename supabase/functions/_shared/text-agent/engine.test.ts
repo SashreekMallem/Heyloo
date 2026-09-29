@@ -427,18 +427,18 @@ describe("golden conversation: A2P pending", () => {
       // a2p_status stays "verified": the rule is availability, not the a2p flag.
       vi.mocked(resolveTenantTextContext).mockResolvedValue(TENANT_CONTEXT);
       vi.mocked(dispatchTextTool).mockResolvedValue({ resultText: "{}", isError: false });
-      const { fetchImpl, calls } = fakeAnthropicFetch([
+      const { llm, calls } = queuedLlm([
         toolUseBlock("send_payment_link", { phone: "+15551234567", purpose: "deposit" }),
         textBlock("ok"),
       ]);
       await handleInboundText(
-        baseDeps(fetchImpl, smsAvailable === "absent" ? {} : { smsAvailable }),
+        baseDeps(llm, smsAvailable === "absent" ? {} : { smsAvailable }),
         channel === "sms"
           ? { channel, tenantId: "t1", phoneE164: "+15551234567", message: "hi" }
           : { channel, tenantId: "t1", sessionToken: "tok_1", message: "hi" },
       );
       return {
-        system: JSON.parse(calls[0]?.body as string).system as string,
+        system: calls[0]?.system ?? "",
         toolDeps: vi.mocked(dispatchTextTool).mock.calls[0]?.[0],
       };
     }
