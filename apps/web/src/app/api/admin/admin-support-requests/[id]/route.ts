@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { requireAdminApiSession, writeAdminAction } from "@/app/api/admin/_lib/admin-auth";
+import {
+  fromUntypedTable,
+  requireAdminApiSession,
+  writeAdminAction,
+} from "@/app/api/admin/_lib/admin-auth";
 import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-role";
 
 export const runtime = "nodejs";
@@ -37,13 +41,24 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     .eq("support_request_id", id)
     .order("created_at", { ascending: true });
 
+  // COCKPIT-F25: label who wrote each note (support team vs the tenant's own user)
+  // by checking the authors against `platform_admins`.
+  const authorIds = [...new Set((notes ?? []).map((n) => n.author_id))];
+  const { data: adminRows } = authorIds.length
+    ? await fromUntypedTable(supabase, "platform_admins").select("user_id").in("user_id", authorIds)
+    : { data: [] as { user_id: string }[] };
+  const adminIds = new Set(((adminRows ?? []) as { user_id: string }[]).map((r) => r.user_id));
+
   return NextResponse.json({
     ticket: {
       ...ticket,
       tenant_name: tenant?.name ?? "—",
       tenant_vertical: tenant?.vertical ?? null,
     },
-    notes: notes ?? [],
+    notes: (notes ?? []).map((n) => ({
+      ...n,
+      author_role: adminIds.has(n.author_id) ? "admin" : "tenant",
+    })),
   });
 }
 

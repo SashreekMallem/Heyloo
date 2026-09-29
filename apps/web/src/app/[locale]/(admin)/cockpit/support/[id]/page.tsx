@@ -1,10 +1,13 @@
 "use client";
 
 import {
+  Badge,
   Button,
   Card,
   CardContent,
+  Checkbox,
   DataState,
+  Label,
   PageHeader,
   Select,
   SelectContent,
@@ -29,7 +32,16 @@ interface TicketDetail {
     priority: string;
     created_at: string;
   };
-  notes: Array<{ id: string; body: string; created_at: string; author_id: string }>;
+  notes: Array<{
+    id: string;
+    body: string;
+    created_at: string;
+    author_id: string;
+    /** Who wrote it: a platform admin (the support team) or the tenant's own user. */
+    author_role?: "admin" | "tenant";
+    /** false = an internal note the tenant never sees. */
+    visible_to_tenant?: boolean;
+  }>;
 }
 
 const STATUSES = ["open", "pending", "resolved", "closed"] as const;
@@ -38,6 +50,7 @@ export default function AdminSupportTicketPage({ params }: { params: Promise<{ i
   const { id } = use(params);
   const queryClient = useQueryClient();
   const [reply, setReply] = useState("");
+  const [internal, setInternal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const query = useAdminQuery<TicketDetail>(
@@ -66,11 +79,13 @@ export default function AdminSupportTicketPage({ params }: { params: Promise<{ i
     const res = await fetch(`/api/admin/admin-support-requests/${id}/notes`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ body: reply }),
+      body: JSON.stringify({ body: reply, visible_to_tenant: !internal }),
     });
     setSubmitting(false);
     if (res.ok) {
+      toast.success(internal ? "Internal note saved" : "Reply sent to the tenant");
       setReply("");
+      setInternal(false);
       void queryClient.invalidateQueries({ queryKey: ["admin", "support_request", id] });
     } else {
       toast.error("Couldn't send reply — please try again.");
@@ -117,8 +132,12 @@ export default function AdminSupportTicketPage({ params }: { params: Promise<{ i
               </div>
               {(data.notes ?? []).map((note) => (
                 <div key={note.id} className="border-t border-border pt-4">
-                  <p className="text-xs text-muted-foreground">
-                    {new Date(note.created_at).toLocaleString()}
+                  <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">
+                      {note.author_role === "admin" ? "Support team" : "Tenant"}
+                    </span>
+                    {note.visible_to_tenant === false && <Badge variant="warning">Internal</Badge>}
+                    <span>{new Date(note.created_at).toLocaleString()}</span>
                   </p>
                   <p className="mt-1 text-sm">{note.body}</p>
                 </div>
@@ -130,10 +149,23 @@ export default function AdminSupportTicketPage({ params }: { params: Promise<{ i
             <Textarea
               value={reply}
               onChange={(e) => setReply(e.target.value)}
-              placeholder="Reply to the tenant…"
+              placeholder={
+                internal ? "Internal note (the tenant won't see this)…" : "Reply to the tenant…"
+              }
+              aria-label={internal ? "Internal note" : "Reply to the tenant"}
             />
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="support-internal-note"
+                checked={internal}
+                onCheckedChange={(checked) => setInternal(checked === true)}
+              />
+              <Label htmlFor="support-internal-note" className="text-sm font-normal">
+                Internal note (not visible to the tenant)
+              </Label>
+            </div>
             <Button onClick={sendReply} disabled={submitting || !reply.trim()}>
-              Send reply
+              {internal ? "Save note" : "Send reply"}
             </Button>
           </div>
         </div>

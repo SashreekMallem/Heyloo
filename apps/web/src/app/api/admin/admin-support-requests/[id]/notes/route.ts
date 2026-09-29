@@ -4,7 +4,11 @@ import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-ro
 
 export const runtime = "nodejs";
 
-/** Admin reply on a ticket — always `visible_to_tenant: true` (an internal-only note surface doesn't exist in this UI yet; see docs/BUILD_NOTES.md). */
+/**
+ * Admin note on a ticket. A reply to the tenant by default (`visible_to_tenant`
+ * true); `{ visible_to_tenant: false }` stores an internal note the tenant never
+ * sees (COCKPIT-F25).
+ */
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireAdminApiSession();
   if (!session.ok) return session.response;
@@ -16,10 +20,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   } catch {
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
-  const body = (json as { body?: unknown })?.body;
+  const { body, visible_to_tenant: visibleInput } = (json ?? {}) as {
+    body?: unknown;
+    visible_to_tenant?: unknown;
+  };
   if (typeof body !== "string" || body.trim().length === 0) {
     return NextResponse.json({ error: "empty_body" }, { status: 422 });
   }
+  if (visibleInput !== undefined && typeof visibleInput !== "boolean") {
+    return NextResponse.json({ error: "invalid_visible_to_tenant" }, { status: 422 });
+  }
+  const visibleToTenant = visibleInput ?? true;
 
   const supabase = createSupabaseServiceRoleServerClient();
   const { data: ticket } = await supabase
@@ -35,7 +46,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       support_request_id: id,
       author_id: session.adminUserId,
       body: body.trim(),
-      visible_to_tenant: true,
+      visible_to_tenant: visibleToTenant,
     })
     .select("id, body, visible_to_tenant, created_at, author_id")
     .maybeSingle();

@@ -2,7 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 
 function chain(result: unknown) {
   const obj: Record<string, unknown> = {};
-  for (const method of ["select", "eq", "order", "limit", "maybeSingle", "update", "insert"]) {
+  for (const method of [
+    "select",
+    "eq",
+    "in",
+    "order",
+    "limit",
+    "maybeSingle",
+    "update",
+    "insert",
+  ]) {
     obj[method] = vi.fn(() => obj);
   }
   // biome-ignore lint/suspicious/noThenProperty: intentional thenable mock of a Supabase query-builder chain.
@@ -92,6 +101,7 @@ describe("GET /api/admin/admin-support-requests/[id]", () => {
           error: null,
         },
       ],
+      platform_admins: [{ data: [], error: null }],
     };
     const res = await GET(new Request("http://localhost/x"), {
       params: Promise.resolve({ id: "s1" }),
@@ -100,6 +110,60 @@ describe("GET /api/admin/admin-support-requests/[id]", () => {
     const body = (await res.json()) as { ticket: { tenant_name: string }; notes: unknown[] };
     expect(body.ticket.tenant_name).toBe("Acme");
     expect(body.notes).toHaveLength(1);
+  });
+
+  // COCKPIT-F25: the thread labels who wrote each note.
+  it("marks each note's author as the support team or the tenant", async () => {
+    mockSession = { user: adminUser };
+    serviceQueue = {
+      support_requests: [
+        {
+          data: { id: "s1", tenant_id: "t1", subject: "Help", body: "b", status: "open" },
+          error: null,
+        },
+      ],
+      tenants: [{ data: { name: "Acme", vertical: "dental" }, error: null }],
+      support_request_notes: [
+        {
+          data: [
+            {
+              id: "n1",
+              body: "from tenant",
+              visible_to_tenant: true,
+              created_at: "1",
+              author_id: "u1",
+            },
+            {
+              id: "n2",
+              body: "from us",
+              visible_to_tenant: true,
+              created_at: "2",
+              author_id: "admin1",
+            },
+            {
+              id: "n3",
+              body: "internal",
+              visible_to_tenant: false,
+              created_at: "3",
+              author_id: "admin1",
+            },
+          ],
+          error: null,
+        },
+      ],
+      platform_admins: [{ data: [{ user_id: "admin1" }], error: null }],
+    };
+    const res = await GET(new Request("http://localhost/x"), {
+      params: Promise.resolve({ id: "s1" }),
+    });
+    const body = (await res.json()) as {
+      notes: { id: string; author_role: string; visible_to_tenant: boolean }[];
+    };
+    expect(body.notes.map((n) => [n.id, n.author_role, n.visible_to_tenant])).toEqual([
+      ["n1", "tenant", true],
+      ["n2", "admin", true],
+      ["n3", "admin", false],
+    ]);
   });
 });
 
