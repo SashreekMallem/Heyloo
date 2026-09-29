@@ -20,10 +20,14 @@ export interface BookingCalendarProps {
   view: BookingCalendarView;
   onViewChange: (view: BookingCalendarView) => void;
   onSelect: (booking: BookingCalendarEntry) => void;
+  /** Called with the first day of the newly visible month when the calendar is paged — lets the page fetch bookings for exactly that month. */
+  onMonthChange?: (month: Date) => void;
+  /** List-view sort order (default "asc" = soonest first); a "past" list reads newest first. */
+  listOrder?: "asc" | "desc";
   className?: string;
 }
 
-function startOfMonthGrid(anchor: Date): Date[] {
+export function startOfMonthGrid(anchor: Date): Date[] {
   const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
   const startWeekday = first.getDay();
   const gridStart = new Date(first);
@@ -49,9 +53,16 @@ export function BookingCalendar({
   view,
   onViewChange,
   onSelect,
+  onMonthChange,
+  listOrder = "asc",
   className,
 }: BookingCalendarProps) {
   const [anchor, setAnchor] = useState(() => new Date());
+  const pageMonth = (delta: number) => {
+    const next = new Date(anchor.getFullYear(), anchor.getMonth() + delta, 1);
+    setAnchor(next);
+    onMonthChange?.(next);
+  };
 
   const byDay = useMemo(() => {
     const map = new Map<string, BookingCalendarEntry[]>();
@@ -69,7 +80,11 @@ export function BookingCalendar({
       <div className={cn("space-y-2", className)}>
         {bookings
           .slice()
-          .sort((a, b) => a.startAt.localeCompare(b.startAt))
+          .sort((a, b) =>
+            listOrder === "desc"
+              ? b.startAt.localeCompare(a.startAt)
+              : a.startAt.localeCompare(b.startAt),
+          )
           .map((booking) => (
             <button
               key={booking.id}
@@ -104,18 +119,15 @@ export function BookingCalendar({
         <Button
           size="icon"
           variant="ghost"
-          onClick={() => setAnchor(new Date(anchor.getFullYear(), anchor.getMonth() - 1, 1))}
+          aria-label="Previous month"
+          onClick={() => pageMonth(-1)}
         >
           <ChevronLeft className="size-4" />
         </Button>
         <span className="text-sm font-medium">
           {anchor.toLocaleDateString("en-US", { month: "long", year: "numeric" })}
         </span>
-        <Button
-          size="icon"
-          variant="ghost"
-          onClick={() => setAnchor(new Date(anchor.getFullYear(), anchor.getMonth() + 1, 1))}
-        >
+        <Button size="icon" variant="ghost" aria-label="Next month" onClick={() => pageMonth(1)}>
           <ChevronRight className="size-4" />
         </Button>
       </div>
@@ -143,7 +155,9 @@ export function BookingCalendar({
                     key={booking.id}
                     type="button"
                     onClick={() => onSelect(booking)}
-                    className="block w-full truncate rounded bg-secondary px-1 py-0.5 text-left text-[10px] hover:bg-secondary/80"
+                    // Wrap on phones (a ~50px cell can't hold "3:00 PM Jamie" on one
+                    // line, and a lone "3:00…" identifies nothing); truncate from sm up.
+                    className="block w-full break-words rounded bg-secondary px-1 py-0.5 text-left text-[10px] leading-tight hover:bg-secondary/80 sm:truncate"
                   >
                     {new Date(booking.startAt).toLocaleTimeString([], {
                       hour: "numeric",

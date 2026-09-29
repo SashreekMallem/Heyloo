@@ -20,20 +20,23 @@ import {
   SheetTitle,
   Skeleton,
   StatusBadge,
+  startOfMonthGrid,
   ToggleGroup,
   ToggleGroupItem,
 } from "@heyloo/ui";
 import { useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 import { CustomAnswersList } from "@/components/tenant/custom-answers";
-import { Link } from "@/i18n/navigation";
+import { Link, useRouter } from "@/i18n/navigation";
 import { tenantQueryKey, useTenantQuery } from "@/lib/hooks/use-tenant-query";
 import { customerNotifiedToast, paymentLinkResentToast } from "@/lib/messaging/texting-copy";
 import { useTextingOn } from "@/lib/messaging/use-texting-on";
 import { readCustomAnswers, withoutCustomAnswers } from "@/lib/settings/custom-questions";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
+import { tenantDayStartIso } from "@/lib/tenant/tz";
 import { parseTstzrange } from "@/lib/tstzrange";
 
 interface BookingDetail {
@@ -71,6 +74,37 @@ interface SlotOption {
   start: string;
 }
 
+/** Statuses a booking can still be confirmed / rescheduled / cancelled from. */
+const ACTIONABLE_STATUSES = new Set(["scheduled", "confirmed"]);
+
+const PAST_PAGE_SIZE = 25;
+/** Upper bound on the "upcoming" list / a calendar month, so one query can never run away. */
+const WINDOW_LIMIT = 500;
+const SLOT_LIMIT = 60;
+
+type BookingScope = "upcoming" | "past";
+
+interface BookingsResult {
+  entries: BookingCalendarEntry[];
+  total: number;
+}
+
+/** Slots grouped per calendar day for the reschedule picker ("Mon, Sep 21" -> times). */
+export function groupSlotsByDay(slots: SlotOption[]): { day: string; slots: SlotOption[] }[] {
+  const groups = new Map<string, SlotOption[]>();
+  for (const slot of slots) {
+    const day = new Date(slot.start).toLocaleDateString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    });
+    const list = groups.get(day) ?? [];
+    list.push(slot);
+    groups.set(day, list);
+  }
+  return [...groups.entries()].map(([day, list]) => ({ day, slots: list }));
+}
+
 interface WaitlistRow {
   id: string;
   customerName: string;
@@ -92,29 +126,82 @@ export default function BookingsPage() {
   const queryClient = useQueryClient();
   // MSG-3: never claim a customer was texted unless carriers approved texting.
   const textingOn = useTextingOn(tenantId);
+  const router = useRouter();
+  const bookingParam = useSearchParams()?.get("booking") ?? null;
   const [view, setView] = useState<BookingCalendarView>("list");
+  const [scope, setScope] = useState<BookingScope>("upcoming");
+  const [pastPage, setPastPage] = useState(0);
+  const [month, setMonth] = useState(() => new Date());
   const [selected, setSelected] = useState<BookingCalendarEntry | null>(null);
   const [rescheduling, setRescheduling] = useState(false);
   const [resendingLink, setResendingLink] = useState(false);
 
+  // "Today" is the tenant's local day, not the browser's or UTC's.
+  const tzQuery = useTenantQuery(
+    tenantId ?? "",
+    "tenant_timezone",
+    [],
+    async (): Promise<string> => {
+      const { data } = await supabaseBrowserClient
+        .from("tenants")
+        .select("timezone")
+        .eq("id", tenantId as string)
+        .maybeSingle();
+      return data?.timezone ?? "UTC";
+    },
+    { enabled: !!tenantId },
+  );
+  const tenantTz = tzQuery.data ?? "UTC";
+
+  const monthKey = `${month.getFullYear()}-${month.getMonth()}`;
+
   const query = useTenantQuery(
     tenantId ?? "",
     "bookings",
-    [],
-    async (): Promise<BookingCalendarEntry[]> => {
+    [view, scope, pastPage, monthKey, tenantTz],
+    async (): Promise<BookingsResult> => {
+      // Windowed, ordered queries (QA-1 F-08): the old "oldest 200 bookings, no
+      // date window" query showed past bookings first and silently dropped the
+      // newest ones once a tenant passed 200 bookings.
+      //   calendar        -> exactly the visible 6-week grid
+      //   list / upcoming -> from the start of the tenant's today, soonest first
+      //   list / past     -> before today, newest first, paginated
       // Two flat queries rather than an embedded `customers(name)` select —
       // the hand-maintained Database type has no `Relationships` metadata
       // (packages/supabase-client/src/database.types.ts), so FK-embedded
       // selects don't type-check against it.
-      const { data: bookings } = await supabaseBrowserClient
+      let q = supabaseBrowserClient
         .from("bookings")
-        .select("id, start_at, status, customer_id")
+        .select("id, start_at, status, customer_id", { count: "exact" })
         .eq("tenant_id", tenantId as string)
         // CALL-6 (docs/BUILD_NOTES.md): never show a Retell batch-test/
         // simulator booking on the tenant's real bookings list.
-        .eq("is_test", false)
-        .order("start_at", { ascending: true })
-        .limit(200);
+        .eq("is_test", false);
+
+      if (view === "calendar") {
+        const grid = startOfMonthGrid(month);
+        const first = grid[0] as Date;
+        const last = grid[grid.length - 1] as Date;
+        const gridEnd = new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1);
+        q = q
+          .gte("start_at", first.toISOString())
+          .lt("start_at", gridEnd.toISOString())
+          .order("start_at", { ascending: true })
+          .limit(WINDOW_LIMIT);
+      } else if (scope === "upcoming") {
+        q = q
+          .gte("start_at", tenantDayStartIso(tenantTz))
+          .order("start_at", { ascending: true })
+          .limit(WINDOW_LIMIT);
+      } else {
+        q = q
+          .lt("start_at", tenantDayStartIso(tenantTz))
+          .order("start_at", { ascending: false })
+          .range(pastPage * PAST_PAGE_SIZE, pastPage * PAST_PAGE_SIZE + PAST_PAGE_SIZE - 1);
+      }
+
+      const { data: bookings, count, error } = await q;
+      if (error) throw new Error(error.message);
 
       const customerIds = [
         ...new Set((bookings ?? []).map((b) => b.customer_id).filter((id): id is string => !!id)),
@@ -124,22 +211,58 @@ export default function BookingsPage() {
         : { data: [] as { id: string; name: string | null }[] };
       const nameById = new Map((customers ?? []).map((c) => [c.id, c.name]));
 
-      return (bookings ?? []).map((b) => ({
+      return {
+        total: count ?? (bookings ?? []).length,
+        entries: (bookings ?? []).map((b) => ({
+          id: b.id,
+          startAt: b.start_at,
+          status: b.status,
+          customerName: (b.customer_id && nameById.get(b.customer_id)) ?? null,
+        })),
+      };
+    },
+    { enabled: !!tenantId && tzQuery.isFetched },
+  );
+
+  // Deep link `/dashboard/bookings?booking=<id>` (notification bell, call detail):
+  // load that one booking directly so it opens even when it is outside the list window.
+  const deepLinkQuery = useTenantQuery(
+    tenantId ?? "",
+    "booking_deeplink",
+    [bookingParam ?? ""],
+    async (): Promise<BookingCalendarEntry | null> => {
+      const { data: b } = await supabaseBrowserClient
+        .from("bookings")
+        .select("id, start_at, status, customer_id")
+        .eq("tenant_id", tenantId as string)
+        .eq("id", bookingParam as string)
+        .maybeSingle();
+      if (!b) return null;
+      const { data: customer } = b.customer_id
+        ? await supabaseBrowserClient
+            .from("customers")
+            .select("name")
+            .eq("id", b.customer_id)
+            .maybeSingle()
+        : { data: null };
+      return {
         id: b.id,
         startAt: b.start_at,
         status: b.status,
-        customerName: (b.customer_id && nameById.get(b.customer_id)) ?? null,
-      }));
+        customerName: customer?.name ?? null,
+      };
     },
-    { enabled: !!tenantId },
+    { enabled: !!tenantId && !!bookingParam },
   );
+  const active: BookingCalendarEntry | null =
+    selected ?? (bookingParam ? (deepLinkQuery.data ?? null) : null);
 
   const detailQuery = useTenantQuery(
     tenantId ?? "",
     "booking_detail",
-    [selected?.id ?? ""],
+    [active?.id ?? ""],
     async (): Promise<BookingDetail> => {
-      const bookingId = selected?.id as string;
+      const bookingId = active?.id as string;
       const [{ data: booking }, { data: paymentLink }] = await Promise.all([
         supabaseBrowserClient
           .from("bookings")
@@ -195,7 +318,7 @@ export default function BookingsPage() {
           : null,
       };
     },
-    { enabled: !!selected && !!tenantId },
+    { enabled: !!active && !!tenantId },
   );
 
   const slotsQuery = useTenantQuery(
@@ -209,8 +332,13 @@ export default function BookingsPage() {
         .eq("tenant_id", tenantId as string)
         .eq("resource_id", detailQuery.data?.resourceId as string)
         .eq("is_available", true)
+        // Only slots that start from now on: `fn_regenerate_availability_slots`
+        // keeps ended slots as history, so without this the picker listed 150+
+        // past slots first (QA-1 F-07). `rangeGte` = PostgREST `nxl` (`&>`, "does
+        // not extend to the left of"): lower(slot_range) >= now.
+        .rangeGte("slot_range", `[${new Date().toISOString()},)`)
         .order("slot_range", { ascending: true })
-        .limit(30);
+        .limit(SLOT_LIMIT);
       const options: SlotOption[] = [];
       for (const s of data ?? []) {
         const range = parseTstzrange(s.slot_range);
@@ -260,11 +388,13 @@ export default function BookingsPage() {
   function closeSheet() {
     setSelected(null);
     setRescheduling(false);
+    // Drop `?booking=` so a closed deep-linked sheet stays closed.
+    if (bookingParam) router.replace("/dashboard/bookings");
   }
 
   async function runAction(action: "confirm" | "cancel") {
-    if (!selected) return;
-    const res = await fetch(`/api/tenant/bookings/${selected.id}`, {
+    if (!active) return;
+    const res = await fetch(`/api/tenant/bookings/${active.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action }),
@@ -281,8 +411,8 @@ export default function BookingsPage() {
   }
 
   async function pickSlot(slotId: string) {
-    if (!selected || !tenantId) return;
-    const res = await fetch(`/api/tenant/bookings/${selected.id}`, {
+    if (!active || !tenantId) return;
+    const res = await fetch(`/api/tenant/bookings/${active.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: "reschedule", new_slot_id: slotId }),
@@ -316,7 +446,7 @@ export default function BookingsPage() {
     }
     toast.success(paymentLinkResentToast({ textingOn }));
     void queryClient.invalidateQueries({
-      queryKey: tenantQueryKey(tenantId, "booking_detail", selected?.id ?? ""),
+      queryKey: tenantQueryKey(tenantId, "booking_detail", active?.id ?? ""),
     });
   }
 
@@ -340,32 +470,93 @@ export default function BookingsPage() {
       <PageHeader
         title="Bookings"
         actions={
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            value={view}
-            onValueChange={(v) => v && setView(v as BookingCalendarView)}
-          >
-            <ToggleGroupItem value="list" aria-label="List view">
-              List
-            </ToggleGroupItem>
-            <ToggleGroupItem value="calendar" aria-label="Calendar view">
-              Calendar
-            </ToggleGroupItem>
-          </ToggleGroup>
+          <div className="flex flex-wrap items-center gap-2">
+            {view === "list" && (
+              <ToggleGroup
+                type="single"
+                variant="outline"
+                value={scope}
+                onValueChange={(v) => {
+                  if (!v) return;
+                  setScope(v as BookingScope);
+                  setPastPage(0);
+                }}
+              >
+                <ToggleGroupItem value="upcoming" aria-label="Upcoming bookings">
+                  Upcoming
+                </ToggleGroupItem>
+                <ToggleGroupItem value="past" aria-label="Past bookings">
+                  Past
+                </ToggleGroupItem>
+              </ToggleGroup>
+            )}
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              value={view}
+              onValueChange={(v) => v && setView(v as BookingCalendarView)}
+            >
+              <ToggleGroupItem value="list" aria-label="List view">
+                List
+              </ToggleGroupItem>
+              <ToggleGroupItem value="calendar" aria-label="Calendar view">
+                Calendar
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </div>
         }
       />
 
       <DataState
         query={query}
-        empty={{ title: "No bookings yet", description: "Confirmed bookings will show up here." }}
-        render={(bookings) => (
-          <BookingCalendar
-            bookings={bookings}
-            view={view}
-            onViewChange={setView}
-            onSelect={setSelected}
-          />
+        empty={{
+          title: scope === "past" ? "No past bookings" : "No upcoming bookings",
+          description:
+            scope === "past"
+              ? "Bookings from before today will show up here."
+              : "Confirmed bookings will show up here.",
+          // The calendar always renders its grid (an empty month still needs the month controls).
+          isEmpty: (data) => view === "list" && data.entries.length === 0,
+        }}
+        render={(data) => (
+          <div className="space-y-3">
+            <BookingCalendar
+              bookings={data.entries}
+              view={view}
+              onViewChange={setView}
+              onSelect={setSelected}
+              onMonthChange={setMonth}
+              listOrder={scope === "past" ? "desc" : "asc"}
+            />
+            {view === "list" && scope === "past" && (
+              <div className="flex items-center justify-between text-sm text-muted-foreground">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={pastPage === 0}
+                  onClick={() => setPastPage((p) => Math.max(0, p - 1))}
+                >
+                  Newer
+                </Button>
+                <span>
+                  Page {pastPage + 1} of {Math.max(1, Math.ceil(data.total / PAST_PAGE_SIZE))}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={(pastPage + 1) * PAST_PAGE_SIZE >= data.total}
+                  onClick={() => setPastPage((p) => p + 1)}
+                >
+                  Older
+                </Button>
+              </div>
+            )}
+            {view === "list" && scope === "upcoming" && data.total > data.entries.length && (
+              <p className="text-xs text-muted-foreground">
+                Showing the next {data.entries.length} of {data.total} upcoming bookings.
+              </p>
+            )}
+          </div>
         )}
       />
 
@@ -408,16 +599,16 @@ export default function BookingsPage() {
         </CardContent>
       </Card>
 
-      <Sheet open={!!selected} onOpenChange={(open) => !open && closeSheet()}>
+      <Sheet open={!!active} onOpenChange={(open) => !open && closeSheet()}>
         <SheetContent>
           <SheetHeader>
-            <SheetTitle>{selected?.customerName ?? "Booking"}</SheetTitle>
+            <SheetTitle>{active?.customerName ?? "Booking"}</SheetTitle>
           </SheetHeader>
-          {selected && (
+          {active && (
             <div className="mt-4 space-y-4">
-              <StatusBadge variant="booking" value={selected.status} />
+              <StatusBadge variant="booking" value={active.status} />
               <p className="text-sm text-muted-foreground">
-                {new Date(selected.startAt).toLocaleString()}
+                {new Date(active.startAt).toLocaleString()}
               </p>
               {detailQuery.data?.customerPhone && (
                 <Link
@@ -534,9 +725,16 @@ export default function BookingsPage() {
                 )}
               </div>
 
-              {!rescheduling ? (
+              {!ACTIONABLE_STATUSES.has(active.status) ? (
+                <p className="text-sm text-muted-foreground">
+                  This booking is {active.status.replace(/_/g, " ")} — it can no longer be
+                  confirmed, rescheduled or cancelled.
+                </p>
+              ) : !rescheduling ? (
                 <div className="flex flex-col gap-2">
-                  <Button onClick={() => runAction("confirm")}>Confirm</Button>
+                  {active.status === "scheduled" && (
+                    <Button onClick={() => runAction("confirm")}>Confirm</Button>
+                  )}
                   <Button variant="outline" onClick={() => setRescheduling(true)}>
                     Reschedule
                   </Button>
@@ -553,22 +751,30 @@ export default function BookingsPage() {
                     query={slotsQuery}
                     empty={{ title: "No open slots in the next few weeks" }}
                     render={(slots) => (
-                      <div className="grid max-h-64 grid-cols-2 gap-2 overflow-y-auto">
-                        {slots.map((slot) => (
-                          <Button
-                            key={slot.id}
-                            size="sm"
-                            variant="outline"
-                            onClick={() => pickSlot(slot.id)}
-                          >
-                            {new Date(slot.start).toLocaleString(undefined, {
-                              weekday: "short",
-                              month: "short",
-                              day: "numeric",
-                              hour: "numeric",
-                              minute: "2-digit",
-                            })}
-                          </Button>
+                      <div className="max-h-72 space-y-3 overflow-y-auto">
+                        {groupSlotsByDay(slots).map((group) => (
+                          <div key={group.day}>
+                            <p className="mb-1 text-xs font-medium text-muted-foreground">
+                              {group.day}
+                            </p>
+                            {/* One column on phones, two from sm up; labels wrap instead of clipping. */}
+                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                              {group.slots.map((slot) => (
+                                <Button
+                                  key={slot.id}
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-auto whitespace-normal py-2"
+                                  onClick={() => pickSlot(slot.id)}
+                                >
+                                  {new Date(slot.start).toLocaleTimeString(undefined, {
+                                    hour: "numeric",
+                                    minute: "2-digit",
+                                  })}
+                                </Button>
+                              ))}
+                            </div>
+                          </div>
                         ))}
                       </div>
                     )}
