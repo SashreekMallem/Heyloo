@@ -803,6 +803,47 @@ describe("routeAdminRequest — templates group", () => {
     }
   });
 
+  it("POST /admin-templates rejects a non-array jsonb field (a string would be stored as a jsonb string scalar)", async () => {
+    const { sql, calls } = makeSql({ "insert into public.agent_templates": [{ id: "tmpl_new" }] });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "POST",
+        path: "/admin-templates",
+        body: {
+          vertical: "auto",
+          name: "Auto v2",
+          version: 2,
+          compile_target: "conversation_flow",
+          voice_id: "voice_1",
+          model: "gpt",
+          disclosure_line: "This call may be recorded and you are speaking with an AI assistant.",
+          tools: JSON.stringify([{ type: "custom", name: "lookup_customer" }]),
+        },
+      }),
+      logger,
+    );
+    expect(result).toEqual({ status: 422, body: { error: "invalid_tools" } });
+    expect(calls.some((c) => c.text.includes("insert into public.agent_templates"))).toBe(false);
+  });
+
+  it("PATCH /admin-templates/:id rejects a non-array jsonb field before any update runs", async () => {
+    const { sql, calls } = makeSql({
+      "select * from public.agent_templates where id": [templateRow],
+    });
+    const result = await routeAdminRequest(
+      sql,
+      baseCtx({
+        method: "PATCH",
+        path: `/admin-templates/${templateRow.id}`,
+        body: { name: "renamed", states: "[]" },
+      }),
+      logger,
+    );
+    expect(result).toEqual({ status: 422, body: { error: "invalid_states" } });
+    expect(calls.some((c) => c.text.includes("update public.agent_templates"))).toBe(false);
+  });
+
   it("PATCH /admin-templates/:id binds the raw states/transitions/global_intents/tools objects to their ::jsonb params, never pre-stringified", async () => {
     const { sql, calls } = makeSql({
       "select * from public.agent_templates where id": [templateRow],

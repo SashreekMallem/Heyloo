@@ -267,9 +267,9 @@ async function runTenantRegression(
         scenarios_total = ${outcome.scenarios_total},
         scenarios_passed = ${outcome.scenarios_passed},
         field_capture_ok = ${outcome.field_capture_ok},
-        failures = ${JSON.stringify(outcome.failures)}::jsonb,
+        failures = ${outcome.failures}::jsonb,
         retell_batch_test_id = ${outcome.retell_batch_test_id},
-        resume_state = ${outcome.resume_state ? JSON.stringify(outcome.resume_state) : null}::jsonb
+        resume_state = ${outcome.resume_state ?? null}::jsonb
     where id = ${runId}
   `;
 
@@ -291,7 +291,7 @@ async function runTenantRegression(
           : "agent_regression_failure";
     await sql`
       insert into public.alerts (rule, severity, tenant_id, payload, status)
-      select ${rule}, 'critical', ${tenant.id}, ${JSON.stringify({
+      select ${rule}, 'critical', ${tenant.id}, ${{
         vertical: tenant.vertical,
         tenant_slug: tenant.slug,
         run_id: runId,
@@ -299,7 +299,7 @@ async function runTenantRegression(
         scenarios_passed: outcome.scenarios_passed,
         field_capture_ok: outcome.field_capture_ok,
         failures: outcome.failures.slice(0, 20),
-      })}::jsonb, 'open'
+      }}::jsonb, 'open'
       where not exists (
         select 1 from public.alerts a
         where a.rule = ${rule}

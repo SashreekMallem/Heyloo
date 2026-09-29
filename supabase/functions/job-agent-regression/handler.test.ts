@@ -106,6 +106,20 @@ describe("runAgentRegression", () => {
     expect(alertInsert).toBeTruthy();
     expect(alertInsert?.values).toContain("agent_regression_failure");
     expect(alertInsert?.values).toContain(TENANT.id);
+
+    // JSONB-2: `failures` (runs table) and the alert payload are raw
+    // array/object params, never JSON.stringify'd strings.
+    const update = calls.find((c) => c.text.includes("update public.agent_regression_runs"));
+    const failures = update?.values.find((v) => Array.isArray(v));
+    expect(failures).toEqual([
+      expect.objectContaining({ case_id: "b", result_explanation: "wrong hours" }),
+    ]);
+    expect(update?.values.some((v) => typeof v === "string" && v.startsWith("["))).toBe(false);
+    const payload = alertInsert?.values.find((v) => typeof v === "object" && v !== null);
+    expect(payload).toEqual(
+      expect.objectContaining({ run_id: "run-1", tenant_slug: TENANT.slug, failures }),
+    );
+    expect(alertInsert?.values.some((v) => typeof v === "string" && v.startsWith("{"))).toBe(false);
   });
 
   it("writes an alert when every scenario passes but field capture is missing required fields", async () => {
@@ -198,6 +212,11 @@ describe("runAgentRegression", () => {
 
     const update = calls.find((c) => c.text.includes("update public.agent_regression_runs"));
     expect(update?.values).toContain("timeout");
+    // JSONB-2: jsonb params are bound as raw objects/arrays (postgres.js
+    // serializes them exactly once via the learned jsonb type) — never a
+    // pre-stringified JSON string, which would be stored double-encoded.
+    expect(update?.values).toContainEqual(resume);
+    expect(update?.values.filter((v) => typeof v === "string" && v.startsWith("{"))).toEqual([]);
     const alertInsert = calls.find((c) => c.text.includes("into public.alerts"));
     expect(alertInsert?.values).toContain("agent_regression_timeout");
   });

@@ -6558,3 +6558,102 @@ cleanly from zero in all three is direct proof its SQL is valid and
 reproducible-from-zero (CLAUDE.md Rule 2), independent of it not being
 applied to the live project yet:
 https://github.com/SashreekMallem/Heyloo/actions/runs/35812785589.
+
+## JSONB-2 (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — jsonb encoding sweep finished: last `JSON.stringify(...)::jsonb` sites fixed, every raw-value site proven against the real postgres.js, live corruption found and a repair migration written (not applied)
+
+Follow-up to CALL-3. Code + tests + one migration file only; deploys and DDL
+remain owner-gated from this sandbox.
+
+### How postgres.js 3.4.9 actually binds `${x}::jsonb` (proven, not assumed)
+
+`_shared/jsonb-encoding.test.ts` (new) drives the REAL `postgres` client
+(same options as the edge functions: `prepare: true`) against a minimal
+in-process fake Postgres server speaking the v3 wire protocol. The fake
+answers Describe with `jsonb` for every `$n::jsonb`, exactly like a real
+server, and records the exact Bind bytes plus the parameter OIDs postgres.js
+declared in Parse. Each case runs twice (first execution = Parse/Describe;
+second = cached prepared statement) and both must agree.
+
+Mechanism (`node_modules/postgres/src/{types,connection}.js`): `inferType`
+returns 0 for plain objects, strings, numbers and arrays of any of those
+(and for `[]`), so the OID is left to the server; the `::jsonb` cast makes
+the server report OID 3802, postgres.js learns it, and serializes with
+`JSON.stringify` ONCE. Consequences:
+
+| Bound value | Result |
+|---|---|
+| plain object / `{}` / array of objects / strings / numbers / nested arrays / `[]` / array starting with `null` | correct: one JSON document (jsonb object/array) — never a Postgres array literal (`{a,b}`) |
+| `null` | SQL NULL |
+| a JS string (incl. a pre-`JSON.stringify`'d one) | jsonb STRING scalar — the double-encoding shape the old pattern produced |
+| a raw boolean, or an array whose FIRST element is a boolean | declared OID 16 (bool) in Parse, so `$1::jsonb` is a bool-to-jsonb cast the server rejects — a loud error, never silent corruption; no current site passes one raw (job-retell-health-failover wraps it as `{ active }`) |
+
+### Site-by-site verdicts
+
+| Site | Verdict |
+|---|---|
+| `job-agent-regression/handler.ts` `failures = ${JSON.stringify(outcome.failures)}::jsonb` | WRONG (double-encoded) — FIXED |
+| same file, `resume_state = ${... ? JSON.stringify(...) : null}::jsonb` | WRONG (same bug, not in the task list) — FIXED (`${outcome.resume_state ?? null}`) |
+| same file, alert insert `${JSON.stringify({...})}::jsonb` (agent_regression_* alerts) | WRONG (same bug, split across lines so a same-line grep missed it) — FIXED |
+| `admin/handler.ts` ~456 `${{ rules }}` (alert rules) | correct (object -> jsonb object) |
+| `admin/handler.ts` ~774, ~779 `${{ amount_cents }}`, `${{ rule }}` (referral) | correct |
+| `admin/handler.ts` ~825 `${value}` (pricing merged object) | correct |
+| `admin/handler.ts` ~1314-1315 `${body["states"] ?? []}` etc. (template create) | correct for arrays; but the value was UNVALIDATED, so a string body value would be stored as a jsonb string — HARDENED: create and PATCH now 422 `invalid_<field>` for a non-array `states`/`transitions`/`global_intents`/`tools` (all four columns are arrays, `default '[]'`); no web caller sends them |
+| `admin/handler.ts` ~1351-1363 `${patch["states"]}` etc. (template patch) | correct for arrays; same validation added, checked before any UPDATE runs |
+| every other `${x}::jsonb` in `supabase/functions/**` (77 cast sites, all objects/arrays/null) | correct |
+| `job-outreach-personalize-collect/handler.ts` `jsonb_build_object('research', ${research}, 'opening_line', ${openingLine})` | NOT an encoding bug but a latent crash found by the sweep: untyped parameters inside a variadic-`any` function fail at prepare time (`42P18 could not determine data type of parameter $1`, confirmed live with a session-local `PREPARE`). Never exercised live (0 leads rows). FIXED with `::text` casts |
+
+Source guard (in the same test file): scans every non-test `.ts` under
+`supabase/functions` (>50 casted interpolations) and fails on any
+`JSON.stringify` inside a `${...}` feeding `::jsonb`/`::json` (handles
+multi-line and ternary forms; the guard's own detection is tested).
+`worker-messages-outbound`'s `error = ${JSON.stringify(...)}` is a plain
+`text` column (no cast) and correctly left alone (CALL-3 note stands).
+Regression assertions added to `job-agent-regression/handler.test.ts`
+(verified to fail against the pre-fix handler) and
+`admin/handler.test.ts` (two validation tests) and
+`job-outreach-personalize-collect/handler.test.ts` (`::text` casts).
+
+### Live data (read-only, every one of the 47 public jsonb columns swept via `jsonb_typeof(col)='string'`)
+
+| Column | Rows | double-encoded |
+|---|---|---|
+| `agent_regression_runs.failures` | 72 | **72** (all 72 parse to an array) |
+| `agent_regression_runs.resume_state` | 72 | 0 |
+| `platform_settings.value` | 13 | 0 |
+| `agent_templates.states / transitions / global_intents / tools` | 8 each | 0 / 0 / 0 / 0 |
+| `alerts.payload` | 236 | **44** (41 `agent_regression_failure`, 3 `agent_regression_error`; all parse to objects) |
+| `call_logs.extracted_entities` | 22 | **6** (all `"{}"`) |
+| `call_logs.transcript` | 22 | **2** (arrays stored as strings, 2026-09-21 08:15/08:21) |
+| `resources.metadata` | — | **2** (`"{}"`, 2026-09-20 17:13) |
+| every other jsonb column | — | 0 |
+
+Anomaly worth a look: `call_logs` row `44678700-...` (2026-09-23 02:30,
+`error_user_not_joined` web call) has `extracted_entities = "{}"` although
+`voice-events`' source has bound the raw object since CALL-3 and the
+proof test shows `{}` binds correctly. Two 2026-09-21 08:50/09:27 rows are
+correct objects, so the most likely explanation is a stale deployed
+`voice-events` on 09-23 (or an out-of-order retry through an older
+instance); it could not be settled from here (no function-metadata read
+path). After redeploying `voice-events`, re-run
+`select count(*) from call_logs where jsonb_typeof(extracted_entities)='string'`
+on new rows; if it is still nonzero for rows created after the redeploy,
+that is a real remaining bug and needs a fresh look.
+
+### What needs redeploying / applying (owner action)
+
+- Redeploy `job-agent-regression` (the fix), `admin` (template validation),
+  `job-outreach-personalize-collect` (the `::text` cast). Also redeploy
+  `voice-events` and `api-admin-provision-test-tenant` if not already
+  current with CALL-3/FOLLOWUP-1 (see the anomaly above).
+- Apply `supabase/migrations/20260929010000_repair_double_encoded_jsonb_2.sql`
+  (additive, idempotent, same unwrap-only-if-parses-to-object/array guard as
+  CALL-3's; repairs the 126 rows above; helper function created and dropped
+  in the file). `call_logs` has a realtime broadcast trigger
+  (`trg_broadcast_call_logs`), so the 8 repaired call_logs rows will emit
+  update broadcasts — harmless. Apply BEFORE or right after redeploying
+  `job-agent-regression`; either order is safe.
+
+### Gates
+
+`pnpm lint` 0 errors (46 biome warnings, same as baseline), `pnpm typecheck`
+clean, `cd supabase/functions && pnpm run test` 121 files / 1213 tests green.

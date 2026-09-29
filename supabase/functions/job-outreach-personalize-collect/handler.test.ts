@@ -110,6 +110,12 @@ describe("collectResearchBatch", () => {
     expect(result.ended).toBe(true);
     expect(result.collected).toBe(1);
     expect(calls.some((c) => c.text.includes("'personalization'"))).toBe(true);
+    // JSONB-2: untyped parameters inside jsonb_build_object (a variadic "any"
+    // function) fail at prepare time with 42P18 "could not determine data type
+    // of parameter" — each must carry an explicit ::text cast.
+    const personalizationSql = calls.find((c) => c.text.includes("'personalization'"))?.text ?? "";
+    expect(personalizationSql).toMatch(/'research',\s*\S*\s*::text/);
+    expect(personalizationSql).toMatch(/'opening_line',\s*\S*\s*::text/);
     expect(calls.some((c) => c.text.includes("insert into public.pipeline_costs"))).toBe(true);
     expect(calls.some((c) => c.text.includes("insert into public.cac_events"))).toBe(true);
     expect(

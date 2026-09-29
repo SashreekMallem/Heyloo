@@ -256,7 +256,7 @@ export async function collectResearchBatch(
     await sql`
       update public.leads
       set enrichment = enrichment || jsonb_build_object(
-        'personalization', jsonb_build_object('research', ${research}, 'opening_line', ${openingLine})
+        'personalization', jsonb_build_object('research', ${research}::text, 'opening_line', ${openingLine}::text)
       )
       where id = ${lead.id}
     `;

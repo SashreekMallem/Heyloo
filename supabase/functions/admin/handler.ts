@@ -1267,6 +1267,9 @@ async function resolveTemplateByKey(
   )[0];
 }
 
+// agent_templates jsonb columns that always hold an array (default '[]').
+const TEMPLATE_JSONB_ARRAY_FIELDS = ["states", "transitions", "global_intents", "tools"] as const;
+
 async function handleTemplates(
   sql: SqlClient,
   ctx: AdminRequestContext,
@@ -1303,6 +1306,14 @@ async function handleTemplates(
     for (const field of required) {
       if (body[field] === undefined) return { status: 422, body: { error: `missing_${field}` } };
     }
+    // JSONB-2: these four columns are jsonb ARRAYS; a caller-supplied string
+    // would otherwise be stored as a jsonb string scalar (double-encoded
+    // shape), so reject anything that is not an array before it reaches SQL.
+    for (const field of TEMPLATE_JSONB_ARRAY_FIELDS) {
+      if (body[field] !== undefined && !Array.isArray(body[field])) {
+        return { status: 422, body: { error: `invalid_${field}` } };
+      }
+    }
     const inserted = (
       await sql<{ id: string }>`
         insert into public.agent_templates (
@@ -1332,6 +1343,11 @@ async function handleTemplates(
     if (!before) return { status: 404, body: { error: "template_not_found" } };
 
     const patch = (ctx.body ?? {}) as Record<string, unknown>;
+    for (const field of TEMPLATE_JSONB_ARRAY_FIELDS) {
+      if (field in patch && !Array.isArray(patch[field])) {
+        return { status: 422, body: { error: `invalid_${field}` } };
+      }
+    }
     let didUpdate = false;
     // One explicit statement per editable field (never a dynamic-identifier
     // query) — matches `handleTenants`' PATCH pattern; `SqlClient` is a
