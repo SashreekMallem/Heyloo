@@ -601,18 +601,31 @@ export async function handleCockpit(sql: SqlClient, ctx: CockpitContext): Promis
 
   if (page === "per-customer-margin" && parts[2]) {
     const tenantId = parts[2];
+    // COCKPIT-F13: the list applies `include_test`; this drill-down always used
+    // `true`, so the same tenant/period showed cost 16c on the list and 380c
+    // here. It now honors the flag the list was opened with. A TEST tenant only
+    // exists in the include-test view, so its own page always shows its data.
+    const allRows = await loadMarginRows(sql, win, true);
+    const anyRow = allRows.find((r) => r.tenant_id === tenantId);
+    if (!anyRow) return { status: 404, body: { error: "tenant_not_found" } };
+    const effectiveIncludeTest = includeTest || anyRow.is_test;
     const [rows, included, calls] = await Promise.all([
-      loadMarginRows(sql, win, true),
+      effectiveIncludeTest ? Promise.resolve(allRows) : loadMarginRows(sql, win, false),
       loadIncludedMinutes(sql),
-      loadCalls(sql, { includeTest: true, tenantId, start: win.start, end: win.end }),
+      loadCalls(sql, {
+        includeTest: effectiveIncludeTest,
+        tenantId,
+        start: win.start,
+        end: win.end,
+      }),
     ]);
-    const row = rows.find((r) => r.tenant_id === tenantId);
-    if (!row) return { status: 404, body: { error: "tenant_not_found" } };
+    const row = rows.find((r) => r.tenant_id === tenantId) ?? anyRow;
     const diagnosis = diagnoseMargin(row, included.get(row.vertical) ?? null);
     return {
       status: 200,
       body: {
         ...windowBody,
+        include_test: effectiveIncludeTest,
         tenant: { id: row.tenant_id, name: row.name, vertical: row.vertical, is_test: row.is_test },
         summary: { ...row, ...diagnosis },
         calls,
