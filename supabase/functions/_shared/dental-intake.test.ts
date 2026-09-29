@@ -13,6 +13,9 @@ function makeSql(): { sql: SqlClient; calls: { text: string; values: unknown[] }
       tokenCounter += 1;
       return Promise.resolve([{ id: `intake_token_${tokenCounter}` }]);
     }
+    if (text.includes("insert into public.messages_outbound")) {
+      return Promise.resolve([{ id: "msg_1" }]);
+    }
     return Promise.resolve([]);
   }) as SqlClient;
   return { sql, calls };
@@ -88,6 +91,21 @@ describe("issueDentalIntakeToken", () => {
     expect(payload?.url).toMatch(/^https:\/\/app\.heyloo\.com\/intake\/[A-Za-z0-9_-]+$/);
     const embeddedToken = payload?.url.split("/intake/")[1] as string;
     expect(await sha256Hex(embeddedToken)).toBe(storedHash);
+  });
+
+  it("inserts the intake SMS as 'queued' and enqueues it on the outbound queue (a bare insert was never sent)", async () => {
+    const { sql, calls } = makeSql();
+    await issueDentalIntakeToken(
+      sql,
+      { tenantId: "t1", bookingId: "b1", customerPhoneE164: "+15551234567" },
+      { appBaseUrl: "https://app.heyloo.com" },
+    );
+    const smsInsert = calls.find((c) => c.text.includes("insert into public.messages_outbound"));
+    expect(smsInsert?.text).toContain("'queued'");
+    const send = calls.find((c) => c.text.includes("pgmq.send"));
+    expect(send?.values).toEqual(["messages_outbound_queue", { message_id: "msg_1" }]);
+    // Enqueue strictly after the row exists.
+    expect(calls.indexOf(send as never)).toBeGreaterThan(calls.indexOf(smsInsert as never));
   });
 
   it("strips a trailing slash from appBaseUrl so the URL never has a double slash", async () => {

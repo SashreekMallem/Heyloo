@@ -1,4 +1,5 @@
 import { randomOpaqueToken, sha256Hex } from "./crypto.ts";
+import { enqueue, QUEUE_NAMES } from "./queue.ts";
 import type { SqlClient } from "./types.ts";
 
 /**
@@ -61,14 +62,21 @@ export async function issueDentalIntakeToken(
   }
 
   const url = `${deps.appBaseUrl.replace(/\/+$/, "")}/intake/${token}`;
-  await sql`
+  // Explicitly `queued` AND enqueued: the outbound worker reads only the
+  // pgmq queue, so an un-enqueued row sat forever (NUMBERS-1; 16 such rows
+  // live). The worker, not this helper, decides SMS vs. the owner-email
+  // fallback for an unverified sender.
+  const messageRows = await sql<{ id: string }>`
     insert into public.messages_outbound (
-      tenant_id, channel, recipient, template_key, payload, related_booking_id
+      tenant_id, channel, recipient, template_key, payload, related_booking_id, status
     ) values (
       ${input.tenantId}, 'sms', ${input.customerPhoneE164}, 'dental_intake_link',
-      ${{ url }}::jsonb, ${input.bookingId}
+      ${{ url }}::jsonb, ${input.bookingId}, 'queued'
     )
+    returning id
   `;
+  const messageId = messageRows[0]?.id;
+  if (messageId) await enqueue(sql, QUEUE_NAMES.messagesOutbound, { message_id: messageId });
 
   return { intakeTokenId };
 }
