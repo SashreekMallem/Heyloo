@@ -1,10 +1,7 @@
 import "server-only";
 
 import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-role";
-
-function randomCode(): string {
-  return Math.random().toString(36).slice(2, 8).toUpperCase();
-}
+import { insertReferralLink } from "./referral-code";
 
 /**
  * Find-or-create a `referral_links` row for an already-existing referral
@@ -31,15 +28,12 @@ export async function ensurePartnerReferralLink(partnerId: string): Promise<stri
     .maybeSingle();
   if (existing?.code) return existing.code;
 
-  // Unique `code` constraint (`referral_links_code_unique`) makes a retry
-  // on collision safe; a genuinely failed insert just falls through to
-  // the re-select below in case a concurrent request already created one.
-  const { data: inserted } = await service
-    .from("referral_links")
-    .insert({ referral_partner_id: partnerId, code: randomCode() })
-    .select("code")
-    .single();
-  if (inserted?.code) return inserted.code;
+  // `insertReferralLink` draws a CSPRNG code and retries on a unique-code
+  // collision (`referral_links_code_unique`); a genuinely failed insert
+  // just falls through to the re-select below in case a concurrent request
+  // already created one.
+  const inserted = await insertReferralLink(service, partnerId);
+  if (inserted) return inserted;
 
   const { data: afterRace } = await service
     .from("referral_links")
