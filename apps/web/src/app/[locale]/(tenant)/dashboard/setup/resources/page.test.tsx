@@ -89,7 +89,7 @@ describe("Setup → Resources (SETTINGS-1 review)", () => {
     renderWithTenant(<ResourcesSetupPage />);
     const cards = await screen.findByTestId("resource-cards");
     expect(cards.className).toContain("md:hidden");
-    const card = within(cards).getByText("Bay 1").closest("li") as HTMLElement;
+    const card = within(cards).getAllByRole("listitem")[0] as HTMLElement;
     expect(within(card).getByText(/1 hour · buffer 15 min/)).toBeInTheDocument();
     expect(within(card).getByRole("button", { name: "Edit Bay 1" })).toBeInTheDocument();
     await userEvent.click(within(card).getByRole("button", { name: "Remove Bay 1" }));

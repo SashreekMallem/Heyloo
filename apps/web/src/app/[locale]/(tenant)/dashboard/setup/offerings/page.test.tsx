@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fake } from "@/test/fake-supabase";
@@ -58,7 +58,7 @@ describe("Setup → Offerings dialog (QA-1 F-1)", () => {
     renderWithTenant(<OfferingsSetupPage />);
     await userEvent.click((await screen.findAllByRole("button", { name: "Edit Margherita" }))[0]!);
     const dialog = await screen.findByRole("dialog");
-    const duration = dialog.querySelector('input[type="number"]') as HTMLInputElement;
+    const duration = within(dialog).getByLabelText(/Duration in minutes/);
     await userEvent.clear(duration);
     await userEvent.clear(screen.getByLabelText("Price"));
     await userEvent.click(screen.getByRole("button", { name: "Save" }));

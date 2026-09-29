@@ -15,7 +15,7 @@ describe("ServiceOfferingEditor", () => {
     const cards = screen.getByTestId("service-cards");
     // The cards sit in an md:hidden list, the table in a hidden md:block — never both on screen.
     expect(cards.className).toContain("md:hidden");
-    const card = within(cards).getByText("Oil change").closest("li") as HTMLElement;
+    const card = within(cards).getAllByRole("listitem")[0] as HTMLElement;
     expect(within(card).getByText("$49.99")).toBeInTheDocument();
     expect(within(card).getByText("30 min")).toBeInTheDocument();
     await userEvent.click(within(card).getByRole("button", { name: "Edit Oil change" }));
