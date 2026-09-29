@@ -26,6 +26,7 @@ import {
   openingAlreadySpokenInstruction,
   TRANSFER_ANNOUNCEMENT_INSTRUCTION,
 } from "./opening.js";
+import { OWNER_INFO_INSTRUCTIONS } from "./owner-info.js";
 import type {
   RetellFunctionTool,
   RetellSinglePromptRequest,
@@ -75,7 +76,8 @@ export function compileSinglePrompt(
   // disclosure is the static `begin_message` now; the prompt only needs to
   // know it was already spoken.
   const opening = buildOpeningLine(template.disclosure_line);
-  const sections: string[] = [openingAlreadySpokenInstruction(opening)];
+  // SETTINGS-2: the owner-info block (parity with the Deno compiler's global call-context).
+  const sections: string[] = [openingAlreadySpokenInstruction(opening), OWNER_INFO_INSTRUCTIONS];
   if (template.system_prompt) {
     sections.push(template.system_prompt);
   }

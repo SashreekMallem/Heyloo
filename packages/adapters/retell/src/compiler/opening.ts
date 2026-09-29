@@ -99,6 +99,16 @@ export function openingAlreadySpokenInstruction(opening: OpeningLine): string {
 export const COMPILER_DEFAULT_DYNAMIC_VARIABLES: Readonly<Record<string, string>> = {
   caller_greeting: "",
   transfer_number: "",
+  // SETTINGS-2: safe "nothing set" values for the owner-info block's variables (parity with the Deno compiler's table).
+  special_instructions: "",
+  faq_text: "(no FAQ entries have been added)",
+  business_facts: "(nothing extra on file)",
+  voicemail_message: "",
+  booking_mode_text: "Normal — you can book, reschedule and cancel appointments as usual.",
+  transfer_policy_text:
+    "No live transfer number is set. Do not offer or attempt a transfer: take a message instead.",
+  cancellation_policy_text:
+    "we ask that you let us know as soon as possible if you need to cancel or reschedule",
 };
 
 const NEVER_CLAIM_A_TRANSFER_RULE =

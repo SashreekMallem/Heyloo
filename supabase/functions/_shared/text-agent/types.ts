@@ -54,6 +54,17 @@ export interface TenantTextContext {
   disclosureLine: string;
   cancellationPolicyText: string;
   dynamicVariableOverrides: Record<string, unknown>;
+  /** SETTINGS-2: `tenants.text_agent_enabled` — the owner's "Text agent enabled" switch. Gates AI replies to inbound SMS (web chat follows the widget switch). */
+  textAgentEnabled: boolean;
+  /** SETTINGS-2: `tenants.text_agent_persona` (`{tone, signOff}`), raw jsonb; resolved by `resolveTextPersona`. */
+  textAgentPersona: unknown;
+  /** SETTINGS-2: `agent_configs.special_instructions`, the owner's free-text guidance. */
+  specialInstructions: string | null;
+  /** SETTINGS-2: `tenants.manual_mode`. */
+  manualMode: boolean;
+  /** SETTINGS-2: tenant hours (used for the transfer-independent facts; kept for parity with voice). */
+  businessHours: unknown;
+  hoursExceptions: unknown;
   /** `tenants.price_version` (defaults `'v1'`) — the real per-tenant price
    * version, threaded through to `incrementTextMessagesOut` so a tenant
    * later migrated off `'v1'` doesn't get its `usage_daily.price_version`
@@ -76,6 +87,7 @@ export interface TextAgentTurnResult {
     | "human_handoff"
     | "a2p_not_verified"
     | "opted_out"
+    | "text_agent_disabled"
     | "rate_limited"
     | "closed"
     | "engine_error"

@@ -77,6 +77,8 @@ export interface CompiledTemplateResult {
    * `{{language}}` dynamic-variable instruction. */
   language: string;
   disclosureVerified: boolean;
+  /** SETTINGS-2: `AGENT_COMPILER_VERSION` this compile used, stamped on `agent_configs.compiled_with_version` (the portal's "Changes pending" badge compares it). */
+  compilerVersion: number;
   flow: CompiledFlowRequest;
   /** ANALYSIS-1 (docs/BUILD_NOTES.md): the template's dead per-state
    * `extraction[]` declarations, actually compiled into Retell's real
@@ -233,6 +235,7 @@ export async function compileTenantTemplate(
     agentName: `heyloo-tenant-${tenantId}`,
     language,
     disclosureVerified: compiled.disclosureVerified,
+    compilerVersion: compiled.compilerVersion,
     flow: compiled.flow,
     postCallAnalysisData: compiled.postCallAnalysisData,
   };
@@ -332,15 +335,17 @@ export async function compileAndCreateAgent(
   const agentId = createdBody.agent_id;
   const retellLlmId = compiled.flow.kind === "conversation_flow" ? null : (flowBody.llm_id ?? null);
   await sql`
-    insert into public.agent_configs (tenant_id, template_id, template_version, retell_agent_id, retell_llm_id, compiled_config)
+    insert into public.agent_configs (tenant_id, template_id, template_version, retell_agent_id, retell_llm_id, compiled_config, compiled_with_version)
     values (
       ${tenantId}, ${compiled.templateId}, ${compiled.templateVersion}, ${agentId}, ${retellLlmId},
-      ${{ compileTarget: compiled.flow.kind, flow: compiled.flow.body, response_engine: responseEngine }}::jsonb
+      ${{ compileTarget: compiled.flow.kind, flow: compiled.flow.body, response_engine: responseEngine }}::jsonb,
+      ${compiled.compilerVersion}
     )
     on conflict (tenant_id) do update set
       retell_agent_id = excluded.retell_agent_id, retell_llm_id = excluded.retell_llm_id,
       compiled_config = excluded.compiled_config, template_id = excluded.template_id,
-      template_version = excluded.template_version, published_at = null
+      template_version = excluded.template_version,
+      compiled_with_version = excluded.compiled_with_version, published_at = null
   `;
   return {
     ok: true,

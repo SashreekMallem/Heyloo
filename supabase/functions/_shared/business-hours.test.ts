@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { computeGreetingHoursContext, computeUpcomingWeekdayDates } from "./business-hours.ts";
+import {
+  computeGreetingHoursContext,
+  computeUpcomingWeekdayDates,
+  isOpenAt,
+} from "./business-hours.ts";
 
 const TZ = "America/New_York"; // EST = UTC-5 in January
 const HOURS = {
@@ -89,5 +93,33 @@ describe("computeUpcomingWeekdayDates", () => {
       "Friday=2026-01-30, Saturday=2026-01-31, Sunday=2026-02-01, " +
         "Monday=2026-02-02, Tuesday=2026-02-03, Wednesday=2026-02-04, Thursday=2026-02-05",
     );
+  });
+});
+
+describe("isOpenAt (SETTINGS-2 call routing)", () => {
+  it("is true inside a window, false before/after it and on a closed weekday", () => {
+    expect(isOpenAt(new Date("2026-01-12T14:00:00.000Z"), TZ, HOURS)).toBe(true); // Mon 09:00
+    expect(isOpenAt(new Date("2026-01-12T11:00:00.000Z"), TZ, HOURS)).toBe(false); // Mon 06:00
+    expect(isOpenAt(new Date("2026-01-13T01:00:00.000Z"), TZ, HOURS)).toBe(false); // Mon 20:00
+    expect(isOpenAt(new Date("2026-01-11T18:00:00.000Z"), TZ, HOURS)).toBe(false); // Sun
+  });
+
+  it("closes at the closing minute exactly (end-exclusive)", () => {
+    expect(isOpenAt(new Date("2026-01-12T22:59:00.000Z"), TZ, HOURS)).toBe(true); // 17:59
+    expect(isOpenAt(new Date("2026-01-12T23:00:00.000Z"), TZ, HOURS)).toBe(false); // 18:00
+  });
+
+  it("honors closed-day and special-hours exceptions", () => {
+    const monday = new Date("2026-01-12T14:00:00.000Z");
+    expect(isOpenAt(monday, TZ, HOURS, [{ date: "2026-01-12", closed: true }])).toBe(false);
+    expect(
+      isOpenAt(monday, TZ, HOURS, [
+        { date: "2026-01-12", closed: false, hours: [{ open: "12:00", close: "13:00" }] },
+      ]),
+    ).toBe(false);
+  });
+
+  it("treats a business with no hours configured at all as always open", () => {
+    expect(isOpenAt(new Date("2026-01-11T18:00:00.000Z"), TZ, {})).toBe(true);
   });
 });

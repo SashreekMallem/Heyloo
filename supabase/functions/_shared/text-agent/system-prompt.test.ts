@@ -2,6 +2,8 @@ import { VERTICALS } from "@heyloo/canonical-types";
 import {
   CANCELLATION_POLICY_READOUT_FRAGMENT,
   TEXT_DISCLOSURE_LINE as CANONICAL_TEXT_DISCLOSURE_LINE,
+  TEXT_OWNER_INFO_INSTRUCTIONS as CANONICAL_TEXT_OWNER_INFO_INSTRUCTIONS,
+  TEXT_TONE_FRAGMENTS as CANONICAL_TEXT_TONE_FRAGMENTS,
   TEXT_VERTICAL_INTROS as CANONICAL_TEXT_VERTICAL_INTROS,
   CONSENT_ASK_FRAGMENT,
   buildTextSystemPrompt as canonicalBuildTextSystemPrompt,
@@ -15,6 +17,8 @@ import {
   buildTextSystemPrompt,
   interpolate,
   TEXT_DISCLOSURE_LINE,
+  TEXT_OWNER_INFO_INSTRUCTIONS,
+  TEXT_TONE_FRAGMENTS,
   TEXT_VERTICAL_INTROS,
 } from "./system-prompt.js";
 
@@ -36,6 +40,11 @@ describe("system-prompt.ts <-> @heyloo/templates parity", () => {
     for (const vertical of VERTICALS) {
       expect(TEXT_VERTICAL_INTROS[vertical]).toBe(CANONICAL_TEXT_VERTICAL_INTROS[vertical]);
     }
+  });
+
+  it("SETTINGS-2: the tone fragments and the owner-info block match the canonical source", () => {
+    expect(TEXT_TONE_FRAGMENTS).toEqual(CANONICAL_TEXT_TONE_FRAGMENTS);
+    expect(TEXT_OWNER_INFO_INSTRUCTIONS).toBe(CANONICAL_TEXT_OWNER_INFO_INSTRUCTIONS);
   });
 
   it("buildTextSystemPrompt produces the same composed prompt per vertical", () => {

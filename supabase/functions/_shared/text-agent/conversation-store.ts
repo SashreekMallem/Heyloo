@@ -1,3 +1,4 @@
+import { resolveCancellationPolicyText } from "../../voice-inbound/dynamic-variables.ts";
 import { randomOpaqueToken, sha256Hex } from "../crypto.ts";
 import type { SqlClient } from "../types.ts";
 import type { TenantTextContext, TextChannel, TextConversationRow, TextTurn } from "./types.ts";
@@ -303,6 +304,12 @@ interface TenantTextContextRow {
   dynamic_variable_overrides: Record<string, unknown>;
   disclosure_line: string | null;
   price_version: string;
+  text_agent_enabled: boolean;
+  text_agent_persona: unknown;
+  special_instructions: string | null;
+  manual_mode: boolean;
+  business_hours: unknown;
+  hours_exceptions: unknown;
 }
 
 /** Resolves the same tenant/agent-config shape `voice-inbound/handler.ts`
@@ -322,7 +329,13 @@ export async function resolveTenantTextContext(
       ac.transfer_number,
       ac.dynamic_variable_overrides,
       at.disclosure_line,
-      t.price_version
+      t.price_version,
+      t.text_agent_enabled,
+      t.text_agent_persona,
+      t.manual_mode,
+      t.business_hours,
+      t.hours_exceptions,
+      ac.special_instructions
     from public.tenants t
     left join public.agent_configs ac on ac.tenant_id = t.id
     left join public.agent_templates at on at.id = ac.template_id
@@ -333,16 +346,9 @@ export async function resolveTenantTextContext(
   if (!row) return null;
 
   const overrides = row.dynamic_variable_overrides ?? {};
-  const policy =
-    overrides["cancellation_policy"] &&
-    typeof overrides["cancellation_policy"] === "object" &&
-    !Array.isArray(overrides["cancellation_policy"])
-      ? (overrides["cancellation_policy"] as Record<string, unknown>)
-      : undefined;
-  const cancellationPolicyText =
-    typeof policy?.["text"] === "string" && policy["text"].trim().length > 0
-      ? (policy["text"] as string)
-      : "we ask that you let us know as soon as possible if you need to cancel or reschedule";
+  // SETTINGS-2: the same resolver the voice pipeline uses (owner text sanitized,
+  // plus the structured window/fee sentence), so a text and a call state one policy.
+  const cancellationPolicyText = resolveCancellationPolicyText(overrides);
 
   return {
     tenantId,
@@ -355,6 +361,12 @@ export async function resolveTenantTextContext(
     disclosureLine: row.disclosure_line ?? "",
     cancellationPolicyText,
     dynamicVariableOverrides: overrides,
+    textAgentEnabled: row.text_agent_enabled === true,
+    textAgentPersona: row.text_agent_persona ?? {},
+    specialInstructions: row.special_instructions,
+    manualMode: row.manual_mode === true,
+    businessHours: row.business_hours,
+    hoursExceptions: row.hours_exceptions,
     priceVersion: row.price_version,
   };
 }

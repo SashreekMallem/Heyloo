@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { LEGAL_MULTI_PROMPT_TEMPLATE } from "../fixtures/templates.js";
 import { compileMultiPrompt } from "./multi-prompt.js";
+import { COMPILER_DEFAULT_DYNAMIC_VARIABLES } from "./opening.js";
 
 const TOOL_WEBHOOK_URL = "https://example.supabase.co/functions/v1/voice-tools";
 
@@ -15,7 +16,11 @@ describe("compileMultiPrompt", () => {
       `${LEGAL_MULTI_PROMPT_TEMPLATE.disclosure_line} {{caller_greeting}} How can I help you today?`,
     );
     expect(result.start_speaker).toBe("agent");
-    expect(result.default_dynamic_variables).toEqual({ caller_greeting: "", transfer_number: "" });
+    expect(result.default_dynamic_variables).toEqual(COMPILER_DEFAULT_DYNAMIC_VARIABLES);
+    expect(result.default_dynamic_variables).toMatchObject({
+      caller_greeting: "",
+      transfer_number: "",
+    });
     const startState = result.states.find((s) => s.name === result.starting_state);
     expect(startState?.state_prompt).toMatch(/ALREADY been spoken/);
   });

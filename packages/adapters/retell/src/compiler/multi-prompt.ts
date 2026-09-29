@@ -33,6 +33,7 @@ import {
   openingAlreadySpokenInstruction,
   TRANSFER_ANNOUNCEMENT_INSTRUCTION,
 } from "./opening.js";
+import { OWNER_INFO_INSTRUCTIONS } from "./owner-info.js";
 import type {
   RetellFunctionTool,
   RetellMultiPromptRequest,
@@ -193,7 +194,7 @@ export function compileMultiPrompt(
     begin_message: opening.text,
     start_speaker: "agent",
     default_dynamic_variables: { ...COMPILER_DEFAULT_DYNAMIC_VARIABLES },
-    general_prompt: (template.system_prompt ?? "") + END_CALL_INSTRUCTION,
+    general_prompt: `${template.system_prompt ? `${template.system_prompt}\n\n` : ""}${OWNER_INFO_INSTRUCTIONS}${END_CALL_INSTRUCTION}`,
     starting_state: startState?.id ?? "",
     states: [...statesByName.values()],
     general_tools: [

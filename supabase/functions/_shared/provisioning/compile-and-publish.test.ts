@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { AGENT_COMPILER_VERSION } from "../compiler/template-compiler.ts";
 import { createLogger } from "../logger.ts";
 import type { SqlClient } from "../types.ts";
 import { type CompileAndPublishDeps, compileAndCreateAgent } from "./compile-and-publish.ts";
@@ -222,5 +223,38 @@ describe("compileAndCreateAgent — static opening line + default dynamic variab
       `${STANDARD_DISCLOSURE} {{caller_greeting}} How can I help you today?`,
     );
     expect(llm.start_speaker).toBe("agent");
+  });
+});
+
+describe("compileAndCreateAgent — SETTINGS-2 compiler-version stamp", () => {
+  it("writes AGENT_COMPILER_VERSION to agent_configs.compiled_with_version on insert AND on the conflict-update path", async () => {
+    const upserts: { text: string; values: unknown[] }[] = [];
+    const fixtures: Record<string, unknown[]> = {
+      "as tools_ok\n    from public.agent_templates": [],
+      "select at.* from public.agent_templates": [HEALTHY_TEMPLATE_ROW],
+      "as language_primary": [{ language_primary: "en" }],
+    };
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.agent_configs")) upserts.push({ text, values });
+      for (const [key, rows] of Object.entries(fixtures)) {
+        if (text.includes(key)) return Promise.resolve(rows);
+      }
+      return Promise.resolve([]);
+    }) as SqlClient;
+    const requests: { url: string; body: unknown }[] = [];
+    const outcome = await compileAndCreateAgent(sql, "tenant_stamp", "auto", {
+      retellFetch: makeCapturingRetellFetch(requests),
+      retellApiKey: "key",
+      voiceToolsWebhookUrl: "https://example.supabase.co/functions/v1/voice-tools",
+      eventsWebhookUrl: "https://example.supabase.co/functions/v1/voice-events",
+      logger: createLogger(),
+    });
+    expect(outcome.ok).toBe(true);
+    expect(upserts).toHaveLength(1);
+    const upsert = upserts[0] as { text: string; values: unknown[] };
+    expect(upsert.text).toContain("compiled_with_version");
+    expect(upsert.text).toContain("compiled_with_version = excluded.compiled_with_version");
+    expect(upsert.values).toContain(AGENT_COMPILER_VERSION);
   });
 });

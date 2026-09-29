@@ -27,6 +27,7 @@
  * since `supabase/migrations/**` isn't in this task's ownership.
  */
 
+import { sanitizeOwnerText } from "../_shared/agent-settings.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 
 export interface OfferingRow {
@@ -70,10 +71,36 @@ function obj(value: unknown): Record<string, unknown> | undefined {
 const DEFAULT_CANCELLATION_POLICY_TEXT =
   "we ask that you let us know as soon as possible if you need to cancel or reschedule";
 
-/** Universal — spoken by auto/vet/dental/motel/restaurant's cancellation-policy fragment. */
+/**
+ * Universal `{{cancellation_policy_text}}` — spoken by every vertical's
+ * cancellation-policy fragment and by the compiler-owned owner-info block
+ * (`OWNER_INFO_INSTRUCTIONS`, which is how legal — whose template has no
+ * such fragment — now states it too).
+ *
+ * SETTINGS-2: the owner's policy text (sanitized: it is prompt text) PLUS the
+ * structured rules the portal saves next to it — the cancellation window
+ * (`window_hours`, stated only when > 0) and the late-cancellation fee
+ * (`fee_cents`, stated only when > 0; integer cents -> dollars for speech).
+ * The AI STATES these to callers; it does not enforce or charge the fee
+ * (out of scope, docs/BUILD_NOTES.md SETTINGS-2). An owner who already
+ * wrote the window or fee into the text may hear it once more in the
+ * structured sentence, which is harmless.
+ */
 export function resolveCancellationPolicyText(overrides: Record<string, unknown>): string {
   const policy = obj(overrides["cancellation_policy"]);
-  return str(policy?.["text"]) ?? DEFAULT_CANCELLATION_POLICY_TEXT;
+  const text = sanitizeOwnerText(policy?.["text"], 500) || DEFAULT_CANCELLATION_POLICY_TEXT;
+  const parts: string[] = [text.replace(/[.\s]+$/, "")];
+  const windowHours = num(policy?.["window_hours"]);
+  if (windowHours !== undefined && windowHours > 0) {
+    parts.push(
+      `cancellations need at least ${windowHours} hour${windowHours === 1 ? "" : "s"} notice`,
+    );
+  }
+  const feeCents = num(policy?.["fee_cents"]);
+  if (feeCents !== undefined && feeCents > 0) {
+    parts.push(`a late-cancellation fee of ${formatUsd(feeCents)} may apply`);
+  }
+  return parts.join("; ");
 }
 
 /** Legal: {{practice_areas}}, {{consult_fee_text}} (the fee guardrail's own enforcement number). */

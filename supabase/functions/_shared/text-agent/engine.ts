@@ -1,3 +1,4 @@
+import { buildAgentSettingsVariables, resolveTextPersona } from "../agent-settings.ts";
 import type { StripeFetch } from "../providers/stripe.ts";
 import { withTimeout } from "../timeout.ts";
 import type { Logger, SqlClient } from "../types.ts";
@@ -17,7 +18,12 @@ import {
   saveConversationPatch,
 } from "./conversation-store.ts";
 import { textAgentRateLimiter } from "./rate-limit.ts";
-import { buildTextSystemPrompt, interpolate, TEXT_DISCLOSURE_LINE } from "./system-prompt.ts";
+import {
+  buildTextSystemPrompt,
+  interpolate,
+  TEXT_DISCLOSURE_LINE,
+  TEXT_TONE_FRAGMENTS,
+} from "./system-prompt.ts";
 import { dispatchTextTool, tryVerifyCode } from "./tool-router.ts";
 import { toolsForChannel } from "./tools.ts";
 import type { TextAgentTurnResult, TextConversationRow, TextTurn } from "./types.ts";
@@ -158,6 +164,19 @@ export async function handleInboundText(
   }
 
   if (input.channel === "sms") {
+    // SETTINGS-2 (docs/BUILD_NOTES.md): the owner's "Text agent enabled" switch
+    // (`tenants.text_agent_enabled`, default false) now gates the AI's replies to
+    // inbound SMS — off means the message is archived for the owner (the caller
+    // already stored it in `messages_inbound`) and NO automatic reply is sent.
+    // Website chat follows the widget switch instead (the tab says so). Checked
+    // before the opt-out/A2P/rate-limit work: nothing else needs to run.
+    if (!tenantContext.textAgentEnabled) {
+      await saveConversationPatch(deps.sql, conversation, {
+        appendTurns: [turnRecord("user", input.message, now)],
+        incrementMessageCount: true,
+      });
+      return noReply(conversation.id, "text_agent_disabled");
+    }
     const optedOut = await isSmsOptedOut(deps.sql, input.tenantId, input.phoneE164);
     if (optedOut) {
       await saveConversationPatch(deps.sql, conversation, {
@@ -222,10 +241,35 @@ export async function handleInboundText(
     };
   }
 
+  // SETTINGS-2: every owner setting the portal saves, resolved fresh for this
+  // turn (an edit is live on the next text, no publish) through the SAME
+  // sanitizing/bounding module the voice pipeline uses (`agent-settings.ts`),
+  // plus the owner's text persona (tone, sign-off). Owner text is data inside
+  // the prompt's fenced block (`TEXT_OWNER_INFO_INSTRUCTIONS`); the mandatory
+  // first-reply disclosure is prepended in code below, never by the model.
+  const settings = buildAgentSettingsVariables({
+    specialInstructions: tenantContext.specialInstructions,
+    overrides: tenantContext.dynamicVariableOverrides,
+    manualMode: tenantContext.manualMode,
+    transferNumber: null,
+    vertical: tenantContext.vertical,
+    timezone: tenantContext.timezone,
+    businessHours: tenantContext.businessHours,
+    hoursExceptions: tenantContext.hoursExceptions,
+    now,
+  });
+  const persona = resolveTextPersona(tenantContext.textAgentPersona);
   const systemPrompt = interpolate(buildTextSystemPrompt(tenantContext.vertical), {
     cancellation_policy_text: tenantContext.cancellationPolicyText,
     business_name: tenantContext.businessName,
     assistant_name: tenantContext.assistantName,
+    special_instructions: settings.special_instructions,
+    faq_text: settings.faq_text,
+    business_facts: settings.business_facts,
+    voicemail_message: settings.voicemail_message,
+    booking_mode_text: settings.booking_mode_text,
+    text_tone_text: TEXT_TONE_FRAGMENTS[persona.tone],
+    text_sign_off: persona.signOff,
   });
 
   const messages: AnthropicMessage[] = [
