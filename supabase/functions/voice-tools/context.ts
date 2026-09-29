@@ -138,6 +138,11 @@ interface PayloadResolution {
   vertical: string;
   phoneNumberId: string | null;
   via: "agent_id" | "to_number" | "test_harness_tenant_id";
+  /** HOTPATH: the call_logs row already stored under this resolution's
+   * upsert key, when the resolving query fetched it in the same statement
+   * (`null` = fetched, none exists); `undefined` = not fetched, the caller
+   * looks it up separately (`lookupPlaceholderRowByKey`). */
+  keyRow?: UpsertedCallLogRow | null;
 }
 
 /**
@@ -171,6 +176,8 @@ interface PayloadResolution {
 async function resolveTenantFromPayload(
   sql: SqlClient,
   call: ToolCall,
+  retellCallId: string,
+  placeholder: boolean,
 ): Promise<PayloadResolution | null> {
   if (call.agent_id) {
     const rows = await sql<{ tenant_id: string; vertical: string }>`
@@ -197,9 +204,36 @@ async function resolveTenantFromPayload(
       ? dynamicVars["heyloo_tenant_id"]
       : null;
   if (testHarnessTenantId) {
-    const rows = await sql<{ id: string; vertical: string }>`
-      select id, vertical from public.tenants where id = ${testHarnessTenantId} and deleted_at is null
-      limit 1
+    // HOTPATH (docs/BUILD_NOTES.md): this tier is the Retell batch-test path
+    // (no agent_id, no to_number), so it also fetches the row already
+    // stored under this call's upsert key in the SAME statement — the key
+    // is known up front because, if this tier resolves, the tenant IS the
+    // harness tenant. Saves `lookupPlaceholderRowByKey`'s separate round
+    // trip on every batch-test tool call. The tenant match itself is
+    // unchanged (the inner select), and the key is computed by the same
+    // `upsertKeyFor` the write path uses.
+    const predictedKey = upsertKeyFor(
+      retellCallId,
+      placeholder,
+      call.agent_id,
+      testHarnessTenantId,
+    );
+    const rows = await sql<{
+      id: string;
+      vertical: string;
+      key_row_id?: string | null;
+      key_row_tenant_id?: string | null;
+      key_row_caller_number?: string | null;
+      key_row_is_test_call?: boolean | null;
+    }>`
+      select t.id, t.vertical,
+        kr.id as key_row_id, kr.tenant_id as key_row_tenant_id,
+        kr.caller_number as key_row_caller_number, kr.is_test_call as key_row_is_test_call
+      from (
+        select id, vertical from public.tenants where id = ${testHarnessTenantId} and deleted_at is null
+        limit 1
+      ) t
+      left join public.call_logs kr on kr.retell_call_id = ${predictedKey}
     `;
     const row = rows[0];
     if (row) {
@@ -208,6 +242,15 @@ async function resolveTenantFromPayload(
         vertical: row.vertical,
         phoneNumberId: null,
         via: "test_harness_tenant_id",
+        keyRow:
+          row.key_row_id && row.key_row_tenant_id
+            ? {
+                id: row.key_row_id,
+                tenant_id: row.key_row_tenant_id,
+                caller_number: row.key_row_caller_number ?? null,
+                is_test_call: row.key_row_is_test_call ?? true,
+              }
+            : null,
       };
     }
   }
@@ -252,6 +295,20 @@ function placeholderRetellCallId(
   resolvedTenantId: string,
 ): string {
   return agentId ? `${originalCallId}:${agentId}` : `${originalCallId}:tenant:${resolvedTenantId}`;
+}
+
+/** The `call_logs.retell_call_id` a resolution upserts under: the per-agent/
+ * per-tenant composite for a placeholder id (CALL-6), the real id unchanged
+ * otherwise. One definition for the write path and the HOTPATH prefetch. */
+export function upsertKeyFor(
+  retellCallId: string,
+  placeholder: boolean,
+  agentId: string | null | undefined,
+  resolvedTenantId: string,
+): string {
+  return placeholder
+    ? placeholderRetellCallId(retellCallId, agentId, resolvedTenantId)
+    : retellCallId;
 }
 
 interface UpsertedCallLogRow {
@@ -413,7 +470,7 @@ export async function resolveCallContext(
   // tenant identity (args are never consulted here; G6/cross-tenant
   // safety).
   if (call) {
-    const resolved = await resolveTenantFromPayload(sql, call);
+    const resolved = await resolveTenantFromPayload(sql, call, retellCallId, placeholder);
     if (resolved) {
       // CALL-9 (docs/BUILD_NOTES.md): `heyloo_test_caller_number` — a
       // QA-harness-only dynamic variable `api-admin-run-agent-tests` sets
@@ -447,9 +504,7 @@ export async function resolveCallContext(
       // different tenant's placeholder row — this IS the fix, not just the
       // skip-the-cache-read above. A real-shaped id (the race case) keeps
       // the original literal key unchanged.
-      const upsertKey = placeholder
-        ? placeholderRetellCallId(retellCallId, call.agent_id, resolved.tenantId)
-        : retellCallId;
+      const upsertKey = upsertKeyFor(retellCallId, placeholder, call.agent_id, resolved.tenantId);
       // Only the strongest signal (agent_id) is allowed to override a
       // stale tenant already stored under this exact key on conflict.
       const overwriteTenantOnConflict = placeholder && resolved.via === "agent_id";
@@ -463,7 +518,12 @@ export async function resolveCallContext(
       // same key (the overwhelmingly common case within one batch-test
       // scenario or one real multi-tool call) returns the existing row
       // as-is, with zero writes.
-      const existingRow = await lookupPlaceholderRowByKey(sql, upsertKey);
+      // HOTPATH: reuse the key row when the resolving statement already
+      // fetched it (the batch-test tier), else one separate cheap SELECT.
+      const existingRow =
+        resolved.keyRow !== undefined
+          ? resolved.keyRow
+          : await lookupPlaceholderRowByKey(sql, upsertKey);
       const priorTenantId = overwriteTenantOnConflict ? (existingRow?.tenant_id ?? null) : null;
       const writeNeeded =
         !existingRow || (overwriteTenantOnConflict && existingRow.tenant_id !== resolved.tenantId);

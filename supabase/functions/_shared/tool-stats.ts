@@ -73,6 +73,76 @@ export function resolveTelemetryTenantId(
   return testHarnessTenantId || resolvedTenantId;
 }
 
+/**
+ * HOTPATH (docs/BUILD_NOTES.md): per-stage timings for one `/voice-tools`
+ * request, stored on the `tool_health.stages` jsonb column
+ * (`20260929124500_tool_health_stages.sql`) and echoed as a `Server-Timing`
+ * response header, so the next measurement can attribute the part of a tool
+ * call that is NOT query execution (VERIFY-DEPLOY: ~400-500 ms per call
+ * could not be attributed from outside). All `*_ms` values are wall-clock
+ * milliseconds measured inside the isolate, rounded to 0.1 ms.
+ *
+ * - `region`: `SB_REGION`, the AWS region the function executed in
+ *   (supabase.com/docs/guides/functions/regional-invocation). The DB is in
+ *   us-east-2; anything else means every round trip crosses regions.
+ * - `isolate_seq` / `isolate_age_ms`: 1 / small = a freshly booted isolate.
+ * - `db_warm`: the isolate's (single, hot-path) DB connection was already
+ *   open, i.e. this call did not pay TCP + TLS + SCRAM + `fetch_types`.
+ * - `body_ms` (reading the request body), `verify_ms` (Retell HMAC),
+ *   `parse_ms` (JSON + envelope validation), `context_ms`
+ *   (`resolveCallContext`), `tool_ms` (tool body incl. arg validation),
+ *   `total_ms` (request start -> response built). `latency_ms` on the row
+ *   keeps its historical meaning (dispatch only) so old/new rows compare.
+ * - `budget_ms`: the per-tool deadline in force; `outcome`: see
+ *   `voice-tools/handler.ts#DispatchOutcome`.
+ * - `prev_telemetry_ms`: how long the PREVIOUS `tool_health` insert on this
+ *   isolate took (the insert runs after the response, via
+ *   `EdgeRuntime.waitUntil`, so it cannot time itself into its own row).
+ */
+export interface ToolStageTimings {
+  v: 1;
+  region: string | null;
+  isolate_seq: number;
+  isolate_age_ms: number;
+  db_warm: boolean;
+  body_ms: number;
+  verify_ms: number;
+  parse_ms: number;
+  context_ms: number | null;
+  tool_ms: number | null;
+  total_ms: number;
+  budget_ms: number | null;
+  outcome: string;
+  prev_telemetry_ms: number | null;
+}
+
+/** Rounds a millisecond duration to 0.1 ms (never negative). */
+export function roundMs(ms: number): number {
+  return Math.max(0, Math.round(ms * 10) / 10);
+}
+
+/**
+ * `Server-Timing` header value (W3C Server Timing: `name;dur=<ms>` entries,
+ * comma-separated) for the stages that were actually measured. Cheap string
+ * work only; a stage that never ran (`null`) is omitted.
+ */
+export function serverTimingHeader(stages: ToolStageTimings): string {
+  const entries: [string, number | null][] = [
+    ["body", stages.body_ms],
+    ["verify", stages.verify_ms],
+    ["parse", stages.parse_ms],
+    ["context", stages.context_ms],
+    ["tool", stages.tool_ms],
+    ["total", stages.total_ms],
+  ];
+  const parts = entries
+    .filter((e): e is [string, number] => e[1] !== null)
+    .map(([name, dur]) => `${name};dur=${roundMs(dur)}`);
+  parts.push(`db;desc="${stages.db_warm ? "warm" : "cold"}"`);
+  if (stages.region) parts.push(`region;desc="${stages.region}"`);
+  return parts.join(", ");
+}
+
 export interface ToolStatSample {
   tenantId: string | null;
   toolName: string;
@@ -80,10 +150,37 @@ export interface ToolStatSample {
   latencyMs: number;
   success: boolean;
   errorType?: string;
+  stages?: ToolStageTimings;
+}
+
+const UNDEFINED_COLUMN = "42703";
+
+// Set once per isolate if `tool_health.stages` does not exist yet (the
+// function was deployed before `20260929124500_tool_health_stages.sql` was
+// applied) so later inserts skip straight to the column list that works.
+let stagesColumnMissing = false;
+
+/** Test-only: resets the per-isolate "stages column missing" memo. */
+export function resetToolStatMemoForTests(): void {
+  stagesColumnMissing = false;
 }
 
 export async function recordToolStat(sql: SqlClient, sample: ToolStatSample): Promise<void> {
   try {
+    if (sample.stages && !stagesColumnMissing) {
+      try {
+        await sql`
+          insert into public.tool_health (tenant_id, tool_name, call_id, latency_ms, success, error_type, stages)
+          values (${sample.tenantId}, ${sample.toolName}, ${sample.callId}, ${sample.latencyMs}, ${sample.success}, ${sample.errorType ?? null}, ${sample.stages}::jsonb)
+        `;
+        return;
+      } catch (err) {
+        if ((err as { code?: string } | null)?.code !== UNDEFINED_COLUMN) throw err;
+        // Migration not applied yet: remember it and fall through to the
+        // pre-HOTPATH column list, so the latency row is still recorded.
+        stagesColumnMissing = true;
+      }
+    }
     await sql`
       insert into public.tool_health (tenant_id, tool_name, call_id, latency_ms, success, error_type)
       values (${sample.tenantId}, ${sample.toolName}, ${sample.callId}, ${sample.latencyMs}, ${sample.success}, ${sample.errorType ?? null})

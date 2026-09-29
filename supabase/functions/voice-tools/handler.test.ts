@@ -1,8 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import type { SqlClient } from "../_shared/types.ts";
 import type { DispatchDeps } from "./handler.ts";
-import { dispatchTool, isKnownTool, resolveEnvelopeCallId } from "./handler.ts";
+import {
+  BOOKING_NOT_COMPLETED_MESSAGE,
+  BOOKING_PENDING_MESSAGE,
+  CREATE_BOOKING_BUDGET_MS,
+  CREATE_BOOKING_VERIFY_MS,
+  countsAsBreakerFailure,
+  DEFAULT_TOOL_BUDGET_MS,
+  dispatchTool,
+  isKnownTool,
+  resolveEnvelopeCallId,
+  toolBudget,
+} from "./handler.ts";
 
 const logger = createLogger();
 
@@ -305,5 +316,296 @@ describe("resolveEnvelopeCallId", () => {
 
   it("returns null when neither is present", () => {
     expect(resolveEnvelopeCallId({})).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOTPATH (docs/BUILD_NOTES.md): per-tool budgets and create_booking's
+// truthful deadline answer.
+// ---------------------------------------------------------------------------
+
+const REAL_CALL = "call_0123456789abcdef01234567";
+const BOOKING_ARGS = {
+  resource_id: "11111111-1111-1111-1111-111111111111",
+  start: "2026-10-15T14:00:00.000Z",
+  end: "2026-10-15T14:30:00.000Z",
+  customer: { name: "Jordan Lee", phone: "+15552010199" },
+  structured_payload: { reason: "checkup" },
+};
+const PREFLIGHT_ROW = {
+  replay_id: null,
+  replay_start: null,
+  replay_end: null,
+  exact_resource_id: BOOKING_ARGS.resource_id,
+  first_available_resource_id: null,
+  offering_ok: true,
+  start_in_past: false,
+  tz: null,
+  deposit_overrides: null,
+};
+const BOOKED_ROW = {
+  id: "booking_1",
+  start_at: BOOKING_ARGS.start,
+  end_at: BOOKING_ARGS.end,
+  customer_id: "customer_1",
+  customer_metadata: {},
+};
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * A fake `sql` that behaves like ONE Postgres connection: every statement
+ * runs only after the previous one finished (FIFO), which is what the hot
+ * path's single-connection pool guarantees. `bookingCommitted` flips when
+ * the write statement completes, so the verify read sees exactly what a
+ * real database would.
+ */
+function singleConnectionSql(opts: {
+  preflightDelayMs?: number;
+  writeDelayMs?: number;
+  writeThrowsAfterCommit?: Error;
+  verifyHangs?: boolean;
+  contextDelayMs?: number;
+}): { sql: SqlClient; texts: string[]; state: { bookingCommitted: boolean } } {
+  const texts: string[] = [];
+  const state = { bookingCommitted: false };
+  let tail: Promise<unknown> = Promise.resolve();
+  const sql = ((strings: TemplateStringsArray) => {
+    const text = strings.join(" ");
+    texts.push(text);
+    const run = async (): Promise<unknown[]> => {
+      if (text.includes("from public.call_logs") && text.includes("retell_call_id")) {
+        await sleep(opts.contextDelayMs ?? 0);
+        return [
+          {
+            id: "cl1",
+            tenant_id: "t1",
+            caller_number: null,
+            vertical: "generic",
+            is_test_call: false,
+          },
+        ];
+      }
+      if (text.includes("create_booking:preflight")) {
+        await sleep(opts.preflightDelayMs ?? 0);
+        return [PREFLIGHT_ROW];
+      }
+      if (text.includes("create_booking:write")) {
+        await sleep(opts.writeDelayMs ?? 0);
+        state.bookingCommitted = true;
+        if (opts.writeThrowsAfterCommit) throw opts.writeThrowsAfterCommit;
+        return [BOOKED_ROW];
+      }
+      if (text.includes("create_booking:verify")) {
+        if (opts.verifyHangs) await new Promise(() => {});
+        return state.bookingCommitted
+          ? [{ id: "booking_1", start_at: BOOKING_ARGS.start, end_at: BOOKING_ARGS.end, tz: null }]
+          : [];
+      }
+      return [];
+    };
+    const p = tail.then(run);
+    tail = p.catch(() => undefined);
+    return p;
+  }) as SqlClient;
+  return { sql, texts, state };
+}
+
+function bookingDeps(sql: SqlClient, extra: Partial<DispatchDeps> = {}): DispatchDeps {
+  return {
+    ...makeDeps(null),
+    sql,
+    // As in production (verify 1.5 s > the 1.2 s statement_timeout), the
+    // verify window outlasts any single in-flight statement it queues behind.
+    budget: { budgetMs: 40, verifyMs: 150, hardAbortMs: 400 },
+    ...extra,
+  };
+}
+
+describe("toolBudget (HOTPATH)", () => {
+  // docs.retellai.com: custom tool `timeout_ms` defaults to 120,000 ms and no
+  // compiled tool overrides it (docs/VERIFY.md HOTPATH).
+  const RETELL_DEFAULT_TOOL_TIMEOUT_MS = 120_000;
+
+  it("gives create_booking 4 s + 1.5 s verification + 0.5 s margin, every other tool the historical 1.5 s", () => {
+    expect(toolBudget("create_booking")).toEqual({
+      budgetMs: CREATE_BOOKING_BUDGET_MS,
+      verifyMs: CREATE_BOOKING_VERIFY_MS,
+      hardAbortMs: 6_000,
+    });
+    expect(CREATE_BOOKING_BUDGET_MS).toBe(4_000);
+    expect(CREATE_BOOKING_VERIFY_MS).toBe(1_500);
+    expect(toolBudget("check_availability")).toEqual({
+      budgetMs: DEFAULT_TOOL_BUDGET_MS,
+      verifyMs: 0,
+      hardAbortMs: 1_500,
+    });
+  });
+
+  it("a create_booking that ran out of time unverified counts against the circuit breaker; a verified one does not", () => {
+    expect(countsAsBreakerFailure("booking_not_completed")).toBe(true);
+    expect(countsAsBreakerFailure("booking_outcome_unknown")).toBe(true);
+    expect(countsAsBreakerFailure("booking_verified_after_timeout")).toBe(false);
+    expect(countsAsBreakerFailure("ok")).toBe(false);
+    expect(countsAsBreakerFailure(undefined)).toBe(false);
+  });
+
+  it("every budget sits far inside Retell's default tool timeout", () => {
+    for (const name of [
+      "create_booking",
+      "check_availability",
+      "lookup_customer",
+      "take_message",
+    ]) {
+      expect(toolBudget(name).hardAbortMs).toBeLessThan(RETELL_DEFAULT_TOOL_TIMEOUT_MS);
+    }
+  });
+});
+
+describe("dispatchTool — create_booking deadline (HOTPATH)", () => {
+  it("returns the real booking when the write finishes within the budget", async () => {
+    const { sql } = singleConnectionSql({});
+    const telemetry: NonNullable<DispatchDeps["telemetry"]> = { tenantId: null };
+    const result = await dispatchTool(
+      bookingDeps(sql, { telemetry }),
+      REAL_CALL,
+      "create_booking",
+      BOOKING_ARGS,
+    );
+    expect(result.result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
+    expect(telemetry.outcome).toBe("ok");
+    expect(typeof telemetry.contextMs).toBe("number");
+    expect(typeof telemetry.toolMs).toBe("number");
+  });
+
+  it("deadline hit while the write is in flight and the row COMMITS: answers confirmed with the committed booking (never 'someone will confirm')", async () => {
+    const { sql, state } = singleConnectionSql({ writeDelayMs: 80 });
+    const telemetry: NonNullable<DispatchDeps["telemetry"]> = { tenantId: null };
+    const result = await dispatchTool(
+      bookingDeps(sql, { telemetry }),
+      REAL_CALL,
+      "create_booking",
+      BOOKING_ARGS,
+    );
+    expect(state.bookingCommitted).toBe(true);
+    expect(result.result).toEqual({
+      booking_id: "booking_1",
+      confirmed: true,
+      start: BOOKING_ARGS.start,
+      end: BOOKING_ARGS.end,
+    });
+    expect(telemetry.outcome).toBe("booking_verified_after_timeout");
+  });
+
+  it("deadline hit BEFORE the write started: answers not_completed (retry-safe) and the write is never issued afterwards", async () => {
+    const { sql, texts, state } = singleConnectionSql({ preflightDelayMs: 80 });
+    const telemetry: NonNullable<DispatchDeps["telemetry"]> = { tenantId: null };
+    const result = await dispatchTool(
+      bookingDeps(sql, { telemetry }),
+      REAL_CALL,
+      "create_booking",
+      BOOKING_ARGS,
+    );
+    expect(result.result).toEqual({
+      confirmed: false,
+      reason: "not_completed",
+      retry_safe: true,
+      message: BOOKING_NOT_COMPLETED_MESSAGE,
+    });
+    expect(telemetry.outcome).toBe("booking_not_completed");
+    // Even after the in-flight preflight finishes, the abort flag keeps the
+    // write from ever starting, so "not booked" stays true.
+    await sleep(120);
+    expect(texts.some((t) => t.includes("create_booking:write"))).toBe(false);
+    expect(state.bookingCommitted).toBe(false);
+  });
+
+  it("a retry after not_completed is idempotent: the same call + start maps to the same key the write and the verify use", async () => {
+    const first = singleConnectionSql({ preflightDelayMs: 80 });
+    await dispatchTool(bookingDeps(first.sql), REAL_CALL, "create_booking", BOOKING_ARGS);
+    const retry = singleConnectionSql({});
+    const result = await dispatchTool(
+      bookingDeps(retry.sql),
+      REAL_CALL,
+      "create_booking",
+      BOOKING_ARGS,
+    );
+    expect(result.result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
+  });
+
+  it("when even the verification read cannot answer: confirmation_pending, never confirmed, and the late outcome is logged after the response", async () => {
+    const error = vi.fn();
+    const deferred: string[] = [];
+    const { sql } = singleConnectionSql({ writeDelayMs: 60, verifyHangs: true });
+    const telemetry: NonNullable<DispatchDeps["telemetry"]> = { tenantId: null };
+    const result = await dispatchTool(
+      bookingDeps(sql, {
+        telemetry,
+        logger: { ...createLogger(), error },
+        defer: (label) => deferred.push(label),
+      }),
+      REAL_CALL,
+      "create_booking",
+      BOOKING_ARGS,
+    );
+    expect(result.result).toEqual({
+      confirmed: false,
+      reason: "confirmation_pending",
+      retry_safe: true,
+      message: BOOKING_PENDING_MESSAGE,
+    });
+    expect(telemetry.outcome).toBe("booking_outcome_unknown");
+    expect(error).toHaveBeenCalledWith(
+      "create_booking_outcome_unknown",
+      expect.objectContaining({ idempotency_key: `${REAL_CALL}:${BOOKING_ARGS.start}` }),
+    );
+    expect(deferred).toContain("create_booking_late_outcome");
+  });
+
+  it("context resolution alone used the whole budget: answers not_completed without starting the booking at all", async () => {
+    const { sql, texts } = singleConnectionSql({ contextDelayMs: 60 });
+    const result = await dispatchTool(bookingDeps(sql), REAL_CALL, "create_booking", BOOKING_ARGS);
+    expect(result.result).toMatchObject({ confirmed: false, reason: "not_completed" });
+    expect(texts.some((t) => t.includes("create_booking:"))).toBe(false);
+  });
+
+  it("the write errors AFTER Postgres committed it (e.g. the reply was lost): answers from the database, confirmed", async () => {
+    const { sql } = singleConnectionSql({ writeThrowsAfterCommit: new Error("connection reset") });
+    const telemetry: NonNullable<DispatchDeps["telemetry"]> = { tenantId: null };
+    const result = await dispatchTool(
+      bookingDeps(sql, { telemetry }),
+      REAL_CALL,
+      "create_booking",
+      BOOKING_ARGS,
+    );
+    expect(result.result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
+    expect(telemetry.outcome).toBe("booking_verified_after_error");
+  });
+
+  it("the write errors and nothing committed: the error still surfaces (generic fallback + circuit breaker in index.ts)", async () => {
+    const texts: string[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      const text = strings.join(" ");
+      texts.push(text);
+      if (text.includes("from public.call_logs") && text.includes("retell_call_id")) {
+        return Promise.resolve([
+          {
+            id: "cl1",
+            tenant_id: "t1",
+            caller_number: null,
+            vertical: "generic",
+            is_test_call: false,
+          },
+        ]);
+      }
+      if (text.includes("create_booking:preflight")) return Promise.resolve([PREFLIGHT_ROW]);
+      if (text.includes("create_booking:write"))
+        return Promise.reject(new Error("statement timeout"));
+      return Promise.resolve([]);
+    }) as SqlClient;
+    await expect(
+      dispatchTool(bookingDeps(sql), REAL_CALL, "create_booking", BOOKING_ARGS),
+    ).rejects.toThrow("statement timeout");
+    expect(texts.some((t) => t.includes("create_booking:verify"))).toBe(true);
   });
 });

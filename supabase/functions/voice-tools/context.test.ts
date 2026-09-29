@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import type { ToolCall } from "../_shared/schemas/voice-tools.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
-import { isPlaceholderCallId, resolveCallContext } from "./context.ts";
+import { isPlaceholderCallId, resolveCallContext, upsertKeyFor } from "./context.ts";
 
 const logger = createLogger();
 
@@ -460,5 +460,89 @@ describe("resolveCallContext", () => {
     const ctx = await resolveCallContext(sql, "heyloo-keep-warm-ping", undefined, warnLogger);
     expect(ctx).toBeNull();
     expect(warnings.length).toBe(1);
+  });
+});
+
+describe("HOTPATH: batch-test context resolution in one statement", () => {
+  const batchCall: ToolCall = {
+    call_type: "web_call",
+    retell_llm_dynamic_variables: { heyloo_tenant_id: "t6" },
+  };
+
+  it("upsertKeyFor is the CALL-6 key: per agent, else per tenant, for a placeholder; the real id otherwise", () => {
+    expect(upsertKeyFor("playground", true, "agent_abc", "t1")).toBe("playground:agent_abc");
+    expect(upsertKeyFor("playground", true, undefined, "t1")).toBe("playground:tenant:t1");
+    expect(upsertKeyFor("playground", true, "", "t1")).toBe("playground:tenant:t1");
+    expect(upsertKeyFor(REAL_CALL_ID, false, "agent_abc", "t1")).toBe(REAL_CALL_ID);
+  });
+
+  it("a repeat batch-test tool call resolves the tenant AND reads its key row in ONE statement — no separate lookup, no write", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.tenants where id": [
+        {
+          id: "t6",
+          vertical: "dental",
+          key_row_id: "cl-existing",
+          key_row_tenant_id: "t6",
+          key_row_caller_number: "+15550001111", // another scenario's number: must not leak
+          key_row_is_test_call: true,
+        },
+      ],
+    });
+    const ctx = await resolveCallContext(sql, "playground", batchCall, logger);
+    expect(ctx).toEqual({
+      tenantId: "t6",
+      callLogId: "cl-existing",
+      retellCallId: "playground",
+      callerNumber: null, // CALL-9: never read back from the shared row
+      vertical: "dental",
+      isTestCall: true,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.text).toContain("left join public.call_logs kr on kr.retell_call_id =");
+    // The prefetched key is exactly the key the write path would use.
+    expect(calls[0]?.values).toEqual(["t6", "playground:tenant:t6"]);
+  });
+
+  it("the first batch-test tool call (no row yet) is two statements: the combined read, then the upsert", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.tenants where id": [{ id: "t6", vertical: "dental", key_row_id: null }],
+      "insert into public.call_logs": [
+        { id: "cl-new", tenant_id: "t6", caller_number: null, is_test_call: true },
+      ],
+    });
+    const ctx = await resolveCallContext(sql, "playground", batchCall, logger);
+    expect(ctx?.callLogId).toBe("cl-new");
+    expect(calls.map((c) => c.text.includes("insert into public.call_logs"))).toEqual([
+      false,
+      true,
+    ]);
+    const insert = calls[1];
+    expect(insert?.values).toContain("playground:tenant:t6");
+  });
+
+  it("prefetches under the per-agent key when the payload carries an agent_id that did not resolve", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "from public.tenants where id": [
+        {
+          id: "t6",
+          vertical: "dental",
+          key_row_id: "cl-agent-key",
+          key_row_tenant_id: "t6",
+          key_row_caller_number: null,
+          key_row_is_test_call: true,
+        },
+      ],
+    });
+    const ctx = await resolveCallContext(
+      sql,
+      "playground",
+      { ...batchCall, agent_id: "agent_unmapped" },
+      logger,
+    );
+    expect(ctx?.callLogId).toBe("cl-agent-key");
+    const tenantQuery = calls.find((c) => c.text.includes("from public.tenants where id"));
+    expect(tenantQuery?.values).toEqual(["t6", "playground:agent_unmapped"]);
+    expect(calls.some((c) => c.text.includes("insert into public.call_logs"))).toBe(false);
   });
 });

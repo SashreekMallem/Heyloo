@@ -6974,3 +6974,199 @@ suites against test tenants (bookings on `test-generic-anyservice` as listed
 above, take_message rows on the vet tenant, bookings/orders/messages from the
 suites on the auto, vet and restaurant test tenants), 1 real self-call
 (booking + call_log on `test-riverside-auto`). Scratch scripts live only in the session scratchpad.
+
+## HOTPATH (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — /voice-tools latency root cause is the execution REGION (Retell's calls run in us-west-2, the DB is in us-east-2); round trips cut, per-stage timings added, create_booking made truthful under a deadline, past slots never offered
+
+Follow-up to VERIFY-DEPLOY §4 ("the fix is at the connection layer") and its
+"Other findings" (past slots). Code + tests + one migration file; no deploy,
+no DDL, no production writes (all live checks were read-only: `pg_stat_*`,
+`EXPLAIN`/`EXECUTE` of the new statements inside `begin read only`, Management
+API GETs, and one `GET` to `voice-tools` that returns 405 before any work).
+Package owned: `_shared/deno/db.ts`, `_shared/db-options.ts`,
+`_shared/tool-stats.ts`, `voice-tools/**`, new migration. Doc citations:
+`docs/VERIFY.md` HOTPATH.
+
+### 1. Root cause: every Retell tool call executes ~2,000 miles from the database
+
+- Project region `us-east-2` (Management API `GET /v1/projects/{ref}`).
+- Edge logs, last 24 h (`logs` table, `source='function_edge_logs'`,
+  `response.headers.x_sb_edge_region`): **all 184 Retell requests
+  (`axios/1.15.2`, Cloudflare colo PDX) executed in `us-west-2`**, execution
+  p50 1143 ms / p95 1676 ms. Supabase runs a function "in the region closest
+  to the user making the request" (docs, regional-invocation), and Retell
+  calls from Oregon. `job-keep-warm`'s own pings (Deno UA) run in `us-east-2`
+  / `us-east-1`, so they never warmed a single isolate that serves Retell.
+- The DB is direct (`SUPABASE_DB_URL` is the direct connection — docs +
+  `pg_stat_activity`), so every round trip crosses Oregon<->Ohio (typically
+  ~50 ms on AWS; inferred, not measured from here — the new `stages.region`
+  field makes it measurable). VERIFY-DEPLOY's "~35 ms apparent round trip"
+  and the ~650-850 ms cold-path cost fit that: a cold call pays TCP + TLS +
+  SCRAM (~6 round trips) + postgres.js's `fetch_types` query (1) + 2 round
+  trips per statement not yet prepared on the connection (postgres.js
+  `describeFirst`) — roughly 11-13 cross-country round trips for a
+  one-statement tool, 20+ for the old create_booking.
+- `forceFunctionRegion=us-east-2` works even though the docs' region list
+  omits it: `GET .../voice-tools?forceFunctionRegion=us-east-2` answered with
+  `x-sb-edge-region: us-east-2`.
+
+**This is the single largest fix and it is not code in this package**: the
+tool URL Retell calls comes from the `VOICE_TOOLS_WEBHOOK_URL` secret, read by
+the provisioning/publish functions and baked into each compiled agent.
+Owner action below. Everything else in this entry reduces the NUMBER of round
+trips, which helps wherever the function runs.
+
+### 2. Connection: stay direct, one connection per isolate, keep prepared statements
+
+- **Pooler not adopted, by evidence.** The shared transaction pooler
+  (`aws-1-us-east-2.pooler.supabase.com:6543`, user `postgres.<ref>`, same
+  password as `SUPABASE_DB_URL` — derivable, no new secret) sits in the same
+  region as the DB, so it removes none of the cross-region round trips; it
+  requires `prepare: false`, which in postgres.js 3.4.9 makes EVERY
+  parameterized statement a Parse/Describe round trip plus a Bind/Execute
+  round trip on every call (today only the first use per connection pays
+  that); and Supabase's own postgres.js page warns that postgres.js's
+  pipelining under transaction mode "can hang queries or return mismatched
+  rows" with no working off switch — our `Promise.all` groups pipeline, and
+  the create_booking recovery below depends on in-order execution. The
+  dedicated pooler is paid-plan only (none configured). `jsonb-encoding.test.ts`
+  was re-run unchanged (it pins `prepare: true`, `max: 1`, i.e. the new hot
+  path options) and passes; no `prepare: false` path exists to extend it for.
+- **`max: 1` for `voice-tools` only** (`buildConnectionOptions({profile:
+  "hot_path"})`; every other function unchanged at 5). Proven against the real
+  postgres.js client with a fake server (`db-options.test.ts`): with max 5,
+  two concurrent statements on a cold pool open TWO connections (the second
+  pays a full handshake instead of waiting 2 round trips — the source of the
+  "11 connections from 8 isolates" VERIFY-DEPLOY sampled); with max 1 they
+  share one, and a statement issued while another runs executes strictly after
+  it (postgres.js README: ordering is only guaranteed with `sql.begin()` or
+  `max: 1`). Matches Supabase's serverless guidance ("Set the pool to 1").
+- `fetch_types` kept on: `create_order` binds a string array into
+  `orders.allergies text[]`, whose serializer postgres.js only registers after
+  that fetch.
+
+### 3. Round trips removed
+
+| Path | Before (statements before the answer) | After |
+|---|---|---|
+| create_booking, typical (exact resource, consent, captured payload) | 8-9: context, resource tier, offering+idempotency pair, customer upsert, insert, consent update, metadata merge, call_logs merge, adapter push | **3**: context, `create_booking:preflight`, `create_booking:write` |
+| create_booking, resource_id omitted (batch tests, CALL-8) | +1 (tier 3 query) | tier 3 computed inside the preflight |
+| batch-test context (`heyloo_tenant_id` tier) | 2: tenant lookup, key-row lookup | **1** (key row fetched by the same statement) |
+| every tool, telemetry | insert already after the response via `EdgeRuntime.waitUntil` | unchanged (verified), now also timed |
+
+- `create_booking:preflight` = replay-by-idempotency-key, tier-1 resource,
+  tier-3 first-available (only when needed), offering ownership, past-start
+  check, tenant timezone, motel deposit overrides — one FROM-less select.
+- `create_booking:write` = customer upsert (consent folded in) + booking
+  insert in ONE atomic statement (a 23P01/23505 rolls both back; race-winner
+  path unchanged).
+- Post-commit effects (vehicle/pet memory, `call_logs.structured_booking_payload`
+  merge — its broadcast trigger was the ~80-137 ms QA-HOT measured — dental
+  intake link, adapter push) now run after the answer via `defer`
+  (`EdgeRuntime.waitUntil`); each is caught and logged, so none can turn a
+  committed booking into a failure any more (before, a failing adapter push
+  threw and produced the fallback envelope for a booking that existed). The
+  text agent (no `defer`) still awaits them inline.
+- All new statements were validated against the live schema read-only
+  (`prepare` + `execute` for reads, `explain execute` for the write inside
+  `begin read only`), including a motel tenant, a replay, a bogus offering and
+  an unparseable time (22007 -> `invalid_time`).
+
+### 4. Instrumentation (next measurement can attribute the 400-500 ms)
+
+Every `tool_health` row gets `stages jsonb` (migration
+`20260929124500_tool_health_stages.sql`; `recordToolStat` falls back to the
+old column list on 42703, so deploy order does not matter) and every response
+a `Server-Timing` header: `region` (`SB_REGION`), `isolate_seq`,
+`isolate_age_ms`, `db_warm` (the single connection was already open),
+`body_ms`, `verify_ms`, `parse_ms`, `context_ms`, `tool_ms`, `total_ms`,
+`budget_ms`, `outcome`, `prev_telemetry_ms` (the previous insert's duration on
+that isolate — the insert runs after the response so it cannot time itself).
+`latency_ms` keeps its old meaning (dispatch only). Query for the re-run:
+
+```sql
+select tool_name, stages->>'region' region, (stages->>'db_warm')::bool warm,
+  count(*), percentile_cont(0.5) within group (order by (stages->>'context_ms')::numeric) ctx_p50,
+  percentile_cont(0.5) within group (order by (stages->>'tool_ms')::numeric) tool_p50,
+  percentile_cont(0.95) within group (order by (stages->>'total_ms')::numeric) total_p95
+from tool_health where occurred_at > now() - interval '30 minutes' and stages is not null
+group by 1,2,3 order by 1,2,3;
+```
+
+### 5. create_booking: a budget inside Retell's timeout, and an answer that is always true
+
+Retell custom tools: `timeout_ms` default 120,000 ms, `max_retry` default 0;
+no compiled tool overrides either (checked live). New budgets
+(`voice-tools/handler.ts#toolBudget`): create_booking 4 s to finish the
+write, then up to 1.5 s (longer than the 1.2 s `statement_timeout`) to read
+back what committed, 6 s hard abort; every other tool keeps 1.5 s. At the
+deadline the dispatcher sets an abort flag that `createBooking` checks
+synchronously right before issuing the write, then looks the booking up by
+its idempotency key on the same single connection (so it runs after any
+in-flight write). Found -> the real booking, `confirmed: true`. Not found ->
+`{confirmed:false, reason:"not_completed", retry_safe:true}` (nothing was or
+can be booked; a retry is idempotent). Lookup itself times out ->
+`confirmation_pending` (never "booked") and the write's late outcome is logged
+after the response. A write that errors after Postgres committed (lost reply)
+is also answered from the database. Unverified timeouts still count against
+the circuit breaker. Tests: `voice-tools/handler.test.ts` "create_booking
+deadline (HOTPATH)" (commit-during-deadline -> confirmed; deadline before the
+write -> not_completed and the write is never issued even after the
+in-flight read finishes; retry -> same booking; verify hang -> pending;
+context ate the budget; error-after-commit; error without commit).
+
+### 6. Past slots
+
+`check_availability` now offers a slot only if it starts at least
+`minNoticeMinutes(vertical)` from `now()` (30 min; 15 for restaurant), or —
+for a day-length slot (motel nights run local midnight to midnight) — if it
+has not ended by then; the nearest-alternative query applies the same cutoff,
+so a request for a past window is pointed at the next upcoming slot.
+Timezone-independent (instant comparison). Returned times are rendered in the
+tenant's timezone with an explicit offset (`2026-09-29T10:00:00-04:00`, same
+instant) instead of UTC, which is what the judged "UTC-vs-local slot
+inconsistency" needed. `create_booking` rejects a start already past
+(`reason: "start_in_past"`, with an instruction to re-check availability);
+for a day-length booking the rule is "check-in date before today in the
+tenant's timezone". Live read-only check: riverside's window from yesterday
+returned no elapsed slot; the motel's tonight slot (started at local
+midnight) is still offered at 20:12 local and still bookable, last night's is
+rejected. Live evidence of the bug: 5 bookings created 9-106 hours after their
+own `start_at` (e.g. `74252f90...`, `1971221d...`), all test tenants.
+
+### Redeploy / apply / owner actions
+
+- Behavior changes: `voice-tools` (everything above), `api-text-chat` and
+  `webhooks-twilio-sms` (they import `create_booking`/`check_availability`
+  through `_shared/text-agent`: past-slot filter, past-start rejection, local
+  times, non-throwing side effects). Every other function imports
+  `_shared/deno/db.ts`/`db-options.ts` and only picks up a no-op (an `onclose`
+  hook; the default profile is unchanged) — redeploying them is harmless and
+  only needed to keep all bundles identical.
+- Apply `supabase/migrations/20260929124500_tool_health_stages.sql` (additive,
+  nullable column). Renamed from `...120000...` because a concurrent package
+  added `20260929120000_messaging_providers.sql`.
+- **Owner (the big one):** `supabase secrets set VOICE_TOOLS_WEBHOOK_URL=https://qulcubtwqsqgqpfgvorn.supabase.co/functions/v1/voice-tools?forceFunctionRegion=us-east-2`
+  (secrets apply immediately, no redeploy), then republish every agent with
+  `force_recompile` so the compiled tool URLs carry it. Explicit regions are
+  not re-routed during a regional outage (docs); switch to `us-east-1` if
+  us-east-2 ever degrades. Optional, same idea: the inbound-webhook URL and
+  `job-keep-warm`'s ping (add `x-region: us-east-2`), both outside this package.
+- Then re-run VERIFY-DEPLOY §4's three concurrent suites and the query above.
+
+### Not fixed / follow-ups
+
+- `update_booking`, `cancel_booking`, `take_message`, `create_order`,
+  `join_waitlist` still use the 1.5 s hard abort, so a slow write there can
+  commit after the generic fallback was spoken (same shape create_booking had).
+- Real-call context resolution was already one statement; merging it into
+  each tool's first statement was judged too invasive for this task.
+- The region pin itself needs the owner action above; code cannot move the
+  execution region after Retell has already called the function.
+
+### Gates
+
+In an isolated worktree of `origin/claude/voice-ai-agent-architecture-dcw0n8`
+plus only this package's files: `pnpm lint` exit 0 (46 warnings, baseline),
+`pnpm typecheck` clean, `supabase/functions` `pnpm run test` 122 files / 1268
+tests green. (The shared working tree also holds two other packages'
+in-progress edits, whose own tests were failing mid-edit; not touched.)

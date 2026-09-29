@@ -7,6 +7,7 @@ import { sanitizeBookingStructuredPayload } from "../../_shared/schemas/booking-
 import type { CreateBookingArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { Logger, SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
+import { toTenantLocalIso } from "./local-time.ts";
 
 type Args = z.infer<typeof CreateBookingArgsSchema>;
 
@@ -22,18 +23,50 @@ export interface CreateBookingDeps {
   logger: Logger;
   /** `APP_BASE_URL` — the base the one-time intake link is built against. */
   appBaseUrl: string;
+  /**
+   * HOTPATH: runs the post-commit side effects (customer vehicle/pet memory,
+   * `call_logs.structured_booking_payload`, dental intake link, adapter
+   * push) AFTER the tool response instead of before it. `voice-tools` passes
+   * `EdgeRuntime.waitUntil`-backed scheduling; when omitted (the text
+   * agent) they are awaited inline, as before. Either way none of them can
+   * turn a committed booking into a failure result any more.
+   */
+  defer?: (label: string, task: () => Promise<void>) => void;
+  /**
+   * HOTPATH: checked synchronously immediately before the booking write is
+   * issued. `true` means the dispatcher has already answered the caller
+   * (deadline passed), so the write must never start — that is what makes a
+   * "nothing was booked" answer after a timeout stay true.
+   */
+  isAborted?: () => boolean;
 }
 
 export type CreateBookingResult =
   | { booking_id: string; confirmed: true; start: string; end: string }
   | {
       confirmed: false;
-      reason: "slot_taken" | "invalid_phone" | "resource_not_found" | "offering_not_found";
+      reason:
+        | "slot_taken"
+        | "invalid_phone"
+        | "resource_not_found"
+        | "offering_not_found"
+        | "start_in_past"
+        | "invalid_time"
+        | "not_completed";
       nearest_alternative?: { start: string; end: string };
+      message?: string;
     };
+
+/** HOTPATH: the model-facing instruction for `reason: "start_in_past"`. */
+export const START_IN_PAST_MESSAGE =
+  "That time has already passed, so it was NOT booked. Call check_availability again and offer the caller one of the upcoming times it returns.";
 
 const EXCLUSION_VIOLATION = "23P01";
 const UNIQUE_VIOLATION = "23505";
+/** `invalid input syntax for type timestamp with time zone` / out of range —
+ * the model sent a start/end Postgres cannot parse. */
+const INVALID_DATETIME_FORMAT = "22007";
+const DATETIME_FIELD_OVERFLOW = "22008";
 
 function isPgError(err: unknown, code: string): boolean {
   return typeof err === "object" && err !== null && (err as { code?: string }).code === code;
@@ -95,72 +128,173 @@ interface DepositPolicy {
 
 const DEFAULT_DEPOSIT_HOLD_HOURS = 24;
 
-/**
- * OPS-5 (docs/BUILD_NOTES.md — recurring `create_booking` batch-test
- * failure): resolves the resource to book server-side rather than trusting
- * `args.resource_id` verbatim. The batch-test simulator's caller-LLM
- * sometimes invents or misremembers a `resource_id` a few turns after
- * `check_availability` returned the real ones (a plain LLM-recall error,
- * not an authorization concern — `check_availability`'s own results are
- * already tenant-scoped and available-only); previously that always
- * failed the booking outright with `resource_not_found`, even though a
- * perfectly good resource for the requested window existed. Resolution
- * order:
- *   1. exact id match, scoped to this tenant + active (the fast, correct-
- *      model-behavior path — zero extra query beyond what already ran).
- *   2. `resource_name`, if the model supplied one — case-insensitive match
- *      against this tenant's active resources.
- *   3. first-available — the earliest (by id, deterministic) resource that
- *      genuinely has an `availability_slots` row covering the requested
- *      `[start, end)` window, i.e. the exact table `check_availability`
- *      itself reads, so this can only ever resolve onto a resource that
- *      really is open then, never an arbitrary one.
- * Returns `null` (→ `resource_not_found`) only when none of the three
- * resolves — never widens which resource a call is authorized to book,
- * only which one of THIS tenant's genuinely-open resources it lands on.
- */
-/** A real `resources.id` is a Postgres `uuid` — matching this shape BEFORE
- * ever binding `args.resource_id` into a `where id = ...` comparison is
- * what makes CALL-8's `default`-literal fix (below) actually safe: an
+/** A real `resources.id` / `offerings.id` is a Postgres `uuid` — matching
+ * this shape BEFORE ever binding a model-supplied id into a `where id = ...`
+ * comparison is what makes CALL-8's `default`-literal fix actually safe: an
  * obviously-non-UUID value (Retell live-observed literal `"default"`,
  * matching CALL-2/OPS-5's own documented "model invents a placeholder id"
  * class of bug) would otherwise make Postgres THROW `invalid input syntax
- * for type uuid` rather than simply returning zero rows — an uncaught
- * exception, not a graceful "not found" the name/first-available fallback
- * tiers could ever run after. */
+ * for type uuid` rather than simply returning zero rows. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-async function resolveBookingResourceId(
+/** HOTPATH: the booking's idempotency key — the single definition shared by
+ * `createBooking` and `voice-tools/handler.ts`'s timeout recovery, so the
+ * recovery looks for exactly the row the write would have created. */
+export function createBookingIdempotencyKey(ctx: CallContext, args: Pick<Args, "start">): string {
+  return bookingIdempotencyKey(ctx.retellCallId, args.start);
+}
+
+interface BookingRow {
+  id: string;
+  start_at: string | Date;
+  end_at: string | Date;
+}
+
+/** Renders a booking time for the model in the tenant's timezone (see
+ * `toTenantLocalIso`); falls back to the pre-HOTPATH shape. */
+function localIso(value: string | Date, tz: string | null | undefined): string {
+  const rendered = toTenantLocalIso(value, tz);
+  return typeof rendered === "string" ? rendered : String(rendered);
+}
+
+function confirmedResult(row: BookingRow, tz: string | null | undefined): CreateBookingResult {
+  return {
+    booking_id: row.id,
+    confirmed: true,
+    start: localIso(row.start_at, tz),
+    end: localIso(row.end_at, tz),
+  };
+}
+
+/**
+ * HOTPATH (docs/BUILD_NOTES.md): every read `create_booking` needs before its
+ * write, in ONE statement (one round trip; two on a connection that has not
+ * prepared it yet). Before this, the same reads were 3-6 sequential
+ * statements (resource tier(s), offering + idempotency pair, motel config),
+ * and with the post-insert writes the tool ran 7-9 statements; live, the
+ * row committed ~1.1-1.4 s in and the tool hit the 1.5 s abort 5/5 times.
+ *
+ * Columns:
+ *  - `replay_*`: an existing booking under this call's idempotency key
+ *    (Retell retry, or the model re-calling after a timeout answer) — checked
+ *    FIRST, so a legitimate replay is never refused because its own slot is
+ *    no longer `is_available`.
+ *  - `exact_resource_id`: OPS-5 tier 1 (id match, this tenant, active).
+ *  - `first_available_resource_id`: OPS-5 tier 3, computed here only when
+ *    tier 1 missed AND the model gave no `resource_name` (tier 2 needs its own
+ *    statement and runs, with tier 3 after it, only in that rare case).
+ *  - `offering_ok`: EDGE_AUDIT B1 offering ownership.
+ *  - `start_in_past`: the requested start has already passed. For a
+ *    day-length booking (a motel night, local midnight to local midnight)
+ *    the check is "check-in date before today in the tenant's timezone"
+ *    instead, since tonight's slot started at midnight but is still
+ *    bookable in the evening.
+ *  - `tz`: `tenants.timezone`, for rendering the returned times.
+ *  - `deposit_overrides`: motel-only `agent_configs.dynamic_variable_overrides`
+ *    (GAP_REGISTER.md §2 Motel item 4); NULL for every other vertical.
+ */
+interface PreflightRow {
+  replay_id: string | null;
+  replay_start: string | Date | null;
+  replay_end: string | Date | null;
+  exact_resource_id: string | null;
+  first_available_resource_id: string | null;
+  offering_ok: boolean;
+  start_in_past: boolean;
+  tz: string | null;
+  deposit_overrides: Record<string, unknown> | null;
+}
+
+async function preflight(
+  sql: SqlClient,
+  ctx: CallContext,
+  args: Args,
+  idempotencyKey: string,
+  exactResourceId: string | null,
+  offeringId: string | null,
+): Promise<PreflightRow> {
+  const lookupFirstAvailable = !args.resource_name;
+  const isMotel = ctx.vertical === "motel";
+  const rows = await sql<PreflightRow>`
+    /* create_booking:preflight */
+    with replay as (
+      select id, start_at, end_at from public.bookings
+      where tenant_id = ${ctx.tenantId} and idempotency_key = ${idempotencyKey}
+      limit 1
+    ), ex as (
+      select id from public.resources
+      where id = ${exactResourceId}::uuid and tenant_id = ${ctx.tenantId} and active
+      limit 1
+    ), tn as (
+      select timezone from public.tenants where id = ${ctx.tenantId}
+    )
+    select
+      (select id from replay) as replay_id,
+      (select start_at from replay) as replay_start,
+      (select end_at from replay) as replay_end,
+      (select id from ex) as exact_resource_id,
+      case when ${lookupFirstAvailable} and not exists (select 1 from ex) then (
+        select r.id from public.resources r
+        where r.tenant_id = ${ctx.tenantId} and r.active
+          and r.id in (
+            select s.resource_id from public.availability_slots s
+            where s.tenant_id = ${ctx.tenantId} and s.is_available = true
+              and s.slot_range && tstzrange(${args.start}::timestamptz, ${args.end}::timestamptz)
+          )
+        order by r.id asc
+        limit 1
+      ) end as first_available_resource_id,
+      case when ${offeringId}::uuid is null then true else exists (
+        select 1 from public.offerings
+        where id = ${offeringId}::uuid and tenant_id = ${ctx.tenantId} and active
+      ) end as offering_ok,
+      case
+        when ${args.end}::timestamptz - ${args.start}::timestamptz >= interval '1 day'
+          then ${args.start}::timestamptz < (
+            date_trunc('day', now() at time zone (select timezone from tn))
+              at time zone (select timezone from tn)
+          )
+        else ${args.start}::timestamptz < now()
+      end as start_in_past,
+      (select timezone from tn) as tz,
+      case when ${isMotel} then (
+        select dynamic_variable_overrides from public.agent_configs
+        where tenant_id = ${ctx.tenantId}
+        limit 1
+      ) end as deposit_overrides
+  `;
+  const row = rows[0];
+  if (!row) {
+    // A FROM-less select always returns exactly one row; an empty result
+    // means the client/driver misbehaved — fail loudly, never guess.
+    throw new Error("create_booking_preflight_empty");
+  }
+  return row;
+}
+
+/** OPS-5 tier 2 — only when tier 1 missed and the model named a resource. */
+async function resourceByName(
+  sql: SqlClient,
+  ctx: CallContext,
+  name: string,
+): Promise<string | null> {
+  const rows = await sql<{ id: string }>`
+    select id from public.resources
+    where tenant_id = ${ctx.tenantId} and active and name ilike ${name}
+    order by id asc
+    limit 1
+  `;
+  return rows[0]?.id ?? null;
+}
+
+/** OPS-5 tier 3 as its own statement — only after a tier-2 miss (when no
+ * `resource_name` was given, the preflight already computed it). */
+async function firstAvailableResource(
   sql: SqlClient,
   ctx: CallContext,
   args: Args,
 ): Promise<string | null> {
-  // CALL-8: `args.resource_id` is optional (`_shared/schemas/voice-tools.ts`'s
-  // own comment) — skip this tier entirely rather than binding `undefined`
-  // as a query parameter when the model omitted it, falling straight
-  // through to the name/first-available tiers below. Also skipped (rather
-  // than attempted and left to throw) for any value that isn't shaped like
-  // a real `resources.id` at all — see `UUID_RE`'s own comment.
-  if (args.resource_id && UUID_RE.test(args.resource_id)) {
-    const exact = await sql<{ id: string }>`
-      select id from public.resources
-      where id = ${args.resource_id} and tenant_id = ${ctx.tenantId} and active
-      limit 1
-    `;
-    if (exact[0]) return exact[0].id;
-  }
-
-  if (args.resource_name) {
-    const byName = await sql<{ id: string }>`
-      select id from public.resources
-      where tenant_id = ${ctx.tenantId} and active and name ilike ${args.resource_name}
-      order by id asc
-      limit 1
-    `;
-    if (byName[0]) return byName[0].id;
-  }
-
-  const firstAvailable = await sql<{ id: string }>`
+  const rows = await sql<{ id: string }>`
     select id from public.resources
     where tenant_id = ${ctx.tenantId} and active
       and id in (
@@ -171,7 +305,30 @@ async function resolveBookingResourceId(
     order by id asc
     limit 1
   `;
-  return firstAvailable[0]?.id ?? null;
+  return rows[0]?.id ?? null;
+}
+
+/**
+ * HOTPATH: read-only lookup of a booking committed under this call's
+ * idempotency key, rendered exactly like a successful `createBooking`
+ * result. Used by `voice-tools/handler.ts` after a create_booking deadline
+ * to answer truthfully from what the database actually holds.
+ */
+export async function findCommittedBooking(
+  sql: SqlClient,
+  ctx: CallContext,
+  idempotencyKey: string,
+): Promise<CreateBookingResult | null> {
+  const rows = await sql<BookingRow & { tz: string | null }>`
+    /* create_booking:verify */
+    select b.id, b.start_at, b.end_at,
+      (select timezone from public.tenants where id = ${ctx.tenantId}) as tz
+    from public.bookings b
+    where b.tenant_id = ${ctx.tenantId} and b.idempotency_key = ${idempotencyKey}
+    limit 1
+  `;
+  const row = rows[0];
+  return row ? confirmedResult(row, row.tz) : null;
 }
 
 /**
@@ -188,6 +345,14 @@ async function resolveBookingResourceId(
  * so a Retell batch-test/simulator booking is flagged from the moment it's
  * written, before the dashboard bookings list or any KPI aggregate ever
  * reads it.
+ *
+ * HOTPATH (docs/BUILD_NOTES.md): the common path is now exactly two
+ * statements — `preflight` (every read) and one write that upserts the
+ * customer (with the consent capture) and inserts the booking atomically.
+ * The side effects that used to run before the answer (customer
+ * vehicle/pet memory, `call_logs.structured_booking_payload`, dental intake
+ * link, adapter push) run after it (`deps.defer`), and none of them can
+ * report a committed booking as a failure any more.
  */
 export async function createBooking(
   sql: SqlClient,
@@ -199,17 +364,54 @@ export async function createBooking(
   if (!phone) {
     return { confirmed: false, reason: "invalid_phone" };
   }
+  const offeringId = args.offering_id ?? null;
+  if (offeringId && !UUID_RE.test(offeringId)) {
+    // EDGE_AUDIT B1: a non-UUID offering id can never be one of this
+    // tenant's offerings — answer without binding it (a bind would throw).
+    return { confirmed: false, reason: "offering_not_found" };
+  }
 
-  // EDGE_AUDIT B1: every referenced id must be verified to belong to the
-  // caller's OWN tenant before it's ever written — same pattern already
-  // used by `update_booking`/`cancel_booking`/`create_order`/
-  // `send_payment_link`. `args.resource_id` comes straight from the Retell
-  // tool-call args (Zod-shape-validated only, not ownership-validated); a
-  // mismatch is resolved server-side (`resolveBookingResourceId` above)
-  // rather than failing outright — an LLM-hallucinated id can only ever
-  // land on one of THIS tenant's own genuinely-open resources, never
-  // widen authorization to another tenant's.
-  const resolvedResourceId = await resolveBookingResourceId(sql, ctx, args);
+  const idempotencyKey = createBookingIdempotencyKey(ctx, args);
+  // CALL-8: skip tier 1 for an omitted or non-UUID resource_id.
+  const exactResourceId =
+    args.resource_id && UUID_RE.test(args.resource_id) ? args.resource_id : null;
+
+  let pre: PreflightRow;
+  try {
+    pre = await preflight(sql, ctx, args, idempotencyKey, exactResourceId, offeringId);
+  } catch (err) {
+    if (isPgError(err, INVALID_DATETIME_FORMAT) || isPgError(err, DATETIME_FIELD_OVERFLOW)) {
+      return { confirmed: false, reason: "invalid_time" };
+    }
+    throw err;
+  }
+
+  // Idempotent replay: a prior identical tool call already created this
+  // booking — return it rather than re-inserting or erroring.
+  if (pre.replay_id && pre.replay_start && pre.replay_end) {
+    return confirmedResult(
+      { id: pre.replay_id, start_at: pre.replay_start, end_at: pre.replay_end },
+      pre.tz,
+    );
+  }
+  if (pre.start_in_past) {
+    return { confirmed: false, reason: "start_in_past", message: START_IN_PAST_MESSAGE };
+  }
+  if (offeringId && !pre.offering_ok) {
+    return { confirmed: false, reason: "offering_not_found" };
+  }
+
+  // EDGE_AUDIT B1 / OPS-5 (see PreflightRow): every referenced id is
+  // verified to belong to the caller's OWN tenant before it's ever written;
+  // a hallucinated id can only land on one of THIS tenant's own
+  // genuinely-open resources, never widen authorization to another's.
+  let resolvedResourceId = pre.exact_resource_id;
+  if (!resolvedResourceId) {
+    resolvedResourceId = args.resource_name
+      ? ((await resourceByName(sql, ctx, args.resource_name)) ??
+        (await firstAvailableResource(sql, ctx, args)))
+      : pre.first_available_resource_id;
+  }
   if (!resolvedResourceId) {
     return { confirmed: false, reason: "resource_not_found" };
   }
@@ -222,56 +424,6 @@ export async function createBooking(
       resolved_resource_id: resolvedResourceId,
     });
   }
-
-  const idempotencyKey = bookingIdempotencyKey(ctx.retellCallId, args.start);
-
-  // QA-HOT (docs/BUILD_NOTES.md): the offering-ownership check and the
-  // idempotent-replay lookup are independent reads (neither's WHERE
-  // depends on the other's result) — run them over the same connection
-  // concurrently rather than as two sequential awaits. postgres.js
-  // pipelines concurrent queries on one connection by default, so this
-  // saves one full network round trip on the hot path instead of paying
-  // it twice in series (live-measured: real query EXECUTION time is only
-  // single-digit ms per EXPLAIN ANALYZE, docs/VERIFY.md QA-HOT — the cost
-  // this cuts is the ROUND TRIP itself, not server-side work).
-  const [offeringRows, existing] = await Promise.all([
-    args.offering_id
-      ? sql<{ id: string }>`
-          select id from public.offerings
-          where id = ${args.offering_id} and tenant_id = ${ctx.tenantId} and active
-          limit 1
-        `
-      : Promise.resolve([]),
-    // Idempotent replay: a prior identical tool call already created this
-    // booking — return it rather than re-inserting or erroring.
-    sql<{ id: string; start_at: string; end_at: string }>`
-      select id, start_at, end_at from public.bookings
-      where tenant_id = ${ctx.tenantId} and idempotency_key = ${idempotencyKey}
-      limit 1
-    `,
-  ]);
-  if (args.offering_id && !offeringRows[0]) {
-    return { confirmed: false, reason: "offering_not_found" };
-  }
-  const priorBooking = existing[0];
-  if (priorBooking) {
-    return {
-      booking_id: priorBooking.id,
-      confirmed: true,
-      start: priorBooking.start_at,
-      end: priorBooking.end_at,
-    };
-  }
-
-  const customerRows = await sql<{ id: string; metadata: Record<string, unknown> }>`
-    insert into public.customers (tenant_id, phone_e164, name)
-    values (${ctx.tenantId}, ${phone}, ${args.customer.name ?? null})
-    on conflict (tenant_id, phone_e164)
-    do update set name = coalesce(excluded.name, public.customers.name), last_seen_at = now()
-    returning id, metadata
-  `;
-  const customerId = customerRows[0]?.id ?? null;
-  const customerMetadata = customerRows[0]?.metadata ?? {};
 
   const consentPayload = args.consent
     ? {
@@ -300,22 +452,18 @@ export async function createBooking(
   // `hold_expires_at` a cron sweep (20260910122000_motel_deposit_hold_expiry_cron.sql)
   // cancels past if still unpaid — `webhooks-stripe/handler.ts` already
   // flips a paid deposit's booking to `confirmed` on the Stripe webhook.
-  // Scoped to `vertical === 'motel'` so every other vertical's hot path
-  // never pays for this extra query. The hold actually blocks a second
-  // caller at the DB level: `bookings_hold_exclusion` (a partial GIST
-  // exclusion scoped to `status = 'scheduled' and hold_expires_at is not
-  // null`, 20260910170000_motel_hold_exclusion.sql) races this INSERT
-  // against any other unexpired hold on the same resource/range, and the
-  // same trigger extension flips `availability_slots.is_available = false`
-  // for the held range so `check_availability` stops offering it.
+  // The overrides are only fetched (inside the preflight) for
+  // `vertical === 'motel'`. The hold actually blocks a second caller at the
+  // DB level: `bookings_hold_exclusion` (a partial GIST exclusion scoped to
+  // `status = 'scheduled' and hold_expires_at is not null`,
+  // 20260910170000_motel_hold_exclusion.sql) races this INSERT against any
+  // other unexpired hold on the same resource/range, and the same trigger
+  // extension flips `availability_slots.is_available = false` for the held
+  // range so `check_availability` stops offering it.
   let bookingStatus: "confirmed" | "scheduled" = "confirmed";
   let holdExpiresAt: string | null = null;
   if (ctx.vertical === "motel") {
-    const configRows = await sql<{ dynamic_variable_overrides: Record<string, unknown> }>`
-      select dynamic_variable_overrides from public.agent_configs where tenant_id = ${ctx.tenantId}
-    `;
-    const overrides = configRows[0]?.dynamic_variable_overrides ?? {};
-    const depositPolicy = overrides["deposit_policy"] as DepositPolicy | undefined;
+    const depositPolicy = pre.deposit_overrides?.["deposit_policy"] as DepositPolicy | undefined;
     if (depositPolicy?.required) {
       bookingStatus = "scheduled";
       const holdHours =
@@ -340,144 +488,179 @@ export async function createBooking(
       ? rawQuotedRate
       : null;
 
+  // HOTPATH: the dispatcher's deadline already passed and it has answered
+  // the caller — never start the write after that point.
+  if (deps?.isAborted?.()) {
+    return { confirmed: false, reason: "not_completed" };
+  }
+
+  let written: (BookingRow & { customer_id: string; customer_metadata: unknown }) | undefined;
   try {
-    const inserted = await sql<{ id: string; start_at: string; end_at: string }>`
-      insert into public.bookings (
-        tenant_id, resource_id, offering_id, customer_id, start_at, end_at,
-        status, party_size, source_call_id, idempotency_key, structured_payload,
-        quoted_rate_cents, hold_expires_at, is_test
-      ) values (
-        ${ctx.tenantId}, ${resolvedResourceId}, ${args.offering_id ?? null}, ${customerId},
-        ${args.start}, ${args.end}, ${bookingStatus}, ${args.party_size ?? null}, ${ctx.callLogId},
-        ${idempotencyKey}, ${structuredPayload}::jsonb,
-        ${quotedRateCents}, ${holdExpiresAt}, ${ctx.isTestCall}
+    // One atomic statement: the customer upsert (with this call's consent
+    // answer, when given) and the booking insert. A constraint violation on
+    // the booking rolls back the customer write with it.
+    const rows = await sql<BookingRow & { customer_id: string; customer_metadata: unknown }>`
+      /* create_booking:write */
+      with c as (
+        insert into public.customers (tenant_id, phone_e164, name, consent)
+        values (
+          ${ctx.tenantId}, ${phone}, ${args.customer.name ?? null},
+          coalesce(${consentPayload}::jsonb, '{}'::jsonb)
+        )
+        on conflict (tenant_id, phone_e164) do update set
+          name = coalesce(excluded.name, public.customers.name),
+          last_seen_at = now(),
+          consent = case when ${consentPayload !== null} then excluded.consent else public.customers.consent end
+        returning id, metadata
+      ), b as (
+        insert into public.bookings (
+          tenant_id, resource_id, offering_id, customer_id, start_at, end_at,
+          status, party_size, source_call_id, idempotency_key, structured_payload,
+          quoted_rate_cents, hold_expires_at, is_test
+        ) values (
+          ${ctx.tenantId}, ${resolvedResourceId}, ${offeringId}, (select id from c),
+          ${args.start}, ${args.end}, ${bookingStatus}, ${args.party_size ?? null}, ${ctx.callLogId},
+          ${idempotencyKey}, ${structuredPayload}::jsonb,
+          ${quotedRateCents}, ${holdExpiresAt}, ${ctx.isTestCall}
+        )
+        returning id, start_at, end_at
       )
-      returning id, start_at, end_at
+      select b.id, b.start_at, b.end_at,
+        (select id from c) as customer_id,
+        (select metadata from c) as customer_metadata
+      from b
     `;
-
-    // GAP_REGISTER.md §1.8 — vehicles (auto) / pets (vet) recurring-asset
-    // history, so a repeat caller's `lookup_customer` result can skip
-    // re-asking (see that tool's already-existing `vehicles`/`pets` read).
-    // Skipped entirely (zero extra query) when this vertical/call has
-    // nothing new to remember.
-    const metadataMerge = extractMetadataMerge(ctx.vertical, structuredPayload, customerMetadata);
-
-    // QA-HOT (docs/BUILD_NOTES.md): these two customer-record writes are
-    // independent of each other (neither reads the other's result) and
-    // both only need `customerId`, already known — run them concurrently
-    // instead of two sequential awaited round trips.
-    await Promise.all([
-      consentPayload && customerId
-        ? sql`
-            update public.customers set consent = ${consentPayload}::jsonb
-            where id = ${customerId}
-          `
-        : Promise.resolve(),
-      metadataMerge && customerId
-        ? sql`
-            update public.customers
-            set metadata = metadata || ${{ [metadataMerge.key]: metadataMerge.entries }}::jsonb
-            where id = ${customerId}
-          `
-        : Promise.resolve(),
-    ]);
-
-    const booking = inserted[0];
-    if (!booking) {
-      return { confirmed: false, reason: "slot_taken" };
-    }
-
-    // GAP_REGISTER.md §1.7 — mirrors this call's typed booking capture onto
-    // `call_logs.structured_booking_payload` (a dashboard "Linked booking"
-    // card column that was asked for but never written by anything).
-    // Skipped when the model captured nothing this call — never clobbers a
-    // populated column with an empty object.
-    //
-    // CALL-8 (docs/BUILD_PLAN.md): now a jsonb MERGE (`coalesce(...) ||
-    // ...`), matching `take_message.ts`'s own merge pattern — this used to
-    // be a straight overwrite, which meant a `take_message` call earlier in
-    // the SAME call (e.g. an emergency-referral message-taking step before
-    // a routine booking path, or — on a Retell BATCH-TEST run specifically
-    // — a different scenario's `take_message` call landing on the SAME
-    // shared per-tenant placeholder row, CALL-6) had its
-    // `caller_name`/`caller_phone` silently erased the instant
-    // `create_booking` next wrote here. Live-confirmed: this WAS
-    // corrupting field-capture verification for take_message-intent
-    // scenarios that happened to share a batch run with a create_booking-
-    // intent scenario.
-    // QA-HOT (docs/BUILD_NOTES.md): these three post-insert side effects
-    // are all independent of one another (none reads another's result,
-    // all only need `booking.id`/already-known values) — run them
-    // concurrently instead of three sequential awaited round trips. Each
-    // keeps its own existing failure posture unchanged: the dental-intake
-    // send stays wrapped in its own try/catch (fail-open, never blocks or
-    // fails the booking); the other two propagate a real error exactly as
-    // before (this function's own `try` already wraps the whole insert
-    // path).
-    await Promise.all([
-      Object.keys(structuredPayload).length > 0
-        ? sql`
-            update public.call_logs
-            set structured_booking_payload = coalesce(structured_booking_payload, '{}'::jsonb) || ${structuredPayload}::jsonb
-            where id = ${ctx.callLogId} and tenant_id = ${ctx.tenantId}
-          `
-        : Promise.resolve(),
-      // FIX_REQUESTS.md: dental-only, best-effort post-booking intake-link
-      // send. Never throws/blocks the booking itself on failure — same
-      // fail-open posture as any other post-booking side effect (reminders,
-      // review requests) — wrapped in try/catch and logged.
-      ctx.vertical === "dental" && deps
-        ? issueDentalIntakeToken(
-            sql,
-            {
-              tenantId: ctx.tenantId,
-              bookingId: booking.id,
-              customerPhoneE164: phone,
-              customerName: args.customer.name ?? null,
-            },
-            { appBaseUrl: deps.appBaseUrl },
-          ).catch((err) => {
-            deps.logger.error("dental_intake_token_issue_failed", {
-              booking_id: booking.id,
-              tenant_id: ctx.tenantId,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          })
-        : Promise.resolve(),
-      // E2E_FLOWS_AUDIT B4 (producer side): push this booking to every
-      // connected deep-integration adapter — never inline (hot-path
-      // discipline), and a no-op for the common case of a tenant with no
-      // connected adapter.
-      enqueueAdapterPush(sql, {
-        tenantId: ctx.tenantId,
-        entityType: "booking",
-        entityId: booking.id,
-        idempotencyKey,
-      }),
-    ]);
-
-    return {
-      booking_id: booking.id,
-      confirmed: true,
-      start: booking.start_at,
-      end: booking.end_at,
-    };
+    written = rows[0];
   } catch (err) {
     if (isPgError(err, EXCLUSION_VIOLATION) || isPgError(err, UNIQUE_VIOLATION)) {
       // Concurrent double-book (exclusion constraint) or a benign
       // idempotency-key race (unique constraint) — either way, never a
       // duplicate booking and never a raw DB error surfaced to the model.
-      const raceWinner = await sql<{ id: string; start_at: string; end_at: string }>`
+      const raceWinner = await sql<BookingRow>`
         select id, start_at, end_at from public.bookings
         where tenant_id = ${ctx.tenantId} and idempotency_key = ${idempotencyKey}
         limit 1
       `;
       const won = raceWinner[0];
-      if (won) {
-        return { booking_id: won.id, confirmed: true, start: won.start_at, end: won.end_at };
-      }
+      if (won) return confirmedResult(won, pre.tz);
       return { confirmed: false, reason: "slot_taken" };
+    }
+    if (isPgError(err, INVALID_DATETIME_FORMAT) || isPgError(err, DATETIME_FIELD_OVERFLOW)) {
+      return { confirmed: false, reason: "invalid_time" };
     }
     throw err;
   }
+
+  if (!written) {
+    return { confirmed: false, reason: "slot_taken" };
+  }
+  const booking = written;
+  const customerMetadata =
+    booking.customer_metadata && typeof booking.customer_metadata === "object"
+      ? (booking.customer_metadata as Record<string, unknown>)
+      : {};
+
+  const postCommit = () =>
+    runPostCommitEffects(sql, ctx, deps, {
+      bookingId: booking.id,
+      customerId: booking.customer_id,
+      customerMetadata,
+      structuredPayload,
+      phone,
+      customerName: args.customer.name ?? null,
+      idempotencyKey,
+    });
+  if (deps?.defer) {
+    deps.defer("create_booking_post_commit", postCommit);
+  } else {
+    await postCommit();
+  }
+
+  return confirmedResult(booking, pre.tz);
+}
+
+/**
+ * The booking is committed before any of these run; each is best-effort,
+ * logged on failure, and independent of the others (none reads another's
+ * result), so they run concurrently.
+ */
+async function runPostCommitEffects(
+  sql: SqlClient,
+  ctx: CallContext,
+  deps: CreateBookingDeps | undefined,
+  input: {
+    bookingId: string;
+    customerId: string;
+    customerMetadata: Record<string, unknown>;
+    structuredPayload: Record<string, unknown>;
+    phone: string;
+    customerName: string | null;
+    idempotencyKey: string;
+  },
+): Promise<void> {
+  const logFailure =
+    (effect: string, event = "create_booking_post_commit_failed") =>
+    (err: unknown) => {
+      deps?.logger.error(event, {
+        effect,
+        booking_id: input.bookingId,
+        tenant_id: ctx.tenantId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    };
+
+  // GAP_REGISTER.md §1.8 — vehicles (auto) / pets (vet) recurring-asset
+  // history, so a repeat caller's `lookup_customer` result can skip
+  // re-asking. Skipped (no statement) when there is nothing new to remember.
+  const metadataMerge = extractMetadataMerge(
+    ctx.vertical,
+    input.structuredPayload,
+    input.customerMetadata,
+  );
+
+  await Promise.all([
+    metadataMerge
+      ? sql`
+          update public.customers
+          set metadata = metadata || ${{ [metadataMerge.key]: metadataMerge.entries }}::jsonb
+          where id = ${input.customerId}
+        `.then(() => undefined, logFailure("customer_metadata"))
+      : Promise.resolve(),
+    // GAP_REGISTER.md §1.7 / CALL-8 — mirrors this call's typed booking
+    // capture onto `call_logs.structured_booking_payload` as a jsonb MERGE
+    // (never clobbers what an earlier take_message in the same call wrote).
+    // Skipped when the model captured nothing this call.
+    Object.keys(input.structuredPayload).length > 0
+      ? sql`
+          update public.call_logs
+          set structured_booking_payload = coalesce(structured_booking_payload, '{}'::jsonb) || ${input.structuredPayload}::jsonb
+          where id = ${ctx.callLogId} and tenant_id = ${ctx.tenantId}
+        `.then(() => undefined, logFailure("call_logs_structured_payload"))
+      : Promise.resolve(),
+    // FIX_REQUESTS.md: dental-only, best-effort post-booking intake-link send.
+    ctx.vertical === "dental" && deps
+      ? issueDentalIntakeToken(
+          sql,
+          {
+            tenantId: ctx.tenantId,
+            bookingId: input.bookingId,
+            customerPhoneE164: input.phone,
+            customerName: input.customerName,
+          },
+          { appBaseUrl: deps.appBaseUrl },
+        ).then(
+          () => undefined,
+          logFailure("dental_intake_token", "dental_intake_token_issue_failed"),
+        )
+      : Promise.resolve(),
+    // E2E_FLOWS_AUDIT B4 (producer side): push this booking to every
+    // connected deep-integration adapter — a no-op for the common case of a
+    // tenant with no connected adapter.
+    enqueueAdapterPush(sql, {
+      tenantId: ctx.tenantId,
+      entityType: "booking",
+      entityId: input.bookingId,
+      idempotencyKey: input.idempotencyKey,
+    }).then(() => undefined, logFailure("adapter_push")),
+  ]);
 }

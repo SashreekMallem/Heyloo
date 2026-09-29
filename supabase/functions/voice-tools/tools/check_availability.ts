@@ -2,13 +2,39 @@ import type { z } from "zod";
 import type { CheckAvailabilityArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
+import { toTenantLocalIso } from "./local-time.ts";
 
 type Args = z.infer<typeof CheckAvailabilityArgsSchema>;
 
 interface SlotRow {
   resource_id: string;
-  slot_start: string;
-  slot_end: string;
+  slot_start: string | Date;
+  slot_end: string | Date;
+  /** `tenants.timezone`, same value on every row (one initplan, no extra
+   * round trip) — used only to render the returned times locally. */
+  tz?: string | null;
+}
+
+/**
+ * HOTPATH (docs/BUILD_NOTES.md) — minimum notice before a slot may be
+ * offered. `availability_slots` is precomputed and never pruned, so without
+ * a cutoff the tool offered slots that had already started: live, one
+ * tenant had 1,252 elapsed slots still `is_available = true`, and the
+ * result is ordered earliest-first with `limit 20`, so a "today" request got
+ * this morning's slots first. Four judged runs booked a start 9-106 hours in
+ * the past.
+ *
+ * 30 minutes is enough to reach an appointment-type business; restaurant
+ * tables are commonly taken for "in 15 minutes". Day-length slots (motel
+ * nights, which run local-midnight to local-midnight) are handled by the
+ * `day slot` branch of the cutoff instead: tonight's room is still bookable
+ * at 8 pm even though its slot started at midnight.
+ */
+export const DEFAULT_MIN_NOTICE_MINUTES = 30;
+const MIN_NOTICE_MINUTES_BY_VERTICAL: Record<string, number> = { restaurant: 15 };
+
+export function minNoticeMinutes(vertical: string): number {
+  return MIN_NOTICE_MINUTES_BY_VERTICAL[vertical] ?? DEFAULT_MIN_NOTICE_MINUTES;
 }
 
 export interface CheckAvailabilityResult {
@@ -37,6 +63,14 @@ export interface CheckAvailabilityResult {
  * actually keys off of. `party_size` (GAP_REGISTER.md §2 Restaurant item
  * 3) filters to resources whose `capacity` can seat the party — previously
  * accepted by the schema but never applied.
+ *
+ * HOTPATH: both queries apply the same "not already started" cutoff, which
+ * is timezone-independent because it compares `timestamptz` instants with
+ * `now()`: a slot is offerable when it starts at least
+ * `minNoticeMinutes(vertical)` from now, or — for a day-length slot (a
+ * motel night) — when it has not yet ended by then. Returned times are
+ * rendered in the tenant's own timezone with an explicit offset
+ * (`toTenantLocalIso`).
  */
 export async function checkAvailability(
   sql: SqlClient,
@@ -47,12 +81,22 @@ export async function checkAvailability(
   const roomType = args.room_type ?? null;
   const partySize = args.party_size ?? null;
 
+  const noticeMinutes = minNoticeMinutes(ctx.vertical);
+
   const rows = await sql<SlotRow>`
-    select resource_id, lower(slot_range) as slot_start, upper(slot_range) as slot_end
+    select resource_id, lower(slot_range) as slot_start, upper(slot_range) as slot_end,
+      (select timezone from public.tenants where id = ${ctx.tenantId}) as tz
     from public.availability_slots
     where tenant_id = ${ctx.tenantId}
       and is_available = true
       and slot_range && tstzrange(${args.date_range.start}, ${args.date_range.end})
+      and (
+        lower(slot_range) >= now() + make_interval(mins => ${noticeMinutes}::int)
+        or (
+          upper(slot_range) - lower(slot_range) >= interval '1 day'
+          and upper(slot_range) > now() + make_interval(mins => ${noticeMinutes}::int)
+        )
+      )
       and (
         (${resourceType}::text is null and ${roomType}::text is null and ${partySize}::int is null)
         or resource_id in (
@@ -72,11 +116,19 @@ export async function checkAvailability(
     // the requested window (bounded lookahead — a single extra indexed read,
     // not an unbounded scan).
     const alt = await sql<SlotRow>`
-      select resource_id, lower(slot_range) as slot_start, upper(slot_range) as slot_end
+      select resource_id, lower(slot_range) as slot_start, upper(slot_range) as slot_end,
+        (select timezone from public.tenants where id = ${ctx.tenantId}) as tz
       from public.availability_slots
       where tenant_id = ${ctx.tenantId}
         and is_available = true
         and lower(slot_range) >= ${args.date_range.end}
+        and (
+          lower(slot_range) >= now() + make_interval(mins => ${noticeMinutes}::int)
+          or (
+            upper(slot_range) - lower(slot_range) >= interval '1 day'
+            and upper(slot_range) > now() + make_interval(mins => ${noticeMinutes}::int)
+          )
+        )
         and (
           (${resourceType}::text is null and ${roomType}::text is null and ${partySize}::int is null)
           or resource_id in (
@@ -95,13 +147,27 @@ export async function checkAvailability(
       slots: [],
       none_available: true,
       ...(nearest
-        ? { nearest_alternative: { start: nearest.slot_start, end: nearest.slot_end } }
+        ? {
+            nearest_alternative: {
+              start: localIso(nearest.slot_start, nearest.tz),
+              end: localIso(nearest.slot_end, nearest.tz),
+            },
+          }
         : {}),
     };
   }
 
   return {
-    slots: rows.map((r) => ({ start: r.slot_start, end: r.slot_end, resource_id: r.resource_id })),
+    slots: rows.map((r) => ({
+      start: localIso(r.slot_start, r.tz),
+      end: localIso(r.slot_end, r.tz),
+      resource_id: r.resource_id,
+    })),
     none_available: false,
   };
+}
+
+function localIso(value: string | Date, tz: string | null | undefined): string {
+  const rendered = toTenantLocalIso(value, tz);
+  return typeof rendered === "string" ? rendered : String(rendered);
 }

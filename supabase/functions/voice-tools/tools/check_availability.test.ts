@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
-import { checkAvailability } from "./check_availability.ts";
+import {
+  checkAvailability,
+  DEFAULT_MIN_NOTICE_MINUTES,
+  minNoticeMinutes,
+} from "./check_availability.ts";
 
 const ctx: CallContext = {
   tenantId: "tenant_1",
@@ -127,6 +131,103 @@ describe("checkAvailability", () => {
       return Promise.resolve([{ resource_id: "res_1", slot_start: "a", slot_end: "b" }]);
     }) as SqlClient;
     await checkAvailability(sql, ctx, { date_range: dateRange });
-    expect(capturedValues.every((v) => v === null || typeof v === "string")).toBe(true);
+    // Every value is a tenant id, a date bound, a null filter, or the
+    // HOTPATH minimum-notice minutes — never a stray room_type/party_size.
+    expect(
+      capturedValues.every(
+        (v) => v === null || typeof v === "string" || v === minNoticeMinutes(ctx.vertical),
+      ),
+    ).toBe(true);
+    expect(capturedValues).not.toContain(undefined);
+  });
+});
+
+describe("checkAvailability — HOTPATH: never offers a slot that has already started", () => {
+  function recordingSql(replies: unknown[][]): {
+    sql: SqlClient;
+    calls: { text: string; values: unknown[] }[];
+  } {
+    const calls: { text: string; values: unknown[] }[] = [];
+    let i = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join(" "), values });
+      const rows = replies[i] ?? [];
+      i += 1;
+      return Promise.resolve(rows);
+    }) as SqlClient;
+    return { sql, calls };
+  }
+
+  it("uses 30 minutes' notice by default and 15 for restaurant tables", () => {
+    expect(DEFAULT_MIN_NOTICE_MINUTES).toBe(30);
+    expect(minNoticeMinutes("auto")).toBe(30);
+    expect(minNoticeMinutes("dental")).toBe(30);
+    expect(minNoticeMinutes("restaurant")).toBe(15);
+  });
+
+  it("filters the window query to slots starting at least the notice period from now(), keeping a day-length slot (motel night) that has not ended yet", async () => {
+    const { sql, calls } = recordingSql([[]]);
+    await checkAvailability(sql, { ...ctx, vertical: "auto" }, { date_range: dateRange });
+    const window = calls[0];
+    expect(window?.text).toContain("lower(slot_range) >= now() + make_interval(mins =>");
+    expect(window?.text).toContain("upper(slot_range) - lower(slot_range) >= interval '1 day'");
+    expect(window?.text).toContain("upper(slot_range) > now() + make_interval(mins =>");
+    expect(window?.values.filter((v) => v === 30)).toHaveLength(2);
+  });
+
+  it("applies the same cutoff to the nearest-alternative query, so a request for a past window is pointed at the next upcoming slot", async () => {
+    const { sql, calls } = recordingSql([[], []]);
+    await checkAvailability(
+      sql,
+      { ...ctx, vertical: "restaurant" },
+      {
+        date_range: { start: "2026-01-01T00:00:00Z", end: "2026-01-02T00:00:00Z" },
+      },
+    );
+    const alternative = calls[1];
+    expect(alternative?.text).toContain("lower(slot_range) >=");
+    expect(alternative?.text).toContain("now() + make_interval(mins =>");
+    expect(alternative?.values.filter((v) => v === 15)).toHaveLength(2);
+  });
+
+  it("renders slot times in the tenant's timezone with an explicit offset (same instant as the stored UTC value)", async () => {
+    const { sql } = recordingSql([
+      [
+        {
+          resource_id: "res_1",
+          slot_start: new Date("2026-07-15T14:00:00.000Z"),
+          slot_end: new Date("2026-07-15T14:30:00.000Z"),
+          tz: "America/New_York",
+        },
+      ],
+    ]);
+    const result = await checkAvailability(sql, ctx, { date_range: dateRange });
+    expect(result.slots).toEqual([
+      {
+        start: "2026-07-15T10:00:00-04:00",
+        end: "2026-07-15T10:30:00-04:00",
+        resource_id: "res_1",
+      },
+    ]);
+    expect(Date.parse(result.slots[0]?.start ?? "")).toBe(Date.parse("2026-07-15T14:00:00.000Z"));
+  });
+
+  it("renders the nearest alternative in the tenant's timezone too", async () => {
+    const { sql } = recordingSql([
+      [],
+      [
+        {
+          resource_id: "res_1",
+          slot_start: new Date("2026-01-17T18:00:00.000Z"),
+          slot_end: new Date("2026-01-17T18:30:00.000Z"),
+          tz: "America/Los_Angeles",
+        },
+      ],
+    ]);
+    const result = await checkAvailability(sql, ctx, { date_range: dateRange });
+    expect(result.nearest_alternative).toEqual({
+      start: "2026-01-17T10:00:00-08:00",
+      end: "2026-01-17T10:30:00-08:00",
+    });
   });
 });
