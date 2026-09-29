@@ -606,6 +606,8 @@ export function createMicrosoftGraphEmailProvider(options: GraphAdapterOptions):
         }
         if (res.status === 202) {
           // 202 has no body and no message id; Graph echoes our request id.
+          // Release the (empty) body so the runtime does not hold the connection.
+          await res.body?.cancel().catch(() => undefined);
           return {
             ok: true,
             providerMessageId: `msgraph:${res.headers.get("request-id") ?? clientRequestId}`,
