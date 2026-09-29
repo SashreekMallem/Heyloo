@@ -5,7 +5,11 @@ describe("createMeter", () => {
   it("sends the required default_aggregation (sum) with the meter fields", async () => {
     const fetchImpl = vi.fn(
       async () =>
-        ({ ok: true, status: 200, json: async () => ({ id: "mtr_test_1" }) }) as unknown as Response,
+        ({
+          ok: true,
+          status: 200,
+          json: async () => ({ id: "mtr_test_1" }),
+        }) as unknown as Response,
     );
 
     await createMeter(fetchImpl, "sk_test_x", {
