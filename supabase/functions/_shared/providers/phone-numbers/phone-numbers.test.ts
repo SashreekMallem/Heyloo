@@ -54,17 +54,64 @@ describe("releaseRetellNumber", () => {
     ]);
   });
 
-  it("a GET 422 (documented 'asset not found') means already released; no DELETE", async () => {
-    const { fetch, seen } = scripted([{ status: 422 }]);
+  // docs.retellai.com get-phone-number documents 422 only as the generic
+  // "Unprocessable Content" (delete-phone-number is the one that says "Cannot
+  // find requested asset"), so a GET 404/422 is never proof by itself: the
+  // list endpoint decides whether the number still exists (and what it is
+  // bound to) before anything is treated as released or deleted.
+  const list = (items: unknown[], extra: Record<string, unknown> = {}) => ({
+    status: 200,
+    body: { items, has_more: false, ...extra },
+  });
+
+  it("a GET 422 counts as released only when the paginated list confirms the number is absent", async () => {
+    const { fetch, seen } = scripted([
+      { status: 422 },
+      list([{ phone_number: "+15550000000" }], { has_more: true, pagination_key: "k1" }),
+      list([{ phone_number: "+15550000001" }]),
+    ]);
     expect(await releaseRetellNumber(deps(fetch), E164)).toEqual({
       ok: true,
       alreadyReleased: true,
     });
-    expect(seen).toHaveLength(1);
+    expect(seen.map((s) => s.method)).toEqual(["GET", "GET", "GET"]);
+    expect(seen[2]?.url).toContain("pagination_key=k1");
   });
 
-  it("a DELETE 404/422 counts as released only when a re-read confirms the number is gone", async () => {
-    const gone = scripted([{ status: 200, body: {} }, { status: 422 }, { status: 422 }]);
+  it("a spurious GET 422 for a number the list still has does not skip the protected-agent check", async () => {
+    const { fetch, seen } = scripted([
+      { status: 422 },
+      list([{ phone_number: E164, inbound_agents: [{ agent_id: "agent_demo", weight: 1 }] }]),
+    ]);
+    const result = await releaseRetellNumber(deps(fetch, ["agent_demo"]), E164);
+    expect(result).toMatchObject({ ok: false, reason: "protected_agent_bound" });
+    expect(seen.map((s) => s.method)).not.toContain("DELETE");
+  });
+
+  it("a spurious GET 422 for a number the list still has proceeds to DELETE it", async () => {
+    const { fetch, seen } = scripted([
+      { status: 422 },
+      list([{ phone_number: E164, inbound_agents: [] }]),
+      { status: 204 },
+    ]);
+    expect(await releaseRetellNumber(deps(fetch), E164)).toEqual({
+      ok: true,
+      alreadyReleased: false,
+    });
+    expect(seen.at(-1)?.method).toBe("DELETE");
+  });
+
+  it("a GET 422 with a failing list fails closed (never released, never deleted)", async () => {
+    const { fetch, seen } = scripted([{ status: 422 }, { status: 500 }]);
+    expect(await releaseRetellNumber(deps(fetch), E164)).toMatchObject({
+      ok: false,
+      reason: "retell_delete_failed",
+    });
+    expect(seen.map((s) => s.method)).not.toContain("DELETE");
+  });
+
+  it("a DELETE 404/422 counts as released only when the list confirms the number is gone", async () => {
+    const gone = scripted([{ status: 200, body: {} }, { status: 422 }, list([])]);
     expect(await releaseRetellNumber(deps(gone.fetch), E164)).toEqual({
       ok: true,
       alreadyReleased: true,
@@ -72,7 +119,7 @@ describe("releaseRetellNumber", () => {
     const stillThere = scripted([
       { status: 200, body: {} },
       { status: 422 },
-      { status: 200, body: {} },
+      list([{ phone_number: E164 }]),
     ]);
     expect(await releaseRetellNumber(deps(stillThere.fetch), E164)).toEqual({
       ok: false,
@@ -147,7 +194,8 @@ describe("ops alerts", () => {
     await raiseNumberOpsAlert(sql, { rule: "r", severity: "warning", tenantId: "t", payload: {} });
     await resolveNumberOpsAlerts(sql, "r");
     expect(texts[0]).toContain("where not exists");
-    expect(texts[0]).toContain("a.status = 'open'");
+    expect(texts[0]).toContain("a.status in ('open', 'acked')");
     expect(texts[1]).toContain("update public.alerts set status = 'resolved'");
+    expect(texts[1]).toContain("status in ('open', 'acked')");
   });
 });

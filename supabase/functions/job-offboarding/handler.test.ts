@@ -46,6 +46,26 @@ function fakeRetell(
     fetch: async (url, init) => {
       const method = init?.method ?? "GET";
       requests.push({ method, path: new URL(url).pathname });
+      if (method === "GET" && new URL(url).pathname === "/v2/list-phone-numbers") {
+        // Retell's list endpoint is the source of truth when a GET/DELETE says 422.
+        return new Response(
+          JSON.stringify({
+            items: exists
+              ? [
+                  {
+                    phone_number: "+15551234567",
+                    inbound_agents: (opts.boundAgents ?? ["agent_tenant"]).map((agent_id) => ({
+                      agent_id,
+                      weight: 1,
+                    })),
+                  },
+                ]
+              : [],
+            has_more: false,
+          }),
+          { status: 200 },
+        );
+      }
       if (method === "GET") {
         if (opts.getStatus) return new Response("{}", { status: opts.getStatus });
         if (!exists) return new Response("{}", { status: 422 });
@@ -151,7 +171,7 @@ describe("releaseOneNumber — Retell-native numbers (NUMBERS-1)", () => {
     const { deps, retell } = makeDeps({ retell: fakeRetell({ exists: false }) });
     const outcome = await releaseOneNumber(sql, candidateRow({ twilio_sid: null }), deps);
     expect(outcome).toBe("released");
-    expect(retell.requests.map((r) => r.method)).toEqual(["GET"]);
+    expect(retell.requests.map((r) => r.method)).toEqual(["GET", "GET"]); // get + list confirm, no DELETE
     expect(calls).toHaveLength(1);
   });
 
