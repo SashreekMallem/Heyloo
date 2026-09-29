@@ -68,7 +68,7 @@ content_path = "./supabase/templates/email_change.html"
 
 [auth.email.template.reauthentication]
 subject = "Your Heyloo verification code"
-content_path = "./templates/reauthentication.html"
+content_path = "./supabase/templates/reauthentication.html"
 
 # Send Email Hook (EMAIL-MSGRAPH, docs/SETUP_EMAIL_MICROSOFT.md): when on,
 # Supabase Auth hands every auth email (signup, recovery, invite, magic link,
