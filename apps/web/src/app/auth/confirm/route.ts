@@ -1,5 +1,6 @@
 import type { EmailOtpType } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { sameOriginPath } from "@/lib/auth/same-origin-path";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -70,13 +71,7 @@ function defaultNext(type: string | null): string {
  * re-checked against the request origin because a leading backslash (or other
  * URL-parser quirks) can still escape to another host once resolved. */
 function safeNext(raw: string | null, fallback: string, origin: string): string {
-  if (!raw) return fallback;
-  if (!raw.startsWith("/") || raw.startsWith("//")) return fallback;
-  try {
-    return new URL(raw, origin).origin === origin ? raw : fallback;
-  } catch {
-    return fallback;
-  }
+  return sameOriginPath(raw, origin) ?? fallback;
 }
 
 export async function GET(request: Request) {

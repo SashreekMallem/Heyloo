@@ -18,6 +18,7 @@ import { useForm } from "react-hook-form";
 import { AuthShell } from "@/components/marketing/auth-shell";
 import { Link, useRouter } from "@/i18n/navigation";
 import { claimsFromSupabaseClient } from "@/lib/auth/claims";
+import { sameOriginPath } from "@/lib/auth/same-origin-path";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
 /** `/login` (FRONTEND_SPEC.md §9.1) — role-based post-login redirect. */
@@ -51,7 +52,9 @@ function LoginForm() {
     // carries the Custom Access Token Hook's tenant_id/role/platform_admin/
     // referral_partner_id — only the freshly-minted JWT's own claims do.
     const claims = await claimsFromSupabaseClient(supabaseBrowserClient);
-    const next = searchParams.get("next");
+    // Same-origin paths only: `?next=` is attacker-controllable (a phished
+    // login link must not bounce the freshly signed-in user to another site).
+    const next = sameOriginPath(searchParams.get("next"), window.location.origin);
     if (next) {
       router.push(next);
     } else if (claims.platform_admin) {

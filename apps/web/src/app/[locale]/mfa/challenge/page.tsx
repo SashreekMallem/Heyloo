@@ -8,6 +8,7 @@ import { Suspense, useState } from "react";
 import { toast } from "sonner";
 import { AuthShell } from "@/components/marketing/auth-shell";
 import { useRouter } from "@/i18n/navigation";
+import { sameOriginPath } from "@/lib/auth/same-origin-path";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
 /** AAL1→AAL2 step-up (FRONTEND_SPEC.md §9.1). */
@@ -58,7 +59,7 @@ function MfaChallengeForm() {
       toast.error("Incorrect code — please try again.");
       return;
     }
-    router.push(searchParams.get("next") ?? "/cockpit");
+    router.push(sameOriginPath(searchParams.get("next"), window.location.origin) ?? "/cockpit");
   }
 
   return (
