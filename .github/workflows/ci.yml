@@ -319,6 +319,12 @@ jobs:
       - name: Run owner column-grant SQL test
         if: steps.migrations.outputs.count != '0'
         run: psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/owner_column_grants.sql
+      # VOICE-ALERTS-1: the slot generator honors closed days, survives bad
+      # hours data, never duplicates on a rerun, and runs with or without the
+      # optional booking_horizon_days column.
+      - name: Run availability slot generator SQL test
+        if: steps.migrations.outputs.count != '0'
+        run: psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/availability_slots_regen.sql
       - name: Run owner privilege-escalation probe
         if: steps.migrations.outputs.count != '0'
         run: node --experimental-strip-types scripts/ci/owner-privilege-escalation-probe.ts
