@@ -243,6 +243,21 @@ function printCleanup(inv: InventoryBody): void {
       `- created~${a.created_at_approx ?? "?"} modified ${a.user_modified_at ?? "?"} ${a.agent_id} "${a.agent_name ?? ""}" [${a.category}]${bound ? ` STILL BOUND: ${bound}` : ""}`,
     );
   }
+  // Still referenced, but only by canceled tenants: job-offboarding releases
+  // numbers, never agents, so these stay in Retell until the owner decides.
+  const canceledOnly = inv.agents.filter(
+    (a) =>
+      a.referenced_by.length > 0 &&
+      a.referenced_by.every((r) => r.kind === "agent_configs" && r.tenant_status === "canceled"),
+  );
+  for (const a of canceledOnly) {
+    const slugs = a.referenced_by
+      .map((r) => (r.kind === "agent_configs" ? (r.tenant_slug ?? r.tenant_id) : r.key))
+      .join(", ");
+    console.log(
+      `- (canceled tenant ${slugs}) ${a.agent_id} "${a.agent_name ?? ""}" — referenced only by a canceled tenant; owner decides`,
+    );
+  }
   if (inv.orphan_retell_llm_ids.length > 0 || inv.orphan_conversation_flow_ids.length > 0) {
     console.log(
       `  Response engines no agent uses: ${inv.orphan_retell_llm_ids.length} retell-llm(s), ` +

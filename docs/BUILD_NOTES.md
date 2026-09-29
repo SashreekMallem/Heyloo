@@ -7615,6 +7615,16 @@ opening node, `begin_message`).
   `api-admin-provision-test-tenant` / `api-tenant-agent-publish` republishes
   logged a deletion of each superseded agent; earlier runs (CALL-1..CALL-6)
   and agents from the legacy product are what section 4 will surface.
+- `test-offboard-1790130213` (`tenants.status = 'canceled'`) still has a live,
+  published Retell agent `agent_16043584b03c207ee983a56f0c` (deployed
+  `inspect`): `job-offboarding` releases numbers but never deletes agents.
+  It is still an `agent_configs` reference, so it is not in the unreferenced
+  list; the audit prints such agents at the end of section 4 as "referenced
+  only by a canceled tenant; owner decides".
+- `.env.example` documents `VOICE_EVENTS_WEBHOOK_URL` as `.../voice-inbound`;
+  it must be `.../functions/v1/voice-events` (the live secret is correct: every
+  tenant agent's `webhook_url` reads back as `/voice-events`). Not this
+  package's file.
 
 ### Gates
 
