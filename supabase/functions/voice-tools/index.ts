@@ -9,6 +9,7 @@ import { runInBackground } from "../_shared/deno/background.ts";
 import { getSql, isDbConnectionWarm, markDbConnectionUsed } from "../_shared/deno/db.ts";
 import { optionalEnv, requireRetellWebhookKey } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
+import { buildMessagingRegistryFromEnv } from "../_shared/providers/messaging/registry.ts";
 import { fallbackEnvelope, jsonResponse } from "../_shared/responses.ts";
 import { verifyRetellSignature } from "../_shared/retell-signature.ts";
 import { withTimeout } from "../_shared/timeout.ts";
@@ -52,6 +53,11 @@ const APP_BASE_URL = optionalEnv("APP_BASE_URL") ?? "https://heyloo.app";
 // (supabase.com/docs/guides/functions/regional-invocation: "SB_REGION: The
 // AWS region function was invoked"). Recorded on every tool_health row.
 const SB_REGION = optionalEnv("SB_REGION") ?? null;
+// MSG-3: which SMS provider (if any) this project has secrets for. Only
+// `send_sms_confirmation`/`send_payment_link`/`join_waitlist` consult it, to
+// know whether a text they are about to promise can really be sent
+// (`_shared/sms-availability.ts`). Built once per isolate; no network.
+const MESSAGING = buildMessagingRegistryFromEnv((name) => Deno.env.get(name), fetch);
 
 // Module-scope — survives across invocations on the same warm instance
 // (SYSTEM_DESIGN §5's per-tool rolling-window circuit breaker).
@@ -151,6 +157,7 @@ Deno.serve(async (req: Request) => {
             cancelUrl: PAYMENT_LINK_CANCEL_URL,
           },
           dentalIntake: { appBaseUrl: APP_BASE_URL },
+          sms: { registry: MESSAGING },
           ...(GEOCODE_API_KEY ? { geocode: { fetchImpl: fetch, apiKey: GEOCODE_API_KEY } } : {}),
           telemetry,
           now: () => performance.now(),

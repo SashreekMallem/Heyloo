@@ -26,6 +26,7 @@ vi.mock("./rate-limit.ts", () => ({
   textAgentRateLimiter: { allow: vi.fn(() => true) },
 }));
 
+import { TEXT_AGENT_TEXTING_OFF, TEXT_AGENT_TEXTING_ON } from "../sms-availability.ts";
 import {
   createWebChatConversation,
   incrementTextMessagesOut,
@@ -412,6 +413,47 @@ describe("golden conversation: A2P pending", () => {
     });
 
     expect(result.sent).toBe(true);
+  });
+
+  describe("MSG-3: the per-turn texting rule", () => {
+    async function systemPromptFor(
+      channel: "sms" | "web_chat",
+      a2pStatus: string,
+    ): Promise<string> {
+      if (channel === "sms") {
+        vi.mocked(loadOrCreateSmsConversation).mockResolvedValue(
+          conversation({ disclosureSent: true }),
+        );
+      } else {
+        vi.mocked(loadWebChatConversationByToken).mockResolvedValue(
+          conversation({ channel: "web_chat", phoneE164: null, disclosureSent: true }),
+        );
+      }
+      vi.mocked(resolveTenantTextContext).mockResolvedValue({ ...TENANT_CONTEXT, a2pStatus });
+      const { fetchImpl, calls } = fakeAnthropicFetch([textBlock("ok")]);
+      await handleInboundText(
+        baseDeps(fetchImpl),
+        channel === "sms"
+          ? { channel, tenantId: "t1", phoneE164: "+15551234567", message: "hi" }
+          : { channel, tenantId: "t1", sessionToken: "tok_1", message: "hi" },
+      );
+      return JSON.parse(calls[0]?.body as string).system as string;
+    }
+
+    it("web chat for a tenant with no verified sender is told texting is NOT available", async () => {
+      const system = await systemPromptFor("web_chat", "pending_verification");
+      expect(system).toContain(`Text messages right now: ${TEXT_AGENT_TEXTING_OFF}`);
+      expect(system).not.toContain("{{texting_policy_text}}");
+    });
+
+    it("web chat for a verified tenant, and any SMS conversation, may text a payment link", async () => {
+      expect(await systemPromptFor("web_chat", "verified")).toContain(
+        `Text messages right now: ${TEXT_AGENT_TEXTING_ON}`,
+      );
+      expect(await systemPromptFor("sms", "verified")).toContain(
+        `Text messages right now: ${TEXT_AGENT_TEXTING_ON}`,
+      );
+    });
   });
 });
 

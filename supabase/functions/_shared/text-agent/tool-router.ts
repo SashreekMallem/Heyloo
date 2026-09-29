@@ -368,7 +368,14 @@ export async function dispatchTextTool(
           return { resultText: jsonResult({ error: "invalid_args" }), isError: true };
         return {
           resultText: jsonResult(
-            await sendPaymentLink(sql, ctx, parsed.data, { ...deps.paymentLink, logger }),
+            await sendPaymentLink(sql, ctx, parsed.data, {
+              ...deps.paymentLink,
+              logger,
+              // MSG-3: a payment link travels by text; a chat with no verified
+              // sender cannot deliver it (the SMS channel itself only runs when
+              // the tenant is verified).
+              smsAvailable: async () => deps.a2pVerified,
+            }),
           ),
           isError: false,
         };
@@ -378,7 +385,11 @@ export async function dispatchTextTool(
         if (!parsed.success)
           return { resultText: jsonResult({ error: "invalid_args" }), isError: true };
         return {
-          resultText: jsonResult(await joinWaitlist(sql, ctx, parsed.data)),
+          resultText: jsonResult(
+            await joinWaitlist(sql, ctx, parsed.data, {
+              smsAvailable: async () => deps.a2pVerified,
+            }),
+          ),
           isError: false,
         };
       }

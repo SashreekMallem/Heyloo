@@ -4,6 +4,8 @@ import type {
   VoiceInboundRequest,
   VoiceInboundResponse,
 } from "../_shared/schemas/voice-inbound.ts";
+import type { SmsRegistry } from "../_shared/sms-availability.ts";
+import { isSmsAvailable, resolveTextingVariables } from "../_shared/sms-availability.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 
 /**
@@ -45,8 +47,11 @@ export async function handleVoiceInbound(params: {
   request: VoiceInboundRequest;
   logger: Logger;
   now?: Date;
+  /** MSG-3: the messaging registry, to tell the agent per call whether this
+   * business can text. Omitted = texting reported as OFF (fail closed). */
+  sms?: { registry: SmsRegistry };
 }): Promise<VoiceInboundResult> {
-  const { sql, request, logger, now = new Date() } = params;
+  const { sql, request, logger, now = new Date(), sms } = params;
 
   const toNumber = normalizeE164(request.call_inbound.to_number);
   const fromNumber = normalizeE164(request.call_inbound.from_number);
@@ -93,6 +98,19 @@ export async function handleVoiceInbound(params: {
   // and `api-admin-run-agent-tests`'s `simulate` action both call — proving
   // one proves the other. No behavior change for a real call: this is the
   // exact same logic that used to live inline here.
+  // MSG-3: can this business text a caller right now? One indexed statement,
+  // dispatched alongside the customer lookup below (no added round-trip wait);
+  // a failure here must never delay or fail the call, so it reads as "no".
+  const smsAvailable: Promise<boolean> = sms
+    ? isSmsAvailable(sql, row.tenant_id, sms.registry).catch((err: unknown) => {
+        logger.warn("voice_inbound_sms_availability_failed", {
+          tenant_id: row.tenant_id,
+          error: String(err),
+        });
+        return false;
+      })
+    : Promise.resolve(false);
+
   const dynamicVariables = await buildInboundDynamicVariables({
     sql,
     logger,
@@ -120,7 +138,7 @@ export async function handleVoiceInbound(params: {
     body: {
       call_inbound: {
         ...(row.retell_agent_id ? { override_agent_id: row.retell_agent_id } : {}),
-        dynamic_variables: dynamicVariables,
+        dynamic_variables: { ...dynamicVariables, ...resolveTextingVariables(await smsAvailable) },
       },
     },
   };

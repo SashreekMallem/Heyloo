@@ -4,7 +4,7 @@ import type { OwnerAlertContact } from "../_shared/owner-alerts.ts";
 import { isOwnerAlertTemplate, loadOwnerAlertContact } from "../_shared/owner-alerts.ts";
 import { normalizeE164 } from "../_shared/phone.ts";
 import type { MessagingRegistry } from "../_shared/providers/messaging/registry.ts";
-import type { SendResult, SmsProvider } from "../_shared/providers/messaging/types.ts";
+import type { SendResult } from "../_shared/providers/messaging/types.ts";
 import type { MessagesOutboundQueueMsg, PgmqMessageRow } from "../_shared/queue.ts";
 import {
   deleteMessage,
@@ -13,6 +13,8 @@ import {
   QUEUE_NAMES,
   readBatch,
 } from "../_shared/queue.ts";
+import type { SmsRoute } from "../_shared/sms-availability.ts";
+import { resolveSmsRoute } from "../_shared/sms-availability.ts";
 import type { RenderedMessage } from "../_shared/templates.ts";
 import { renderTemplate } from "../_shared/templates.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
@@ -127,73 +129,9 @@ function describeFailure(providerId: string, result: Extract<SendResult, { ok: f
 }
 
 // ---------------------------------------------------------------------------
-// SMS routing
+// SMS routing: `_shared/sms-availability.ts` (shared with the voice tools, which
+// must never promise a text this worker cannot send).
 // ---------------------------------------------------------------------------
-
-export type SmsRoute =
-  | { ok: true; from: string; provider: SmsProvider }
-  | {
-      ok: false;
-      reason: "sender_not_verified" | "no_sending_number" | "provider_not_configured";
-      detail?: string;
-    };
-
-interface SenderRow {
-  a2p_status: string | null;
-  sms_provider: string | null;
-  sender_e164: string | null;
-  sender_provider: string | null;
-  sender_status: string | null;
-  primary_e164: string | null;
-}
-
-/** Which number and which provider account a tenant texts from, and
- * whether carriers have approved it. */
-export async function resolveSmsRoute(
-  sql: SqlClient,
-  tenantId: string,
-  registry: MessagingRegistry,
-  options: { requireVerified: boolean },
-): Promise<SmsRoute> {
-  const rows = await sql<SenderRow>`
-    select t.a2p_status, t.sms_provider,
-      s.e164 as sender_e164, s.provider as sender_provider, s.registration_status as sender_status,
-      (select p.e164 from public.phone_numbers p
-        where p.tenant_id = t.id and p.released_at is null and p.is_primary
-        limit 1) as primary_e164
-    from public.tenants t
-    left join lateral (
-      select ms.e164, ms.provider, ms.registration_status
-      from public.messaging_senders ms
-      where ms.tenant_id = t.id and ms.released_at is null
-      order by ms.is_default desc, (ms.registration_status = 'verified') desc, ms.created_at asc
-      limit 1
-    ) s on true
-    where t.id = ${tenantId}
-  `;
-  const row = rows[0];
-  const fromSender = !!row?.sender_e164;
-  const from = fromSender ? row?.sender_e164 : row?.primary_e164;
-  const verified = fromSender
-    ? row?.sender_status === "verified"
-    : (row?.a2p_status ?? null) === "verified";
-
-  if (options.requireVerified && !verified) return { ok: false, reason: "sender_not_verified" };
-  if (!from) return { ok: false, reason: "no_sending_number" };
-
-  const resolution = registry.resolveSms({
-    senderProvider: fromSender ? row?.sender_provider : null,
-    tenantOverride: row?.sms_provider ?? null,
-  });
-  if (!resolution.ok) {
-    return {
-      ok: false,
-      reason: "provider_not_configured",
-      detail: `${resolution.reason}:${resolution.providerId}`,
-    };
-  }
-  return { ok: true, from, provider: resolution.provider };
-}
 
 async function sendSmsFor(
   sql: SqlClient,

@@ -2,14 +2,28 @@ import type { z } from "zod";
 import { fnv1aHex, stableStringify } from "../../_shared/idempotency.ts";
 import { normalizeE164 } from "../../_shared/phone.ts";
 import type { JoinWaitlistArgsSchema } from "../../_shared/schemas/voice-tools.ts";
+import { WAITLIST_NO_TEXT_NOTE } from "../../_shared/sms-availability.ts";
 import type { SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
 
 type Args = z.infer<typeof JoinWaitlistArgsSchema>;
 
 export type JoinWaitlistResult =
-  | { joined: true; waitlist_entry_id: string }
+  | {
+      joined: true;
+      waitlist_entry_id: string;
+      /** MSG-3: present only when the business cannot text, with the model-facing
+       * note that it must not promise the caller a text. */
+      texting_available?: false;
+      note?: string;
+    }
   | { joined: false; reason: "invalid_phone" | "offering_not_found" };
+
+export interface JoinWaitlistDeps {
+  /** Whether a customer text would really be sent (`isSmsAvailable`). Omitted =
+   * the result carries no texting hint (callers that never promise texts). */
+  smsAvailable?: () => Promise<boolean>;
+}
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -41,13 +55,27 @@ function waitlistIdempotencyKey(callId: string, window: { start: string; end: st
  * `20260907131400_functions_triggers.sql`) matches active entries by
  * window overlap and enqueues the "a slot opened — reply YES" SMS; the
  * reply-YES auto-book path (`webhooks-twilio-sms/handler.ts`) is the
- * consumer this tool's insert feeds.
+ * consumer this tool's insert feeds. That notice is a text, so the result
+ * says when the business cannot text (`deps.smsAvailable`, MSG-3).
  */
 export async function joinWaitlist(
   sql: SqlClient,
   ctx: CallContext,
   args: Args,
+  deps: JoinWaitlistDeps = {},
 ): Promise<JoinWaitlistResult> {
+  // MSG-3: the waitlist's "a slot opened" notice is a text; when the business
+  // cannot text, tell the model so it does not promise one.
+  const joined = async (waitlistEntryId: string): Promise<JoinWaitlistResult> =>
+    deps.smsAvailable && !(await deps.smsAvailable())
+      ? {
+          joined: true,
+          waitlist_entry_id: waitlistEntryId,
+          texting_available: false,
+          note: WAITLIST_NO_TEXT_NOTE,
+        }
+      : { joined: true, waitlist_entry_id: waitlistEntryId };
+
   const phone = normalizeE164(args.customer.phone);
   if (!phone) return { joined: false, reason: "invalid_phone" };
 
@@ -69,7 +97,7 @@ export async function joinWaitlist(
     limit 1
   `;
   const prior = existing[0];
-  if (prior) return { joined: true, waitlist_entry_id: prior.id };
+  if (prior) return joined(prior.id);
 
   const customerRows = await sql<{ id: string }>`
     insert into public.customers (tenant_id, phone_e164, name)
@@ -93,7 +121,7 @@ export async function joinWaitlist(
     `;
     const row = inserted[0];
     if (!row) return { joined: false, reason: "invalid_phone" };
-    return { joined: true, waitlist_entry_id: row.id };
+    return joined(row.id);
   } catch (err) {
     if (isPgError(err, UNIQUE_VIOLATION)) {
       const raceWinner = await sql<{ id: string }>`
@@ -102,7 +130,7 @@ export async function joinWaitlist(
         limit 1
       `;
       const won = raceWinner[0];
-      if (won) return { joined: true, waitlist_entry_id: won.id };
+      if (won) return joined(won.id);
     }
     throw err;
   }

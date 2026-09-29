@@ -8,6 +8,7 @@
 import { getSql } from "../_shared/deno/db.ts";
 import { requireRetellWebhookKey } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
+import { buildMessagingRegistryFromEnv } from "../_shared/providers/messaging/registry.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { verifyRetellSignature } from "../_shared/retell-signature.ts";
 import { VoiceInboundRequestSchema } from "../_shared/schemas/voice-inbound.ts";
@@ -15,6 +16,9 @@ import { handleVoiceInbound } from "./handler.ts";
 
 const logger = createLogger({ fn: "voice-inbound" });
 const RETELL_WEBHOOK_SIGNING_SECRET = requireRetellWebhookKey();
+// MSG-3: lets the handler tell the agent per call whether this business can
+// text (`_shared/sms-availability.ts`). Built once per isolate; no network.
+const MESSAGING = buildMessagingRegistryFromEnv((name) => Deno.env.get(name), fetch);
 
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
@@ -48,7 +52,12 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const result = await handleVoiceInbound({ sql: getSql(), request: parsed.data, logger });
+    const result = await handleVoiceInbound({
+      sql: getSql(),
+      request: parsed.data,
+      logger,
+      sms: { registry: MESSAGING },
+    });
     return jsonResponse(result.body, { status: result.status });
   } catch (err) {
     // A DB error here falls back to Retell's own retry/timeout path — kept

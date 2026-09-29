@@ -1,5 +1,6 @@
 import { buildAgentSettingsVariables, resolveTextPersona } from "../agent-settings.ts";
 import type { StripeFetch } from "../providers/stripe.ts";
+import { resolveTextAgentTexting } from "../sms-availability.ts";
 import { withTimeout } from "../timeout.ts";
 import type { Logger, SqlClient } from "../types.ts";
 import type { AnthropicFetch, AnthropicMessage } from "./anthropic-messages.ts";
@@ -269,6 +270,12 @@ export async function handleInboundText(
     business_facts: settings.business_facts,
     voicemail_message: settings.voicemail_message,
     booking_mode_text: settings.booking_mode_text,
+    // MSG-3: an SMS conversation is texting by construction (the engine only
+    // runs it for a carrier-verified tenant); web chat can text (a payment
+    // link) only when the tenant is verified.
+    texting_policy_text: resolveTextAgentTexting(
+      input.channel === "sms" || tenantContext.a2pStatus === "verified",
+    ),
     text_tone_text: TEXT_TONE_FRAGMENTS[persona.tone],
     text_sign_off: persona.signOff,
   });
