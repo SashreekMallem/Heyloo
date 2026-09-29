@@ -5,12 +5,14 @@ import { enqueue, QUEUE_NAMES } from "../../_shared/queue.ts";
 import type { CancelBookingArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
+import { MANUAL_MODE_CANCEL_MESSAGE } from "../manual-mode.ts";
 
 type Args = z.infer<typeof CancelBookingArgsSchema>;
 
 export type CancelBookingResult =
   | { cancelled: true }
-  | { cancelled: false; reason: "not_found" | "identity_verification_failed" };
+  | { cancelled: false; reason: "not_found" | "identity_verification_failed" }
+  | { cancelled: false; reason: "manual_mode"; message: string };
 
 /**
  * BACKEND_SPEC §7.2.4 + MASTER_SPEC §3.7 identity fallback. Cancelling an
@@ -28,6 +30,11 @@ export async function cancelBooking(
   ctx: CallContext,
   args: Args,
 ): Promise<CancelBookingResult> {
+  // VOICE-ALERTS-1 review: Manual Mode also means no cancelling. Refused
+  // before any SQL (the flag rode in on the call context).
+  if (ctx.manualMode) {
+    return { cancelled: false, reason: "manual_mode", message: MANUAL_MODE_CANCEL_MESSAGE };
+  }
   const bookingRows = await sql<{
     id: string;
     status: string;

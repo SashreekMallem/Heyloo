@@ -371,3 +371,49 @@ describe("dispatchTextTool", () => {
     expect(JSON.parse(resultText)).toEqual({ queued: false, reason: "unavailable" });
   });
 });
+
+describe("dispatchTextTool - Manual Mode (VOICE-ALERTS-1 review)", () => {
+  const manualDeps = (sql: SqlClient) => ({
+    sql,
+    logger: silentLogger,
+    conversation: makeConversation(),
+    vertical: "dental",
+    appBaseUrl: "https://heyloo.app",
+    a2pVerified: true,
+    manualMode: true,
+  });
+
+  it.each([
+    [
+      "create_booking",
+      {
+        resource_id: "11111111-1111-1111-1111-111111111111",
+        start: "2999-01-15T14:00:00.000Z",
+        end: "2999-01-15T14:30:00.000Z",
+        customer: { name: "Jordan", phone: "555-123-4567" },
+      },
+    ],
+    [
+      "create_order",
+      {
+        items: [{ name: "Burger", qty: 1 }],
+        fulfillment_type: "pickup",
+        customer: { name: "Jordan", phone: "555-123-4567" },
+      },
+    ],
+    [
+      "update_booking",
+      {
+        booking_id: "22222222-2222-2222-2222-222222222222",
+        new_start: "2999-01-16T14:00:00.000Z",
+        new_end: "2999-01-16T14:30:00.000Z",
+      },
+    ],
+    ["cancel_booking", { booking_id: "22222222-2222-2222-2222-222222222222" }],
+  ])("%s refuses with reason manual_mode and writes nothing", async (tool, args) => {
+    const { sql, calls } = makeSql();
+    const { resultText } = await dispatchTextTool(manualDeps(sql), tool, args);
+    expect(JSON.parse(resultText)).toMatchObject({ reason: "manual_mode" });
+    expect(calls.some((c) => /insert into|update public\./i.test(c))).toBe(false);
+  });
+});

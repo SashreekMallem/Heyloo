@@ -3,7 +3,12 @@ import { createLogger } from "../_shared/logger.ts";
 import type { SqlClient } from "../_shared/types.ts";
 import type { DispatchDeps } from "./handler.ts";
 import { dispatchTool } from "./handler.ts";
-import { MANUAL_MODE_BOOKING_MESSAGE, MANUAL_MODE_ORDER_MESSAGE } from "./manual-mode.ts";
+import {
+  MANUAL_MODE_BOOKING_MESSAGE,
+  MANUAL_MODE_CANCEL_MESSAGE,
+  MANUAL_MODE_CHANGE_MESSAGE,
+  MANUAL_MODE_ORDER_MESSAGE,
+} from "./manual-mode.ts";
 
 const logger = createLogger();
 const CALL_ID = "call_0123456789abcdef01234567";
@@ -76,6 +81,30 @@ describe("dispatchTool - Manual Mode is enforced end to end (VOICE-ALERTS-1)", (
       result: { confirmed: false, reason: "manual_mode", message: MANUAL_MODE_ORDER_MESSAGE },
     });
     expect(calls.some((c) => c.text.includes("insert into"))).toBe(false);
+  });
+
+  it("update_booking (reschedule) in manual mode refuses and touches no booking", async () => {
+    const { deps, calls } = makeDeps({ manualMode: true });
+    const result = await dispatchTool(deps, CALL_ID, "update_booking", {
+      booking_id: "22222222-2222-2222-2222-222222222222",
+      new_start: "2999-01-16T14:00:00.000Z",
+      new_end: "2999-01-16T14:30:00.000Z",
+    });
+    expect(result).toEqual({
+      result: { confirmed: false, reason: "manual_mode", message: MANUAL_MODE_CHANGE_MESSAGE },
+    });
+    expect(calls.some((c) => c.text.includes("public.bookings"))).toBe(false);
+  });
+
+  it("cancel_booking in manual mode refuses and touches no booking", async () => {
+    const { deps, calls } = makeDeps({ manualMode: true });
+    const result = await dispatchTool(deps, CALL_ID, "cancel_booking", {
+      booking_id: "22222222-2222-2222-2222-222222222222",
+    });
+    expect(result).toEqual({
+      result: { cancelled: false, reason: "manual_mode", message: MANUAL_MODE_CANCEL_MESSAGE },
+    });
+    expect(calls.some((c) => c.text.includes("public.bookings"))).toBe(false);
   });
 
   it("take_message still works in manual mode and alerts the owner (the fallback the agent is told to use)", async () => {

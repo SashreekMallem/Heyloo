@@ -9,7 +9,25 @@ type Args = z.infer<typeof SendSmsConfirmationArgsSchema>;
 
 export type SendSmsConfirmationResult =
   | { queued: true; message_id: string }
-  | { queued: false; reason: "invalid_phone" | "booking_not_found" | "order_not_found" };
+  | {
+      queued: false;
+      reason: "invalid_phone" | "invalid_template" | "booking_not_found" | "order_not_found";
+    };
+
+/**
+ * VOICE-ALERTS-1 review: `template_key` comes straight from the model, and
+ * this tool texts an arbitrary number. Only the customer-facing
+ * confirmation templates may be requested: without the allowlist a prompt-
+ * injected caller could have the agent queue an owner-alert template (paging
+ * the owner with an empty alert) or `chat_phone_verification` (a code text
+ * to any number). Any other key already rendered an empty body and failed in
+ * the worker, so nothing legitimate is lost.
+ */
+export const CONFIRMATION_TEMPLATE_KEYS: ReadonlySet<string> = new Set([
+  "booking_confirmation",
+  "order_confirmation",
+  "booking_cancelled",
+]);
 
 /**
  * BACKEND_SPEC §7.2.7 — enqueue-only, the actual send happens in the
@@ -24,6 +42,9 @@ export async function sendSmsConfirmation(
 ): Promise<SendSmsConfirmationResult> {
   const phone = normalizeE164(args.phone);
   if (!phone) return { queued: false, reason: "invalid_phone" };
+  if (!CONFIRMATION_TEMPLATE_KEYS.has(args.template_key)) {
+    return { queued: false, reason: "invalid_template" };
+  }
 
   // EDGE_AUDIT M1: `args.booking_id`/`args.order_id` come straight from the
   // tool call — verify each actually belongs to the caller's OWN tenant

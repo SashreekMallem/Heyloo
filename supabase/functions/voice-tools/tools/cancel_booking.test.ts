@@ -118,3 +118,12 @@ describe("cancelBooking", () => {
     expect(result).toEqual({ cancelled: true });
   });
 });
+
+describe("cancelBooking - Manual Mode (VOICE-ALERTS-1 review)", () => {
+  it("refuses before any SQL so a booking is never cancelled while the owner has paused automatic booking", async () => {
+    const { sql, calls } = makeStepSql([{ rows: [bookingRow] }]);
+    const result = await cancelBooking(sql, { ...ctx, manualMode: true }, args);
+    expect(result).toMatchObject({ cancelled: false, reason: "manual_mode" });
+    expect(calls).toHaveLength(0);
+  });
+});

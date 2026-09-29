@@ -106,6 +106,10 @@ export interface TextToolRouterDeps {
    * campaign isn't verified, so the tool simply isn't callable and the
    * model is told so via the tool_result instead of silently failing. */
   a2pVerified: boolean;
+  /** `tenants.manual_mode` (VOICE-ALERTS-1 review): the same tool-level
+   * refusal the voice dispatcher applies — create_booking/create_order/
+   * update_booking/cancel_booking answer `reason: "manual_mode"`. */
+  manualMode?: boolean;
   /** Injectable clock for `verify_phone`'s per-number cooldown (tests only —
    * production callers omit this and get the real time). */
   now?: () => Date;
@@ -125,6 +129,7 @@ async function buildCallContext(deps: TextToolRouterDeps): Promise<CallContext> 
     // resolver, which derives it from the placeholder-call-id detection
     // that only applies to actual Retell voice calls.
     isTestCall: false,
+    ...(deps.manualMode ? { manualMode: true } : {}),
   };
 }
 
