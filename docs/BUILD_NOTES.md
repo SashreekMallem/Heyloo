@@ -6622,9 +6622,9 @@ Regression assertions added to `job-agent-regression/handler.test.ts`
 | `platform_settings.value` | 13 | 0 |
 | `agent_templates.states / transitions / global_intents / tools` | 8 each | 0 / 0 / 0 / 0 |
 | `alerts.payload` | 236 | **44** (41 `agent_regression_failure`, 3 `agent_regression_error`; all parse to objects) |
-| `call_logs.extracted_entities` | 22 | **6** (all `"{}"`) |
-| `call_logs.transcript` | 22 | **2** (arrays stored as strings, 2026-09-21 08:15/08:21) |
-| `resources.metadata` | — | **2** (`"{}"`, 2026-09-20 17:13) |
+| `call_logs.extracted_entities` | 19 | **6** (all `"{}"`) |
+| `call_logs.transcript` | 19 | **2** (arrays stored as strings, 2026-09-21 08:15/08:21) |
+| `resources.metadata` | 25 | **2** (`"{}"`, 2026-09-20 17:13) |
 | every other jsonb column | — | 0 |
 
 Anomaly worth a look: `call_logs` row `44678700-...` (2026-09-23 02:30,
