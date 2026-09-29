@@ -7992,3 +7992,117 @@ Not fixed (minor, recorded):
 - Ops: configure the Telnyx messaging profile's STOP auto-response
   (Advanced Opt-In/Out) so 10DLC numbers confirm opt-outs; toll-free gets
   the network's "NETWORK MSG".
+
+## RETELLCFG-REVIEW (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — hostile review of RETELLCFG (6b992bb, d4ff684): five majors fixed (a live agent on the delete list, unredacted URLs, no request timeout, a cleanup list trusted when partial or mis-bound, `--apply` able to touch a real tenant and delete an agent); safe to deploy with this commit
+
+Scope: the `retellcfg` package only (`api-admin-attach-retell-number/**`,
+`scripts/retell/**`, GO_LIVE step 10). No deploy, no DDL, no Retell or
+database write. Live checks were read-only: catalog + row queries through the
+Management API, and the project's secret NAMES (values never read).
+Citations: `docs/VERIFY.md` RETELLCFG-REVIEW.
+
+### What held up
+
+- Root cause: confirmed against the code and the docs.
+  `api-admin-self-call/handler.ts#ensureCallerAgent` creates the caller agent
+  with no `webhook_url`; every tenant agent gets `webhook_url` from the
+  required `VOICE_EVENTS_WEBHOOK_URL` (compile-and-publish.ts); Retell's
+  account-level webhook is dashboard-only. `voice-events` really does resolve
+  the tenant by `to_number` first, so NOT pointing the account webhook at
+  `/voice-events` is right.
+- Every new `_shared/providers/retell.ts` wrapper matches the current docs
+  (method, path, query, envelope). Only list/get endpoints are called.
+- `inspect`: the new fields are additive; the static opening node and
+  `begin_message` come back verbatim (now with any URL inside redacted).
+
+### Defects (all fixed in this commit, with tests)
+
+1. **MAJOR: the public demo agent would have been on the delete list.**
+   An agent was "referenced" only via `agent_configs` or `platform_settings`.
+   `api-demo-agent` uses `DEMO_AGENT_ID`, a secret whose agent is created by
+   hand in Retell (docs/DEPLOY.md), so the audit would list it as
+   `unrecognized`, and GO_LIVE step 10 told the owner to delete section 4.
+   Fixed: `index.ts` passes `envReferences: {DEMO_AGENT_ID}`; such agents are
+   referenced (`{kind: "env", name}`), shown as `secret DEMO_AGENT_ID`, and
+   their account-webhook fallback is an owned (high) finding. GO_LIVE: set the
+   secret before running the audit.
+2. **MAJOR: URLs returned unredacted despite the claim.** `agents[].webhook_url`,
+   `unreferenced_agents[].webhook_url` and `phone_numbers[].inbound_webhook_url`
+   / `inbound_sms_webhook_url` were copied raw (credentials and `?token=` would
+   leak into the response, the terminal and the `--json` file), and
+   capability URLs (Zapier / n8n / Slack / Discord hooks, Telegram bot tokens)
+   carry the secret in the PATH, which `redactUrl` kept. Fixed: every URL
+   field goes through `redactUrl`; on non-Supabase hosts, long letter+digit
+   path segments become `REDACTED` (Supabase function paths stay verbatim, the
+   classification needs the name); URLs inside the opening / `begin_message`
+   text are redacted too; URL discovery is now case-insensitive.
+3. **MAJOR: no per-request timeout.** `retellRequest` has no signal, and the
+   100 s budget was only checked between attempts, so one hung Retell
+   connection ran past Supabase's 150 s limit: a 504 with no partial result,
+   the opposite of the claim. Fixed: every attempt is aborted after
+   `min(requestTimeoutMs = 20 s, remaining budget)`; an abort counts as a
+   network error (retried twice, then an explicit `retell_error`, status 0).
+4. **MAJOR: the cleanup list could send the owner to delete a live agent.**
+   (a) If the phone-number (or agent) listing failed, every agent looked
+   unbound and section 4 still printed as a deletion list. (b) SMS bindings
+   (`inbound_sms_agents` / `outbound_sms_agents`, documented on
+   list-phone-numbers) were ignored. (c) A tenant number still ringing a
+   superseded agent (a missed re-attach) made that agent "unreferenced but
+   STILL BOUND", and GO_LIVE said "unbind the number first", which takes that
+   tenant's line down. Fixed: new `cleanup_list_complete`, and each
+   unreferenced agent carries `delete_hold`
+   (`bound_to_tenant_number` | `bound_to_number` | `inventory_incomplete` |
+   null); all four binding arrays count; a new high finding
+   `tenant_number_agent_mismatch` (a `phone_numbers` number whose Retell
+   inbound agents are not the tenant's current `retell_agent_id`) with
+   `reattach_tenant_number`, which the repair plan picks up. The script prints
+   "PARTIAL inventory ... delete nothing" and a `DO NOT DELETE` line per held
+   agent; GO_LIVE step 4 rewritten accordingly.
+5. **MAJOR: `--apply` could write to a real tenant and delete an agent.** The
+   guard was `slug startsWith "test-" && !is_test`, but api-checkout slugs a
+   real business "Test Prep Co" as `test-prep-co-<suffix>`.
+   `api-admin-provision-test-tenant` looks tenants up by slug, recompiles and
+   republishes their agent, flips `trialing` to `active`, and with the
+   `cleanup_superseded_agent: true` the plan sent it DELETES the old agent,
+   which contradicts "nothing is ever deleted by this script". Fixed: the
+   planning logic moved to `api-admin-attach-retell-number/audit-plan.ts`
+   (typechecked and tested with the package; the script imports it).
+   `isProvisionTestTenant` also requires no Stripe customer or subscription
+   (`tenant_has_billing`, new on `TenantRef`) and a non-canceled status. The
+   republish body no longer asks for `cleanup_superseded_agent` (the old agent
+   shows up on the next cleanup list instead).
+
+### Minor (fixed or noted)
+
+- `index.ts`: project host now from the platform-injected `SUPABASE_URL`
+  (falls back to the inbound URL; parsed without throwing), and empty-string
+  optional secrets fall back like unset ones (`||`).
+- GO_LIVE: the `--json` file goes to `/tmp` (it names every tenant and agent).
+- Not fixed (noted in VERIFY): the inventory scans the listed (highest)
+  LLM / flow version, not a version an agent pins via
+  `response_engine.version`; same content for every tenant agent today. The
+  2 s CPU limit on a very large account is unmeasured.
+
+### Tests
+
+`api-admin-attach-retell-number/`: `inventory.test.ts` +7 (DEMO_AGENT_ID
+reference; redaction of every URL field, path tokens and opening text; a hung
+request aborted with an explicit partial result; tenant number bound to a
+superseded agent -> mismatch finding + `bound_to_tenant_number` hold; SMS
+bindings; partial number listing holds the whole list; `tenant_has_billing`),
+`audit-plan.test.ts` (new, 6: test-tenant detection incl. a real
+`test-prep-co-*` tenant, no `cleanup_superseded_agent`, nothing runnable for
+real / signup tenants, labels), `retell-summaries.test.ts` +3 (path-token
+redaction, Supabase paths verbatim, text / nullable redaction). The new
+inventory tests fail against 6b992bb (7 of 7) and pass now. The script was
+run end to end with `--apply` against a local mock serving the real
+`inventoryRetellAccount`: the real `test-prep-co-4f2a` tenant was skipped, the
+test tenant got `force_recompile` without cleanup plus a re-attach, and no
+other write was made. `index.ts` and the script were typechecked with `tsc`
+and a `Deno` shim (no Deno binary here).
+
+### Deploy
+
+Same list as RETELLCFG (behavior change: `api-admin-attach-retell-number`
+only; `_shared/providers/retell.ts` is untouched by this review). No
+migration, no new required secret (`DEMO_AGENT_ID` is read if present).

@@ -39,8 +39,11 @@ export const LEGACY_FUNCTION_NAMES: readonly string[] = [
 
 const MAX_TEXT_CHARS = 2000;
 
+/** Truncates long text and redacts every URL inside it (RETELLCFG-REVIEW:
+ * an opening or prompt can quote a URL that carries a token). */
 function clip(text: string): string {
-  return text.length > MAX_TEXT_CHARS ? `${text.slice(0, MAX_TEXT_CHARS)}...[truncated]` : text;
+  const safe = redactUrlsInText(text);
+  return safe.length > MAX_TEXT_CHARS ? `${safe.slice(0, MAX_TEXT_CHARS)}...[truncated]` : safe;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -115,18 +118,44 @@ export function describeLanguage(agent: unknown): string | string[] | null {
 const SECRET_BEARING_KEY =
   /^(headers|query_params|auth_username|auth_password|sip_trunk_auth_username|sip_trunk_auth_password|password|secret|api_key|token)$/i;
 
-const URL_IN_TEXT = /https?:\/\/[^\s"'`<>\\]+/g;
+const URL_IN_TEXT = /https?:\/\/[^\s"'`<>\\]+/gi;
 
-/** Strip credentials, query values and fragments from a URL string without
- * re-encoding its path (so `{{dynamic_variable}}` placeholders stay
- * readable): `https://u:p@h/x?token=abc#f` -> `https://REDACTED@h/x?token=REDACTED`. */
+/** A path segment that looks like an embedded credential: long, URL-safe,
+ * mixing letters and digits (Zapier / n8n / Make catch-hook ids, Slack and
+ * Discord webhook tokens, `bot<id>:<token>`). */
+const SECRET_LIKE_SEGMENT = /^(?=.*[0-9])(?=.*[A-Za-z])[A-Za-z0-9._~:+=-]{16,}$/;
+
+/** Hosts whose URLs never carry a credential in the path (Supabase function
+ * and REST URLs authenticate by header / `apikey` query), so their path
+ * stays verbatim: the function name is what the classification reads. */
+function isSupabaseHost(host: string): boolean {
+  return host.endsWith(".supabase.co") || host.endsWith(".supabase.in");
+}
+
+/** Strip credentials, query values, fragments and credential-like path
+ * segments (on non-Supabase hosts) from a URL string without re-encoding
+ * the rest of its path (so `{{dynamic_variable}}` placeholders stay
+ * readable): `https://u:p@h/x?token=abc#f` -> `https://REDACTED@h/x?token=REDACTED`,
+ * `https://hooks.zapier.com/hooks/catch/123/abc9def0ghi1jkl2/` ->
+ * `https://hooks.zapier.com/hooks/catch/123/REDACTED/`. */
 export function redactUrl(raw: string): string {
   const hashIndex = raw.indexOf("#");
   const withoutFragment = hashIndex >= 0 ? raw.slice(0, hashIndex) : raw;
   const queryIndex = withoutFragment.indexOf("?");
   const base = queryIndex >= 0 ? withoutFragment.slice(0, queryIndex) : withoutFragment;
   const query = queryIndex >= 0 ? withoutFragment.slice(queryIndex + 1) : null;
-  const safeBase = base.replace(/^(https?:\/\/)[^@/]*@/i, "$1REDACTED@");
+  const withoutCredentials = base.replace(/^(https?:\/\/)[^@/]*@/i, "$1REDACTED@");
+  const authority = /^(https?:\/\/(?:[^@/]*@)?)([^/:]+)(:\d+)?/i.exec(withoutCredentials);
+  const host = authority?.[2]?.toLowerCase() ?? "";
+  const safeBase =
+    authority && !isSupabaseHost(host)
+      ? authority[0] +
+        withoutCredentials
+          .slice(authority[0].length)
+          .split("/")
+          .map((segment) => (SECRET_LIKE_SEGMENT.test(segment) ? "REDACTED" : segment))
+          .join("/")
+      : withoutCredentials;
   if (query === null || query === "") return safeBase;
   const safeQuery = query
     .split("&")
@@ -134,6 +163,19 @@ export function redactUrl(raw: string): string {
     .map((pair) => `${pair.split("=")[0]}=REDACTED`)
     .join("&");
   return `${safeBase}?${safeQuery}`;
+}
+
+/** `redactUrl` for a URL-valued field that may be null. */
+export function redactUrlOrNull(raw: string | null | undefined): string | null {
+  return typeof raw === "string" ? redactUrl(raw) : null;
+}
+
+/** Every URL inside free text replaced by its redacted form. */
+export function redactUrlsInText(text: string): string {
+  return text.replace(URL_IN_TEXT, (match) => {
+    const trailing = /[.,;:!?)\]]+$/.exec(match)?.[0] ?? "";
+    return redactUrl(match.slice(0, match.length - trailing.length)) + trailing;
+  });
 }
 
 export interface FoundUrl {

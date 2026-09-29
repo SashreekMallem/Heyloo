@@ -20,6 +20,7 @@ import {
   type ExpectedRetellUrls,
   expectedUrlForField,
   type RetellResourceType,
+  redactUrlOrNull,
   type StartNodeSummary,
   type UrlClassification,
 } from "./retell-summaries.ts";
@@ -74,6 +75,17 @@ export interface InventoryDeps {
   concurrency?: number;
   /** Safety cap on list pages per resource type (default 20 x 1000 items). */
   maxPages?: number;
+  /** Per-attempt timeout for one Retell request (default 20 s, never more
+   * than what is left of `budgetMs`). Without it one hung connection would
+   * outlive the budget and Supabase's 150 s request limit would kill the
+   * function with no partial result (RETELLCFG-REVIEW). */
+  requestTimeoutMs?: number;
+  /** Agent / LLM ids that deployment configuration (secrets) points at, by
+   * variable name, e.g. `{ DEMO_AGENT_ID: "agent_..." }`. They are live
+   * references exactly like `agent_configs` rows, so they must never land
+   * on the cleanup list (RETELLCFG-REVIEW: the public demo agent is
+   * referenced ONLY by the `DEMO_AGENT_ID` secret). */
+  envReferences?: Record<string, string | null | undefined>;
 }
 
 export interface TenantRef {
@@ -84,6 +96,12 @@ export interface TenantRef {
   tenant_vertical: string | null;
   tenant_is_test: boolean | null;
   tenant_status: string | null;
+  /** True when the tenant has a Stripe customer or subscription, i.e. it
+   * went through real checkout. Test tenants created by
+   * `api-admin-provision-test-tenant` never do (RETELLCFG-REVIEW: a real
+   * business named "Test ..." gets a `test-...` slug from api-checkout, so
+   * the slug alone cannot identify a test tenant). */
+  tenant_has_billing: boolean | null;
 }
 
 export interface PlatformSettingRef {
@@ -91,11 +109,17 @@ export interface PlatformSettingRef {
   key: string;
 }
 
-export type ResourceRef = TenantRef | PlatformSettingRef;
+/** A deployment secret whose value is this resource's id (e.g. `DEMO_AGENT_ID`). */
+export interface EnvRef {
+  kind: "env";
+  name: string;
+}
+
+export type ResourceRef = TenantRef | PlatformSettingRef | EnvRef;
 
 export interface NumberBinding {
   phone_number: string;
-  direction: "inbound" | "outbound";
+  direction: "inbound" | "outbound" | "inbound_sms" | "outbound_sms";
 }
 
 export interface InventoryAgent {
@@ -130,6 +154,8 @@ export interface InventoryPhoneNumber {
   inbound_sms_webhook_url: string | null;
   inbound_agents: unknown;
   outbound_agents: unknown;
+  inbound_sms_agents: unknown;
+  outbound_sms_agents: unknown;
   /** Tenant owning this number in `phone_numbers` (unreleased), if any. */
   tenant_id: string | null;
 }
@@ -153,7 +179,14 @@ export interface InventoryFlow extends InventoryEngine {
   start_node: StartNodeSummary | null;
 }
 
-export type FindingKind = "account_webhook_fallback" | UrlClassification;
+export type FindingKind =
+  | "account_webhook_fallback"
+  /** A number `phone_numbers` assigns to a tenant is not answered by that
+   * tenant's current `agent_configs.retell_agent_id` in Retell (a missed
+   * re-attach after a republish): the old agent is still serving the
+   * tenant's calls, so it must be re-attached, never unbound. */
+  | "tenant_number_agent_mismatch"
+  | UrlClassification;
 
 export interface InventoryFinding {
   severity: "high" | "medium" | "low";
@@ -186,13 +219,23 @@ export interface UnreferencedAgent {
     | "template_publish_agent"
     | "superseded_self_call_caller"
     | "unrecognized";
-  /** Non-empty = still bound to a number: unbind before deleting. */
+  /** Non-empty = still bound to a number (voice or SMS). */
   bound_numbers: NumberBinding[];
   webhook_url: string | null;
+  /** Null = safe to delete as far as this inventory can tell. Otherwise why
+   * it must NOT be deleted yet: `bound_to_tenant_number` (it answers a
+   * tenant's number: re-attach the number to the tenant's current agent,
+   * never unbind it), `bound_to_number` (unbind first),
+   * `inventory_incomplete` (the agent or number listing was partial, so a
+   * binding or reference may be missing). */
+  delete_hold: "bound_to_tenant_number" | "bound_to_number" | "inventory_incomplete" | null;
 }
 
 export interface InventoryBody {
   complete: boolean;
+  /** True only when the agent AND phone-number listings were read in full,
+   * so `unreferenced_agents` and every binding on it can be trusted. */
+  cleanup_list_complete: boolean;
   errors: { step: string; status: number | null; detail: string }[];
   expected_urls: ExpectedRetellUrls;
   counts: {
@@ -271,6 +314,8 @@ const PhoneNumberItemSchema = z
     inbound_sms_webhook_url: z.string().nullish(),
     inbound_agents: z.unknown().optional(),
     outbound_agents: z.unknown().optional(),
+    inbound_sms_agents: z.unknown().optional(),
+    outbound_sms_agents: z.unknown().optional(),
   })
   .passthrough();
 
@@ -292,7 +337,10 @@ function isoOrNull(ms: number | null | undefined): string | null {
   return typeof ms === "number" && Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
-type RetellCall = () => Promise<{ ok: boolean; status: number; body: unknown }>;
+/** One Retell request, given the (timeout-wrapped) fetch to use. */
+type RetellCall = (
+  fetchImpl: RetellFetch,
+) => Promise<{ ok: boolean; status: number; body: unknown }>;
 
 class BudgetExceeded extends Error {}
 
@@ -348,15 +396,25 @@ export async function inventoryRetellAccount(
   const deadline = now() + (deps.budgetMs ?? 100_000);
   const concurrency = deps.concurrency ?? 4;
   const maxPages = deps.maxPages ?? 20;
+  const requestTimeoutMs = deps.requestTimeoutMs ?? 20_000;
   const errors: InventoryBody["errors"] = [];
   let complete = true;
+  // The cleanup list is only as good as the agent and number listings.
+  let agentsListed = true;
+  let numbersListed = true;
 
-  /** One Retell call with a bounded retry on 429 / 5xx / network error. */
+  /** One Retell call with a bounded retry on 429 / 5xx / network error /
+   * timeout. Each attempt is aborted after `requestTimeoutMs` or when the
+   * budget runs out, whichever is first. */
   const call = async (step: string, fn: RetellCall) => {
     for (let attempt = 0; ; attempt++) {
-      if (now() > deadline) throw new BudgetExceeded(step);
+      const remaining = deadline - now();
+      if (remaining <= 0) throw new BudgetExceeded(step);
+      const timeoutMs = Math.max(1, Math.min(requestTimeoutMs, remaining));
+      const timedFetch: RetellFetch = (input, init) =>
+        deps.retellFetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
       try {
-        const res = await fn();
+        const res = await fn(timedFetch);
         if ((res.status === 429 || res.status >= 500) && attempt < 2) {
           await sleep(500 * 2 ** attempt);
           continue;
@@ -375,13 +433,13 @@ export async function inventoryRetellAccount(
 
   const listAll = async (
     step: string,
-    page: (opts: RetellListPageOptions) => ReturnType<RetellCall>,
+    page: (fetchImpl: RetellFetch, opts: RetellListPageOptions) => ReturnType<RetellCall>,
   ): Promise<Record<string, unknown>[]> => {
     const items: Record<string, unknown>[] = [];
     let paginationKey: string | undefined;
     for (let i = 0; i < maxPages; i++) {
-      const res = await call(step, () =>
-        page(paginationKey ? { limit: 1000, paginationKey } : { limit: 1000 }),
+      const res = await call(step, (f) =>
+        page(f, paginationKey ? { limit: 1000, paginationKey } : { limit: 1000 }),
       );
       const parsed = ListEnvelopeSchema.safeParse(res.body);
       if (!res.ok || !parsed.success) {
@@ -392,6 +450,7 @@ export async function inventoryRetellAccount(
           detail: res.ok ? "unexpected_response_shape" : "retell_error",
         });
         deps.logger.error("retell_inventory_list_failed", { step, status: res.status });
+        markListIncomplete(step);
         return items;
       }
       items.push(...parsed.data.items);
@@ -400,6 +459,7 @@ export async function inventoryRetellAccount(
     }
     complete = false;
     errors.push({ step, status: null, detail: "max_pages_reached" });
+    markListIncomplete(step);
     return items;
   };
 
@@ -413,9 +473,11 @@ export async function inventoryRetellAccount(
     vertical: string | null;
     is_test: boolean | null;
     status: string | null;
+    has_billing: boolean | null;
   }>`
     select ac.tenant_id, ac.retell_agent_id, ac.retell_llm_id,
-      t.slug, t.name, t.vertical, t.is_test, t.status
+      t.slug, t.name, t.vertical, t.is_test, t.status,
+      (t.stripe_customer_id is not null or t.stripe_subscription_id is not null) as has_billing
     from public.agent_configs ac
     join public.tenants t on t.id = ac.tenant_id
   `;
@@ -445,6 +507,7 @@ export async function inventoryRetellAccount(
       tenant_vertical: row.vertical,
       tenant_is_test: row.is_test,
       tenant_status: row.status,
+      tenant_has_billing: row.has_billing,
     };
     tenantRefById.set(row.tenant_id, ref);
     addRef(row.retell_agent_id, ref);
@@ -455,7 +518,21 @@ export async function inventoryRetellAccount(
     extractIds(row.value, ids);
     for (const id of ids) addRef(id, { kind: "platform_settings", key: row.key });
   }
+  for (const [name, value] of Object.entries(deps.envReferences ?? {})) {
+    const id = value?.trim();
+    if (id) addRef(id, { kind: "env", name });
+  }
+  const currentAgentByTenant = new Map(
+    tenantRows
+      .filter((r) => r.retell_agent_id)
+      .map((r) => [r.tenant_id, r.retell_agent_id as string]),
+  );
   const tenantByNumber = new Map(numberRows.map((r) => [r.e164, r.tenant_id]));
+
+  const markListIncomplete = (step: string) => {
+    if (step === "list_agents") agentsListed = false;
+    if (step === "list_phone_numbers") numbersListed = false;
+  };
 
   const findings: InventoryFinding[] = [];
   const agents: InventoryAgent[] = [];
@@ -540,15 +617,11 @@ export async function inventoryRetellAccount(
   try {
     // --- account listings --------------------------------------------------
     const [agentItems, numberItems, llmItems, flowItems] = [
-      await listAll("list_agents", (o) => listAgentsPage(deps.retellFetch, deps.retellApiKey, o)),
-      await listAll("list_phone_numbers", (o) =>
-        listPhoneNumbersPage(deps.retellFetch, deps.retellApiKey, o),
-      ),
-      await listAll("list_retell_llms", (o) =>
-        listRetellLLMsPage(deps.retellFetch, deps.retellApiKey, o),
-      ),
-      await listAll("list_conversation_flows", (o) =>
-        listConversationFlowsPage(deps.retellFetch, deps.retellApiKey, o),
+      await listAll("list_agents", (f, o) => listAgentsPage(f, deps.retellApiKey, o)),
+      await listAll("list_phone_numbers", (f, o) => listPhoneNumbersPage(f, deps.retellApiKey, o)),
+      await listAll("list_retell_llms", (f, o) => listRetellLLMsPage(f, deps.retellApiKey, o)),
+      await listAll("list_conversation_flows", (f, o) =>
+        listConversationFlowsPage(f, deps.retellApiKey, o),
       ),
     ];
 
@@ -557,35 +630,66 @@ export async function inventoryRetellAccount(
       const parsed = PhoneNumberItemSchema.safeParse(raw);
       if (!parsed.success) {
         complete = false;
+        numbersListed = false;
         errors.push({ step: "parse_phone_number", status: null, detail: "unexpected_item_shape" });
         continue;
       }
       const n = parsed.data;
-      const inbound = agentWeightIds(n.inbound_agents);
-      const outbound = agentWeightIds(n.outbound_agents);
-      for (const id of inbound) {
-        bindingsByAgent.set(id, [
-          ...(bindingsByAgent.get(id) ?? []),
-          { phone_number: n.phone_number, direction: "inbound" },
-        ]);
+      // Voice AND SMS bindings (list-phone-numbers documents
+      // `inbound_sms_agents` / `outbound_sms_agents` alongside the voice
+      // ones): an agent bound by either is in use.
+      const bindings: [NumberBinding["direction"], string[]][] = [
+        ["inbound", agentWeightIds(n.inbound_agents)],
+        ["outbound", agentWeightIds(n.outbound_agents)],
+        ["inbound_sms", agentWeightIds(n.inbound_sms_agents)],
+        ["outbound_sms", agentWeightIds(n.outbound_sms_agents)],
+      ];
+      for (const [direction, ids] of bindings) {
+        for (const id of ids) {
+          bindingsByAgent.set(id, [
+            ...(bindingsByAgent.get(id) ?? []),
+            { phone_number: n.phone_number, direction },
+          ]);
+        }
       }
-      for (const id of outbound) {
-        bindingsByAgent.set(id, [
-          ...(bindingsByAgent.get(id) ?? []),
-          { phone_number: n.phone_number, direction: "outbound" },
-        ]);
-      }
-      numberOwners.set(n.phone_number, [...inbound, ...outbound]);
+      numberOwners.set(
+        n.phone_number,
+        bindings.flatMap(([, ids]) => ids),
+      );
+      const ownerTenantId = tenantByNumber.get(n.phone_number) ?? null;
       phoneNumbers.push({
         phone_number: n.phone_number,
         nickname: n.nickname ?? null,
         phone_number_type: n.phone_number_type ?? null,
-        inbound_webhook_url: n.inbound_webhook_url ?? null,
-        inbound_sms_webhook_url: n.inbound_sms_webhook_url ?? null,
+        inbound_webhook_url: redactUrlOrNull(n.inbound_webhook_url),
+        inbound_sms_webhook_url: redactUrlOrNull(n.inbound_sms_webhook_url),
         inbound_agents: n.inbound_agents ?? null,
         outbound_agents: n.outbound_agents ?? null,
-        tenant_id: tenantByNumber.get(n.phone_number) ?? null,
+        inbound_sms_agents: n.inbound_sms_agents ?? null,
+        outbound_sms_agents: n.outbound_sms_agents ?? null,
+        tenant_id: ownerTenantId,
       });
+      // A tenant's number must be answered by that tenant's CURRENT agent.
+      const currentAgent = ownerTenantId ? currentAgentByTenant.get(ownerTenantId) : undefined;
+      const inboundIds = bindings[0]?.[1] ?? [];
+      const ownerRef = ownerTenantId ? tenantRefById.get(ownerTenantId) : undefined;
+      if (
+        currentAgent &&
+        ownerRef &&
+        (inboundIds.length === 0 || inboundIds.some((id) => id !== currentAgent))
+      ) {
+        findings.push({
+          severity: "high",
+          kind: "tenant_number_agent_mismatch",
+          resource_type: "phone_number",
+          resource_id: n.phone_number,
+          path: "inbound_agents",
+          url: null,
+          function_name: null,
+          owners: [ownerRef],
+          recommended_action: "reattach_tenant_number",
+        });
+      }
     }
 
     // --- agents (list-agents is a summary; details need get-agent) ----------
@@ -594,6 +698,7 @@ export async function inventoryRetellAccount(
       .filter((p) => {
         if (!p.success) {
           complete = false;
+          agentsListed = false;
           errors.push({ step: "parse_agent", status: null, detail: "unexpected_item_shape" });
         }
         return p.success;
@@ -615,8 +720,8 @@ export async function inventoryRetellAccount(
       // details live under `/get-chat-agent` (same `version` values).
       const getDetail = summary.channel === "chat" ? getChatAgentVersion : getAgentVersion;
       try {
-        const latest = await call("get_agent", () =>
-          getDetail(deps.retellFetch, deps.retellApiKey, summary.agent_id, "latest"),
+        const latest = await call("get_agent", (f) =>
+          getDetail(f, deps.retellApiKey, summary.agent_id, "latest"),
         );
         const parsed = AgentDetailSchema.safeParse(latest.body);
         if (!latest.ok || !parsed.success) {
@@ -625,8 +730,8 @@ export async function inventoryRetellAccount(
         }
         out.latest = parsed.data;
         if (parsed.data.is_published === false) {
-          const pub = await call("get_agent_published", () =>
-            getDetail(deps.retellFetch, deps.retellApiKey, summary.agent_id, "latest_published"),
+          const pub = await call("get_agent_published", (f) =>
+            getDetail(f, deps.retellApiKey, summary.agent_id, "latest_published"),
           );
           const pubParsed = AgentDetailSchema.safeParse(pub.body);
           if (pub.ok && pubParsed.success) out.published = pubParsed.data;
@@ -667,7 +772,7 @@ export async function inventoryRetellAccount(
           detail.published && detail.latest && detail.latest.version !== detail.published.version
             ? (detail.latest.version ?? null)
             : null,
-        webhook_url: serving?.webhook_url ?? null,
+        webhook_url: redactUrlOrNull(serving?.webhook_url),
         webhook_events: serving?.webhook_events ?? null,
         webhook_timeout_ms: serving?.webhook_timeout_ms ?? null,
         language: describeLanguage(serving),
@@ -758,8 +863,8 @@ export async function inventoryRetellAccount(
     const created = await mapWithConcurrency(unrefAgents, concurrency, async (a) => {
       if (now() > deadline) return null;
       try {
-        const res = await call("list_agent_versions", () =>
-          listAgentVersions(deps.retellFetch, deps.retellApiKey, a.agent_id, {
+        const res = await call("list_agent_versions", (f) =>
+          listAgentVersions(f, deps.retellApiKey, a.agent_id, {
             limit: 1,
             sortOrder: "ascending",
           }),
@@ -775,6 +880,15 @@ export async function inventoryRetellAccount(
     });
     unrefAgents.forEach((a, i) => {
       a.created_at_approx = created[i] ?? null;
+      const deleteHold: UnreferencedAgent["delete_hold"] = a.bound_numbers.some((b) =>
+        tenantByNumber.has(b.phone_number),
+      )
+        ? "bound_to_tenant_number"
+        : !agentsListed || !numbersListed
+          ? "inventory_incomplete"
+          : a.bound_numbers.length > 0
+            ? "bound_to_number"
+            : null;
       unreferenced.push({
         agent_id: a.agent_id,
         agent_name: a.agent_name,
@@ -783,6 +897,7 @@ export async function inventoryRetellAccount(
         category: categorize(a.agent_name, knownTenantIds),
         bound_numbers: a.bound_numbers,
         webhook_url: a.webhook_url,
+        delete_hold: deleteHold,
       });
     });
     unreferenced.sort((x, y) =>
@@ -793,6 +908,7 @@ export async function inventoryRetellAccount(
   } catch (err) {
     if (!(err instanceof BudgetExceeded)) throw err;
     complete = false;
+    agentsListed = false;
     errors.push({ step: err.message, status: null, detail: "budget_exhausted" });
   }
 
@@ -824,6 +940,7 @@ export async function inventoryRetellAccount(
     status: 200,
     body: {
       complete,
+      cleanup_list_complete: agentsListed && numbersListed,
       errors,
       expected_urls: deps.expected,
       counts: {
@@ -850,7 +967,12 @@ export async function inventoryRetellAccount(
 function dedupeRefs(refs: ResourceRef[]): ResourceRef[] {
   const seen = new Set<string>();
   return refs.filter((r) => {
-    const key = r.kind === "agent_configs" ? `t:${r.tenant_id}` : `s:${r.key}`;
+    const key =
+      r.kind === "agent_configs"
+        ? `t:${r.tenant_id}`
+        : r.kind === "platform_settings"
+          ? `s:${r.key}`
+          : `e:${r.name}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

@@ -20,11 +20,15 @@
  *      category. Nothing is ever deleted by this script.
  *
  * Dry-run by default: reads only. `--apply` executes ONLY the repair steps
- * for TEST tenants provisioned by `api-admin-provision-test-tenant`
- * (slug `test-*`): force_recompile + cleanup_superseded_agent, then re-attach
- * the tenant's number. Real tenants are never touched (the owner publishes
- * from the portal); signup test tenants (`tenants.is_test`) are printed as a
- * `scripts/republish-fleet.ts` command.
+ * for TEST tenants provisioned by `api-admin-provision-test-tenant` (slug
+ * `test-*`, no Stripe customer or subscription, not a signup test tenant,
+ * not canceled: `isProvisionTestTenant` in
+ * supabase/functions/api-admin-attach-retell-number/audit-plan.ts):
+ * force_recompile (WITHOUT cleanup_superseded_agent: this script never
+ * causes a delete), then re-attach the tenant's number. Real tenants are
+ * never touched, even one whose slug starts with `test-` (the owner
+ * publishes from the portal); signup test tenants (`tenants.is_test`) are
+ * printed as a `scripts/republish-fleet.ts` command.
  *
  *   SUPABASE_URL=https://<ref>.supabase.co PROVISION_INTERNAL_SECRET=... \
  *     node --experimental-strip-types scripts/retell/audit-config.ts [--json out.json] [--apply]
@@ -42,10 +46,16 @@
 
 import { existsSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import {
+  buildRepairPlan,
+  deleteHoldLabel,
+  type RepairStep,
+  refLabel,
+  runnableSteps,
+} from "../../supabase/functions/api-admin-attach-retell-number/audit-plan.ts";
 import type {
   InventoryBody,
   InventoryFinding,
-  TenantRef,
 } from "../../supabase/functions/api-admin-attach-retell-number/inventory.ts";
 
 function requireEnv(name: string): string {
@@ -110,20 +120,22 @@ function functionExistsInRepo(name: string): boolean {
 
 function ownerLabel(f: InventoryFinding): string {
   if (f.owners.length === 0) return "unreferenced";
-  return f.owners
-    .map((o) =>
-      o.kind === "agent_configs"
-        ? `tenant ${o.tenant_slug ?? o.tenant_id}`
-        : `platform_settings.${o.key}`,
-    )
-    .join(", ");
+  return f.owners.map(refLabel).join(", ");
 }
 
 function printFindings(inv: InventoryBody): void {
-  console.log("\n=== 1. Stale / unexpected URLs ===");
+  console.log("\n=== 1. Stale / unexpected URLs, and tenant numbers bound to the wrong agent ===");
   const urlFindings = inv.findings.filter((f) => f.kind !== "account_webhook_fallback");
   if (urlFindings.length === 0) console.log("(none)");
   for (const f of urlFindings) {
+    if (f.kind === "tenant_number_agent_mismatch") {
+      const n = inv.phone_numbers.find((p) => p.phone_number === f.resource_id);
+      console.log(
+        `- [${f.severity}] ${f.kind} ${f.resource_id} inbound_agents=${JSON.stringify(n?.inbound_agents ?? null)} is not the tenant's current agent`,
+      );
+      console.log(`    owner: ${ownerLabel(f)}; action: ${f.recommended_action}`);
+      continue;
+    }
     const repo =
       f.function_name === null
         ? ""
@@ -156,70 +168,6 @@ function printFindings(inv: InventoryBody): void {
   }
 }
 
-interface RepairStep {
-  tenant: TenantRef;
-  kind: "provision_test_tenant" | "republish_fleet" | "owner_portal_publish" | "reattach_number";
-  body?: Record<string, unknown>;
-  note: string;
-}
-
-function buildPlan(inv: InventoryBody): RepairStep[] {
-  const republish = new Map<string, TenantRef>();
-  const reattach = new Map<string, TenantRef>();
-  for (const f of inv.findings) {
-    for (const owner of f.owners) {
-      if (owner.kind !== "agent_configs") continue;
-      if (f.recommended_action === "republish_tenant_agent") republish.set(owner.tenant_id, owner);
-      if (f.recommended_action === "reattach_tenant_number") reattach.set(owner.tenant_id, owner);
-    }
-  }
-  const steps: RepairStep[] = [];
-  for (const tenant of republish.values()) {
-    const slug = tenant.tenant_slug ?? "";
-    if (slug.startsWith("test-") && tenant.tenant_is_test !== true) {
-      steps.push({
-        tenant,
-        kind: "provision_test_tenant",
-        body: {
-          vertical: tenant.tenant_vertical,
-          name: tenant.tenant_name,
-          slug,
-          owner_email: OWNER_EMAIL ?? "<OWNER_EMAIL>",
-          force_recompile: true,
-          cleanup_superseded_agent: true,
-        },
-        note: "POST /functions/v1/api-admin-provision-test-tenant (recompiles with the configured URLs)",
-      });
-    } else if (tenant.tenant_is_test === true) {
-      steps.push({
-        tenant,
-        kind: "republish_fleet",
-        note: `node --experimental-strip-types scripts/republish-fleet.ts --tenant ${slug} --apply`,
-      });
-    } else {
-      steps.push({
-        tenant,
-        kind: "owner_portal_publish",
-        note: "real tenant: the owner clicks 'Publish changes' in the portal (api-tenant-agent-publish)",
-      });
-    }
-    // A republish creates a NEW agent id; the tenant's number must follow it.
-    reattach.set(tenant.tenant_id, tenant);
-  }
-  for (const tenant of reattach.values()) {
-    const numbers = inv.phone_numbers.filter((n) => n.tenant_id === tenant.tenant_id);
-    for (const n of numbers) {
-      steps.push({
-        tenant,
-        kind: "reattach_number",
-        body: { tenant_id: tenant.tenant_id, phone_e164: n.phone_number },
-        note: "POST /functions/v1/api-admin-attach-retell-number (re-points inbound agent + inbound_webhook_url)",
-      });
-    }
-  }
-  return steps;
-}
-
 function printPlan(steps: RepairStep[]): void {
   console.log("\n=== 3. Repair plan for resources owned by CURRENT tenants ===");
   if (steps.length === 0) {
@@ -236,12 +184,20 @@ function printPlan(steps: RepairStep[]): void {
 
 function printCleanup(inv: InventoryBody): void {
   console.log("\n=== 4. Unreferenced Retell agents (owner cleanup list — nothing deleted) ===");
+  if (!inv.cleanup_list_complete) {
+    console.log(
+      "  !! PARTIAL inventory: the agent or phone-number listing did not complete. This is NOT a\n" +
+        "     deletion list: a binding or reference may be missing. Delete nothing; re-run the audit.",
+    );
+  }
   if (inv.unreferenced_agents.length === 0) console.log("(none)");
   for (const a of inv.unreferenced_agents) {
     const bound = a.bound_numbers.map((b) => `${b.direction} ${b.phone_number}`).join(", ");
+    const hold = deleteHoldLabel(a.delete_hold);
     console.log(
       `- created~${a.created_at_approx ?? "?"} modified ${a.user_modified_at ?? "?"} ${a.agent_id} "${a.agent_name ?? ""}" [${a.category}]${bound ? ` STILL BOUND: ${bound}` : ""}`,
     );
+    if (hold) console.log(`    ${hold}`);
   }
   // Still referenced, but only by canceled tenants: job-offboarding releases
   // numbers, never agents, so these stay in Retell until the owner decides.
@@ -251,9 +207,7 @@ function printCleanup(inv: InventoryBody): void {
       a.referenced_by.every((r) => r.kind === "agent_configs" && r.tenant_status === "canceled"),
   );
   for (const a of canceledOnly) {
-    const slugs = a.referenced_by
-      .map((r) => (r.kind === "agent_configs" ? (r.tenant_slug ?? r.tenant_id) : r.key))
-      .join(", ");
+    const slugs = a.referenced_by.map(refLabel).join(", ");
     console.log(
       `- (canceled tenant ${slugs}) ${a.agent_id} "${a.agent_name ?? ""}" — referenced only by a canceled tenant; owner decides`,
     );
@@ -277,9 +231,7 @@ function printOpenings(inv: InventoryBody): void {
       : llm
         ? `begin_message: ${llm.begin_message ?? "(unset: model-generated)"}`
         : "(engine not listed)";
-    const who = a.referenced_by
-      .map((r) => (r.kind === "agent_configs" ? (r.tenant_slug ?? r.tenant_id) : r.key))
-      .join(", ");
+    const who = a.referenced_by.map(refLabel).join(", ");
     console.log(
       `- ${who}: ${a.agent_id} language=${JSON.stringify(a.language)} voice=${a.voice_id ?? "?"} webhook=${a.webhook_url ?? "(none)"}`,
     );
@@ -288,24 +240,22 @@ function printOpenings(inv: InventoryBody): void {
 }
 
 async function applyPlan(steps: RepairStep[]): Promise<void> {
-  const runnable = steps.filter(
-    (s) => s.kind === "provision_test_tenant" || s.kind === "reattach_number",
-  );
+  // Only tenants created by api-admin-provision-test-tenant (see
+  // isProvisionTestTenant) are ever written to — never a real tenant.
+  const runnable = runnableSteps(steps);
+  for (const s of steps) {
+    if (!runnable.includes(s)) {
+      console.log(
+        `[retell-audit] skip ${s.kind} for ${s.tenant.tenant_slug ?? s.tenant.tenant_id} (not an api-admin-provision-test-tenant tenant)`,
+      );
+    }
+  }
   if (runnable.some((s) => s.kind === "provision_test_tenant") && !OWNER_EMAIL) {
     console.error("[retell-audit] --apply needs OWNER_EMAIL for api-admin-provision-test-tenant.");
     process.exit(1);
   }
   for (const s of runnable) {
-    // Only tenants created by api-admin-provision-test-tenant (slug test-*,
-    // tenants.is_test not set) are ever written to — never a real tenant,
-    // even if the plan were edited by hand.
     const slug = s.tenant.tenant_slug ?? "";
-    if (!slug.startsWith("test-") || s.tenant.tenant_is_test === true) {
-      console.log(
-        `[retell-audit] skip ${s.kind} for ${slug || s.tenant.tenant_id} (not a test-* tenant)`,
-      );
-      continue;
-    }
     const fn =
       s.kind === "provision_test_tenant"
         ? "api-admin-provision-test-tenant"
@@ -335,7 +285,7 @@ async function main(): Promise<void> {
     console.log(`[retell-audit] full inventory written to ${JSON_OUT}`);
   }
   printFindings(inv);
-  const plan = buildPlan(inv);
+  const plan = buildRepairPlan(inv, OWNER_EMAIL);
   printPlan(plan);
   printCleanup(inv);
   printOpenings(inv);

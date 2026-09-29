@@ -156,8 +156,12 @@ audit below lists as unreferenced.
 
 **Steps**:
 1. Once `api-admin-attach-retell-number` is redeployed, run the read-only audit:
-   `SUPABASE_URL=https://qulcubtwqsqgqpfgvorn.supabase.co PROVISION_INTERNAL_SECRET=<secret> node --experimental-strip-types scripts/retell/audit-config.ts --json retell-inventory.json`
-   (keep `retell-inventory.json` out of git). Section 1 lists stale URLs,
+   `SUPABASE_URL=https://qulcubtwqsqgqpfgvorn.supabase.co PROVISION_INTERNAL_SECRET=<secret> node --experimental-strip-types scripts/retell/audit-config.ts --json /tmp/retell-inventory.json`
+   (write the JSON outside the repo; it names every tenant and agent). If you
+   already created the public demo agent, set the `DEMO_AGENT_ID` secret
+   first: the audit reads it and lists that agent as referenced by
+   `secret DEMO_AGENT_ID`; without it the demo agent would look unused.
+   Section 1 lists stale URLs and tenant numbers bound to the wrong agent,
    section 2 the agents that fall back to the account-level webhook, section 3
    any repair for a current tenant, section 4 the cleanup list.
 2. Retell dashboard (dashboard.retellai.com) -> **Settings** -> **Webhooks** tab
@@ -169,13 +173,19 @@ audit below lists as unreferenced.
    call and a second usage row on the called tenant. If the dashboard will not
    save an empty value, leave it and tell engineering (the self-call caller
    agent then needs its own webhook setting; see docs/BUILD_NOTES.md RETELLCFG).
-3. If section 3 lists a repair: for `test-*` tenants re-run the audit with
-   `--apply` and `OWNER_EMAIL=<your email>`; for a real tenant, click
-   **Publish changes** in that tenant's portal, then re-run the audit.
-4. Old agents: for each agent in section 4 you do not want, Retell dashboard ->
-   **Agents** -> open it -> the "..." menu -> **Delete**. Skip lines marked
-   `STILL BOUND` (unbind the number first). Never delete an agent that is not
-   in section 4.
+3. If section 3 lists a repair: for steps marked `provision_test_tenant` /
+   `reattach_number` on a test tenant, re-run the audit with `--apply` and
+   `OWNER_EMAIL=<your email>` (it only ever writes to tenants created by
+   `api-admin-provision-test-tenant`: `test-*` slug AND no Stripe customer;
+   it never deletes anything); for a real tenant, click **Publish changes**
+   in that tenant's portal, then re-run the audit.
+4. Old agents: first check the top of section 4. If it says **PARTIAL
+   inventory**, delete nothing and re-run the audit. Otherwise, for each
+   agent in section 4 you do not want, Retell dashboard -> **Agents** -> open
+   it -> the "..." menu -> **Delete**. Skip every line followed by a
+   `DO NOT DELETE` note: an agent that still answers a tenant's number is
+   fixed by re-attaching the number (section 1/3), never by unbinding it.
+   Never delete an agent that is not in section 4.
 
 **Verify**:
 - Run `scripts/e2e/self-call.ts` once. Supabase -> Logs -> Edge Functions for

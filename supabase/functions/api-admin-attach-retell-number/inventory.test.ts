@@ -37,6 +37,7 @@ function makeSql(): { sql: SqlClient; texts: string[] } {
           vertical: "auto",
           is_test: false,
           status: "active",
+          has_billing: false,
         },
         {
           tenant_id: VET,
@@ -47,6 +48,7 @@ function makeSql(): { sql: SqlClient; texts: string[] } {
           vertical: "vet",
           is_test: false,
           status: "active",
+          has_billing: false,
         },
       ]);
     }
@@ -572,5 +574,171 @@ describe("inventoryRetellAccount", () => {
       ),
     ).toBe(true);
     expect(calls.length).toBeLessThan(10);
+  });
+  describe("RETELLCFG-REVIEW", () => {
+    it("treats an agent referenced only by a deployment secret (DEMO_AGENT_ID) as live, never as a cleanup candidate", async () => {
+      const account = liveLikeAccount();
+      account.agents["agent_demo"] = {
+        agent_id: "agent_demo",
+        version: 0,
+        is_published: true,
+        webhook_url: null,
+        response_engine: { type: "retell-llm", llm_id: "llm_orphan" },
+      };
+      const { body } = await run(account, {
+        envReferences: { DEMO_AGENT_ID: "agent_demo", UNSET_ONE: undefined, EMPTY: "  " },
+      });
+      expect(body.unreferenced_agents.map((a) => a.agent_id)).not.toContain("agent_demo");
+      expect(body.agents.find((a) => a.agent_id === "agent_demo")?.referenced_by).toEqual([
+        { kind: "env", name: "DEMO_AGENT_ID" },
+      ]);
+      // Its account-level fallback is an OWNED (high) finding, with the secret as owner.
+      expect(
+        body.findings.find(
+          (f) => f.resource_id === "agent_demo" && f.kind === "account_webhook_fallback",
+        ),
+      ).toMatchObject({ severity: "high", owners: [{ kind: "env", name: "DEMO_AGENT_ID" }] });
+      // Without the secret it would have been listed for deletion.
+      const without = await run(account);
+      expect(without.body.unreferenced_agents.map((a) => a.agent_id)).toContain("agent_demo");
+    });
+
+    it("redacts every URL it returns, including agent webhook_url, number webhook fields, capability-style paths and URLs inside the opening text", async () => {
+      const account = liveLikeAccount();
+      (account.agents["agent_legacy"] as Record<string, unknown>)["webhook_url"] =
+        "https://ops:hunter2@hooks.example.com/retell?token=tok_live_123";
+      const signup = account.numbers[1] as Record<string, unknown>;
+      signup["inbound_sms_webhook_url"] =
+        "https://acme.app.n8n.cloud/webhook/8f14e45f-ceea-467a-9575-6b2e1c3a9d0f";
+      const flow = account.flows[0] as Record<string, unknown>;
+      flow["nodes"] = [
+        {
+          id: "__opening",
+          type: "conversation",
+          instruction: {
+            type: "static_text",
+            text: "Thanks for calling. This call may be recorded. Book at https://book.example.com/s?k=sess_secret_9.",
+          },
+        },
+      ];
+      const { body } = await run(account);
+      const serialized = JSON.stringify(body);
+      for (const secret of [
+        "hunter2",
+        "tok_live_123",
+        "8f14e45f-ceea-467a-9575-6b2e1c3a9d0f",
+        "sess_secret_9",
+      ]) {
+        expect(serialized).not.toContain(secret);
+      }
+      expect(body.agents.find((a) => a.agent_id === "agent_legacy")?.webhook_url).toBe(
+        "https://REDACTED@hooks.example.com/retell?token=REDACTED",
+      );
+      expect(body.unreferenced_agents.find((a) => a.agent_id === "agent_legacy")?.webhook_url).toBe(
+        "https://REDACTED@hooks.example.com/retell?token=REDACTED",
+      );
+      expect(
+        body.phone_numbers.find((n) => n.phone_number === "+16105383920")?.inbound_sms_webhook_url,
+      ).toBe("https://acme.app.n8n.cloud/webhook/REDACTED");
+      // The disclosure text itself is untouched.
+      expect(
+        body.conversation_flows.find((f) => f.id === "flow_tenant")?.start_node?.instruction_text,
+      ).toBe(
+        "Thanks for calling. This call may be recorded. Book at https://book.example.com/s?k=REDACTED.",
+      );
+    });
+
+    it("aborts a hung Retell request after the per-request timeout and returns an explicit partial result", async () => {
+      const { retellFetch } = makeRetell(liveLikeAccount());
+      let hung = 0;
+      const hanging = async (url: string, init?: RequestInit) => {
+        if (url.includes("/v2/list-retell-llms")) {
+          hung++;
+          return new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+          });
+        }
+        return retellFetch(url, init);
+      };
+      const { sql } = makeSql();
+      const result = await inventoryRetellAccount(sql, deps(hanging, { requestTimeoutMs: 20 }));
+      const body = result.body as InventoryBody;
+      expect(result.status).toBe(200);
+      expect(hung).toBe(3); // first attempt + 2 retries, each aborted
+      expect(body.complete).toBe(false);
+      expect(body.errors).toContainEqual({
+        step: "list_retell_llms",
+        status: 0,
+        detail: "retell_error",
+      });
+      // The rest of the account is still inventoried.
+      expect(body.counts.agents).toBe(6);
+      expect(body.counts.conversation_flows).toBe(4);
+      // LLM listing is not needed to trust the cleanup list.
+      expect(body.cleanup_list_complete).toBe(true);
+    });
+
+    it("never offers an agent that still answers a TENANT's number for deletion, and flags the mis-bound number for re-attach", async () => {
+      const account = liveLikeAccount();
+      // Missed re-attach: riverside's number still rings the superseded agent.
+      (account.numbers[0] as Record<string, unknown>)["inbound_agents"] = [
+        { agent_id: "agent_old_riverside", weight: 1 },
+      ];
+      const { body } = await run(account);
+      expect(body.findings.find((f) => f.kind === "tenant_number_agent_mismatch")).toMatchObject({
+        severity: "high",
+        resource_type: "phone_number",
+        resource_id: "+12602354330",
+        path: "inbound_agents",
+        recommended_action: "reattach_tenant_number",
+        owners: [expect.objectContaining({ tenant_id: RIVERSIDE })],
+      });
+      expect(
+        body.unreferenced_agents.find((a) => a.agent_id === "agent_old_riverside"),
+      ).toMatchObject({
+        delete_hold: "bound_to_tenant_number",
+        bound_numbers: [{ phone_number: "+12602354330", direction: "inbound" }],
+      });
+      // The correctly bound live account has no mismatch.
+      const healthy = await run();
+      expect(healthy.body.findings.some((f) => f.kind === "tenant_number_agent_mismatch")).toBe(
+        false,
+      );
+    });
+
+    it("counts SMS bindings as bindings (inbound_sms_agents / outbound_sms_agents)", async () => {
+      const account = liveLikeAccount();
+      (account.numbers[1] as Record<string, unknown>)["inbound_sms_agents"] = [
+        { agent_id: "agent_legacy", weight: 1 },
+      ];
+      const { body } = await run(account);
+      expect(body.unreferenced_agents.find((a) => a.agent_id === "agent_legacy")).toMatchObject({
+        bound_numbers: [{ phone_number: "+16105383920", direction: "inbound_sms" }],
+        delete_hold: "bound_to_number",
+      });
+      expect(
+        body.unreferenced_agents.find((a) => a.agent_id === "agent_template")?.delete_hold,
+      ).toBeNull();
+    });
+
+    it("holds the whole cleanup list when the phone-number listing is partial", async () => {
+      const { retellFetch } = makeRetell(liveLikeAccount());
+      const broken = async (url: string, init?: RequestInit) =>
+        url.includes("/v2/list-phone-numbers")
+          ? jsonResponse({ message: "boom" }, 500)
+          : retellFetch(url, init);
+      const { sql } = makeSql();
+      const body = (await inventoryRetellAccount(sql, deps(broken))).body as InventoryBody;
+      expect(body.complete).toBe(false);
+      expect(body.cleanup_list_complete).toBe(false);
+      expect(body.unreferenced_agents.length).toBeGreaterThan(0);
+      for (const a of body.unreferenced_agents) expect(a.delete_hold).toBe("inventory_incomplete");
+    });
+
+    it("carries each tenant's billing state so a real test-* slug is never treated as a test tenant", async () => {
+      const { body } = await run();
+      const owner = body.agents.find((a) => a.agent_id === "agent_tenant")?.referenced_by[0];
+      expect(owner).toMatchObject({ kind: "agent_configs", tenant_has_billing: false });
+    });
   });
 });

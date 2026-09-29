@@ -8,6 +8,8 @@ import {
   expectedUrlForField,
   functionNameOf,
   redactUrl,
+  redactUrlOrNull,
+  redactUrlsInText,
 } from "./retell-summaries.ts";
 
 const PROJECT_HOST = "qulcubtwqsqgqpfgvorn.supabase.co";
@@ -29,6 +31,47 @@ describe("redactUrl", () => {
     expect(redactUrl(`${BASE}/voice-tools`)).toBe(`${BASE}/voice-tools`);
     expect(redactUrl("https://example.com/{{tenant}}/hook")).toBe(
       "https://example.com/{{tenant}}/hook",
+    );
+  });
+});
+
+describe("redactUrl: credential-bearing paths (RETELLCFG-REVIEW)", () => {
+  it("redacts capability tokens embedded in the path of a non-Supabase URL", () => {
+    expect(redactUrl("https://hooks.zapier.com/hooks/catch/123456/abc9def0ghi1jkl2/")).toBe(
+      "https://hooks.zapier.com/hooks/catch/123456/REDACTED/",
+    );
+    expect(
+      redactUrl("https://hooks.slack.com/services/T0000000/B0000000/XXXXXXXXXXXXXXXXXXXXXXXX1"),
+    ).toBe("https://hooks.slack.com/services/T0000000/B0000000/REDACTED");
+    expect(
+      redactUrl("https://api.telegram.org/bot123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/x"),
+    ).toBe("https://api.telegram.org/REDACTED/x");
+    expect(
+      redactUrl("HTTPS://acme.app.n8n.cloud/webhook/8f14e45f-ceea-467a-9575-6b2e1c3a9d0f"),
+    ).toBe("HTTPS://acme.app.n8n.cloud/webhook/REDACTED");
+  });
+
+  it("keeps ordinary paths and every Supabase function path verbatim", () => {
+    expect(redactUrl("https://api.example.com/v1/bookings/create")).toBe(
+      "https://api.example.com/v1/bookings/create",
+    );
+    expect(redactUrl(`${BASE}/api-admin-attach-retell-number`)).toBe(
+      `${BASE}/api-admin-attach-retell-number`,
+    );
+    expect(redactUrl(`https://${PROJECT_HOST}/functions/v1/worker2024recordingfetch`)).toBe(
+      `https://${PROJECT_HOST}/functions/v1/worker2024recordingfetch`,
+    );
+  });
+
+  it("redacts every URL inside free text and nullable fields", () => {
+    expect(
+      redactUrlsInText("Call us. Pay at https://pay.example.com/i?t=secret1, or https://x.io/a."),
+    ).toBe("Call us. Pay at https://pay.example.com/i?t=REDACTED, or https://x.io/a.");
+    expect(redactUrlOrNull(null)).toBeNull();
+    expect(redactUrlOrNull(undefined)).toBeNull();
+    expect(redactUrlOrNull("https://u:p@h.example/x")).toBe("https://REDACTED@h.example/x");
+    expect(describeBeginMessage({ begin_message: "Visit https://a.example/?k=v" })).toBe(
+      "Visit https://a.example/?k=REDACTED",
     );
   });
 });
