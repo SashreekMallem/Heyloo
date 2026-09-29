@@ -189,6 +189,18 @@ export async function enableAuthEmailHook(options: HookOptions): Promise<HookOut
         "no complete email provider in the function secrets. Set MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET and EMAIL_FROM_ADDRESS (plus EMAIL_PROVIDER=microsoft_graph), or the SMTP_* / RESEND_* equivalents, before enabling the hook, or every signup email would fail.",
     };
   }
+  // The function sends with the provider EMAIL_PROVIDER names, and with none
+  // set the registry defaults to `resend`. Values are not readable through the
+  // Management API, so the one thing checkable is: an unset EMAIL_PROVIDER
+  // means the default is used, so THAT provider's secrets must be complete
+  // (a complete Graph set alone would leave every auth email failing).
+  if (!names.has("EMAIL_PROVIDER") && !providers.includes("resend")) {
+    return {
+      ok: false,
+      error:
+        "EMAIL_PROVIDER is not set as a function secret, so the default provider (resend) is used, but its secrets (RESEND_API_KEY, EMAIL_FROM_ADDRESS) are incomplete. Set EMAIL_PROVIDER (for example microsoft_graph) before enabling the hook, or every signup email would fail.",
+    };
+  }
   log(
     `  provider secrets present for: ${providers.join(", ")} (EMAIL_PROVIDER must select one of them)`,
   );

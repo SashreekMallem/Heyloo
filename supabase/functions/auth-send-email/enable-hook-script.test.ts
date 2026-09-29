@@ -36,6 +36,7 @@ const mod = (await import(/* @vite-ignore */ scriptPath)) as ScriptModule;
 const REF = "qulcubtwqsqgqpfgvorn";
 const SECRET = "v1,whsec_TESTSECRETTESTSECRETTESTSECRETTESTSECRE=";
 const GRAPH_SECRETS = [
+  "EMAIL_PROVIDER",
   "MS_TENANT_ID",
   "MS_CLIENT_ID",
   "MS_CLIENT_SECRET",
@@ -193,6 +194,21 @@ describe("enableAuthEmailHook", () => {
       makeSecret: () => SECRET,
     });
     expect(result.ok).toBe(false);
+    expect(api.calls.filter((c) => c.method !== "GET")).toHaveLength(0);
+  });
+
+  it("refuses when EMAIL_PROVIDER is unset and the default provider (resend) is incomplete", async () => {
+    const api = fakeApi({
+      secrets: GRAPH_SECRETS.filter((entry) => entry.name !== "EMAIL_PROVIDER"),
+    });
+    const result = await mod.enableAuthEmailHook({
+      ref: REF,
+      accessToken: "t",
+      fetchImpl: api.fetchImpl,
+      makeSecret: () => SECRET,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("EMAIL_PROVIDER is not set");
     expect(api.calls.filter((c) => c.method !== "GET")).toHaveLength(0);
   });
 
