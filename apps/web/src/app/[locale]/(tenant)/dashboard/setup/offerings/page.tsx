@@ -149,8 +149,11 @@ export default function OfferingsSetupPage() {
     const payload = {
       name: values.name,
       category: values.category ? values.category : null,
-      duration_minutes: values.duration_minutes,
-      price_cents: values.price_cents,
+      // An EDIT sends `null` for an emptied length/price so it is really
+      // cleared (JSON.stringify drops `undefined`, which left the old value
+      // in place and said "Saved"); a new offering just omits them.
+      duration_minutes: editing ? (values.duration_minutes ?? null) : values.duration_minutes,
+      price_cents: editing ? (values.price_cents ?? null) : values.price_cents,
       metadata: {
         modifiers: values.modifiers.filter((m) => m.name.trim().length > 0),
         allergens: lineToAllergens(values.allergens),
@@ -401,7 +404,7 @@ export default function OfferingsSetupPage() {
 
               <div>
                 <div className="mb-1 flex items-center justify-between">
-                  <FormLabel>Modifiers</FormLabel>
+                  <p className="text-sm font-medium leading-none">Modifiers</p>
                   <Button
                     type="button"
                     variant="outline"
