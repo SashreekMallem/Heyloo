@@ -31,6 +31,7 @@ export type TemplateKey =
   | "waitlist_slot_opened"
   | "chat_phone_verification"
   | "owner_new_booking"
+  | "owner_new_order"
   | "owner_urgent_call"
   | "owner_missed_transfer"
   | "sms_reply"
@@ -76,7 +77,17 @@ export function renderTemplate(
       const service = str("service");
       return {
         subject: `New booking: ${callerName}`,
-        body: `New booking from ${callerName}${str("caller_phone") ? ` (${str("caller_phone")})` : ""}${service ? ` for ${service}` : ""}${str("start_local") ? ` on ${str("start_local")}` : ""}.`,
+        body: `New booking from ${callerName}${str("caller_phone") ? ` (${str("caller_phone")})` : ""}${service ? ` for ${service}` : ""}${str("start_local") ? ` on ${str("start_local")}` : ""}${str("note") ? ` (${str("note")})` : ""}.`,
+      };
+    }
+    case "owner_new_order": {
+      const callerName = str("caller_name", "A caller");
+      const total = num("total_cents");
+      const fulfillment = str("fulfillment_type");
+      const items = str("items_summary");
+      return {
+        subject: `New order from ${callerName}`,
+        body: `New order from ${callerName}${str("caller_phone") ? ` (${str("caller_phone")})` : ""}${fulfillment ? ` for ${fulfillment.replace("_", "-")}` : ""}${items ? `: ${items}` : ""}${total !== undefined ? ` — total $${(total / 100).toFixed(2)}` : ""}.`,
       };
     }
     case "owner_urgent_call": {

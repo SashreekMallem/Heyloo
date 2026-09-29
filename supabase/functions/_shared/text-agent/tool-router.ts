@@ -337,7 +337,10 @@ export async function dispatchTextTool(
         const parsed = TakeMessageArgsSchema.safeParse(rawArgs);
         if (!parsed.success)
           return { resultText: jsonResult({ error: "invalid_args" }), isError: true };
-        return { resultText: jsonResult(await takeMessage(sql, ctx, parsed.data)), isError: false };
+        return {
+          resultText: jsonResult(await takeMessage(sql, ctx, parsed.data, { logger })),
+          isError: false,
+        };
       }
       case "create_order": {
         const parsed = CreateOrderArgsSchema.safeParse(rawArgs);

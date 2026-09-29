@@ -20,6 +20,7 @@ import type { Logger, SqlClient, ToolResultEnvelope } from "../_shared/types.ts"
 import { getMissingRequiredFields } from "../_shared/vertical-intake.ts";
 import type { CallContext } from "./context.ts";
 import { resolveCallContext } from "./context.ts";
+import { MANUAL_MODE_BOOKING_MESSAGE, MANUAL_MODE_ORDER_MESSAGE } from "./manual-mode.ts";
 import { cancelBooking } from "./tools/cancel_booking.ts";
 import { checkAvailability } from "./tools/check_availability.ts";
 import {
@@ -289,6 +290,16 @@ async function runTool(
     case "create_booking": {
       const parsed = CreateBookingArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
+      // VOICE-ALERTS-1: answered before the intake gate so a caller is not
+      // walked through required fields for a booking that cannot be made.
+      // (`createBooking` refuses too, for callers that skip this dispatcher.)
+      if (ctx.manualMode) {
+        return toolEnvelope({
+          confirmed: false,
+          reason: "manual_mode",
+          message: MANUAL_MODE_BOOKING_MESSAGE,
+        });
+      }
       const gated = applyIntakeGate(ctx, "create_booking", parsed.data, "customer");
       if (!gated.ok) return gated.envelope;
       return toolEnvelope(await createBookingWithinBudget(deps, ctx, gated.args, startedAt));
@@ -313,7 +324,7 @@ async function runTool(
       if (!parsed.success) return fallbackEnvelope();
       const gated = applyIntakeGate(ctx, "take_message", parsed.data, "caller_phone");
       if (!gated.ok) return gated.envelope;
-      return toolEnvelope(await takeMessage(sql, ctx, gated.args));
+      return toolEnvelope(await takeMessage(sql, ctx, gated.args, { logger, defer: deps.defer }));
     }
     case "send_sms_confirmation": {
       const parsed = SendSmsConfirmationArgsSchema.safeParse(rawArgs);
@@ -323,10 +334,20 @@ async function runTool(
     case "create_order": {
       const parsed = CreateOrderArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
+      if (ctx.manualMode) {
+        return toolEnvelope({
+          confirmed: false,
+          reason: "manual_mode",
+          message: MANUAL_MODE_ORDER_MESSAGE,
+        });
+      }
       const gated = applyIntakeGate(ctx, "create_order", parsed.data, "customer");
       if (!gated.ok) return gated.envelope;
       return toolEnvelope(
-        await createOrder(sql, ctx, gated.args, logger, geocode ? { geocode } : {}),
+        await createOrder(sql, ctx, gated.args, logger, {
+          ...(geocode ? { geocode } : {}),
+          defer: deps.defer,
+        }),
       );
     }
     case "send_payment_link": {

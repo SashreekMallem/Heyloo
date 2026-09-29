@@ -80,6 +80,13 @@ export interface CallContext {
    * dashboard/KPIs) mirrors this onto its own row's `is_test` column rather
    * than re-deriving it. */
   isTestCall: boolean;
+  /** VOICE-ALERTS-1: `tenants.manual_mode` — the owner switched the agent to
+   * Manual Mode, so `create_booking`/`create_order` must not commit anything
+   * (the agent takes a message instead). Resolved in the same tenants join
+   * that already yields `vertical` (no extra query). Only present when
+   * true, so a context built elsewhere (the text agent, older tests) simply
+   * means "off". */
+  manualMode?: boolean;
 }
 
 /**
@@ -117,6 +124,7 @@ interface ExistingCallLogRow {
   caller_number: string | null;
   vertical: string;
   is_test_call: boolean;
+  manual_mode: boolean;
 }
 
 async function lookupExistingCallLog(
@@ -124,7 +132,7 @@ async function lookupExistingCallLog(
   retellCallId: string,
 ): Promise<ExistingCallLogRow | null> {
   const rows = await sql<ExistingCallLogRow>`
-    select cl.id, cl.tenant_id, cl.caller_number, cl.is_test_call, t.vertical
+    select cl.id, cl.tenant_id, cl.caller_number, cl.is_test_call, t.vertical, t.manual_mode
     from public.call_logs cl
     join public.tenants t on t.id = cl.tenant_id
     where cl.retell_call_id = ${retellCallId}
@@ -136,6 +144,7 @@ async function lookupExistingCallLog(
 interface PayloadResolution {
   tenantId: string;
   vertical: string;
+  manualMode: boolean;
   phoneNumberId: string | null;
   via: "agent_id" | "to_number" | "test_harness_tenant_id";
   /** HOTPATH: the call_logs row already stored under this resolution's
@@ -180,8 +189,8 @@ async function resolveTenantFromPayload(
   placeholder: boolean,
 ): Promise<PayloadResolution | null> {
   if (call.agent_id) {
-    const rows = await sql<{ tenant_id: string; vertical: string }>`
-      select ac.tenant_id, t.vertical
+    const rows = await sql<{ tenant_id: string; vertical: string; manual_mode: boolean }>`
+      select ac.tenant_id, t.vertical, t.manual_mode
       from public.agent_configs ac
       join public.tenants t on t.id = ac.tenant_id
       where ac.retell_agent_id = ${call.agent_id}
@@ -192,6 +201,7 @@ async function resolveTenantFromPayload(
       return {
         tenantId: row.tenant_id,
         vertical: row.vertical,
+        manualMode: row.manual_mode,
         phoneNumberId: null,
         via: "agent_id",
       };
@@ -221,16 +231,17 @@ async function resolveTenantFromPayload(
     const rows = await sql<{
       id: string;
       vertical: string;
+      manual_mode: boolean;
       key_row_id?: string | null;
       key_row_tenant_id?: string | null;
       key_row_caller_number?: string | null;
       key_row_is_test_call?: boolean | null;
     }>`
-      select t.id, t.vertical,
+      select t.id, t.vertical, t.manual_mode,
         kr.id as key_row_id, kr.tenant_id as key_row_tenant_id,
         kr.caller_number as key_row_caller_number, kr.is_test_call as key_row_is_test_call
       from (
-        select id, vertical from public.tenants where id = ${testHarnessTenantId} and deleted_at is null
+        select id, vertical, manual_mode from public.tenants where id = ${testHarnessTenantId} and deleted_at is null
         limit 1
       ) t
       left join public.call_logs kr on kr.retell_call_id = ${predictedKey}
@@ -240,6 +251,7 @@ async function resolveTenantFromPayload(
       return {
         tenantId: row.id,
         vertical: row.vertical,
+        manualMode: row.manual_mode,
         phoneNumberId: null,
         via: "test_harness_tenant_id",
         keyRow:
@@ -257,8 +269,13 @@ async function resolveTenantFromPayload(
 
   const toNumber = normalizeE164(call.to_number ?? null);
   if (toNumber) {
-    const rows = await sql<{ tenant_id: string; vertical: string; phone_number_id: string }>`
-      select pn.tenant_id, t.vertical, pn.id as phone_number_id
+    const rows = await sql<{
+      tenant_id: string;
+      vertical: string;
+      manual_mode: boolean;
+      phone_number_id: string;
+    }>`
+      select pn.tenant_id, t.vertical, t.manual_mode, pn.id as phone_number_id
       from public.phone_numbers pn
       join public.tenants t on t.id = pn.tenant_id
       where pn.e164 = ${toNumber} and pn.released_at is null
@@ -269,6 +286,7 @@ async function resolveTenantFromPayload(
       return {
         tenantId: row.tenant_id,
         vertical: row.vertical,
+        manualMode: row.manual_mode,
         phoneNumberId: row.phone_number_id,
         via: "to_number",
       };
@@ -461,6 +479,7 @@ export async function resolveCallContext(
         callerNumber: existing.caller_number,
         vertical: existing.vertical,
         isTestCall: existing.is_test_call,
+        ...(existing.manual_mode === true ? { manualMode: true } : {}),
       };
     }
   }
@@ -577,6 +596,7 @@ export async function resolveCallContext(
           callerNumber: placeholder ? callerNumber : upserted.caller_number,
           vertical: resolved.vertical,
           isTestCall: upserted.is_test_call,
+          ...(resolved.manualMode === true ? { manualMode: true } : {}),
         };
       }
     }

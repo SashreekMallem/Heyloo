@@ -9,6 +9,8 @@ import { enqueue, QUEUE_NAMES } from "../../_shared/queue.ts";
 import type { CreateOrderArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { Logger, SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
+import { MANUAL_MODE_ORDER_MESSAGE } from "../manual-mode.ts";
+import { raiseOwnerAlert } from "../owner-alert-runner.ts";
 
 type Args = z.infer<typeof CreateOrderArgsSchema>;
 
@@ -22,9 +24,15 @@ export type CreateOrderResult =
   | { order_id: string; confirmed: true; total_cents: number; delivery_fee_cents?: number }
   | {
       confirmed: false;
-      reason: "item_not_found" | "out_of_delivery_radius" | "below_minimum_order" | "invalid_phone";
+      reason:
+        | "item_not_found"
+        | "out_of_delivery_radius"
+        | "below_minimum_order"
+        | "invalid_phone"
+        | "manual_mode";
       item_name?: string;
       pickup_offered?: boolean;
+      message?: string;
     };
 
 const UNIQUE_VIOLATION = "23505";
@@ -76,8 +84,17 @@ export async function createOrder(
   ctx: CallContext,
   args: Args,
   logger: Logger,
-  deps?: { geocode?: { fetchImpl: GeocodeFetch; apiKey: string } },
+  deps?: {
+    geocode?: { fetchImpl: GeocodeFetch; apiKey: string };
+    /** VOICE-ALERTS-1: post-response scheduling for the owner alert. */
+    defer?: ((label: string, task: () => Promise<void>) => void) | undefined;
+  },
 ): Promise<CreateOrderResult> {
+  // VOICE-ALERTS-1: Manual Mode - nothing is written; the agent takes a
+  // message instead (flag rode in on the call context, no extra query).
+  if (ctx.manualMode) {
+    return { confirmed: false, reason: "manual_mode", message: MANUAL_MODE_ORDER_MESSAGE };
+  }
   const phone = normalizeE164(args.customer.phone);
   if (!phone) return { confirmed: false, reason: "invalid_phone" };
 
@@ -436,12 +453,35 @@ export async function createOrder(
     idempotencyKey,
   });
 
+  // VOICE-ALERTS-1: tell the owner about the new order (after everything
+  // the caller is waiting on; deferred past the response when the hot path
+  // gave us a `defer`). Idempotent per order, best-effort, never for a test
+  // call, delivery channel per the tenant's preferences.
+  await raiseOwnerAlert(sql, ctx, { logger, defer: deps?.defer }, "create_order_owner_alert", {
+    kind: "new_order",
+    payload: {
+      ...(args.customer.name ? { caller_name: args.customer.name } : {}),
+      caller_phone: phone,
+      fulfillment_type: args.fulfillment_type,
+      items_summary: summarizeItems(priced),
+      total_cents: totalCents,
+    },
+    relatedCallId: ctx.callLogId,
+    relatedOrderId: order.id,
+  });
+
   return {
     order_id: order.id,
     confirmed: true,
     total_cents: totalCents,
     ...(deliveryFeeCents > 0 ? { delivery_fee_cents: deliveryFeeCents } : {}),
   };
+}
+
+/** "2x Burger, 1x Fries" for an owner alert, capped so an SMS stays short. */
+function summarizeItems(items: { name: string; qty: number }[]): string {
+  const text = items.map((i) => `${i.qty}x ${i.name}`).join(", ");
+  return text.length > 140 ? `${text.slice(0, 137)}...` : text;
 }
 
 /**
