@@ -80,13 +80,23 @@ export function sanitizeOwnerText(
   options: { multiline?: boolean } = {},
 ): string {
   if (typeof raw !== "string") return "";
-  let text = raw
-    .replace(CONTROL_CHARS, " ")
-    .replace(INVISIBLE_CHARS, "")
-    .replace(/[{}]/g, "")
-    .replace(FENCE_LIKE, " ")
-    .replace(TAG_LIKE, " ");
-  text = sanitizeScrapedContent(text);
+  // Each pass removes one layer; a removal can splice the text around it into a NEW marker
+  // ("[[[[END OWNER INFO]]END OWNER INFO]]" -> "[[ END OWNER INFO]]"), so repeat until
+  // nothing changes (bounded), then break any double bracket that is left over.
+  let text = raw;
+  for (let pass = 0; pass < 6; pass += 1) {
+    const cleaned = sanitizeScrapedContent(
+      text
+        .replace(CONTROL_CHARS, " ")
+        .replace(INVISIBLE_CHARS, "")
+        .replace(/[{}]/g, "")
+        .replace(FENCE_LIKE, " ")
+        .replace(TAG_LIKE, " "),
+    );
+    if (cleaned === text) break;
+    text = cleaned;
+  }
+  text = text.replace(/\[{2,}/g, "[").replace(/\]{2,}/g, "]");
   text = options.multiline
     ? text
         .split(/\r?\n/)

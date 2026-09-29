@@ -119,6 +119,12 @@ describe("isOpenAt (SETTINGS-2 call routing)", () => {
     ).toBe(false);
   });
 
+  it("SETTINGS-2-REVIEW: an all-day 00:00-23:59 window (how 24-hour tenants are stored) is open at 23:59 too", () => {
+    const allDay = { mon: [{ open: "00:00", close: "23:59" }] };
+    expect(isOpenAt(new Date("2026-01-13T04:59:00.000Z"), TZ, allDay)).toBe(true); // Mon 23:59
+    expect(isOpenAt(new Date("2026-01-12T05:00:00.000Z"), TZ, allDay)).toBe(true); // Mon 00:00
+  });
+
   it("treats a business with no hours configured at all as always open", () => {
     expect(isOpenAt(new Date("2026-01-11T18:00:00.000Z"), TZ, {})).toBe(true);
   });
