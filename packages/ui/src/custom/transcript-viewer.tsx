@@ -83,6 +83,8 @@ export function TranscriptViewer({ turns, activeTs, onSeek, className }: Transcr
 }
 
 function formatSeconds(ts: number): string {
+  // Guard non-finite input (a turn with no timestamp used to render "NaN:NaN").
+  if (!Number.isFinite(ts) || ts < 0) return "0:00";
   const minutes = Math.floor(ts / 60);
   const seconds = Math.floor(ts % 60);
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;

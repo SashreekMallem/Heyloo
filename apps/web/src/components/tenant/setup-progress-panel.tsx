@@ -7,6 +7,9 @@ import type { SetupProgressResponse } from "@/app/api/tenant/setup-progress/rout
 import { Link } from "@/i18n/navigation";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
 
+/** Steps the API returns today (setup-progress route) — sizes the loading skeleton. */
+const SKELETON_ROWS = 11;
+
 function dismissedKey(tenantId: string): string {
   return `heyloo:setup-progress-dismissed:${tenantId}`;
 }
@@ -56,11 +59,21 @@ export function SetupProgressPanel({ tenantId }: { tenantId: string }) {
   // before the first response lands.
   if (query.isPending) {
     return (
-      <Card>
+      <Card data-testid="setup-progress-skeleton">
         <CardContent className="space-y-4 pt-6">
-          <Skeleton className="h-4 w-48" />
+          <Skeleton className="h-10 w-48" />
           <Skeleton className="h-2 w-full" />
-          <Skeleton className="h-14 w-full" />
+          {/* One placeholder row per real checklist row (h-9 = the loaded row's
+              height), so the card doesn't grow ~400px and shove the whole
+              overview down when the response lands (QA-1 MAP-07). */}
+          <ul className="divide-y divide-border">
+            {Array.from({ length: SKELETON_ROWS }, (_, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: static placeholder rows
+              <li key={i} className="flex h-9 items-center">
+                <Skeleton className="h-4 w-2/3" />
+              </li>
+            ))}
+          </ul>
         </CardContent>
       </Card>
     );

@@ -30,3 +30,12 @@ describe("TranscriptViewer", () => {
     expect(screen.getByText("Null speaker.")).toBeInTheDocument();
   });
 });
+
+describe("TranscriptViewer timestamps (QA-1 F-3 / MAP-02)", () => {
+  it("never renders NaN:NaN for a turn with no timestamp", () => {
+    const turns = [{ speaker: "agent", text: "Hi there." } as unknown as TranscriptTurn];
+    render(<TranscriptViewer turns={turns} />);
+    expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
+    expect(screen.getByText(/agent · 0:00/)).toBeInTheDocument();
+  });
+});

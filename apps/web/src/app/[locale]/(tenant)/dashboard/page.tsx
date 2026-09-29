@@ -15,6 +15,12 @@ export default async function DashboardOverviewPage() {
     .is("released_at", null)
     .maybeSingle();
 
+  const { data: tenantRow } = await supabase
+    .from("tenants")
+    .select("timezone")
+    .eq("id", tenant.id)
+    .maybeSingle();
+
   const { count: callCount } = await supabase
     .from("call_logs")
     .select("id", { count: "exact", head: true })
@@ -23,6 +29,7 @@ export default async function DashboardOverviewPage() {
   return (
     <OverviewClient
       tenantId={tenant.id}
+      tenantTz={tenantRow?.timezone ?? "UTC"}
       hasPhoneNumber={!!phoneNumber?.forwarding_verified_at}
       hasAnyCallEver={(callCount ?? 0) > 0}
       liveNumber={phoneNumber?.e164 ?? null}

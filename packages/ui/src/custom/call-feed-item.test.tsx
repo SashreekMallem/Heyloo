@@ -34,3 +34,18 @@ describe("CallFeedItem", () => {
     expect(screen.getByText("Unknown number")).toBeInTheDocument();
   });
 });
+
+describe("CallFeedItem duration (QA-1 F-16)", () => {
+  it("shows seconds for a short call and m/s for a longer one instead of rounding to whole minutes", () => {
+    const base = {
+      id: "c",
+      callerNumber: "+15125551000",
+      classification: null,
+      startedAt: null,
+    };
+    const { rerender } = render(<CallFeedItem call={{ ...base, durationSeconds: 20 }} />);
+    expect(screen.getByText(/· 20s/)).toBeInTheDocument();
+    rerender(<CallFeedItem call={{ ...base, durationSeconds: 62 }} />);
+    expect(screen.getByText(/· 1m 2s/)).toBeInTheDocument();
+  });
+});

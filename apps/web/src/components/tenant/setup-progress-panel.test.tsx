@@ -111,4 +111,17 @@ describe("SetupProgressPanel", () => {
     const { container } = renderPanel();
     await waitFor(() => expect(container).toBeEmptyDOMElement());
   });
+
+  it("reserves the loaded card's height while loading so the overview doesn't jump (QA-1 MAP-07)", () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise(() => {})),
+    );
+    renderPanel();
+    const skeleton = screen.getByTestId("setup-progress-skeleton");
+    // One placeholder row per checklist row the API returns (11), each h-9 like a real row.
+    const rows = skeleton.querySelectorAll("li");
+    expect(rows).toHaveLength(11);
+    for (const row of rows) expect(row.className).toContain("h-9");
+  });
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import { Phone } from "lucide-react";
+import { formatDuration } from "../lib/format-duration.js";
 import { formatPhoneDisplay } from "../lib/format-phone.js";
 import { StatusBadge } from "./status-badge.js";
 
@@ -40,7 +41,7 @@ export function CallFeedItem({ call, onClick }: CallFeedItemProps) {
                   minute: "2-digit",
                 })
               : "In progress"}
-            {call.durationSeconds ? ` · ${Math.round(call.durationSeconds / 60)}m` : ""}
+            {call.durationSeconds ? ` · ${formatDuration(call.durationSeconds)}` : ""}
           </p>
         </div>
       </div>
