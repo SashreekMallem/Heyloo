@@ -7,6 +7,19 @@ import { routeAdminRequest } from "./handler.ts";
 
 const logger = createLogger();
 
+// Path ids are validated as uuids (COCKPIT-F17), so the fixtures use real ones.
+const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+const T1 = uuid(1);
+const T2 = uuid(2);
+const MISSING = uuid(99);
+const CE1 = uuid(3);
+const ALERT1 = uuid(4);
+const CAMP1 = uuid(5);
+const REPLY1 = uuid(6);
+const P1 = uuid(7);
+const SR1 = uuid(8);
+const R1 = uuid(9);
+
 function baseCtx(overrides: Partial<AdminRequestContext> = {}): AdminRequestContext {
   return {
     method: "GET",
@@ -57,7 +70,7 @@ describe("routeAdminRequest — tenants group", () => {
     const { sql } = makeSql({
       "from public.tenants t": [
         {
-          id: "t1",
+          id: T1,
           name: "Acme",
           vertical: "auto",
           status: "active",
@@ -97,19 +110,19 @@ describe("routeAdminRequest — tenants group", () => {
   it("returns { tenant, metrics } on GET /admin-tenants/:id, computing MRR/margin/minutes rather than reading them off `tenants`", async () => {
     const { sql } = makeSql({
       "select * from public.tenants where id": [
-        { id: "t1", name: "Acme", vertical: "auto", status: "active" },
+        { id: T1, name: "Acme", vertical: "auto", status: "active" },
       ],
       "from public.fn_margin_by_tenant": [{ revenue_cents: "20000", margin_cents: "15000" }],
       "from public.platform_settings where key": [{ base_cents: "29900" }],
       "from public.usage_daily": [{ minutes_used: 340 }],
     });
-    const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-tenants/t1" }), logger);
+    const result = await routeAdminRequest(sql, baseCtx({ path: `/admin-tenants/${T1}` }), logger);
     expect(result.status).toBe(200);
     const body = result.body as {
       tenant: { id: string };
       metrics: { mrr_cents: number; margin_pct: number; minutes_used: number };
     };
-    expect(body.tenant.id).toBe("t1");
+    expect(body.tenant.id).toBe(T1);
     // MRR = the plan's base fee (billing tenant), not paid-invoices-so-far.
     expect(body.metrics).toEqual({ mrr_cents: 29900, margin_pct: 75, minutes_used: 340 });
   });
@@ -118,7 +131,7 @@ describe("routeAdminRequest — tenants group", () => {
     const { sql } = makeSql({
       "select * from public.tenants where id": [{ id: "t2", name: "New Co", status: "trialing" }],
     });
-    const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-tenants/t2" }), logger);
+    const result = await routeAdminRequest(sql, baseCtx({ path: `/admin-tenants/${T2}` }), logger);
     expect(result.status).toBe(200);
     const body = result.body as { metrics: { mrr_cents: number; margin_pct: number } };
     expect(body.metrics).toEqual({ mrr_cents: 0, margin_pct: 0, minutes_used: 0 });
@@ -126,11 +139,11 @@ describe("routeAdminRequest — tenants group", () => {
 
   it("patches allowed fields and writes an admin_actions audit row", async () => {
     const { sql, calls } = makeSql({
-      "select * from public.tenants where id": [{ id: "t1", status: "trialing" }],
+      "select * from public.tenants where id": [{ id: T1, status: "trialing" }],
     });
     const result = await routeAdminRequest(
       sql,
-      baseCtx({ method: "PATCH", path: "/admin-tenants/t1", body: { status: "active" } }),
+      baseCtx({ method: "PATCH", path: `/admin-tenants/${T1}`, body: { status: "active" } }),
       logger,
     );
     expect(result.status).toBe(200);
@@ -138,12 +151,12 @@ describe("routeAdminRequest — tenants group", () => {
   });
 
   it("rejects an unrecognized PATCH field (never silently no-ops, returns 422)", async () => {
-    const { sql } = makeSql({ "select * from public.tenants where id": [{ id: "t1" }] });
+    const { sql } = makeSql({ "select * from public.tenants where id": [{ id: T1 }] });
     const result = await routeAdminRequest(
       sql,
       baseCtx({
         method: "PATCH",
-        path: "/admin-tenants/t1",
+        path: `/admin-tenants/${T1}`,
         body: { stripe_customer_id: "cus_hacked" },
       }),
       logger,
@@ -157,7 +170,7 @@ describe("routeAdminRequest — tenants group", () => {
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-tenants/t1/impersonate",
+        path: `/admin-tenants/${T1}/impersonate`,
         claims: { app_metadata: { platform_admin: true }, aal: "aal1" },
         body: { reason: "customer escalation" },
       }),
@@ -173,7 +186,7 @@ describe("routeAdminRequest — tenants group", () => {
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-tenants/t1/impersonate",
+        path: `/admin-tenants/${T1}/impersonate`,
         claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
         body: {},
       }),
@@ -184,12 +197,12 @@ describe("routeAdminRequest — tenants group", () => {
   });
 
   it("writes admin_actions impersonate_start (with reason + timebox) when AAL2 is present, and returns 501 without supabaseAdmin deps", async () => {
-    const { sql, calls } = makeSql({ "from public.tenants where id": [{ id: "t1" }] });
+    const { sql, calls } = makeSql({ "from public.tenants where id": [{ id: T1 }] });
     const result = await routeAdminRequest(
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-tenants/t1/impersonate",
+        path: `/admin-tenants/${T1}/impersonate`,
         claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
         body: { reason: "customer escalation" },
       }),
@@ -204,7 +217,7 @@ describe("routeAdminRequest — tenants group", () => {
 
   it("mints a real impersonation link + expires_at when supabaseAdmin deps are wired", async () => {
     const { sql } = makeSql({
-      "from public.tenants where id": [{ id: "t1" }],
+      "from public.tenants where id": [{ id: T1 }],
       "from public.memberships where tenant_id": [{ user_id: "owner-1" }],
     });
     const fetchImpl = (async (url: string) => {
@@ -219,7 +232,7 @@ describe("routeAdminRequest — tenants group", () => {
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-tenants/t1/impersonate",
+        path: `/admin-tenants/${T1}/impersonate`,
         claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
         body: { reason: "customer escalation" },
       }),
@@ -233,13 +246,13 @@ describe("routeAdminRequest — tenants group", () => {
       expires_at: string;
     };
     expect(body.impersonation_link).toBe("https://project.supabase.co/magic");
-    expect(body.tenant_id).toBe("t1");
+    expect(body.tenant_id).toBe(T1);
     expect(new Date(body.expires_at).getTime()).toBeGreaterThan(Date.now());
   });
 
   it("inserts a read-only impersonation_sessions row (edit_enabled=false) once the mint succeeds", async () => {
     const { sql, calls } = makeSql({
-      "from public.tenants where id": [{ id: "t1" }],
+      "from public.tenants where id": [{ id: T1 }],
       "from public.memberships where tenant_id": [{ user_id: "owner-1" }],
     });
     const fetchImpl = (async (url: string) => {
@@ -254,7 +267,7 @@ describe("routeAdminRequest — tenants group", () => {
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-tenants/t1/impersonate",
+        path: `/admin-tenants/${T1}/impersonate`,
         claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
         body: { reason: "customer escalation" },
       }),
@@ -266,7 +279,7 @@ describe("routeAdminRequest — tenants group", () => {
     );
     expect(insertCall).toBeDefined();
     expect(insertCall?.values.slice(0, 4)).toEqual([
-      "t1",
+      T1,
       "admin_1",
       "owner-1",
       "customer escalation",
@@ -279,7 +292,7 @@ describe("routeAdminRequest — tenants group", () => {
     const { sql, calls } = makeSql();
     const result = await routeAdminRequest(
       sql,
-      baseCtx({ method: "POST", path: "/admin-tenants/t1/impersonate-end" }),
+      baseCtx({ method: "POST", path: `/admin-tenants/${T1}/impersonate-end` }),
       logger,
     );
     expect(result).toEqual({ status: 200, body: { ended: true } });
@@ -305,7 +318,7 @@ describe("routeAdminRequest — tenants group", () => {
         sql,
         baseCtx({
           method: "POST",
-          path: "/admin-tenants/t1/impersonate/edit-mode",
+          path: `/admin-tenants/${T1}/impersonate/edit-mode`,
           claims: { app_metadata: { platform_admin: true }, aal: "aal1" },
           body: { enabled: true },
         }),
@@ -321,7 +334,7 @@ describe("routeAdminRequest — tenants group", () => {
         sql,
         baseCtx({
           method: "POST",
-          path: "/admin-tenants/t1/impersonate/edit-mode",
+          path: `/admin-tenants/${T1}/impersonate/edit-mode`,
           claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
           body: { enabled: "yes" },
         }),
@@ -336,7 +349,7 @@ describe("routeAdminRequest — tenants group", () => {
         sql,
         baseCtx({
           method: "POST",
-          path: "/admin-tenants/t1/impersonate/edit-mode",
+          path: `/admin-tenants/${T1}/impersonate/edit-mode`,
           claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
           body: { enabled: true },
         }),
@@ -353,7 +366,7 @@ describe("routeAdminRequest — tenants group", () => {
         sql,
         baseCtx({
           method: "POST",
-          path: "/admin-tenants/t1/impersonate/edit-mode",
+          path: `/admin-tenants/${T1}/impersonate/edit-mode`,
           claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
           body: { enabled: true },
         }),
@@ -380,7 +393,7 @@ describe("routeAdminRequest — tenants group", () => {
     // `impersonated_by` since the hook stamps it on every mint/refresh
     // while the impersonation_sessions row is active.
     const impersonatedOwnerClaims = {
-      app_metadata: { tenant_id: "t1", role: "owner" as const, impersonated_by: "admin_1" },
+      app_metadata: { tenant_id: T1, role: "owner" as const, impersonated_by: "admin_1" },
     };
 
     it("the top-level platform_admin gate still rejects a non-self-service route for an impersonated-owner token", async () => {
@@ -404,7 +417,7 @@ describe("routeAdminRequest — tenants group", () => {
         sql,
         baseCtx({
           method: "POST",
-          path: "/admin-tenants/t1/impersonate-end",
+          path: `/admin-tenants/${T1}/impersonate-end`,
           claims: impersonatedOwnerClaims,
           adminUserId: "owner-1",
         }),
@@ -435,7 +448,7 @@ describe("routeAdminRequest — tenants group", () => {
         sql,
         baseCtx({
           method: "POST",
-          path: "/admin-tenants/t1/impersonate/edit-mode",
+          path: `/admin-tenants/${T1}/impersonate/edit-mode`,
           claims: impersonatedOwnerClaims,
           adminUserId: "owner-1",
           body: { enabled: true },
@@ -456,8 +469,8 @@ describe("routeAdminRequest — tenants group", () => {
         sql,
         baseCtx({
           method: "POST",
-          path: "/admin-tenants/t1/impersonate/edit-mode",
-          claims: { app_metadata: { tenant_id: "t1", role: "owner" } },
+          path: `/admin-tenants/${T1}/impersonate/edit-mode`,
+          claims: { app_metadata: { tenant_id: T1, role: "owner" } },
           adminUserId: "owner-1",
           body: { enabled: true },
         }),
@@ -470,7 +483,7 @@ describe("routeAdminRequest — tenants group", () => {
 
 describe("routeAdminRequest — cockpit group", () => {
   const marginRow = (over: Record<string, unknown> = {}) => ({
-    tenant_id: "t1",
+    tenant_id: T1,
     name: "Acme",
     vertical: "auto",
     status: "active",
@@ -598,7 +611,7 @@ describe("routeAdminRequest — cockpit group", () => {
       "from public.call_logs cl": [
         {
           call_id: "c1",
-          tenant_id: "t1",
+          tenant_id: T1,
           tenant_name: "Acme",
           started_at: "2026-09-29T10:00:00Z",
           duration_seconds: 180,
@@ -610,7 +623,7 @@ describe("routeAdminRequest — cockpit group", () => {
         },
         {
           call_id: "c2",
-          tenant_id: "t1",
+          tenant_id: T1,
           tenant_name: "Acme",
           started_at: "2026-09-29T09:00:00Z",
           duration_seconds: 0,
@@ -624,7 +637,7 @@ describe("routeAdminRequest — cockpit group", () => {
     });
     const ok = await routeAdminRequest(
       sql,
-      baseCtx({ path: "/admin-cockpit/per-customer-margin/t1" }),
+      baseCtx({ path: `/admin-cockpit/per-customer-margin/${T1}` }),
       logger,
     );
     expect(ok.status).toBe(200);
@@ -645,7 +658,7 @@ describe("routeAdminRequest — cockpit group", () => {
     const { sql: sql2 } = makeSql({ "from public.fn_margin_by_tenant": [] });
     const missing = await routeAdminRequest(
       sql2,
-      baseCtx({ path: "/admin-cockpit/per-customer-margin/nope" }),
+      baseCtx({ path: `/admin-cockpit/per-customer-margin/${MISSING}` }),
       logger,
     );
     expect(missing.status).toBe(404);
@@ -656,7 +669,7 @@ describe("routeAdminRequest — cockpit group", () => {
       "from public.call_logs cl": [
         {
           call_id: "c1",
-          tenant_id: "t1",
+          tenant_id: T1,
           tenant_name: "Acme",
           started_at: "2026-09-29T10:00:00Z",
           duration_seconds: 214,
@@ -775,7 +788,7 @@ describe("routeAdminRequest — config-lab group", () => {
       "from public.platform_settings where key": [
         { value: { base_cents: 29900, included_minutes: 300, overage_cents: 35 } },
       ],
-      "from public.tenants t": [{ tenant_id: "t1", billable_minutes: 400 }],
+      "from public.tenants t": [{ tenant_id: T1, billable_minutes: 400 }],
       "from public.cost_events ce": [{ cost_cents: 5000 }],
     });
     const result = await routeAdminRequest(
@@ -830,7 +843,7 @@ describe("routeAdminRequest — referrals group", () => {
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-referrals/ce1/payout-override",
+        path: `/admin-referrals/${CE1}/payout-override`,
         body: { amount_cents: 15000 },
       }),
       logger,
@@ -847,7 +860,7 @@ describe("routeAdminRequest — referrals group", () => {
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-referrals/ce1/payout-override",
+        path: `/admin-referrals/${CE1}/payout-override`,
         body: { amount_cents: 15000 },
       }),
       logger,
@@ -1131,7 +1144,7 @@ describe("routeAdminRequest — alerts group", () => {
     const { sql } = makeSql({ "update public.alerts": [{ id: "alert_1" }] });
     const result = await routeAdminRequest(
       sql,
-      baseCtx({ method: "PATCH", path: "/admin-alerts/alert_1/ack" }),
+      baseCtx({ method: "PATCH", path: `/admin-alerts/${ALERT1}/ack` }),
       logger,
     );
     expect(result).toEqual({ status: 200, body: { acked: true } });
@@ -1141,7 +1154,7 @@ describe("routeAdminRequest — alerts group", () => {
     const { sql } = makeSql();
     const result = await routeAdminRequest(
       sql,
-      baseCtx({ method: "PATCH", path: "/admin-alerts/missing/ack" }),
+      baseCtx({ method: "PATCH", path: `/admin-alerts/${MISSING}/ack` }),
       logger,
     );
     expect(result.status).toBe(404);
@@ -1166,7 +1179,7 @@ describe("routeAdminRequest — alert rules editor", () => {
           value: {
             rules: [
               {
-                id: "r1",
+                id: R1,
                 metric: "negative_margin",
                 operator: "lt",
                 value: 0,
@@ -1237,7 +1250,11 @@ describe("routeAdminRequest — alert rules editor", () => {
     const { sql } = makeSql();
     const result = await routeAdminRequest(
       sql,
-      baseCtx({ method: "PATCH", path: "/admin-alerts/rules/missing", body: { enabled: false } }),
+      baseCtx({
+        method: "PATCH",
+        path: `/admin-alerts/rules/${MISSING}`,
+        body: { enabled: false },
+      }),
       logger,
     );
     expect(result.status).toBe(404);
@@ -1250,7 +1267,7 @@ describe("routeAdminRequest — alert rules editor", () => {
           value: {
             rules: [
               {
-                id: "r1",
+                id: R1,
                 metric: "negative_margin",
                 operator: "lt",
                 value: 0,
@@ -1266,7 +1283,7 @@ describe("routeAdminRequest — alert rules editor", () => {
       sql,
       baseCtx({
         method: "PATCH",
-        path: "/admin-alerts/rules/r1",
+        path: `/admin-alerts/rules/${R1}`,
         body: { enabled: false },
       }),
       logger,
@@ -1622,7 +1639,7 @@ describe("routeAdminRequest — outreach group", () => {
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-outreach/campaigns/camp1/add-leads",
+        path: `/admin-outreach/campaigns/${CAMP1}/add-leads`,
         body: { lead_ids: ["l1"] },
       }),
       logger,
@@ -1646,7 +1663,7 @@ describe("routeAdminRequest — outreach group", () => {
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-outreach/campaigns/camp1/add-leads",
+        path: `/admin-outreach/campaigns/${CAMP1}/add-leads`,
         body: { lead_ids: ["l1"] },
       }),
       logger,
@@ -1659,7 +1676,7 @@ describe("routeAdminRequest — outreach group", () => {
 
   it("returns the reply feed and a funnel summary", async () => {
     const { sql } = makeSql({
-      "from public.replies r": [{ id: "r1", body: "interested!", ai_intent: "interested" }],
+      "from public.replies r": [{ id: R1, body: "interested!", ai_intent: "interested" }],
       "group by status": [{ status: "new", count: 3 }],
       "group by ai_intent": [{ ai_intent: "interested", count: 1 }],
     });
@@ -1688,7 +1705,7 @@ describe("routeAdminRequest — outreach group", () => {
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-outreach/replies/reply1/actions",
+        path: `/admin-outreach/replies/${REPLY1}/actions`,
         body: { action: "suppress" },
       }),
       logger,
@@ -1709,8 +1726,8 @@ describe("routeAdminRequest — outreach group", () => {
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-outreach/replies/reply1/actions",
-        body: { action: "convert", tenant_id: "t1" },
+        path: `/admin-outreach/replies/${REPLY1}/actions`,
+        body: { action: "convert", tenant_id: T1 },
       }),
       logger,
     );
@@ -1730,7 +1747,7 @@ describe("routeAdminRequest — outreach group", () => {
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-outreach/replies/reply1/actions",
+        path: `/admin-outreach/replies/${REPLY1}/actions`,
         body: { action: "mark_interested" },
       }),
       logger,
@@ -1750,7 +1767,7 @@ describe("routeAdminRequest — outreach group", () => {
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-outreach/replies/reply1/actions",
+        path: `/admin-outreach/replies/${REPLY1}/actions`,
         body: { action: "mark_interested" },
       }),
       logger,
@@ -1797,7 +1814,7 @@ describe("routeAdminRequest — recurring commission terms (GAP_REGISTER Cluster
       sql,
       baseCtx({
         method: "PATCH",
-        path: "/admin-referrals/partners/p1",
+        path: `/admin-referrals/partners/${P1}`,
         body: { rate_bps: 1500, commission_base: "revenue", duration_months: 12 },
       }),
       logger,
@@ -1825,7 +1842,7 @@ describe("routeAdminRequest — recurring commission terms (GAP_REGISTER Cluster
       sql,
       baseCtx({
         method: "PATCH",
-        path: "/admin-referrals/partners/p1",
+        path: `/admin-referrals/partners/${P1}`,
         body: { rate_bps: 20000 },
       }),
       logger,
@@ -1841,7 +1858,7 @@ describe("routeAdminRequest — recurring commission terms (GAP_REGISTER Cluster
       sql,
       baseCtx({
         method: "PATCH",
-        path: "/admin-referrals/partners/missing",
+        path: `/admin-referrals/partners/${MISSING}`,
         body: { rate_bps: 1000 },
       }),
       logger,
@@ -1860,7 +1877,7 @@ describe("routeAdminRequest — recurring commission terms (GAP_REGISTER Cluster
       sql,
       baseCtx({
         method: "PUT",
-        path: "/admin-referrals/partners/p1/vertical-overrides/dental",
+        path: `/admin-referrals/partners/${P1}/vertical-overrides/dental`,
         body: { rate_bps: 2500 },
       }),
       logger,
@@ -1877,7 +1894,7 @@ describe("routeAdminRequest — recurring commission terms (GAP_REGISTER Cluster
       sql,
       baseCtx({
         method: "PUT",
-        path: "/admin-referrals/partners/p1/vertical-overrides/not_a_vertical",
+        path: `/admin-referrals/partners/${P1}/vertical-overrides/not_a_vertical`,
         body: { rate_bps: 2500 },
       }),
       logger,
@@ -1910,7 +1927,7 @@ describe("routeAdminRequest — support requests (GAP_REGISTER Cluster G item 6)
     });
     const result = await routeAdminRequest(
       sql,
-      baseCtx({ path: "/admin-support-requests/sr1" }),
+      baseCtx({ path: `/admin-support-requests/${SR1}` }),
       logger,
     );
     expect(result.status).toBe(200);
@@ -1923,7 +1940,7 @@ describe("routeAdminRequest — support requests (GAP_REGISTER Cluster G item 6)
     const { sql } = makeSql({ "select * from public.support_requests where id": [] });
     const result = await routeAdminRequest(
       sql,
-      baseCtx({ path: "/admin-support-requests/missing" }),
+      baseCtx({ path: `/admin-support-requests/${MISSING}` }),
       logger,
     );
     expect(result).toEqual({ status: 404, body: { error: "support_request_not_found" } });
@@ -1939,7 +1956,7 @@ describe("routeAdminRequest — support requests (GAP_REGISTER Cluster G item 6)
       sql,
       baseCtx({
         method: "PATCH",
-        path: "/admin-support-requests/sr1",
+        path: `/admin-support-requests/${SR1}`,
         body: { status: "resolved", priority: "low" },
       }),
       logger,
@@ -1964,7 +1981,7 @@ describe("routeAdminRequest — support requests (GAP_REGISTER Cluster G item 6)
     const { sql } = makeSql();
     const result = await routeAdminRequest(
       sql,
-      baseCtx({ method: "PATCH", path: "/admin-support-requests/sr1", body: {} }),
+      baseCtx({ method: "PATCH", path: `/admin-support-requests/${SR1}`, body: {} }),
       logger,
     );
     expect(result).toEqual({ status: 422, body: { error: "no_valid_fields" } });
@@ -1981,7 +1998,7 @@ describe("routeAdminRequest — support requests (GAP_REGISTER Cluster G item 6)
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-support-requests/sr1/notes",
+        path: `/admin-support-requests/${SR1}/notes`,
         body: { body: "Refund issued", visible_to_tenant: true },
       }),
       logger,
@@ -2002,7 +2019,7 @@ describe("routeAdminRequest — support requests (GAP_REGISTER Cluster G item 6)
       sql,
       baseCtx({
         method: "POST",
-        path: "/admin-support-requests/missing/notes",
+        path: `/admin-support-requests/${MISSING}/notes`,
         body: { body: "hi" },
       }),
       logger,
@@ -2017,7 +2034,7 @@ describe("routeAdminRequest — agent regression group (NIGHTLY-1)", () => {
       "from public.agent_regression_runs r": [
         {
           id: "run1",
-          tenant_id: "t1",
+          tenant_id: T1,
           tenant_slug: "test-vet-lakeside",
           vertical: "vet",
           started_at: "2026-09-21T09:00:00Z",

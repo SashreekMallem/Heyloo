@@ -1909,6 +1909,33 @@ async function handleAgentRegression(
 
 const NOT_YET_IMPLEMENTED_PREFIXES = ["admin-flags"];
 
+/**
+ * COCKPIT-F17: every path id below is interpolated into a `where id = $1`
+ * against a `uuid` column, so a malformed one (`/admin-tenants/not-a-uuid`)
+ * used to surface as an unhandled Postgres cast error, a 500 with no body.
+ * A syntactically invalid id can never name a row: answer 404 up front.
+ * (`admin-templates/:key` is deliberately absent: its key is a vertical slug
+ * or a uuid and `resolveTemplateByKey` already handles both.)
+ */
+function pathIdSegments(parts: string[]): (string | undefined)[] {
+  const [first, second, third] = parts;
+  switch (first) {
+    case "admin-tenants":
+    case "admin-support-requests":
+      return [second];
+    case "admin-alerts":
+      return [second === "rules" ? third : second];
+    case "admin-cockpit":
+      return second === "per-customer-margin" ? [third] : [];
+    case "admin-outreach":
+      return second === "campaigns" || second === "replies" ? [third] : [];
+    case "admin-referrals":
+      return [second === "partners" ? third : second];
+    default:
+      return [];
+  }
+}
+
 export async function routeAdminRequest(
   sql: SqlClient,
   ctx: AdminRequestContext,
@@ -1927,7 +1954,11 @@ export async function routeAdminRequest(
     return { status: 403, body: { error: "not_a_platform_admin" } };
   }
 
-  const [first] = segments(ctx.path);
+  const parts = segments(ctx.path);
+  const [first] = parts;
+  if (pathIdSegments(parts).some((id) => id !== undefined && !UUID_RE.test(id))) {
+    return { status: 404, body: { error: "invalid_id" } };
+  }
   if (first === "admin-tenants") return handleTenants(sql, ctx, logger, deps);
   if (first === "admin-alerts") return handleAlerts(sql, ctx);
   if (first === "admin-platform-settings") return handlePlatformSettings(sql, ctx);
