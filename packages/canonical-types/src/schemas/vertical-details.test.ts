@@ -18,6 +18,15 @@ describe("verticalDetailsSchema", () => {
     ).toBe(false);
   });
 
+  it("QA-1 F-17: bounds the cancellation window to a year of whole hours", () => {
+    const parse = (window_hours: number) =>
+      verticalDetailsSchema.safeParse({ cancellation_policy: { window_hours, text: "x" } });
+    expect(parse(8760).success).toBe(true);
+    expect(parse(8761).success).toBe(false);
+    expect(parse(999_999).success).toBe(false);
+    expect(parse(1.5).success).toBe(false);
+  });
+
   it("accepts every dental/vet/auto/legal field", () => {
     const parsed = verticalDetailsSchema.parse({
       cancellation_policy: baseCancellationPolicy,

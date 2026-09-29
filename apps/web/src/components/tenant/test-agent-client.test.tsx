@@ -118,6 +118,38 @@ describe("TestAgentClient", () => {
     expect(await screen.findByText(/call ended/i)).toBeInTheDocument();
   });
 
+  it("QA-1 F-17: typing letters in the test phone box is an error, not a silent 'Test number removed'", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderClient();
+    const input = await screen.findByLabelText(/Your phone number/);
+    await userEvent.type(input, "abc");
+    expect(input).toHaveValue("abc");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Enter a full phone number/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("QA-1 F-17: a real number is sent to the route as typed (the route normalizes to E.164)", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init?: RequestInit) =>
+        new Response(JSON.stringify({ ok: true, owner_test_phone: "+16105550100" }), {
+          status: 200,
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    renderClient();
+    const input = await screen.findByLabelText(/Your phone number/);
+    await userEvent.type(input, "(610) 555-0100");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/tenant/settings/test-phone");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      owner_test_phone: "(610) 555-0100",
+    });
+    await waitFor(() => expect(input).toHaveValue("+16105550100"));
+  });
+
   it("never shows the 'turn on forwarding' CTA before a test call has completed", async () => {
     renderClient();
     expect(await screen.findByText("Book a cleaning")).toBeInTheDocument();

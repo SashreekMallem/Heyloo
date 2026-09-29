@@ -8,9 +8,9 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  Input,
   Label,
   PageHeader,
-  PhoneInput,
   TranscriptViewer,
 } from "@heyloo/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -258,11 +258,21 @@ export function TestAgentClient({
               Your phone number (so we recognize your test calls)
             </Label>
             <div className="flex gap-2">
-              <PhoneInput
+              {/* QA-1 F-17: a plain text box, not `PhoneInput` — that one strips
+                  every non-digit, so typing "abc" looked blank and Save then
+                  reported "Test number removed". Now anything that isn't a real
+                  number is rejected with the phone error. */}
+              <Input
                 id="owner-test-phone"
+                type="tel"
+                inputMode="tel"
                 placeholder="(610) 555-0100"
                 value={testPhone}
-                onChange={setTestPhone}
+                aria-invalid={phoneError ? true : undefined}
+                onChange={(e) => {
+                  setTestPhone(e.target.value);
+                  setPhoneError(null);
+                }}
               />
               <Button variant="outline" onClick={() => void saveTestPhone()} disabled={savingPhone}>
                 Save
