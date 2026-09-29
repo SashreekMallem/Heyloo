@@ -404,8 +404,9 @@ const zGraphError = z.object({
 
 /**
  * Graph `sendMail` failure -> canonical classes:
- * - 403: `permanent`, with the owner-facing fix (missing Mail.Send / admin
- *   consent, or the mailbox is outside the app's Exchange RBAC scope);
+ * - 403: `permanent`, with the owner-facing fix (no Mail.Send access for this
+ *   mailbox: the Exchange RBAC role assignment or admin consent is missing, or
+ *   the mailbox is outside the app's RBAC scope);
  * - 404: `permanent`, the sending mailbox does not exist / has no licence;
  * - 429 / 503: `deferred` for `Retry-After` (the worker parks it);
  * - other 5xx, 408, network and timeouts: `transient`;
@@ -433,7 +434,7 @@ export function classifyGraphSendFailure(
     return make(
       "permanent",
       "ms_forbidden",
-      `Microsoft refused to send as ${mailbox}. Either the Entra app is missing the Mail.Send Application permission or admin consent, or ${mailbox} is outside the mailboxes this app is allowed to use (Exchange RBAC for Applications scope). See docs/SETUP_EMAIL_MICROSOFT.md.`,
+      `Microsoft refused to send as ${mailbox}. The app has no Mail.Send access for this mailbox: either the Exchange RBAC for Applications role assignment "Application Mail.Send" is missing or was scoped to a different mailbox, or (if you use the Mail.Send application permission instead) admin consent was not granted. See docs/SETUP_EMAIL_MICROSOFT.md.`,
     );
   }
   if (status === 404) {
@@ -460,7 +461,7 @@ export function classifyGraphSendFailure(
     return make(
       "permanent",
       "ms_unauthorized",
-      "Microsoft Graph rejected a freshly issued token. Check that the app is in the same tenant as MS_TENANT_ID and that admin consent was granted for Mail.Send.",
+      "Microsoft Graph rejected a freshly issued token. Check that the app is in the same tenant as MS_TENANT_ID and that the app still has Mail.Send access (Exchange RBAC role assignment or admin consent).",
     );
   }
   return make("permanent", "ms_bad_request", "Microsoft Graph rejected the message.");

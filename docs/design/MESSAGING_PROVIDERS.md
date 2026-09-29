@@ -33,12 +33,16 @@ supabase/functions/_shared/providers/messaging/
   twilio-signature.ts   X-Twilio-Signature verifier (moved, unchanged)
   resend.ts       Resend email adapter (send, idempotency, error classes)
   smtp.ts         SMTP email adapter: config validation, failure classes (MSG-3)
+  microsoft-graph.ts  Microsoft Graph email adapter: token cache, sendMail, failure classes (EMAIL-MSGRAPH)
   smtp-client.ts  minimal SMTP-over-implicit-TLS client (EHLO/AUTH/DATA), injected socket
   smtp-message.ts RFC 5322 / MIME message builder (Message-ID, quoted-printable, RFC 2047)
   smtp-fake-server.ts   scripted SMTP server used by the tests only
   canonical-parity.test.ts   Deno mirror == canonical package
 supabase/functions/_shared/owner-alerts.ts         owner alert kinds, preferences, producer helper
 supabase/functions/_shared/sms-availability.ts     "can this tenant text right now" + what the model is told (MSG-3)
+supabase/functions/auth-send-email/                Supabase Auth Send Email Hook: signature check, render, send through EmailProvider (EMAIL-MSGRAPH)
+supabase/functions/_shared/auth-email/             renders each auth email (signup, recovery, invite, magic link, email change, reauthentication)
+supabase/functions/_shared/standard-webhooks.ts    Standard Webhooks signature verifier (Web Crypto)
 supabase/functions/worker-messages-outbound/       queue worker (uses only the interface)
 supabase/functions/webhooks-sms/                   inbound + delivery receipts, any provider
 supabase/functions/webhooks-twilio-sms/            legacy URL, thin alias of webhooks-sms (Twilio)
@@ -67,7 +71,7 @@ interface SmsProvider {
 }
 
 interface EmailProvider {
-  id: "resend" | "smtp";
+  id: "resend" | "smtp" | "microsoft_graph";
   capabilities: MessagingProviderCapabilities;
   sendEmail(req: EmailSendRequest): Promise<SendResult>;
 }
@@ -86,13 +90,13 @@ Canonical types (`packages/canonical-types/src/messaging.ts`):
 
 Capability flags:
 
-| Flag | Telnyx | Twilio | Resend | SMTP | Used for |
-|---|---|---|---|---|---|
-| `syncWebhookReply` | no | yes (TwiML) | — | — | reply inline vs queue the reply |
-| `deliveryReceipts` | yes | yes | not consumed yet | no (acceptance only) | ask for status callbacks |
-| `nativeOptOutHandling` | yes | yes | — | — | provider blocks sends after STOP |
-| `senderRegistrationApi` | no (portal for now) | yes (legacy 10DLC) | — | — | `api-a2p-register` |
-| `senderKinds` | toll_free, 10dlc | 10dlc, toll_free, short_code | — | — | documentation |
+| Flag | Telnyx | Twilio | Resend | SMTP | Graph | Used for |
+|---|---|---|---|---|---|---|
+| `syncWebhookReply` | no | yes (TwiML) | — | — | — | reply inline vs queue the reply |
+| `deliveryReceipts` | yes | yes | not consumed yet | no (acceptance only) | no (`202` = accepted only) | ask for status callbacks |
+| `nativeOptOutHandling` | yes | yes | — | — | — | provider blocks sends after STOP |
+| `senderRegistrationApi` | no (portal for now) | yes (legacy 10DLC) | — | — | — | `api-a2p-register` |
+| `senderKinds` | toll_free, 10dlc | 10dlc, toll_free, short_code | — | — | — | documentation |
 
 Failure classes: **permanent** (bad recipient, opted out, sender not
 allowed) marks the row `failed` at once; **transient** (5xx, 429, network)
@@ -110,7 +114,8 @@ Per message, most specific first:
 3. the platform default, `SMS_PROVIDER` env (default `telnyx`).
 
 Email: `EMAIL_PROVIDER` (`resend` by default, `smtp` for the owner's own
-mailbox) plus `EMAIL_FROM_ADDRESS` (`RESEND_FROM_ADDRESS` still accepted).
+mailbox over implicit TLS, `microsoft_graph` for a Microsoft 365 mailbox over
+HTTPS) plus `EMAIL_FROM_ADDRESS` (`RESEND_FROM_ADDRESS` still accepted).
 
 The registry **fails closed**. If the chosen provider has no secrets it
 resolves to `provider_not_configured`; it never silently falls back to a
@@ -235,6 +240,120 @@ owner steps are in `docs/SETUP_EMAIL.md`.
   accepted the message, not that it reached the inbox; bounces arrive in the
   sending mailbox. Microsoft 365 (`smtp.office365.com`) is not usable: its SMTP
   AUTH only offers 587/25. Google Workspace and Zoho both offer 465.
+
+## Email over Microsoft Graph (EMAIL-MSGRAPH)
+
+Owner decision: **all** email goes through the owner's Microsoft 365 mailbox
+(`ms@heycuey.com` on `heycuey.com` for testing). Supabase Edge Functions block
+outgoing ports 25 and 587 and Microsoft 365 only offers those for SMTP, so the
+`microsoft_graph` adapter uses HTTPS only. `EMAIL_PROVIDER=microsoft_graph`
+selects it; owner steps (Entra app, Exchange RBAC restriction, secret, DNS) are
+in `docs/SETUP_EMAIL_MICROSOFT.md`.
+
+| Variable | Meaning |
+|---|---|
+| `MS_TENANT_ID` | Entra directory (tenant) ID GUID, or a verified domain name |
+| `MS_CLIENT_ID` | the app registration's Application (client) ID GUID |
+| `MS_CLIENT_SECRET` | the client secret value (expires: max 24 months) |
+| `EMAIL_FROM_ADDRESS` | the sending mailbox's own address, optionally `Name <addr>` (the name is the display name) |
+
+- **Token.** `POST https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`,
+  form body `client_id`, `scope=https://graph.microsoft.com/.default`,
+  `client_secret`, `grant_type=client_credentials`. The token is cached in
+  module scope until **5 minutes before** its `expires_in`, requests in flight
+  share one round trip, and a token that lives less than 5 minutes is not
+  cached. There are no refresh tokens in this flow, so "refresh" is a new
+  request.
+- **Send.** `POST https://graph.microsoft.com/v1.0/users/{mailbox}/sendMail`,
+  JSON `{message, saveToSentItems: false}`, `202 Accepted` with no body. The
+  `providerMessageId` is `msgraph:<request-id header>` (falling back to our own
+  `client-request-id`), because Graph returns no message id. The adapter only
+  ever sends as the configured mailbox: a different `from` is a permanent
+  `from_not_sending_mailbox`, never an attempt.
+- **Body strategy.** Graph's JSON form takes **one** body. The request's `html`
+  is sent as `HTML`; every HTML body in the repo is a simple layout whose links
+  are also printed as text, so it reads in text-only clients. An empty `html`
+  falls back to the `text` as a `Text` body. Real `multipart/alternative` would
+  need the base64 MIME form of `sendMail`; we do not use it (it would put our
+  own MIME builder in front of Graph's parser, and we cannot test that against
+  a live tenant from CI). Revisit if deliverability data asks for it.
+- **Failure classes.** `401`: get a new token and retry **once**, then
+  permanent (`ms_unauthorized`). `403`: permanent `ms_forbidden` with an
+  owner-facing reason (no `Mail.Send` access for this mailbox: RBAC role
+  assignment missing or scoped elsewhere). `404`: permanent
+  `ms_mailbox_not_found`. `429` and `503`: **deferred** for the `Retry-After`
+  seconds (or an HTTP-date; default 60 s; capped at 1 h), which the worker
+  turns into a park without spending an attempt. Other 5xx, 408, 409, 423,
+  timeouts (2.5 s per request) and network errors: transient. `400` and other
+  4xx: permanent. Token endpoint: `invalid_client` / `AADSTS7000215`,
+  `AADSTS7000222` (expired secret), `AADSTS700016` (unknown app),
+  `AADSTS90002` (unknown tenant): permanent, each with the fix in the message;
+  429/503 deferred; 5xx transient. Secrets and tokens are never in a `detail`.
+- **No idempotency key.** `sendMail` has none. A request that times out after
+  Graph accepted it and is then retried can deliver twice. The 2.5 s timeouts
+  keep that window small.
+- **Limits that matter.** Exchange Online: 10,000 recipients per day and 30
+  messages per minute per mailbox, plus the tenant external-recipient limit
+  (5,000 per day on a trial tenant). Exchange Online is not built for bulk mail.
+- **Least privilege.** The app must not hold the Entra `Mail.Send` grant: that
+  lets it send as anyone. It gets the Exchange RBAC for Applications role
+  `Application Mail.Send`, scoped to the one mailbox
+  (`docs/SETUP_EMAIL_MICROSOFT.md` Step 2).
+
+## Supabase Auth emails: `auth-send-email` (EMAIL-MSGRAPH)
+
+Supabase's built-in mailer is replaced, not supplemented: with the Send Email
+Hook enabled, Auth POSTs every account email to
+`/functions/v1/auth-send-email`, which sends it through the **same
+`EmailProvider` port** as owner alerts (Graph, SMTP or Resend all work).
+
+```
+Auth --POST--> auth-send-email
+   1. standardwebhooks signature over the RAW body (SEND_EMAIL_HOOK_SECRET, fail closed)
+   2. zod payload  {user, email_data{token, token_hash, token_new, token_hash_new, redirect_to, email_action_type, site_url}}
+   3. render       _shared/auth-email/compose.ts  (one or two emails)
+   4. send         registry.resolveEmail() -> provider.sendEmail(...)   (4.2 s of Auth's 5 s budget)
+   5. answer       200 {}  |  {"error": {"http_code": n, "message": "..."}}
+```
+
+| `email_action_type` | verifyOtp `type` in the link | lands on (`next`) |
+|---|---|---|
+| `signup` | `email` | `/signup/resume` |
+| `recovery` | `recovery` | `/reset-password/confirm` |
+| `invite` | `invite` | `/dashboard` |
+| `magiclink` | `magiclink` | `/dashboard` |
+| `email` (OTP) | `email` (the code is shown too) | `/signup/resume` |
+| `email_change` | `email_change` | `/dashboard` |
+| `reauthentication` | no link, the 6-digit `token` only | n/a |
+| `*_notification` (7 types, only if enabled in the project) | no link, a short notice | n/a |
+
+Links are `{site_url}/auth/confirm?token_hash=<hash>&type=<type>&next=<path>`,
+the same shape as `supabase/templates/*.html`. `next` is the `next` of the
+app's own `redirect_to` (`<origin>/auth/confirm?next=...`) when it is a safe
+same-origin path, else the default above.
+`apps/web/src/app/auth/confirm/route.ts` accepts every type in the table (a
+test reads the route's `VALID_TYPES`).
+
+- **Email change.** Supabase's field names are reversed: `token_hash_new` goes
+  with the **current** address (`user.email`) and `token`, `token_hash` with the
+  **new** address (`user.new_email`) and `token_new`. With Secure Email Change
+  on, both pairs are present and two emails go out (both must be confirmed);
+  with it off, one email goes to the new address.
+- **Templates stay in one place.** The renderer's HTML mirrors
+  `supabase/templates/*.html`; `compose.test.ts` compares them (whitespace
+  aside) so they cannot drift, and compares the subjects with
+  `supabase/config.toml`. `reauthentication.html` was added for parity.
+- **Errors.** Bad or missing signature: 401. Missing `SEND_EMAIL_HOOK_SECRET`
+  or unconfigured provider: 500 (retrying cannot help). Provider throttling:
+  429 with `Retry-After`. Provider slow or transient: 503 (Auth retries 429 and
+  503 up to three times). Permanent provider failure: 500. Bad payload or an
+  unknown `email_action_type`: 400. The message returned to Auth is generic;
+  the real reason (`ms_forbidden`, ...) is in the function logs and Sentry.
+- **Idempotency.** Each email carries `auth-email:<webhook-id>:<slot>`; Resend
+  honours it. Graph and SMTP do not, so a retried hook can deliver twice.
+- **Switching on/off.** `scripts/enable-auth-email-hook.ts` (dry-run default,
+  `--apply`, `--disable --apply`). Local development: the commented
+  `[auth.hook.send_email]` block in `supabase/config.toml`.
 
 ## No promise of a text without texting (MSG-3)
 
@@ -366,15 +485,15 @@ parity test enforces they match) and its required env vars to
 
 ## What each provider needs from us
 
-| | Telnyx | Twilio | Resend | SMTP (owner mailbox) |
-|---|---|---|---|---|
-| Account | Telnyx account, verification (Level 2 for some messaging) | usable Twilio account (currently blocked) | account + verified sending domain (DNS) | a mailbox on Google Workspace or Zoho, an app password, SPF/DKIM/DMARC |
-| Secrets | `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY` | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` | `EMAIL_PROVIDER=smtp`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM_ADDRESS` |
-| Webhook | messaging profile → `/webhooks-sms/telnyx` | number/Messaging Service → `/webhooks-sms/twilio` | none consumed yet | none |
-| Sender | toll-free (verified) or 10DLC (brand + campaign) in our account | same, in our account | — | the mailbox itself (`alerts@<domain>`) |
-| Owner must give | legal name, EIN, address, contact, expected volume (the opt-in flow is ours: the AI asks consent on the call) | same | nothing | the mailbox, its app password, DNS access for SPF/DKIM/DMARC |
-| Time to first text | toll-free: Telnyx says 1–2 weeks (help center: usually ≤5 business days) | toll-free ~3–5 business days; 10DLC vetting up to 5 business days + brand, 2–3+ weeks in backlogs | same day | same day (DNS records can take up to 48 h to settle) |
-| Price (per research, verify before quoting) | $0.0055/part TF, $0.004 10DLC, + carrier fees | $0.0083/segment + carrier fees; TF number $2.15/mo | free 3,000/mo (100/day); Pro $20/mo for 50k | the mailbox seat; Google Workspace caps `smtp.gmail.com` at 2,000 messages/day |
+| | Telnyx | Twilio | Resend | SMTP (owner mailbox) | Microsoft Graph (owner's Microsoft 365) |
+|---|---|---|---|---|---|
+| Account | Telnyx account, verification (Level 2 for some messaging) | usable Twilio account (currently blocked) | account + verified sending domain (DNS) | a mailbox on Google Workspace or Zoho, an app password, SPF/DKIM/DMARC | a Microsoft 365 mailbox, an Entra app registration restricted to it (Exchange RBAC for Applications), a client secret, SPF/DKIM/DMARC |
+| Secrets | `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY` | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` | `EMAIL_PROVIDER=smtp`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM_ADDRESS` | `EMAIL_PROVIDER=microsoft_graph`, `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `EMAIL_FROM_ADDRESS` |
+| Webhook | messaging profile → `/webhooks-sms/telnyx` | number/Messaging Service → `/webhooks-sms/twilio` | none consumed yet | none | none |
+| Sender | toll-free (verified) or 10DLC (brand + campaign) in our account | same, in our account | — | the mailbox itself (`alerts@<domain>`) | the mailbox itself (`ms@<domain>`) |
+| Owner must give | legal name, EIN, address, contact, expected volume (the opt-in flow is ours: the AI asks consent on the call) | same | nothing | the mailbox, its app password, DNS access for SPF/DKIM/DMARC | tenant ID, client ID, client secret (via the Supabase secrets page), admin access to Entra and Exchange Online (GoDaddy-managed tenants may need defederation first) |
+| Time to first text | toll-free: Telnyx says 1–2 weeks (help center: usually ≤5 business days) | toll-free ~3–5 business days; 10DLC vetting up to 5 business days + brand, 2–3+ weeks in backlogs | same day | same day (DNS records can take up to 48 h to settle) | same day once the RBAC scope has propagated (30 minutes to 2 hours) |
+| Price (per research, verify before quoting) | $0.0055/part TF, $0.004 10DLC, + carrier fees | $0.0083/segment + carrier fees; TF number $2.15/mo | free 3,000/mo (100/day); Pro $20/mo for 50k | the mailbox seat; Google Workspace caps `smtp.gmail.com` at 2,000 messages/day | the mailbox licence; 10,000 recipients/day and 30 messages/minute per mailbox |
 
 ## Carrier registration: the truth
 
@@ -417,5 +536,9 @@ Retell over SIP, and register 10DLC per tenant on it.
 - Automate Telnyx toll-free verification submission/polling
   (`senderRegistrationApi` is false for Telnyx today).
 - Resend delivery webhooks (Svix-signed) are not consumed.
+- Microsoft Graph: certificate credentials instead of a client secret; a real
+  `multipart/alternative` body through the MIME form of `sendMail`; a
+  bounce reader for the sending mailbox. VERIFY items: docs/VERIFY.md
+  "EMAIL-MSGRAPH".
 - Plivo adapter not built (research: fine second choice).
 - VERIFY items: docs/VERIFY.md "MESSAGING-1".
