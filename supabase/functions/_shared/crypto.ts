@@ -4,7 +4,8 @@
  * Function runtime and Node >=19 — no dependency, so this file is portable
  * and unit-testable under Vitest exactly as it runs in production. Every
  * webhook signature verifier (Retell, Twilio, Stripe — see
- * retell-signature.ts / twilio-signature.ts / stripe-signature.ts) is built
+ * retell-signature.ts / providers/messaging/twilio-signature.ts /
+ * stripe-signature.ts) is built
  * from these.
  */
 

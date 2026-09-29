@@ -136,6 +136,30 @@ describe("GET /api/tenant/setup-progress", () => {
     expect(body.requiredDone).toBe(0);
   });
 
+  it("MESSAGING-1: the texting step is done once the owner submitted business details, before carrier approval", async () => {
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
+    serverQueue = {
+      tenants: [
+        {
+          data: { status: "trialing", a2p_status: "pending_verification", business_hours: {} },
+          error: null,
+        },
+      ],
+      messaging_business_profiles: [
+        { data: { submitted_at: "2026-09-29T00:00:00.000Z" }, error: null },
+      ],
+    };
+    const res = await GET();
+    const body = (await res.json()) as {
+      steps: Array<{ id: string; done: boolean; href: string | null; label: string }>;
+    };
+    const step = body.steps.find((s) => s.id === "a2p");
+    expect(step?.done).toBe(true);
+    expect(step?.href).toBe("/dashboard/texting");
+    expect(step?.label).toBe("Set up text messaging");
+  });
+
   it("does not let the optional team/integration steps count toward requiredTotal", async () => {
     mockGetUser = async () => ({ data: { user: mockUser } });
     mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };

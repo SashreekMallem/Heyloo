@@ -19,6 +19,7 @@ export * from "./agent-template.js";
 export * from "./booking-payloads.js";
 export * from "./call-taxonomy.js";
 export * from "./errors.js";
+export * from "./messaging.js";
 export * from "./primitives.js";
 // `packages/canonical-types/src/schemas/*` (T5, FRONTEND_SPEC.md §2/§0.9)
 // — every react-hook-form schema, one file per schema, named exactly as in

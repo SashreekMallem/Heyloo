@@ -34,16 +34,23 @@ async function twilioRequest(
   return { ok: res.ok, status: res.status, body };
 }
 
+/** POST /Messages.json. `statusCallback` (optional) is Twilio's documented
+ * `StatusCallback` param — the URL Twilio POSTs `MessageStatus`/`ErrorCode`
+ * delivery receipts to (twilio.com/docs/messaging/api/message-resource,
+ * fetched 2026-09-29). Omitted = Twilio sends no receipts (the pre-
+ * MESSAGING-1 behavior). Only ever called through the messaging adapter
+ * (`./messaging/twilio.ts`), never from core code. */
 export async function sendSms(
   fetchImpl: TwilioFetch,
   accountSid: string,
   authToken: string,
-  params: { to: string; from: string; body: string },
+  params: { to: string; from: string; body: string; statusCallback?: string },
 ) {
   return twilioRequest(fetchImpl, accountSid, authToken, "/Messages.json", {
     To: params.to,
     From: params.from,
     Body: params.body,
+    ...(params.statusCallback ? { StatusCallback: params.statusCallback } : {}),
   });
 }
 

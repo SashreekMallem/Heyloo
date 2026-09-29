@@ -7411,3 +7411,53 @@ typecheck` 21/21 tasks, `cd supabase/functions && pnpm run test` 124/124
 files, 1361/1361 tests; `@heyloo/adapter-retell` 20/20 and
 `@heyloo/templates` 8/8 test files (with `templates.build.json` rebuilt so
 the real-registry checks ran against this change).
+
+## MESSAGING-1 (2026-09-29, session_012xvcAnjqsMbPqitErDJQbR) — provider-neutral messaging layer: Telnyx now, Twilio as a drop-in adapter, email as a first-class channel, owner alerts by SMS and/or email
+
+**Task:** make switching SMS provider a config change (the user: "if Twilio is stopping us from working today, why are we not using Telnyx for now? We'll go back to Twilio, but build it scalable"). Design and runbook: `docs/design/MESSAGING_PROVIDERS.md`. Rule 1 citations: `docs/VERIFY.md` "MESSAGING-1".
+
+### Live state before (read-only SQL, 2026-09-29)
+
+`messages_outbound`: 238 SMS `pending_verification` (never enqueued — `send_sms_confirmation` writes them without `pgmq.send`), 17 SMS `queued` (16 `dental_intake_link` rows `_shared/dental-intake.ts` never enqueues, 1 `waitlist_slot_opened` the DB trigger never enqueues), 12 `failed provider_not_configured`, 1 email `queued`; 1 message in `pgmq.q_messages_outbound_queue`. All 18 tenants `a2p_status = pending_verification`; 0 of 10 `agent_configs` have `transfer_number` or `dynamic_variable_overrides.delivery`. Both live numbers are Retell-purchased (`twilio_sid` null / `retell-native:` placeholder). Some live rows carry tool-invented template keys (`order`, `waitlist_notification`, ...) that render to an empty body.
+
+### What was built
+
+- **Canonical types** `packages/canonical-types/src/messaging.ts` (send requests/results with `permanent|transient|deferred` failure classes, canonical inbound SMS, delivery status, sender registration, capability flags, owner alert kinds), mirrored for Deno in `_shared/providers/messaging/types.ts` with a parity test. `deliveryPreferencesSchema` gained `alert_phone`; new `messagingBusinessProfileSchema` (EIN required except sole proprietor).
+- **Port + adapters** `_shared/providers/messaging/`: `SmsProvider` (`sendSms`, `verifyInboundWebhook` on the raw body, `parseInbound`, `parseStatusCallback`, `webhookAck`, optional `registration`), `EmailProvider`; `telnyx.ts` (JSON send, Ed25519 `{timestamp}|{body}` verification with 5-minute replay window, `message.received`/`message.finalized` parsing, `autoresponse_type` passthrough, 403xx permanent codes), `twilio.ts` (existing REST client + signature verifier behind the port, unchanged request shapes; additive `StatusCallback`; TwiML ack; legacy 10DLC registration), `resend.ts` (`Idempotency-Key`, `text` alternative, current error names; quota errors deferred). `twilio-signature.ts` moved here unchanged; `schemas/twilio-sms.ts` folded into the adapter.
+- **Registry** `registry.ts`: per message, number's provider > `tenants.sms_provider` > `SMS_PROVIDER` (default `telnyx`); `EMAIL_PROVIDER` (default `resend`) + `EMAIL_FROM_ADDRESS` (`RESEND_FROM_ADDRESS` still honored). Fails closed with `provider_not_configured`, never falls back to another vendor.
+- **Worker** (`worker-messages-outbound`, `worker-tick` via one shared `deps.ts`): only the port. The leg runs when ANY provider is configured (email alone now works — the old gate required Twilio and Resend together). Per-message `provider_not_configured`/deferred -> `ParkMessageError` -> delayed re-enqueue with a fresh `read_ct` until 24 h old, then dead-letter with that reason (OPS-8 semantics kept; the no-provider-at-all sweep is unchanged). Owner-alert fan-out (SMS + idempotent email copy via `parent_message_id`), SMS-unavailable -> email, A2P fallback email rewritten so the owner can tell it's a copy of a customer text, HTML escaping, `empty_rendered_body` preflight, stranded-row sweep (2 min – 24 h old, 50/tick). Rows record `provider`, `sent_via`, `delivered_at`.
+- **Webhooks**: new `webhooks-sms` (`/webhooks-sms/<provider>[/status]`, verify_jwt false) with a portable pipeline (`handleSmsWebhook`): signature first, canonical parse, `webhook_events` dedup, Twilio replies inline (TwiML, unchanged), Telnyx fast-acked + background processing with replies queued (`sms_reply`/`text_agent_reply` templates), provider-handled STOP never double-replied, delivery receipts applied without downgrading. `webhooks-twilio-sms` is now a thin alias of the same pipeline (its old `handler.ts`/test moved to `webhooks-sms/`).
+- **Owner alerts** `_shared/owner-alerts.ts` + templates `owner_new_booking`, `owner_urgent_call`, `owner_missed_transfer` (and a subject on `take_message`). `voice-events` `call_analyzed` now enqueues new-booking / urgent / missed-transfer (`disconnection_reason = transfer_cancelled`) alerts, never for test calls, idempotent per (call, kind), never failing the webhook. Preferences: `agent_configs.dynamic_variable_overrides.delivery` `{sms_enabled, email_enabled, alert_phone, notification_email}` — the same shape SETTINGS-1's `/api/tenant/settings/notifications` writes.
+- **`api-a2p-register`**: through `SenderRegistrationApi`; no module-scope `requireEnv` (was a cold-start crash on every deploy without Twilio A2P secrets); 503 `provider_not_configured` / `registration_not_configured`, 501 `registration_not_automated` (Telnyx); skips Retell-native numbers; pins `tenants.sms_provider` to the registering provider; internal secret compared in constant time.
+- **`admin`** outreach demo-followup email goes through the `EmailProvider` port (escaped HTML, idempotency key per reply).
+- **Migration** `20260929150000_messaging_providers.sql` (not applied): `messaging_senders` (+ RLS read, service-role writes, trigger keeping `tenants.a2p_status` in sync), `messaging_business_profiles` (owner/admin RLS), `tenants.sms_provider`, a guard trigger so a tenant session can no longer change `a2p_*`/`sms_provider` (owners could previously self-mark SMS verified through PostgREST), `messages_outbound.{provider, sent_via, delivered_at, parent_message_id}` + indexes, `messages_inbound.{provider, provider_message_id}` backfilled from `twilio_message_sid`. Exercised on a throwaway local Postgres 16 with stubs; the handlers' real SQL ran through postgres.js against it. RLS probe (`scripts/ci/rls-cross-tenant-probe.ts`) covers both new tables.
+- **Web**: `/dashboard/texting` ("Text messaging": honest carrier status, ~1–2 weeks, email meanwhile; business-details form for owner/admin), `GET/PUT /api/tenant/messaging` (caller's RLS session only), nav entry, setup step renamed "Set up text messaging" (done when details are submitted or texting is verified), preview fixture label. Transfer number / alert phone / notification email UI is SETTINGS-1's (same working tree, concurrent).
+
+### Decisions / deviations
+
+- **Telnyx is the default SMS provider** (research: fastest compliant path is a per-tenant toll-free number; Twilio account blocked). Telnyx registration is NOT automated: `POST /public/api/v2/requests` needs opt-in screenshots and its host isn't stated on the fetched page (VERIFY.md). Ops submits in the portal and inserts/updates the `messaging_senders` row.
+- A verified tenant whose provider has no secrets is **parked**, not rerouted to email (it will send by SMS once configured). An unverified tenant's customer texts go to the owner by email (unchanged A2P fallback) unless the owner turned email off, recorded as `sms_pending_verification`.
+- The legacy path (no `messaging_senders` row) is unchanged: primary `phone_numbers.e164` + `tenants.a2p_status`, now safe because tenants can't write `a2p_status`.
+- Email rows go to their own `recipient` (was: always the owner's sign-in email); every existing email producer already writes the owner's email there.
+- The stranded sweep deliberately ignores rows older than 24 h (238 stale confirmations would otherwise email owners days later).
+- Migration renamed from `20260929120000` to `20260929150000` so it sorts after the concurrently added `20260929124500_tool_health_stages.sql` / `20260929140000_tenant_booking_rules.sql`.
+
+### Gaps found (not fixed here)
+
+- `voice-tools/tools/send_sms_confirmation.ts` (concurrent workflow's file): inserts `pending_verification` without enqueueing and comments that "a sweep" handles it — none existed; the new stranded sweep now does within ~2 min. Direct fix: always insert `queued` and `enqueue(...)`; the worker decides SMS vs email.
+- `voice-tools/tools/take_message.ts` (concurrent workflow's file): only writes the owner alert when `agent_configs.transfer_number` is set (0 of 10 live), so most owners get nothing. Fix: replace the gated `insert ... select ... from agent_configs where transfer_number is not null` + `enqueue` with `enqueueOwnerAlert(sql, { tenantId: ctx.tenantId, kind: "message_taken", payload: {...same payload}, relatedCallId: ctx.callLogId })` from `_shared/owner-alerts.ts`.
+- `fn_notify_waitlist_on_cancellation` and `_shared/dental-intake.ts` insert without `pgmq.send` (covered by the sweep; direct fix is to enqueue).
+- `api-provision/handler.ts` step 6 "notify" texts `weekly_value_summary` to the tenant's OWN new voice number — almost certainly meant to be an owner email.
+- `job-retell-health-failover` / `job-offboarding` call Twilio number APIs by `phone_numbers.twilio_sid`; they can't work for Retell-purchased numbers (voice, not messaging — outside this layer).
+- `apps/web/.../dashboard/delivery/page.tsx` still says "Carrier approval usually takes 1–5 business days" (SETTINGS-1's page); should link to /dashboard/texting and say about 1–2 weeks.
+- Shared `TWILIO_A2P_BRAND_SID` 10DLC flow will be rejected by carriers (brand per end business required).
+
+### Deploy order (owner/coordinator)
+
+1. Apply `supabase/migrations/20260929150000_messaging_providers.sql` FIRST — the worker, webhooks and web route read/write its columns.
+2. Deploy `worker-messages-outbound`, `worker-tick`, `webhooks-sms` (new), `webhooks-twilio-sms`, `api-a2p-register`, `admin`, `voice-events`.
+3. Secrets: `RESEND_API_KEY` + `EMAIL_FROM_ADDRESS` (turns on email alerts immediately); `WEBHOOKS_SMS_BASE_URL`; when Telnyx is ready `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY`, optional `TELNYX_MESSAGING_PROFILE_ID`, `SMS_PROVIDER=telnyx`.
+
+### Gates
+
+`pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm run test` in `supabase/functions` (see commit).

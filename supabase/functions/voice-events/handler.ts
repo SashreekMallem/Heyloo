@@ -1,3 +1,4 @@
+import { enqueueOwnerAlert } from "../_shared/owner-alerts.ts";
 import { normalizeE164 } from "../_shared/phone.ts";
 import { enqueue, QUEUE_NAMES } from "../_shared/queue.ts";
 import type { RetellCallObject, VoiceEventRequest } from "../_shared/schemas/voice-events.ts";
@@ -310,7 +311,13 @@ export async function handleCallAnalyzed(
   const customData = analysis?.custom_analysis_data ?? {};
   const parsed = parseCustomAnalysisData(customData);
 
-  const rows = await sql<{ id: string; tenant_id: string; urgency_flag: boolean }>`
+  const rows = await sql<{
+    id: string;
+    tenant_id: string;
+    urgency_flag: boolean;
+    is_test_call?: boolean;
+    caller_number?: string | null;
+  }>`
     update public.call_logs
     set call_summary = coalesce(${analysis?.call_summary ?? null}, call_summary),
         sentiment = coalesce(${analysis?.user_sentiment ? (sentimentMap[analysis.user_sentiment] ?? null) : null}, sentiment),
@@ -321,13 +328,24 @@ export async function handleCallAnalyzed(
         extracted_entities = coalesce(${customData}::jsonb, extracted_entities),
         transcript = coalesce(${call.transcript_object ?? null}::jsonb, transcript)
     where retell_call_id = ${call.call_id}
-    returning id, tenant_id, urgency_flag
+    returning id, tenant_id, urgency_flag, is_test_call, caller_number
   `;
 
   const row = rows[0];
   if (!row) {
     logger.warn("voice_events_call_analyzed_no_matching_call", { call_id: call.call_id });
     return;
+  }
+
+  // MESSAGING-1 owner alerts (new booking / urgent call / missed transfer),
+  // delivered by SMS and/or email per the tenant's /dashboard/delivery
+  // preferences. Never allowed to fail this webhook's own processing.
+  try {
+    await enqueueCallOwnerAlerts(sql, call, row, {
+      emergency: parsed.emergencyDetected || parsed.classification === "emergency",
+    });
+  } catch (err) {
+    logger.warn("voice_events_owner_alert_failed", { call_id: call.call_id, error: String(err) });
   }
 
   const legalAdviceGiven = parsed.legalAdviceGiven;
@@ -358,6 +376,97 @@ export async function handleCallAnalyzed(
       tenant_id: row.tenant_id,
       legal_advice_given: legalAdviceGiven,
       emergency_retroactive: emergencyRetroactive,
+    });
+  }
+}
+
+/** Retell `disconnection_reason` for a transfer that was attempted but
+ * never connected (docs.retellai.com/api-references/get-call enum:
+ * `transfer_bridged` = connected, `transfer_cancelled` = not). */
+const MISSED_TRANSFER_REASON = "transfer_cancelled";
+
+function formatLocal(iso: string, timeZone: string | null): string {
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: timeZone ?? "UTC",
+    }).format(new Date(iso));
+  } catch {
+    return iso;
+  }
+}
+
+/**
+ * Owner alerts for one analyzed call (MESSAGING-1). Test calls never alert
+ * (the nightly regression and self-calls would otherwise page the owner).
+ * Each alert is idempotent per (call, kind) inside `enqueueOwnerAlert`, so
+ * a redelivered `call_analyzed` never alerts twice.
+ */
+async function enqueueCallOwnerAlerts(
+  sql: SqlClient,
+  call: RetellCallObject,
+  row: { id: string; tenant_id: string; is_test_call?: boolean; caller_number?: string | null },
+  signals: { emergency: boolean },
+): Promise<void> {
+  if (row.is_test_call) return;
+  const summary = call.call_analysis?.call_summary ?? null;
+  const callerPhone = row.caller_number ?? normalizeE164(call.from_number ?? null);
+
+  const bookings = await sql<{
+    id: string;
+    start_at: string;
+    customer_name: string | null;
+    service: string | null;
+    timezone: string | null;
+  }>`
+    select b.id, b.start_at, c.name as customer_name, o.name as service, t.timezone
+    from public.bookings b
+    join public.tenants t on t.id = b.tenant_id
+    left join public.customers c on c.id = b.customer_id
+    left join public.offerings o on o.id = b.offering_id
+    where b.source_call_id = ${row.id} and b.tenant_id = ${row.tenant_id} and b.status <> 'cancelled'
+    order by b.created_at desc
+    limit 1
+  `;
+  const booking = bookings[0];
+  const callerName = booking?.customer_name ?? null;
+  const base = {
+    ...(callerName ? { caller_name: callerName } : {}),
+    ...(callerPhone ? { caller_phone: callerPhone } : {}),
+    ...(summary ? { summary } : {}),
+  };
+
+  if (signals.emergency) {
+    await enqueueOwnerAlert(sql, {
+      tenantId: row.tenant_id,
+      kind: "urgent_call",
+      payload: base,
+      relatedCallId: row.id,
+    });
+  }
+  if (booking) {
+    await enqueueOwnerAlert(sql, {
+      tenantId: row.tenant_id,
+      kind: "new_booking",
+      payload: {
+        ...base,
+        start_local: formatLocal(booking.start_at, booking.timezone),
+        ...(booking.service ? { service: booking.service } : {}),
+      },
+      relatedCallId: row.id,
+      relatedBookingId: booking.id,
+    });
+  }
+  if (call.disconnection_reason === MISSED_TRANSFER_REASON) {
+    await enqueueOwnerAlert(sql, {
+      tenantId: row.tenant_id,
+      kind: "missed_transfer",
+      payload: base,
+      relatedCallId: row.id,
     });
   }
 }

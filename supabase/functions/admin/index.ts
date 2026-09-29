@@ -8,6 +8,7 @@ import type { AdminJwtClaims } from "../_shared/admin-auth.ts";
 import { getSql } from "../_shared/deno/db.ts";
 import { optionalEnv, optionalServiceRoleKey } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
+import { buildMessagingRegistryFromEnv } from "../_shared/providers/messaging/registry.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import type { AdminDeps } from "./handler.ts";
 import { routeAdminRequest } from "./handler.ts";
@@ -25,8 +26,10 @@ const SUPABASE_URL = optionalEnv("SUPABASE_URL");
 const SB_SECRET_KEY = optionalServiceRoleKey();
 const SMARTLEAD_API_KEY = optionalEnv("SMARTLEAD_API_KEY");
 const OUTREACH_CAN_SPAM_FOOTER = optionalEnv("OUTREACH_CAN_SPAM_FOOTER");
-const RESEND_API_KEY = optionalEnv("RESEND_API_KEY");
-const RESEND_FROM_ADDRESS = optionalEnv("RESEND_FROM_ADDRESS");
+// MESSAGING-1: email goes through the provider-neutral registry (Resend
+// today); unset = the outreach demo-followup action answers 501.
+const MESSAGING = buildMessagingRegistryFromEnv((name) => Deno.env.get(name), fetch);
+const EMAIL = MESSAGING.resolveEmail();
 
 const adminDeps: AdminDeps = {
   ...(RETELL_API_KEY && VOICE_TOOLS_WEBHOOK_URL
@@ -52,8 +55,8 @@ const adminDeps: AdminDeps = {
         },
       }
     : {}),
-  ...(RESEND_API_KEY && RESEND_FROM_ADDRESS
-    ? { resend: { fetchImpl: fetch, apiKey: RESEND_API_KEY, fromAddress: RESEND_FROM_ADDRESS } }
+  ...(EMAIL.ok && MESSAGING.emailFromAddress
+    ? { email: { provider: EMAIL.provider, fromAddress: MESSAGING.emailFromAddress } }
     : {}),
 };
 

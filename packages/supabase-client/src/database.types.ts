@@ -781,6 +781,49 @@ export type AirtableSyncStateRow = {
   created_at: string;
 };
 
+/** MESSAGING-1 (20260929150000_messaging_providers.sql): SMS-capable
+ * numbers a tenant texts from + their carrier-registration state. Tenant
+ * members can read; only the platform writes. */
+export type MessagingSenderRow = {
+  id: string;
+  tenant_id: string;
+  provider: string;
+  e164: string;
+  kind: "toll_free" | "10dlc" | "short_code";
+  registration_status: "not_submitted" | "submitted" | "in_review" | "verified" | "failed";
+  failure_reason: Nullable<string>;
+  is_default: boolean;
+  verified_at: Nullable<string>;
+  released_at: Nullable<string>;
+  created_at: string;
+  updated_at: string;
+};
+
+/** MESSAGING-1: the end business's legal details for carrier registration
+ * (owner/admin read + write their own row under RLS). */
+export type MessagingBusinessProfileRow = {
+  tenant_id: string;
+  legal_name: string;
+  dba_name: Nullable<string>;
+  business_type: "sole_proprietor" | "llc" | "corporation" | "partnership" | "nonprofit";
+  ein: Nullable<string>;
+  website_url: Nullable<string>;
+  street_line1: Nullable<string>;
+  street_line2: Nullable<string>;
+  city: Nullable<string>;
+  region: Nullable<string>;
+  postal_code: Nullable<string>;
+  country: string;
+  contact_first_name: Nullable<string>;
+  contact_last_name: Nullable<string>;
+  contact_email: Nullable<string>;
+  contact_phone_e164: Nullable<string>;
+  monthly_volume_estimate: Nullable<number>;
+  submitted_at: Nullable<string>;
+  created_at: string;
+  updated_at: string;
+};
+
 /** Structural helper: every column is optional on insert (DB defaults fill the rest) except the ones a caller must always supply — good enough for this app's insert call sites without a second hand-transcribed shape per table. */
 export type InsertOf<Row> = { [K in keyof Row]?: Row[K] };
 export type UpdateOf<Row> = { [K in keyof Row]?: Row[K] };
@@ -845,6 +888,8 @@ export type Database = {
       adapter_connections: Tbl<AdapterConnectionRow>;
       adapter_sync_state: Tbl<AdapterSyncStateRow>;
       airtable_sync_state: Tbl<AirtableSyncStateRow>;
+      messaging_senders: Tbl<MessagingSenderRow>;
+      messaging_business_profiles: Tbl<MessagingBusinessProfileRow>;
     };
     Views: {
       v_tenant_margin: { Row: Record<string, unknown>; Relationships: [] };

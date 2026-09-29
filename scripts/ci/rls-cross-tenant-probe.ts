@@ -370,6 +370,20 @@ function tenantScopedTables(): TenantScopedTable[] {
       tenantColumn: "tenant_id",
       row: (t, u) => ({ tenant_id: t, phone_e164: `+1555${u}`, channel: "sms" }),
     },
+    {
+      // MESSAGING-1 (20260929150000_messaging_providers.sql): tenant-readable,
+      // service-role-written sender numbers + registration state.
+      table: "messaging_senders",
+      tenantColumn: "tenant_id",
+      row: (t, u) => ({ tenant_id: t, provider: "telnyx", e164: `+1888${u}`, kind: "toll_free" }),
+    },
+    {
+      // MESSAGING-1: owner/admin-only business details (EIN) for carrier
+      // registration.
+      table: "messaging_business_profiles",
+      tenantColumn: "tenant_id",
+      row: (t) => ({ tenant_id: t, legal_name: "RLS Probe LLC", business_type: "llc" }),
+    },
   ];
 }
 

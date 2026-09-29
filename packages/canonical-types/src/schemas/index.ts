@@ -19,6 +19,7 @@ export * from "./ftc-disclosure-ack.js";
 export * from "./login.js";
 export * from "./manual-mode-toggle.js";
 export * from "./message-reply.js";
+export * from "./messaging-business-profile.js";
 export * from "./mfa-challenge.js";
 export * from "./mfa-enroll.js";
 export * from "./offering.js";

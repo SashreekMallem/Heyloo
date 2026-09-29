@@ -29,7 +29,12 @@ export type TemplateKey =
   | "dental_intake_link"
   | "order_ready"
   | "waitlist_slot_opened"
-  | "chat_phone_verification";
+  | "chat_phone_verification"
+  | "owner_new_booking"
+  | "owner_urgent_call"
+  | "owner_missed_transfer"
+  | "sms_reply"
+  | "text_agent_reply";
 
 export interface RenderedMessage {
   subject?: string;
@@ -58,9 +63,44 @@ export function renderTemplate(
       const callerPhone = str("caller_phone");
       const callbackWindow = str("callback_window");
       return {
+        // Subject only used when the owner alert goes out by email.
+        subject: `New message from ${callerName}`,
         body: `${callerName} (${callerPhone}) left a message: "${str("message_text")}"${callbackWindow ? ` — callback window: ${callbackWindow}` : ""}`,
       };
     }
+    // MESSAGING-1 owner alerts (_shared/owner-alerts.ts) — enqueued by
+    // voice-events on call_analyzed; delivered by SMS and/or email per the
+    // tenant's /dashboard/delivery preferences.
+    case "owner_new_booking": {
+      const callerName = str("caller_name", "A caller");
+      const service = str("service");
+      return {
+        subject: `New booking: ${callerName}`,
+        body: `New booking from ${callerName}${str("caller_phone") ? ` (${str("caller_phone")})` : ""}${service ? ` for ${service}` : ""}${str("start_local") ? ` on ${str("start_local")}` : ""}.`,
+      };
+    }
+    case "owner_urgent_call": {
+      const callerName = str("caller_name", "A caller");
+      return {
+        subject: `Urgent call from ${callerName}`,
+        body: `URGENT: ${callerName}${str("caller_phone") ? ` (${str("caller_phone")})` : ""} called about something that may need immediate attention.${str("summary") ? ` Summary: ${str("summary")}` : ""}`,
+      };
+    }
+    case "owner_missed_transfer": {
+      const callerName = str("caller_name", "A caller");
+      return {
+        subject: `Missed transfer from ${callerName}`,
+        body: `${callerName}${str("caller_phone") ? ` (${str("caller_phone")})` : ""} asked to talk to someone, but the transfer didn't connect. Please call them back.${str("summary") ? ` Summary: ${str("summary")}` : ""}`,
+      };
+    }
+    // Verbatim reply bodies queued by the inbound-SMS webhook for providers
+    // that can't reply inside the webhook response (Telnyx): STOP/START/
+    // HELP/waitlist replies (`sms_reply`) and the text agent's AI reply
+    // (`text_agent_reply`, also written as an already-'sent' record row when
+    // the provider replied synchronously via TwiML).
+    case "sms_reply":
+    case "text_agent_reply":
+      return { body: str("body") };
     case "order_confirmation": {
       const total = num("total_cents");
       return {

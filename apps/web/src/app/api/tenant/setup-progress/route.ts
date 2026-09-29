@@ -67,6 +67,7 @@ export async function GET() {
     { count: resourceCount },
     { count: membershipCount },
     { count: adapterCount },
+    { data: messagingProfile },
   ] = await Promise.all([
     supabase
       .from("tenants")
@@ -108,6 +109,12 @@ export async function GET() {
       .select("id", { count: "exact", head: true })
       .eq("tenant_id", tenantId)
       .eq("status", "connected"),
+    // MESSAGING-1: owner/admin-only under RLS; a member just sees null.
+    supabase
+      .from("messaging_business_profiles")
+      .select("submitted_at")
+      .eq("tenant_id", tenantId)
+      .maybeSingle(),
   ]);
 
   const overrides = (agentConfig?.dynamic_variable_overrides ?? {}) as {
@@ -188,11 +195,15 @@ export async function GET() {
       optional: true,
     },
     {
+      // MESSAGING-1: provider-neutral (toll-free verification or 10DLC).
+      // The owner's part is sending their business details; carrier
+      // approval itself (about 1-2 weeks) isn't something they can do.
       id: "a2p",
-      label: "Complete SMS registration (A2P 10DLC)",
-      description: "Required by carriers before booking/order text messages can send.",
-      href: "/dashboard/delivery",
-      done: tenant?.a2p_status === "verified",
+      label: "Set up text messaging",
+      description:
+        "Carriers must approve texting for your business (about 1–2 weeks). Until then, confirmations and alerts are emailed to you.",
+      href: "/dashboard/texting",
+      done: tenant?.a2p_status === "verified" || !!messagingProfile?.submitted_at,
       optional: false,
     },
     {

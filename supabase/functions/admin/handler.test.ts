@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
+import { createResendEmailProvider } from "../_shared/providers/messaging/resend.ts";
 import type { SqlClient } from "../_shared/types.ts";
 import type { AdminRequestContext } from "./handler.ts";
 import { routeAdminRequest } from "./handler.ts";
@@ -1472,7 +1473,7 @@ describe("routeAdminRequest — outreach group", () => {
     expect(calls.some((c) => c.text.includes("update public.cac_events set tenant_id"))).toBe(true);
   });
 
-  it("returns 501 for mark_interested when resend deps aren't configured", async () => {
+  it("returns 501 for mark_interested when no email provider is configured", async () => {
     const { sql } = makeSql({
       "from public.replies where id": [{ id: "reply1", lead_id: "l1" }],
       "from public.leads where id": [
@@ -1491,7 +1492,7 @@ describe("routeAdminRequest — outreach group", () => {
     expect(result.status).toBe(501);
   });
 
-  it("sends a demo-followup email via Resend for mark_interested when configured", async () => {
+  it("sends a demo-followup email via the email provider for mark_interested when configured", async () => {
     const { sql, calls } = makeSql({
       "from public.replies where id": [{ id: "reply1", lead_id: "l1" }],
       "from public.leads where id": [
@@ -1507,10 +1508,22 @@ describe("routeAdminRequest — outreach group", () => {
         body: { action: "mark_interested" },
       }),
       logger,
-      { resend: { fetchImpl, apiKey: "key", fromAddress: "sales@heyloo.ai" } },
+      {
+        email: {
+          provider: createResendEmailProvider({ fetchImpl, apiKey: "key" }),
+          fromAddress: "sales@heyloo.ai",
+        },
+      },
     );
     expect(result).toEqual({ status: 200, body: { action: "mark_interested", lead_id: "l1" } });
     expect(fetchImpl).toHaveBeenCalled();
+    const [, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect((init.headers as Record<string, string>)["idempotency-key"]).toBe(
+      "outreach_demo_followup:reply1",
+    );
     expect(calls.some((c) => c.text.includes("status = 'replied'"))).toBe(true);
   });
 

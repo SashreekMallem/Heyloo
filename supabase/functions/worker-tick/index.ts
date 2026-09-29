@@ -29,6 +29,7 @@ import {
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import type { AdapterPushDeps } from "../worker-adapter-push/handler.ts";
+import { buildOutboundDeps } from "../worker-messages-outbound/deps.ts";
 import type { OutboundDeps } from "../worker-messages-outbound/handler.ts";
 import type { RecordingFetchDeps, UploadResult } from "../worker-recording-fetch/handler.ts";
 import type { NotConfiguredLeg } from "./handler.ts";
@@ -37,13 +38,10 @@ import { notConfigured, runWorkerTick } from "./handler.ts";
 const logger = createLogger({ fn: "worker-tick" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
 
-// --- messages_outbound leg (same vars as worker-messages-outbound/index.ts) ---
-const OUTBOUND_MISSING = missingEnv([
-  "TWILIO_ACCOUNT_SID",
-  "TWILIO_AUTH_TOKEN",
-  "RESEND_API_KEY",
-  "RESEND_FROM_ADDRESS",
-]);
+// --- messages_outbound leg (MESSAGING-1: same builder as
+// worker-messages-outbound/index.ts — runs when ANY messaging provider is
+// configured, e.g. email only) ---
+const OUTBOUND = buildOutboundDeps((name) => Deno.env.get(name), fetch, logger);
 
 // --- recording_fetch leg (same vars as worker-recording-fetch/index.ts) ---
 const SUPABASE_URL = optionalEnv("SUPABASE_URL");
@@ -127,33 +125,9 @@ Deno.serve(async (req: Request) => {
 
   const sql = getSql();
 
-  const outboundLeg: OutboundDeps | NotConfiguredLeg =
-    OUTBOUND_MISSING.length > 0
-      ? notConfigured(OUTBOUND_MISSING)
-      : {
-          twilioFetch: fetch,
-          twilioAccountSid: optionalEnv("TWILIO_ACCOUNT_SID") ?? "",
-          twilioAuthToken: optionalEnv("TWILIO_AUTH_TOKEN") ?? "",
-          async twilioFromNumber(tenantId: string): Promise<string | null> {
-            const rows = await sql<{ e164: string }>`
-              select e164 from public.phone_numbers where tenant_id = ${tenantId} and released_at is null and is_primary limit 1
-            `;
-            return rows[0]?.e164 ?? null;
-          },
-          resendFetch: fetch,
-          resendApiKey: optionalEnv("RESEND_API_KEY") ?? "",
-          resendFromAddress: optionalEnv("RESEND_FROM_ADDRESS") ?? "",
-          async fallbackTenantEmail(tenantId: string): Promise<string | null> {
-            const rows = await sql<{ email: string }>`
-              select u.email from public.memberships m
-              join auth.users u on u.id = m.user_id
-              where m.tenant_id = ${tenantId} and m.role = 'owner'
-              limit 1
-            `;
-            return rows[0]?.email ?? null;
-          },
-          logger,
-        };
+  const outboundLeg: OutboundDeps | NotConfiguredLeg = OUTBOUND.configured
+    ? OUTBOUND.deps
+    : notConfigured(OUTBOUND.missing);
 
   const result = await runWorkerTick(sql, {
     outbound: outboundLeg,

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { CanonicalInboundSms } from "../_shared/providers/messaging/types.ts";
 import type { TextAgentDeps } from "../_shared/text-agent/engine.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import { processInboundSms } from "./handler.ts";
@@ -18,7 +19,15 @@ function makeSql(fixtures: Record<string, unknown[]> = {}): { sql: SqlClient; ca
   return { sql, calls };
 }
 
-const BASE_SMS = { MessageSid: "SM1", From: "+15551234567", To: "+15559998888", Body: "hi" };
+const BASE_SMS: CanonicalInboundSms = {
+  provider: "twilio",
+  eventId: "SM1",
+  providerMessageId: "SM1",
+  fromE164: "+15551234567",
+  toE164: "+15559998888",
+  body: "hi",
+  providerHandledKeyword: null,
+};
 
 describe("processInboundSms", () => {
   it("no-ops when the tenant cannot be resolved for the To number", async () => {
@@ -30,28 +39,28 @@ describe("processInboundSms", () => {
 
   it("sets sms_opt_out=true and replies with the compliance message on STOP", async () => {
     const { sql, calls } = makeSql({ "from public.phone_numbers": [{ tenant_id: "t1" }] });
-    const result = await processInboundSms(sql, { ...BASE_SMS, Body: "STOP" });
+    const result = await processInboundSms(sql, { ...BASE_SMS, body: "STOP" });
     expect(result.replyBody).toContain("unsubscribed");
     expect(calls.some((c) => c.includes("sms_opt_out = true"))).toBe(true);
   });
 
   it("clears sms_opt_out on START", async () => {
     const { sql, calls } = makeSql({ "from public.phone_numbers": [{ tenant_id: "t1" }] });
-    const result = await processInboundSms(sql, { ...BASE_SMS, Body: "START" });
+    const result = await processInboundSms(sql, { ...BASE_SMS, body: "START" });
     expect(result.replyBody).toContain("resubscribed");
     expect(calls.some((c) => c.includes("sms_opt_out = false"))).toBe(true);
   });
 
   it("replies with static help text on HELP, without touching opt-out state", async () => {
     const { sql, calls } = makeSql({ "from public.phone_numbers": [{ tenant_id: "t1" }] });
-    const result = await processInboundSms(sql, { ...BASE_SMS, Body: "HELP" });
+    const result = await processInboundSms(sql, { ...BASE_SMS, body: "HELP" });
     expect(result.replyBody).toContain("Heyloo AI assistant");
     expect(calls.some((c) => c.includes("sms_opt_out"))).toBe(false);
   });
 
   it("stores an ordinary inbound message with no auto-reply", async () => {
     const { sql, calls } = makeSql({ "from public.phone_numbers": [{ tenant_id: "t1" }] });
-    const result = await processInboundSms(sql, { ...BASE_SMS, Body: "What time do you open?" });
+    const result = await processInboundSms(sql, { ...BASE_SMS, body: "What time do you open?" });
     expect(result).toEqual({});
     expect(calls.some((c) => c.includes("insert into public.messages_inbound"))).toBe(true);
   });
@@ -62,7 +71,7 @@ describe("processInboundSms", () => {
       "from public.customers": [{ id: "cust-1" }],
       // no "from public.messages_outbound" fixture -> [] -> no waitlist match
     });
-    const result = await processInboundSms(sql, { ...BASE_SMS, Body: "YES" });
+    const result = await processInboundSms(sql, { ...BASE_SMS, body: "YES" });
     expect(result.replyBody).toContain("resubscribed");
     expect(calls.some((c) => c.includes("sms_opt_out = false"))).toBe(true);
   });
@@ -80,7 +89,7 @@ describe("processInboundSms", () => {
       ],
       "from public.availability_slots": [{ id: "slot-1" }],
     });
-    const result = await processInboundSms(sql, { ...BASE_SMS, Body: "yes" });
+    const result = await processInboundSms(sql, { ...BASE_SMS, body: "yes" });
     expect(result.replyBody).toContain("booked");
     expect(calls.some((c) => c.includes("insert into public.bookings"))).toBe(true);
     expect(calls.some((c) => c.includes("status = 'converted'"))).toBe(true);
@@ -99,7 +108,7 @@ describe("processInboundSms", () => {
       ],
       // no availability_slots fixture -> [] -> slot no longer open
     });
-    const result = await processInboundSms(sql, { ...BASE_SMS, Body: "Y" });
+    const result = await processInboundSms(sql, { ...BASE_SMS, body: "Y" });
     expect(result.replyBody).toContain("already been taken");
     expect(calls.some((c) => c.includes("status = 'expired'"))).toBe(true);
     expect(calls.some((c) => c.includes("insert into public.bookings"))).toBe(false);
@@ -174,7 +183,7 @@ describe("processInboundSms", () => {
 
       const result = await processInboundSms(
         sql,
-        { ...BASE_SMS, Body: "Can I book a cleaning?" },
+        { ...BASE_SMS, body: "Can I book a cleaning?" },
         deps,
       );
 
@@ -223,7 +232,7 @@ describe("processInboundSms", () => {
 
       const result = await processInboundSms(
         sql,
-        { ...BASE_SMS, Body: "Can I book a cleaning?" },
+        { ...BASE_SMS, body: "Can I book a cleaning?" },
         deps,
       );
 
@@ -260,7 +269,7 @@ describe("processInboundSms", () => {
 
       const result = await processInboundSms(
         sql,
-        { ...BASE_SMS, Body: "Can I book a cleaning?" },
+        { ...BASE_SMS, body: "Can I book a cleaning?" },
         deps,
       );
 
@@ -271,7 +280,7 @@ describe("processInboundSms", () => {
 
     it("falls back to archive-only behavior when no engine deps are provided (unchanged from before this task)", async () => {
       const { sql } = makeSql(engineFixtures());
-      const result = await processInboundSms(sql, { ...BASE_SMS, Body: "Can I book a cleaning?" });
+      const result = await processInboundSms(sql, { ...BASE_SMS, body: "Can I book a cleaning?" });
       expect(result).toEqual({});
     });
   });

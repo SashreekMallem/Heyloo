@@ -1,19 +1,21 @@
 // Deno entrypoint (excluded from ../tsconfig.json). verify_jwt true —
 // authenticated tenant owner, OR triggered internally by the provisioning
-// saga (service_role) — same auth convention as api-provision/index.ts.
+// saga (x-internal-secret) — same auth convention as api-provision/index.ts.
+//
+// MESSAGING-1: every provider/registration env var is OPTIONAL at module
+// scope (the old module-scope requireEnv crashed cold start on any deploy
+// without Twilio A2P secrets); the handler answers 503/501 honestly instead.
+import { timingSafeEqual } from "../_shared/crypto.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { requireEnv } from "../_shared/deno/env.ts";
+import { optionalEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
+import { buildMessagingRegistryFromEnv } from "../_shared/providers/messaging/registry.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { registerA2p } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-a2p-register" });
-const TWILIO_ACCOUNT_SID = requireEnv("TWILIO_ACCOUNT_SID");
-const TWILIO_AUTH_TOKEN = requireEnv("TWILIO_AUTH_TOKEN");
-const TWILIO_A2P_BRAND_SID = requireEnv("TWILIO_A2P_BRAND_SID");
-const A2P_PRIVACY_POLICY_URL = requireEnv("A2P_PRIVACY_POLICY_URL");
-const A2P_TERMS_URL = requireEnv("A2P_TERMS_URL");
-const A2P_INTERNAL_SECRET = requireEnv("A2P_INTERNAL_SECRET");
+const REGISTRY = buildMessagingRegistryFromEnv((name) => Deno.env.get(name), fetch);
+const A2P_INTERNAL_SECRET = optionalEnv("A2P_INTERNAL_SECRET");
 
 interface JwtClaims {
   app_metadata?: { tenant_id?: string; role?: string };
@@ -44,7 +46,10 @@ Deno.serve(async (req: Request) => {
   if (!tenantId) return jsonResponse({ error: "missing_tenant_id" }, { status: 422 });
 
   const internalSecret = req.headers.get("x-internal-secret");
-  const isInternalCall = !!internalSecret && internalSecret === A2P_INTERNAL_SECRET;
+  const isInternalCall =
+    !!internalSecret &&
+    !!A2P_INTERNAL_SECRET &&
+    timingSafeEqual(internalSecret, A2P_INTERNAL_SECRET);
   if (!isInternalCall) {
     const claims = decodeJwtClaims(req.headers.get("authorization"));
     if (claims?.app_metadata?.tenant_id !== tenantId || claims.app_metadata?.role !== "owner") {
@@ -52,14 +57,11 @@ Deno.serve(async (req: Request) => {
     }
   }
 
-  const sql = getSql();
-  const result = await registerA2p(sql, tenantId, body.action, {
-    twilioFetch: fetch,
-    twilioAccountSid: TWILIO_ACCOUNT_SID,
-    twilioAuthToken: TWILIO_AUTH_TOKEN,
-    platformBrandSid: TWILIO_A2P_BRAND_SID,
-    privacyPolicyUrl: A2P_PRIVACY_POLICY_URL,
-    termsAndConditionsUrl: A2P_TERMS_URL,
+  const result = await registerA2p(getSql(), tenantId, body.action, {
+    registry: REGISTRY,
+    brandRef: optionalEnv("TWILIO_A2P_BRAND_SID") ?? null,
+    privacyPolicyUrl: optionalEnv("A2P_PRIVACY_POLICY_URL") ?? null,
+    termsAndConditionsUrl: optionalEnv("A2P_TERMS_URL") ?? null,
     logger,
   });
 

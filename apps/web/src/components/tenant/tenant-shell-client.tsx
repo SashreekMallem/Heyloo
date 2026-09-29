@@ -43,6 +43,7 @@ const CONFIGURE_SECTION: NavSection = {
     { label: "Phone setup", href: "/dashboard/phone-setup", icon: NAV_ICONS.phoneSetup },
     { label: "Website widget", href: "/dashboard/website-widget", icon: NAV_ICONS.websiteWidget },
     { label: "Delivery", href: "/dashboard/delivery", icon: NAV_ICONS.delivery },
+    { label: "Text messaging", href: "/dashboard/texting", icon: NAV_ICONS.messages },
     { label: "Integrations", href: "/dashboard/integrations", icon: NAV_ICONS.integrations },
     { label: "Team", href: "/dashboard/team", icon: NAV_ICONS.team },
   ],

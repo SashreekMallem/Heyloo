@@ -700,9 +700,10 @@ export const API_FIXTURES: Record<string, unknown> = {
       },
       {
         id: "a2p",
-        label: "Complete SMS registration (A2P 10DLC)",
-        description: "Required by carriers before booking/order text messages can send.",
-        href: "/dashboard/delivery",
+        label: "Set up text messaging",
+        description:
+          "Carriers must approve texting for your business (about 1–2 weeks). Until then, confirmations and alerts are emailed to you.",
+        href: "/dashboard/texting",
         done: false,
         optional: false,
       },

@@ -89,6 +89,11 @@ verify_jwt = false
 verify_jwt = false
 [functions.webhooks-twilio-sms]
 verify_jwt = false
+# webhooks-sms (MESSAGING-1): provider-neutral inbound SMS + delivery
+# receipts at /webhooks-sms/<provider>[/status]; authenticated by each
+# provider's own signature (Telnyx Ed25519, Twilio HMAC) on the raw body.
+[functions.webhooks-sms]
+verify_jwt = false
 [functions.webhooks-outreach]
 verify_jwt = false
 [functions.webhooks-pos]

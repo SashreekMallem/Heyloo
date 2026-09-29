@@ -117,6 +117,15 @@ export const ENV_VAR_NAMES = {
   outreachWebhookSecret: "OUTREACH_WEBHOOK_SECRET",
   squareWebhookSignatureKey: "SQUARE_WEBHOOK_SIGNATURE_KEY",
   resendApiKey: "RESEND_API_KEY",
+  // MESSAGING-1: provider-neutral messaging (see providers/messaging/registry.ts,
+  // which reads these through an injected getter so it stays portable).
+  smsProvider: "SMS_PROVIDER",
+  emailProvider: "EMAIL_PROVIDER",
+  emailFromAddress: "EMAIL_FROM_ADDRESS",
+  telnyxApiKey: "TELNYX_API_KEY",
+  telnyxPublicKey: "TELNYX_PUBLIC_KEY",
+  telnyxMessagingProfileId: "TELNYX_MESSAGING_PROFILE_ID",
+  webhooksSmsBaseUrl: "WEBHOOKS_SMS_BASE_URL",
   geocodeApiKey: "GEOCODE_API_KEY",
   adminSessionAal2WindowMinutes: "ADMIN_AAL2_FRESHNESS_MINUTES",
 } as const;

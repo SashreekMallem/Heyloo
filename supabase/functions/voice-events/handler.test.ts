@@ -420,6 +420,147 @@ describe("handleCallAnalyzed", () => {
     await expect(handleCallAnalyzed(sql, call, logger)).resolves.toBeUndefined();
   });
 
+  describe("MESSAGING-1 owner alerts", () => {
+    const OWNER = {
+      "public.agent_configs ac": [
+        { transfer_number: "+15550001111", delivery: null, owner_email: "o@example.com" },
+      ],
+      "insert into public.messages_outbound": [{ id: "alert-1" }],
+    };
+
+    function alertTemplates(calls: { text: string; values: unknown[] }[]): unknown[] {
+      return calls
+        .filter((c) => c.text.includes("insert into public.messages_outbound"))
+        .map((c) => c.values[3]);
+    }
+
+    it("alerts the owner about an emergency call", async () => {
+      const { sql, calls } = makeRecordingSql({
+        "call_summary = coalesce(": [
+          {
+            id: "cl1",
+            tenant_id: "t1",
+            urgency_flag: true,
+            is_test_call: false,
+            caller_number: "+15551234567",
+          },
+        ],
+        ...OWNER,
+      });
+      await handleCallAnalyzed(
+        sql,
+        {
+          call_id: "call_1",
+          call_analysis: {
+            call_summary: "Brakes failed on the highway.",
+            custom_analysis_data: { emergency_detected: true },
+          },
+        },
+        logger,
+      );
+      expect(alertTemplates(calls)).toEqual(["owner_urgent_call"]);
+      const insert = calls.find((c) => c.text.includes("insert into public.messages_outbound"));
+      expect(insert?.values[4]).toEqual({
+        caller_phone: "+15551234567",
+        summary: "Brakes failed on the highway.",
+      });
+    });
+
+    it("alerts about a booking made on the call and a transfer that never connected", async () => {
+      const { sql, calls } = makeRecordingSql({
+        "call_summary = coalesce(": [
+          {
+            id: "cl1",
+            tenant_id: "t1",
+            urgency_flag: false,
+            is_test_call: false,
+            caller_number: null,
+          },
+        ],
+        "from public.bookings b": [
+          {
+            id: "b1",
+            start_at: "2026-10-01T18:00:00Z",
+            customer_name: "Devon",
+            service: "Oil change",
+            timezone: "America/New_York",
+          },
+        ],
+        ...OWNER,
+      });
+      await handleCallAnalyzed(
+        sql,
+        { call_id: "call_1", disconnection_reason: "transfer_cancelled", call_analysis: {} },
+        logger,
+      );
+      expect(alertTemplates(calls)).toEqual(["owner_new_booking", "owner_missed_transfer"]);
+      const booking = calls.find(
+        (c) =>
+          c.text.includes("insert into public.messages_outbound") &&
+          c.values[3] === "owner_new_booking",
+      );
+      expect(booking?.values[4]).toMatchObject({
+        caller_name: "Devon",
+        service: "Oil change",
+        start_local: "Thu, Oct 1, 2:00 PM",
+      });
+    });
+
+    it("never alerts for a test call", async () => {
+      const { sql, calls } = makeRecordingSql({
+        "call_summary = coalesce(": [
+          {
+            id: "cl1",
+            tenant_id: "t1",
+            urgency_flag: true,
+            is_test_call: true,
+            caller_number: null,
+          },
+        ],
+        ...OWNER,
+      });
+      await handleCallAnalyzed(
+        sql,
+        {
+          call_id: "call_1",
+          call_analysis: { custom_analysis_data: { emergency_detected: true } },
+        },
+        logger,
+      );
+      expect(alertTemplates(calls)).toEqual([]);
+    });
+
+    it("an alert failure never fails the webhook's own processing", async () => {
+      const base = makeRecordingSql({
+        "call_summary = coalesce(": [
+          {
+            id: "cl1",
+            tenant_id: "t1",
+            urgency_flag: true,
+            is_test_call: false,
+            caller_number: null,
+          },
+        ],
+      });
+      const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+        if (strings.join(" ").includes("from public.bookings b")) {
+          return Promise.reject(new Error("db_blip"));
+        }
+        return base.sql(strings, ...values);
+      }) as SqlClient;
+      await expect(
+        handleCallAnalyzed(
+          sql,
+          {
+            call_id: "call_1",
+            call_analysis: { custom_analysis_data: { emergency_detected: true } },
+          },
+          logger,
+        ),
+      ).resolves.toBeUndefined();
+    });
+  });
+
   it("ANALYSIS-1: an empty-string outcome degrades to null rather than overwriting a prior real value with blank text", async () => {
     const { sql, calls } = makeRecordingSql({
       "update public.call_logs": [{ id: "cl1", tenant_id: "t1", urgency_flag: false }],

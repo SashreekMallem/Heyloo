@@ -5,9 +5,9 @@ import {
   type CompilerAgentTemplate,
   compileTemplate,
 } from "../_shared/compiler/template-compiler.ts";
+import { textToEmailHtml } from "../_shared/email-body.ts";
 import { isSuppressed } from "../_shared/lead-dedup.ts";
-import type { ResendFetch } from "../_shared/providers/resend.ts";
-import { sendEmail } from "../_shared/providers/resend.ts";
+import type { EmailProvider } from "../_shared/providers/messaging/types.ts";
 import type { RetellFetch } from "../_shared/providers/retell.ts";
 import {
   createAgent,
@@ -94,10 +94,11 @@ export interface AdminDeps {
     canSpamFooter: string;
   };
   /** Used only by the Outreach group's "mark interested -> demo link send"
-   * reply action (T8) — a direct Resend send, deliberately NOT routed
-   * through `messages_outbound`/`worker-messages-outbound` (that table's
-   * `tenant_id` is `NOT NULL`; a cold-outreach lead has no tenant yet). */
-  resend?: { fetchImpl: ResendFetch; apiKey: string; fromAddress: string };
+   * reply action (T8) — a direct send through the email provider port
+   * (MESSAGING-1), deliberately NOT routed through `messages_outbound`/
+   * `worker-messages-outbound` (that table's `tenant_id` is `NOT NULL`; a
+   * cold-outreach lead has no tenant yet). */
+  email?: { provider: EmailProvider; fromAddress: string };
 }
 
 function segments(path: string): string[] {
@@ -1812,18 +1813,21 @@ async function handleOutreach(
 
     if (body.action === "mark_interested") {
       if (!lead.email) return { status: 422, body: { error: "lead_has_no_email" } };
-      if (!deps.resend) return { status: 501, body: { error: "resend_not_configured" } };
+      if (!deps.email) return { status: 501, body: { error: "email_not_configured" } };
       // A direct send, not the tenant-scoped `messages_outbound` pipeline —
-      // this lead has no tenant yet (see AdminDeps.resend's docstring).
+      // this lead has no tenant yet (see AdminDeps.email's docstring).
       const rendered = renderTemplate("outreach_demo_followup", {
         contact_name: lead.contact_name,
         demo_url: "https://heyloo.ai/demo",
       });
-      const sendResult = await sendEmail(deps.resend.fetchImpl, deps.resend.apiKey, {
-        from: deps.resend.fromAddress,
+      const sendResult = await deps.email.provider.sendEmail({
+        from: deps.email.fromAddress,
         to: lead.email,
         subject: rendered.subject ?? "See your AI receptionist in action",
-        html: `<p>${rendered.body}</p>`,
+        html: textToEmailHtml(rendered.body),
+        text: rendered.body,
+        // One demo-followup per reply, even if the admin double-clicks.
+        idempotencyKey: `outreach_demo_followup:${reply.id}`,
       });
       if (!sendResult.ok) return { status: 502, body: { error: "demo_followup_send_failed" } };
       await sql`update public.leads set status = 'replied' where id = ${lead.id} and status <> 'converted'`;

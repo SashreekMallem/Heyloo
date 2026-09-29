@@ -1,6 +1,12 @@
-import { hmacSha1Base64, timingSafeEqual } from "./crypto.ts";
+import { hmacSha1Base64, timingSafeEqual } from "../../crypto.ts";
 
 /**
+ * MESSAGING-1: moved here unchanged from `_shared/twilio-signature.ts`; only
+ * the Twilio messaging adapter (`./twilio.ts`) calls it. Re-confirmed
+ * against twilio.com/docs/usage/webhooks/webhooks-security (fetched
+ * 2026-09-29): params sorted alphabetically and appended to the URL,
+ * HMAC-SHA1 keyed by the Auth Token (docs/VERIFY.md MESSAGING-1).
+ *
  * Twilio webhook signature verification (`/webhooks-twilio-sms` —
  * BACKEND_SPEC §3.3/MASTER_SPEC §3.3, CLAUDE.md Rule 2 "fail closed").
  *

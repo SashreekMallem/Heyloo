@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hmacSha1Base64 } from "./crypto.ts";
+import { hmacSha1Base64 } from "../../crypto.ts";
 import { verifyTwilioSignature } from "./twilio-signature.ts";
 
 const AUTH_TOKEN = "test-twilio-auth-token";
