@@ -29,7 +29,42 @@ port = 54323
 
 [auth]
 enabled = true
+# Local dev only. The LIVE project's site_url is https://heyloo-voice.vercel.app
+# (with uri_allow_list https://heyloo-voice.vercel.app/**, http://localhost:3000/**),
+# set in the dashboard / Management API, never by this file. The email templates
+# below build their links from {{ .SiteURL }}, so this value is what a local
+# `supabase start` (Inbucket) confirmation mail points at.
 site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000/**"]
+
+# Email templates (SIGNUP-BILL-FIX A). Every link goes to the app's own
+# /auth/confirm route with the token hash (server-side verifyOtp, PKCE-safe for
+# SSR; supabase.com/docs/guides/auth/server-side/email-based-auth-with-pkce-flow-for-ssr)
+# instead of {{ .ConfirmationURL }}, and carries where to go next:
+#   confirmation (type=email) -> /signup/resume   (continue to checkout)
+#   recovery                  -> /reset-password/confirm
+#   invite, magic_link        -> /dashboard
+# The live project takes these from `scripts/apply-auth-templates.ts --apply`
+# (Management API); this block is for local parity only.
+[auth.email.template.confirmation]
+subject = "Confirm your Heyloo account"
+content_path = "./templates/confirmation.html"
+
+[auth.email.template.recovery]
+subject = "Reset your Heyloo password"
+content_path = "./templates/recovery.html"
+
+[auth.email.template.invite]
+subject = "You're invited to Heyloo"
+content_path = "./templates/invite.html"
+
+[auth.email.template.magic_link]
+subject = "Your Heyloo sign-in link"
+content_path = "./templates/magic_link.html"
+
+[auth.email.template.email_change]
+subject = "Confirm your new Heyloo email address"
+content_path = "./templates/email_change.html"
 
 # Custom Access Token Hook (tenant_id/role/platform_admin/referral_partner_id
 # in app_metadata) — SYSTEM_DESIGN §2/§6, CLAUDE.md Rule 2, BACKEND_SPEC

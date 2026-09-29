@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 
 let mockVerifyOtp: (args: { type: string; token_hash: string }) => Promise<{ error: unknown }> =
   async () => ({ error: null });
+let mockExchange: (code: string) => Promise<{ error: unknown }> = async () => ({ error: null });
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({
     auth: {
       verifyOtp: (args: { type: string; token_hash: string }) => mockVerifyOtp(args),
+      exchangeCodeForSession: (code: string) => mockExchange(code),
     },
   }),
 }));
@@ -30,10 +32,52 @@ describe("GET /auth/confirm", () => {
     expect(captured).toEqual({ type: "invite", token_hash: "abc123" });
   });
 
-  it("defaults next to /dashboard when absent", async () => {
+  it("defaults next to /dashboard for an invite link with no next", async () => {
+    mockVerifyOtp = async () => ({ error: null });
+    const res = await GET(req("?token_hash=abc123&type=invite"));
+    expect(res.headers.get("location")).toBe("https://app.example.com/dashboard");
+  });
+
+  it("accepts type=email (the CURRENT documented signup-confirmation type) and resumes the signup wizard by default", async () => {
+    let captured: unknown;
+    mockVerifyOtp = async (args) => {
+      captured = args;
+      return { error: null };
+    };
+    const res = await GET(req("?token_hash=abc123&type=email"));
+    expect(captured).toEqual({ type: "email", token_hash: "abc123" });
+    expect(res.headers.get("location")).toBe("https://app.example.com/signup/resume");
+  });
+
+  it("still accepts the legacy type=signup and also resumes the wizard by default", async () => {
     mockVerifyOtp = async () => ({ error: null });
     const res = await GET(req("?token_hash=abc123&type=signup"));
-    expect(res.headers.get("location")).toBe("https://app.example.com/dashboard");
+    expect(res.headers.get("location")).toBe("https://app.example.com/signup/resume");
+  });
+
+  it("honours an explicit next for a signup confirmation", async () => {
+    mockVerifyOtp = async () => ({ error: null });
+    const res = await GET(req("?token_hash=abc123&type=email&next=%2Fsignup%2Fresume"));
+    expect(res.headers.get("location")).toBe("https://app.example.com/signup/resume");
+  });
+
+  it("exchanges a PKCE ?code= link (stock template) for a session and continues to next", async () => {
+    let captured: string | undefined;
+    mockExchange = async (code) => {
+      captured = code;
+      return { error: null };
+    };
+    const res = await GET(req("?code=pkce-code-1&next=%2Fsignup%2Fresume"));
+    expect(captured).toBe("pkce-code-1");
+    expect(res.headers.get("location")).toBe("https://app.example.com/signup/resume");
+  });
+
+  it("fails closed to /login when the PKCE code cannot be exchanged", async () => {
+    mockExchange = async () => ({ error: new Error("invalid grant") });
+    const res = await GET(req("?code=bad&next=%2Fsignup%2Fresume"));
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.pathname).toBe("/login");
+    expect(location.searchParams.get("toast")).toBe("confirm_failed");
   });
 
   it("redirects recovery links to the caller-supplied next (e.g. reset-password/confirm)", async () => {
@@ -84,6 +128,12 @@ describe("GET /auth/confirm", () => {
   it("never treats a protocol-relative next as a redirect target (open-redirect guard)", async () => {
     mockVerifyOtp = async () => ({ error: null });
     const res = await GET(req("?token_hash=abc123&type=invite&next=%2F%2Fevil.example.com"));
+    expect(res.headers.get("location")).toBe("https://app.example.com/dashboard");
+  });
+
+  it("never treats a backslash-prefixed next as a redirect target (URL parser treats /\\host as //host)", async () => {
+    mockVerifyOtp = async () => ({ error: null });
+    const res = await GET(req("?token_hash=abc123&type=invite&next=%2F%5Cevil.example.com"));
     expect(res.headers.get("location")).toBe("https://app.example.com/dashboard");
   });
 });

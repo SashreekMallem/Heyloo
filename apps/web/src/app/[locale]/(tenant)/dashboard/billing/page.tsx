@@ -99,6 +99,10 @@ export default function BillingPage() {
         .from("billing_invoices")
         .select("id, period_start, period_end, total_cents, status")
         .eq("tenant_id", tenantId as string)
+        // `void` rows are internal markers (job-billing-cycle records a usage
+        // computation for a period Stripe already invoiced): showing them next to
+        // the real Stripe invoice would look like a second, cancelled charge.
+        .neq("status", "void")
         .order("period_start", { ascending: false });
       return (data ?? []) as Invoice[];
     },

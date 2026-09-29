@@ -4,7 +4,7 @@ import { encodeSignupDraft, SIGNUP_DRAFT_COOKIE } from "@/lib/signup/draft-cooki
 Object.assign(process.env, { SIGNUP_DRAFT_SECRET: "test-signup-draft-secret" });
 
 let mockSession: { access_token: string } | null = null;
-let mockUser: { email: string } | null = null;
+let mockUser: { email: string; user_metadata?: unknown } | null = null;
 const refreshSession = vi.fn(async () => ({ data: {}, error: null }));
 
 vi.mock("@/lib/supabase/server", () => ({
@@ -123,7 +123,7 @@ describe("POST /api/checkout/session", () => {
     expect(await res.json()).toEqual({ error: "tenant_already_exists" });
   });
 
-  it("refreshes the session, clears the draft cookie, and returns the checkout url on success", async () => {
+  it("refreshes the session, KEEPS the draft cookie (cancel at Stripe returns to /signup/plan), and returns the checkout url on success", async () => {
     mockUser = { email: "owner@example.com" };
     mockSession = { access_token: "at1" };
     cookieValue = encodeSignupDraft({ business_type: "legal", business_name: "Doe & Associates" });
@@ -135,6 +135,46 @@ describe("POST /api/checkout/session", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ url: "https://checkout.stripe.com/xyz" });
     expect(refreshSession).toHaveBeenCalledTimes(1);
-    expect(cookieDelete).toHaveBeenCalledWith(SIGNUP_DRAFT_COOKIE.name);
+    expect(cookieDelete).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the draft saved on the user at signUp when the cookie is gone (email confirmed in another browser)", async () => {
+    mockUser = {
+      email: "owner@example.com",
+      user_metadata: {
+        owner_name: "Joe",
+        signup_draft: { business_type: "dental", business_name: "Bright Smiles" },
+        signup_plan: { annual: false, white_glove: true },
+      },
+    };
+    mockSession = { access_token: "at1" };
+    cookieValue = undefined;
+    edgeResult = { status: 200, body: { checkout_url: "https://checkout.stripe.com/s3" } };
+    callEdgeFunction.mockClear();
+
+    const res = await POST(postRequest({ white_glove: true }));
+    expect(res.status).toBe(200);
+    expect(callEdgeFunction).toHaveBeenCalledWith(
+      "api-checkout",
+      expect.objectContaining({
+        body: {
+          vertical: "dental",
+          business_name: "Bright Smiles",
+          email: "owner@example.com",
+          white_glove: true,
+        },
+      }),
+    );
+  });
+
+  it("still 400s when neither the cookie nor a valid user-metadata draft exists (a tampered draft is not trusted)", async () => {
+    mockUser = {
+      email: "owner@example.com",
+      user_metadata: { signup_draft: { business_type: "not-a-vertical", business_name: "x" } },
+    };
+    mockSession = { access_token: "at1" };
+    cookieValue = undefined;
+    const res = await POST(postRequest());
+    expect(res.status).toBe(400);
   });
 });

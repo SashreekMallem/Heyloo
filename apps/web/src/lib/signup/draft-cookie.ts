@@ -3,7 +3,12 @@ import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 const COOKIE_NAME = "heyloo_signup_draft";
-const MAX_AGE_SECONDS = 60 * 60; // 1 hour — pre-auth state only, per FRONTEND_SPEC.md §4 ("short-lived").
+// 24 hours. The draft must outlive the trip to Stripe Checkout and back
+// (cancel lands on /signup/plan, which needs it) and the wait for the
+// confirmation email; it is removed explicitly once the tenant is active
+// (`DELETE /api/signup/draft`, called when provisioning completes), and the
+// TTL is only the backstop for a customer who never comes back.
+const MAX_AGE_SECONDS = 60 * 60 * 24;
 
 export interface SignupDraft {
   business_type: string;
@@ -21,7 +26,7 @@ function sign(payload: string): string {
   return createHmac("sha256", secret()).update(payload).digest("hex");
 }
 
-/** Signed, short-lived cookie carrying pre-auth signup progress (FRONTEND_SPEC.md §4 DECIDE — avoids a `signup_drafts` table for pre-auth state; cleared once the real `tenants` row exists at step 3). */
+/** Signed cookie carrying signup progress (FRONTEND_SPEC.md §4 DECIDE — avoids a `signup_drafts` table). Kept until the tenant is ACTIVE, not merely created: creating the checkout session no longer clears it, so cancelling at Stripe returns to a filled-in wizard. */
 export function encodeSignupDraft(draft: SignupDraft): string {
   const payload = Buffer.from(JSON.stringify(draft)).toString("base64url");
   return `${payload}.${sign(payload)}`;

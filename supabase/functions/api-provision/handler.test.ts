@@ -124,6 +124,21 @@ describe("runProvisioningSaga", () => {
     expect(publishCall?.body).toEqual({ version: 1 });
   });
 
+  it("counts a provisioning step's attempts once per START, not once per status write (attempts double-counted)", async () => {
+    const { sql, calls } = makeSql(baseFixtures());
+    await runProvisioningSaga(sql, "tenant_1", makeDeps());
+    const writes = calls.filter((c) => c.text.includes("insert into public.provisioning_runs"));
+    expect(writes.length).toBeGreaterThan(0);
+    for (const w of writes) {
+      // status is the 3rd bound value; the increment is the LAST bound value.
+      const status = w.values[2];
+      const increment = w.values.at(-1);
+      expect(increment).toBe(status === "in_progress" ? 1 : 0);
+    }
+    // No write adds a literal "+ 1" any more.
+    expect(writes.every((w) => !w.text.includes("attempts + 1"))).toBe(true);
+  });
+
   it("resumes past an already-compiled agent (idempotent step 2)", async () => {
     const { sql, calls } = makeSql(
       baseFixtures({

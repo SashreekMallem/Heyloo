@@ -5,7 +5,7 @@ import { TenantIdProvider } from "@/lib/tenant/tenant-context";
 
 function chain(result: unknown) {
   const obj: Record<string, unknown> = {};
-  for (const method of ["select", "eq", "gte", "order", "limit", "maybeSingle"]) {
+  for (const method of ["select", "eq", "neq", "gte", "order", "limit", "maybeSingle"]) {
     obj[method] = vi.fn(() => obj);
   }
   // biome-ignore lint/suspicious/noThenProperty: intentional thenable mock of a Supabase query-builder chain.
@@ -14,6 +14,7 @@ function chain(result: unknown) {
   return obj;
 }
 
+let invoicesChain: Record<string, ReturnType<typeof vi.fn>> | null = null;
 let usageDailyRows: { billable_minutes: number | null; text_messages_out?: number | null }[] = [];
 
 vi.mock("@/lib/supabase/browser", () => ({
@@ -23,7 +24,10 @@ vi.mock("@/lib/supabase/browser", () => ({
       if (table === "tenants") {
         return chain({ data: { usage_hard_cap_minutes: null }, error: null });
       }
-      if (table === "billing_invoices") return chain({ data: [], error: null });
+      if (table === "billing_invoices") {
+        invoicesChain = chain({ data: [], error: null }) as typeof invoicesChain;
+        return invoicesChain;
+      }
       return chain({ data: null, error: null });
     }),
   },
@@ -148,5 +152,15 @@ describe("BillingPage text conversations usage tile", () => {
     renderPage();
 
     expect(await screen.findByText("12 of 200 AI text replies used")).toBeInTheDocument();
+  });
+
+  it("never lists the internal `void` markers as invoices", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ included_minutes: 100 })),
+    );
+    renderPage();
+    await screen.findByText("No invoices yet");
+    expect(invoicesChain?.["neq"]).toHaveBeenCalledWith("status", "void");
   });
 });

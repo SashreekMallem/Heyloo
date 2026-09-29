@@ -5,6 +5,18 @@ import { encodeSignupDraft, SIGNUP_DRAFT_COOKIE } from "@/lib/signup/draft-cooki
 
 export const runtime = "nodejs";
 
+/**
+ * Clears the signup draft once the tenant is active (called by the
+ * provisioning step when the line is live). Idempotent: deleting a cookie
+ * that isn't there is fine, so it needs no session — the cookie is the
+ * caller's own and carries nothing sensitive.
+ */
+export async function DELETE() {
+  const cookieStore = await cookies();
+  cookieStore.delete(SIGNUP_DRAFT_COOKIE.name);
+  return NextResponse.json({ ok: true });
+}
+
 /** Signup step 1 submit — writes the signed pre-auth draft cookie (FRONTEND_SPEC.md §4.1). */
 export async function POST(request: Request) {
   let json: unknown;

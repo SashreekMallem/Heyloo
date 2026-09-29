@@ -8,7 +8,8 @@ import { jsonResponse } from "../_shared/responses.ts";
 import { StripeEventSchema } from "../_shared/schemas/stripe-event.ts";
 import { verifyStripeSignature } from "../_shared/stripe-signature.ts";
 import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/webhook-dedup.ts";
-import { processStripeEvent } from "./handler.ts";
+import { createFetchBalanceTransaction } from "./balance-transaction.ts";
+import { processStripeEvent, replayAfterTenantDeferral, StripeEventDeferred } from "./handler.ts";
 import { createInvokeProvisioning } from "./invoke-provisioning.ts";
 
 const logger = createLogger({ fn: "webhooks-stripe" });
@@ -23,6 +24,11 @@ const STRIPE_WEBHOOK_SIGNING_SECRET = optionalEnv("STRIPE_WEBHOOK_SIGNING_SECRET
 const SUPABASE_URL = requireEnv("SUPABASE_URL");
 const PROVISION_INTERNAL_SECRET = requireEnv("PROVISION_INTERNAL_SECRET");
 const SB_SECRET_KEY = requireServiceRoleKey();
+// Optional: without it `charge.succeeded` is deferred (never recorded with a
+// made-up fee) until Stripe is configured and the event is replayed.
+const fetchBalanceTransaction = createFetchBalanceTransaction({
+  secretKey: optionalEnv("STRIPE_SECRET_KEY"),
+});
 
 const invokeProvisioning = createInvokeProvisioning({
   supabaseUrl: SUPABASE_URL,
@@ -80,12 +86,32 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ received: true });
   }
 
+  const deps = {
+    invokeProvisioning,
+    ...(fetchBalanceTransaction ? { fetchBalanceTransaction } : {}),
+  };
   runInBackground(
     async () => {
       try {
-        await processStripeEvent(sql, event, logger, { invokeProvisioning });
+        await processStripeEvent(sql, event, logger, deps);
         if (dedup.webhookEventId) await markWebhookEventProcessed(sql, dedup.webhookEventId);
       } catch (err) {
+        if (err instanceof StripeEventDeferred) {
+          // Not a failure: the tenant is not linked to the customer yet (or the
+          // fee is not fetchable). Kept as `deferred:*` in webhook_events and
+          // replayed when checkout.session.completed / invoice.paid links it.
+          logger.warn("stripe_event_deferred", { reason: err.reason, type: event.type });
+          if (dedup.webhookEventId)
+            await markWebhookEventProcessed(sql, dedup.webhookEventId, err.message);
+          // The tenant may have been linked while this event was processing,
+          // i.e. before this deferral was persisted, so that link's replay
+          // could not see it: re-check once now (whichever of "linked" and
+          // "marked" happens last sees the other).
+          if (err.reason === "tenant_unresolved") {
+            await replayAfterTenantDeferral(sql, logger, deps, event.data.object);
+          }
+          return;
+        }
         logger.error("stripe_background_error", { error: String(err), type: event.type });
         if (dedup.webhookEventId)
           await markWebhookEventProcessed(sql, dedup.webhookEventId, String(err));

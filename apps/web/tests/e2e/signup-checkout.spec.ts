@@ -27,7 +27,7 @@ test("signup account step reaches the (mocked) checkout redirect", async ({ page
   expect(draftRes.ok()).toBe(true);
 
   // Supabase Auth `signUp` — mocked so no live Supabase project is needed.
-  await page.route("**/auth/v1/signup", async (route) => {
+  await page.route(/\/auth\/v1\/signup/, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",

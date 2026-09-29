@@ -1,5 +1,17 @@
 import type { StripeEvent } from "../_shared/schemas/stripe-event.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
+import {
+  type ChargeDeps,
+  linkTenantToStripe,
+  parseInvoice,
+  recordCharge,
+  replayDeferredCharges,
+  resolveInvoiceTenant,
+  StripeEventDeferred,
+  upsertInvoiceRow,
+} from "./billing.ts";
+
+export { replayAfterTenantDeferral, StripeEventDeferred } from "./billing.ts";
 
 /**
  * `/webhooks-stripe` (BACKEND_SPEC §7.9, E2E_FLOWS_AUDIT H3): the ONLY
@@ -10,7 +22,11 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
  * header, matching `api-provision/index.ts`'s own internal-call contract
  * exactly: header `x-internal-secret`, body `{tenant_id}`).
  */
-export interface StripeEventDeps {
+/** `fetchBalanceTransaction` (from `ChargeDeps`) is `GET /v1/balance_transactions/{id}`
+ * for a charge's real fee/net (E); absent when Stripe is not configured, in
+ * which case `charge.succeeded` is deferred rather than recorded with a
+ * made-up 0 fee. */
+export interface StripeEventDeps extends ChargeDeps {
   invokeProvisioning: (
     tenantId: string,
   ) => Promise<{ ok: boolean; status?: number; error?: string }>;
@@ -48,6 +64,10 @@ export async function processStripeEvent(
               stripe_subscription_id = coalesce(${subscriptionId}, stripe_subscription_id)
           where id = ${tenantId}
         `;
+        // The tenant now carries its Stripe customer id: a `charge.succeeded`
+        // that beat this event (Stripe does not order events) could not be
+        // attributed and was deferred — record its real fee now (E).
+        if (customerId) await replayDeferredCharges(sql, logger, deps, customerId);
 
         // Signup/subscription checkout — kicks off the provisioning saga
         // (BACKEND_SPEC §7.9) if not already started; the saga itself is
@@ -132,84 +152,99 @@ export async function processStripeEvent(
       return;
     }
 
-    case "invoice.paid": {
+    case "invoice.paid":
+    case "invoice.payment_failed": {
+      const paid = event.type === "invoice.paid";
       const stripeInvoiceId = typeof obj["id"] === "string" ? obj["id"] : null;
       const customerId = typeof obj["customer"] === "string" ? obj["customer"] : null;
       if (!stripeInvoiceId) return;
-      await sql`
-        update public.billing_invoices set status = 'paid' where stripe_invoice_id = ${stripeInvoiceId}
-      `;
-      // Dunning reactivation (BACKEND_SPEC §8/§10.2, docs/BUILD_NOTES.md T4
-      // entry): a payment that clears while the tenant was `past_due`
-      // reactivates it here directly, belt-and-suspenders alongside
-      // `customer.subscription.updated`'s own status sync below (Stripe
-      // fires both events on a successful dunning retry, and this webhook
-      // handler processes each idempotently via `webhook_events`, so acting
-      // on both is safe, never a double-transition risk).
-      if (customerId) {
+      const rowStatus = paid ? "paid" : "past_due";
+
+      // D: upsert the row from the Stripe payload (the tenant is found by
+      // customer id, else by the `tenant_id` in the subscription metadata, so
+      // an invoice that beats checkout.session.completed still lands).
+      let tenantId: string | null = null;
+      const facts = parseInvoice(obj);
+      if (facts) {
+        const resolved = await resolveInvoiceTenant(sql, facts);
+        if (resolved) {
+          tenantId = resolved.tenantId;
+          if (resolved.needsLink) {
+            await linkTenantToStripe(sql, tenantId, facts.customerId, facts.subscriptionId);
+          }
+          await upsertInvoiceRow(sql, tenantId, facts, rowStatus);
+          // Release any charge deferred for this customer (tenant was not linked
+          // yet, or its fee was not fetchable at the time).
+          if (paid && facts.customerId) {
+            await replayDeferredCharges(sql, logger, deps, facts.customerId);
+          }
+        } else {
+          logger.warn("stripe_invoice_tenant_unresolved", { invoice_id: stripeInvoiceId });
+        }
+      }
+      if (!tenantId) {
+        // Not attributable (or not a full invoice payload): keep the previous
+        // behaviour of syncing the status of a row we already hold, never
+        // downgrading a paid one.
         await sql`
-          update public.tenants set status = 'active'
-          where stripe_customer_id = ${customerId} and status = 'past_due'
+          update public.billing_invoices set status = ${rowStatus}
+          where stripe_invoice_id = ${stripeInvoiceId}
+            and not (status = 'paid' and ${rowStatus} <> 'paid')
         `;
       }
-      return;
-    }
 
-    case "invoice.payment_failed": {
-      const stripeInvoiceId = typeof obj["id"] === "string" ? obj["id"] : null;
-      const customerId = typeof obj["customer"] === "string" ? obj["customer"] : null;
-      if (!stripeInvoiceId) return;
-      await sql`
-        update public.billing_invoices set status = 'past_due' where stripe_invoice_id = ${stripeInvoiceId}
-      `;
+      if (paid) {
+        // Dunning reactivation (BACKEND_SPEC §8/§10.2, docs/BUILD_NOTES.md T4
+        // entry): a payment that clears while the tenant was `past_due`
+        // reactivates it here directly, belt-and-suspenders alongside
+        // `customer.subscription.updated`'s own status sync below (Stripe
+        // fires both events on a successful dunning retry, and this webhook
+        // handler processes each idempotently via `webhook_events`, so acting
+        // on both is safe, never a double-transition risk).
+        if (customerId) {
+          await sql`
+            update public.tenants set status = 'active'
+            where stripe_customer_id = ${customerId} and status = 'past_due'
+          `;
+        }
+        return;
+      }
+
       // Dunning flow entry (BACKEND_SPEC §7.4/§10.2 `dunning_payment_failed`
       // template + "tenant-facing banner + email"): enqueue the email
       // immediately rather than waiting on the messages_outbound worker to
       // discover the status change on its own — there IS no such polling
       // path today (the worker only drains rows it's handed), so this is
       // the actual enqueue point, not a redundant one.
-      if (customerId) {
+      if (!tenantId && customerId) {
         const tenantRows = await sql<{ id: string }>`
           select id from public.tenants where stripe_customer_id = ${customerId} limit 1
         `;
-        const tenantId = tenantRows[0]?.id;
-        if (tenantId) {
-          await sql`
-            insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload)
-            select ${tenantId}, 'email', email, 'dunning_payment_failed', '{}'::jsonb
-            from auth.users u
-            join public.memberships m on m.user_id = u.id
-            where m.tenant_id = ${tenantId} and m.role = 'owner'
-            limit 1
-          `;
-        }
+        tenantId = tenantRows[0]?.id ?? null;
+      }
+      if (tenantId) {
+        await sql`
+          insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload)
+          select ${tenantId}, 'email', email, 'dunning_payment_failed', '{}'::jsonb
+          from auth.users u
+          join public.memberships m on m.user_id = u.id
+          where m.tenant_id = ${tenantId} and m.role = 'owner'
+          limit 1
+        `;
       }
       return;
     }
 
-    case "charge.succeeded":
-    case "payout.paid": {
-      const chargeId = typeof obj["id"] === "string" ? obj["id"] : null;
-      const balanceTransactionId =
-        typeof obj["balance_transaction"] === "string" ? obj["balance_transaction"] : null;
-      const customerId = typeof obj["customer"] === "string" ? obj["customer"] : null;
-      if (!customerId) return;
-      const tenantRows = await sql<{ id: string }>`
-        select id from public.tenants where stripe_customer_id = ${customerId} limit 1
-      `;
-      const tenantId = tenantRows[0]?.id;
-      if (!tenantId) return;
-      // Actual fee/net come from the balance_transaction, fetched
-      // separately (index.ts's job, since it needs a live Stripe API call,
-      // not something this pure-DB function does) — this insert is a
-      // placeholder row updated once that fetch completes.
-      await sql`
-        insert into public.payment_processing_events (
-          tenant_id, stripe_charge_id, stripe_balance_transaction_id, method, fee_cents, net_cents, occurred_at
-        ) values (
-          ${tenantId}, ${chargeId}, ${balanceTransactionId}, 'card', 0, 0, now()
-        )
-      `;
+    case "charge.succeeded": {
+      // E: the real processing fee comes from the charge's balance
+      // transaction, and the tenant may not be linked to the Stripe customer
+      // yet (Stripe delivers charge.succeeded BEFORE checkout.session.
+      // completed for a first payment). Neither case writes a 0-fee
+      // placeholder: the event is deferred (processing_error `deferred:*`)
+      // and replayed by `replayDeferredCharges` once the tenant is linked.
+      const outcome = await recordCharge(sql, logger, obj, deps);
+      if (outcome === "deferred_tenant") throw new StripeEventDeferred("tenant_unresolved");
+      if (outcome === "deferred_fee") throw new StripeEventDeferred("fee_unavailable");
       return;
     }
 
@@ -269,7 +304,9 @@ export async function processStripeEvent(
 }
 
 /** Resolves a Stripe Charge's `invoice` reference (when present) to the
- * `billing_invoices.period_start` (first-of-month, matching
+ * first-of-month of `billing_invoices.period_start` (Stripe invoice periods
+ * are anchored on the subscription date, e.g. 29 Sep, while commission_events
+ * use the calendar month, hence the truncation; matching
  * `job-commission-accrual`'s `commission_events.period` convention) that
  * invoice covers — used to scope a `charge.refunded` clawback to just that
  * period's recurring commission accrual. Returns `null` when the charge
@@ -280,7 +317,8 @@ async function resolveInvoicePeriod(sql: SqlClient, invoiceField: unknown): Prom
   const stripeInvoiceId = typeof invoiceField === "string" ? invoiceField : null;
   if (!stripeInvoiceId) return null;
   const rows = await sql<{ period_start: string }>`
-    select period_start from public.billing_invoices where stripe_invoice_id = ${stripeInvoiceId} limit 1
+    select date_trunc('month', period_start)::date::text as period_start
+    from public.billing_invoices where stripe_invoice_id = ${stripeInvoiceId} limit 1
   `;
   return rows[0]?.period_start ?? null;
 }
