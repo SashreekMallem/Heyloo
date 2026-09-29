@@ -12,12 +12,18 @@ export interface PayoutRow {
   created_at: string;
 }
 
-const STATUS_VARIANT: Record<string, BadgeProps["variant"]> = {
-  sent: "success",
-  paid: "success",
+/**
+ * `referral_payouts.status` is `pending | sent | completed | failed | returned`
+ * (`20260910100400_referral_payouts_terminal_statuses.sql`; the PayPal webhook
+ * writes the last three). "sent" only means PayPal accepted the batch, so it is
+ * in-progress, and only "completed" is the success state.
+ */
+export const STATUS_VARIANT: Record<string, BadgeProps["variant"]> = {
   pending: "outline",
-  processing: "secondary",
+  sent: "secondary",
+  completed: "success",
   failed: "destructive",
+  returned: "warning",
 };
 
 const columns: ColumnDef<PayoutRow, unknown>[] = [

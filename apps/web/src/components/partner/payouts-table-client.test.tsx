@@ -22,6 +22,29 @@ describe("PayoutsTableClient", () => {
     expect(screen.getByText("sent")).toBeInTheDocument();
   });
 
+  it.each([
+    ["pending", "border-border"],
+    ["sent", "bg-secondary"],
+    ["completed", "bg-success"],
+    ["failed", "bg-destructive"],
+    ["returned", "bg-warning"],
+  ])("PT-05: renders the %s status with the %s badge style", (status, expectedClass) => {
+    render(
+      <PayoutsTableClient
+        payouts={[
+          {
+            id: "p1",
+            total_cents: 100,
+            period: "2026-08-01",
+            status,
+            created_at: "2026-08-01T00:00:00Z",
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText(status).className).toContain(expectedClass);
+  });
+
   it("shows an empty state with no payouts", () => {
     render(<PayoutsTableClient payouts={[]} />);
     expect(screen.getByText("No payouts yet")).toBeInTheDocument();
