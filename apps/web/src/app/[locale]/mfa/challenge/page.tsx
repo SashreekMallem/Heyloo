@@ -2,12 +2,11 @@
 
 import { mfaChallengeSchema } from "@heyloo/canonical-types";
 import { Button } from "@heyloo/ui";
-import { InputOTP, InputOTPGroup, InputOTPSlot } from "@heyloo/ui/input-otp";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
-import { toast } from "sonner";
+import { Suspense, useEffect, useState } from "react";
 import { AuthShell } from "@/components/marketing/auth-shell";
 import { useRouter } from "@/i18n/navigation";
+import { OtpCodeInput } from "@/lib/auth/otp-code-input";
 import { sameOriginPath } from "@/lib/auth/same-origin-path";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
@@ -25,19 +24,35 @@ function MfaChallengeForm() {
   const searchParams = useSearchParams();
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Bumped after a failed verify: remounts the OTP field so it is cleared and
+  // focused again (the old code otherwise stayed in the slots).
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    // No session at all: nothing to step up, go and log in (and come back).
+    void supabaseBrowserClient.auth.getUser().then(({ data: { user } }) => {
+      if (!user) router.replace("/login?next=%2Fmfa%2Fchallenge");
+    });
+  }, [router]);
+
+  function fail(message: string) {
+    setSubmitting(false);
+    setError(message);
+  }
 
   async function verify() {
     const parsed = mfaChallengeSchema.safeParse({ code });
     if (!parsed.success) {
-      toast.error("Enter the 6-digit code.");
+      setError("Enter the 6-digit code.");
       return;
     }
+    setError(null);
     setSubmitting(true);
     const { data: factors } = await supabaseBrowserClient.auth.mfa.listFactors();
     const factor = factors?.totp[0];
     if (!factor) {
-      setSubmitting(false);
-      toast.error("No authenticator found — please contact support.");
+      fail("No authenticator found — please contact support.");
       return;
     }
     const { data: challenge, error: challengeError } =
@@ -45,8 +60,7 @@ function MfaChallengeForm() {
         factorId: factor.id,
       });
     if (challengeError || !challenge) {
-      setSubmitting(false);
-      toast.error("Couldn't verify — please try again.");
+      fail("Couldn't verify — please try again.");
       return;
     }
     const { error: verifyError } = await supabaseBrowserClient.auth.mfa.verify({
@@ -54,11 +68,13 @@ function MfaChallengeForm() {
       challengeId: challenge.id,
       code,
     });
-    setSubmitting(false);
     if (verifyError) {
-      toast.error("Incorrect code — please try again.");
+      setCode("");
+      setAttempt((n) => n + 1);
+      fail("Incorrect code — please try again.");
       return;
     }
+    setSubmitting(false);
     router.push(sameOriginPath(searchParams.get("next"), window.location.origin) ?? "/cockpit");
   }
 
@@ -68,14 +84,12 @@ function MfaChallengeForm() {
       description="Open your authenticator app and enter the 6-digit code."
     >
       <div className="flex flex-col items-center gap-6">
-        <InputOTP maxLength={6} value={code} onChange={setCode}>
-          <InputOTPGroup>
-            {Array.from({ length: 6 }, (_, i) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: fixed 6-slot OTP, slot position is the identity
-              <InputOTPSlot key={i} index={i} />
-            ))}
-          </InputOTPGroup>
-        </InputOTP>
+        <OtpCodeInput key={attempt} value={code} onChange={setCode} autoFocus />
+        {error && (
+          <p role="alert" className="text-center text-small text-destructive">
+            {error}
+          </p>
+        )}
         <Button
           size="lg"
           className="w-full"
