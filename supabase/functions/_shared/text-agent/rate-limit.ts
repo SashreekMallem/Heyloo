@@ -8,7 +8,7 @@ import { systemClock } from "../types.ts";
  * `_shared/circuit-breaker.ts`'s `ToolCircuitBreaker` (that file's own
  * docstring: "no synchronous shared-counter read on the hot path") — a
  * cross-instance-exact limit isn't needed here, only a cheap backstop
- * against a runaway/abusive sender hammering the Anthropic API through one
+ * against a runaway/abusive sender hammering the LLM API through one
  * tenant's number.
  */
 

@@ -9,23 +9,29 @@ import type { Logger } from "../types.ts";
 import { runInBackground } from "./background.ts";
 import { getSql } from "./db.ts";
 import { optionalEnv } from "./env.ts";
+import { resolveLlmFromEnv } from "./llm.ts";
 
 export function buildSmsWebhookRegistry(): MessagingRegistry {
   return buildMessagingRegistryFromEnv((name) => Deno.env.get(name), fetch);
 }
 
-// Text-agent engine deps (Cluster T). `ANTHROPIC_API_KEY` optional: a
-// deploy without it still handles STOP/HELP/waitlist-YES correctly and
-// falls back to archive-only for an ordinary inbound message.
+// Text-agent engine deps (Cluster T). The LLM key is optional (LLM-1: Gemini by
+// default, `LLM_PROVIDER` to choose): a deploy without one still handles
+// STOP/HELP/waitlist-YES correctly and falls back to archive-only for an
+// ordinary inbound message.
 export function buildTextEngineDeps(logger: Logger): TextAgentDeps | undefined {
-  const apiKey = optionalEnv("ANTHROPIC_API_KEY");
-  if (!apiKey) return undefined;
+  const llm = resolveLlmFromEnv();
+  if (!llm.ok) {
+    logger.warn("text_agent_ai_not_configured", {
+      provider: llm.providerId,
+      missing: llm.missing,
+    });
+    return undefined;
+  }
   return {
     sql: getSql(),
     logger,
-    anthropicFetch: fetch,
-    anthropicApiKey: apiKey,
-    model: optionalEnv("ANTHROPIC_TEXT_AGENT_MODEL") ?? "claude-sonnet-5",
+    llm: llm.client,
     appBaseUrl: optionalEnv("APP_BASE_URL") ?? "https://heyloo.app",
     paymentLink: {
       fetchImpl: fetch,

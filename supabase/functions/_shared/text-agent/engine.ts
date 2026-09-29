@@ -1,13 +1,8 @@
 import { buildAgentSettingsVariables, resolveTextPersona } from "../agent-settings.ts";
+import type { LlmClient, LlmMessage, LlmToolResult } from "../providers/llm/types.ts";
 import type { StripeFetch } from "../providers/stripe.ts";
 import { withTimeout } from "../timeout.ts";
 import type { Logger, SqlClient } from "../types.ts";
-import type { AnthropicFetch, AnthropicMessage } from "./anthropic-messages.ts";
-import {
-  createMessagesWithTools,
-  extractReplyText,
-  extractToolUseBlocks,
-} from "./anthropic-messages.ts";
 import {
   createWebChatConversation,
   incrementTextMessagesOut,
@@ -32,9 +27,10 @@ import { looksLikeVerificationCode, normalizeCandidateCode } from "./verificatio
 
 /** Bounded tool-use round trips per customer turn — a runaway/looping model
  * fails safe into a take-message-shaped reply rather than an unbounded
- * Anthropic-call sequence (SMS latency budget: "~5s p95"). */
+ * LLM-call sequence (SMS latency budget: "~5s p95"). */
 const MAX_TOOL_ITERATIONS = 4;
 const MAX_REPLY_TOKENS = 350; // short SMS-shaped replies, not a full paragraph
+const LLM_ATTEMPT_TIMEOUT_MS = 6_000; // one model call; the whole turn is still capped by DEFAULT_TURN_TIMEOUT_MS
 const DEFAULT_TURN_TIMEOUT_MS = 8_000; // engine-side ceiling under the ~5s p95 TARGET with headroom for one retry-free pass
 
 const FALLBACK_REPLY =
@@ -43,9 +39,9 @@ const FALLBACK_REPLY =
 export interface TextAgentDeps {
   sql: SqlClient;
   logger: Logger;
-  anthropicFetch: AnthropicFetch;
-  anthropicApiKey: string;
-  model: string;
+  /** The LLM port (Gemini by default — docs/design/LLM_PROVIDERS.md). The
+   * engine never sees a vendor payload; it speaks canonical messages/tools. */
+  llm: LlmClient;
   appBaseUrl: string;
   paymentLink?: {
     fetchImpl: StripeFetch;
@@ -133,7 +129,7 @@ function noReply(
  * Processes one inbound text-channel message end to end (this task's core
  * deliverable): loads/creates the conversation, applies every gate (human
  * handoff, A2P, opt-out, rate limit, pending phone-code verification), runs
- * the Anthropic Messages tool-use loop over the SAME `voice-tools/tools/*.ts`
+ * the LLM tool-calling loop over the SAME `voice-tools/tools/*.ts`
  * handlers, persists state, and meters the reply. Never throws for a
  * business-logic/provider failure — every branch resolves to a
  * `TextAgentTurnResult`, `sent: false` with a `reason` for anything that
@@ -210,7 +206,7 @@ export async function handleInboundText(
   }
 
   // Web-chat pending phone verification: intercept BEFORE spending an
-  // Anthropic call whenever the message looks like a code (verification.ts).
+  // LLM call whenever the message looks like a code (verification.ts).
   if (
     conversation.channel === "web_chat" &&
     conversation.verificationCodeHash &&
@@ -273,38 +269,47 @@ export async function handleInboundText(
     text_sign_off: persona.signOff,
   });
 
-  const messages: AnthropicMessage[] = [
-    ...conversation.recentTurns.map((t): AnthropicMessage => ({ role: t.role, content: t.text })),
-    { role: "user", content: input.message },
+  const messages: LlmMessage[] = [
+    ...conversation.recentTurns.map(
+      (t): LlmMessage =>
+        t.role === "user" ? { role: "user", text: t.text } : { role: "assistant", text: t.text },
+    ),
+    { role: "user", text: input.message },
   ];
 
   const runLoop = async (): Promise<string> => {
     const tools = toolsForChannel(input.channel);
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
-      const result = await createMessagesWithTools(deps.anthropicFetch, deps.anthropicApiKey, {
-        model: deps.model,
-        maxTokens: MAX_REPLY_TOKENS,
+      const result = await deps.llm.chat({
+        tier: "quality",
+        maxOutputTokens: MAX_REPLY_TOKENS,
         system: systemPrompt,
         messages,
         tools,
+        // The turn has its own ~8s ceiling (`withTimeout` below): one bounded
+        // retry on a transient 429/5xx, never a long backoff stack.
+        timeoutMs: LLM_ATTEMPT_TIMEOUT_MS,
+        maxRetries: 1,
       });
       if (!result.ok) {
-        deps.logger.error("text_agent_anthropic_error", {
+        deps.logger.error("text_agent_llm_error", {
           tenant_id: input.tenantId,
-          status: result.status,
+          provider: deps.llm.provider,
+          kind: result.error.kind,
+          status: result.error.status,
         });
         return FALLBACK_REPLY;
       }
 
-      const { response } = result;
-      // COCKPIT-1: token cost of every successful Anthropic call enters the
+      // COCKPIT-1: token cost of every successful LLM call enters the
       // tenant's margin (text turns are not covered by Retell's call_cost).
       await recordTextAgentLlmCost(
         deps.sql,
         {
           tenantId: input.tenantId,
-          model: deps.model,
-          usage: response.usage,
+          provider: deps.llm.provider,
+          model: result.model,
+          usage: result.usage,
           channel: input.channel,
           externalRef: crypto.randomUUID(),
         },
@@ -314,23 +319,17 @@ export async function handleInboundText(
             error: String(err),
           }),
       );
-      if (response.stop_reason !== "tool_use") {
-        return extractReplyText(response.content) || FALLBACK_REPLY;
+      if (result.stopReason !== "tool_use") {
+        return result.text || FALLBACK_REPLY;
       }
 
-      messages.push({ role: "assistant", content: response.content });
-      const toolUses = extractToolUseBlocks(response.content);
+      messages.push(result.assistantMessage);
       // Sequential, not Promise.all: tool dispatch can mutate `conversation`
       // in place (e.g. verify_phone, the shadow call_logs id cache) and a
       // single turn realistically calls one or two tools — correctness over
       // the marginal latency of parallelizing.
-      const toolResults: {
-        type: "tool_result";
-        tool_use_id: string;
-        content: string;
-        is_error?: boolean;
-      }[] = [];
-      for (const block of toolUses) {
+      const toolResults: LlmToolResult[] = [];
+      for (const call of result.toolCalls) {
         const { resultText, isError } = await dispatchTextTool(
           {
             sql: deps.sql,
@@ -342,17 +341,17 @@ export async function handleInboundText(
             a2pVerified: tenantContext.a2pStatus === "verified",
             manualMode: tenantContext.manualMode,
           },
-          block.name,
-          block.input,
+          call.name,
+          call.args,
         );
         toolResults.push({
-          type: "tool_result",
-          tool_use_id: block.id,
+          callId: call.id,
+          name: call.name,
           content: resultText,
-          ...(isError ? { is_error: true } : {}),
+          ...(isError ? { isError: true } : {}),
         });
       }
-      messages.push({ role: "user", content: toolResults });
+      messages.push({ role: "tool", results: toolResults });
     }
     // Exhausted the tool-call budget without a final text turn — fail safe
     // rather than loop forever or return a half-finished tool_use.

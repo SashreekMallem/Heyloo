@@ -165,7 +165,7 @@ export async function processInboundSms(
   /**
    * Cluster T (text-agent engine): when provided, an "other"-classified
    * message is routed into `handleInboundText`; omitted = archive-only
-   * (e.g. no Anthropic credentials configured).
+   * (e.g. no LLM provider configured).
    */
   textEngineDeps?: TextAgentDeps,
   options: ProcessInboundOptions = {},

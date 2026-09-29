@@ -5,20 +5,20 @@
 // `widget_token` (schema.ts/handler.ts), never a bearer JWT.
 import { getSql } from "../_shared/deno/db.ts";
 import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { resolveLlmFromEnv } from "../_shared/deno/llm.ts";
 import { createLogger } from "../_shared/logger.ts";
+import { aiNotConfiguredBody } from "../_shared/providers/llm/registry.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import type { TextAgentDeps } from "../_shared/text-agent/engine.ts";
 import { handleTextChat } from "./handler.ts";
 import { TextChatRequestSchema } from "./schema.ts";
 
 const logger = createLogger({ fn: "api-text-chat" });
-// OPS-5 (docs/BUILD_NOTES.md): Anthropic credentials aren't provisioned on
-// every deploy yet — `optionalEnv` (not `requireEnv`) keeps cold start
-// from crashing the isolate; the handler below returns a clean 503
-// `{error:"not_configured"}` instead whenever it's unset, never attempting
-// the text-agent engine call without it.
-const ANTHROPIC_API_KEY = optionalEnv("ANTHROPIC_API_KEY");
-const ANTHROPIC_TEXT_AGENT_MODEL = optionalEnv("ANTHROPIC_TEXT_AGENT_MODEL") ?? "claude-sonnet-5";
+// OPS-5 / LLM-1 (docs/BUILD_NOTES.md): LLM credentials aren't provisioned on
+// every deploy — the client is resolved lazily per request (never at module
+// load, so a missing key can't crash the isolate) and an unusable provider
+// answers a clean 503 `{error:"ai_not_configured", missing:[...]}` below,
+// never attempting the text-agent engine call without it.
 const APP_BASE_URL = optionalEnv("APP_BASE_URL") ?? "https://heyloo.app";
 const STRIPE_SECRET_KEY = optionalEnv("STRIPE_SECRET_KEY") ?? "";
 const PAYMENT_LINK_SUCCESS_URL =
@@ -56,9 +56,13 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "method_not_allowed" }, { status: 405, headers: cors });
   }
 
-  if (!ANTHROPIC_API_KEY) {
-    logger.error("api_text_chat_not_configured");
-    return jsonResponse({ error: "not_configured" }, { status: 503, headers: cors });
+  const llm = resolveLlmFromEnv();
+  if (!llm.ok) {
+    logger.error("api_text_chat_not_configured", {
+      provider: llm.providerId,
+      missing: llm.missing,
+    });
+    return jsonResponse(aiNotConfiguredBody(llm), { status: 503, headers: cors });
   }
 
   let rawBody: unknown;
@@ -77,9 +81,7 @@ Deno.serve(async (req: Request) => {
   const deps: TextAgentDeps & { widgetTokenSecret: string } = {
     sql,
     logger,
-    anthropicFetch: fetch,
-    anthropicApiKey: ANTHROPIC_API_KEY,
-    model: ANTHROPIC_TEXT_AGENT_MODEL,
+    llm: llm.client,
     appBaseUrl: APP_BASE_URL,
     paymentLink: {
       fetchImpl: fetch,

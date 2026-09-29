@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import { chatText, fakeLlm } from "../_shared/providers/llm/test-support.ts";
 import type { CanonicalInboundSms } from "../_shared/providers/messaging/types.ts";
 import type { TextAgentDeps } from "../_shared/text-agent/engine.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
@@ -115,19 +116,6 @@ describe("processInboundSms", () => {
   });
 
   describe("Cluster T text-agent engine routing (post STOP/HELP/waitlist-YES)", () => {
-    function fakeAnthropicFetch(replyText: string): typeof fetch {
-      return vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            content: [{ type: "text", text: replyText }],
-            stop_reason: "end_turn",
-            usage: { input_tokens: 1, output_tokens: 1 },
-          }),
-          { status: 200 },
-        ),
-      ) as unknown as typeof fetch;
-    }
-
     function engineFixtures(overrides: Record<string, unknown[]> = {}) {
       return {
         "from public.phone_numbers": [{ tenant_id: "t1", id: "pn1" }],
@@ -172,13 +160,11 @@ describe("processInboundSms", () => {
 
     it("uses the engine's AI reply as the TwiML body for an ordinary message", async () => {
       const { sql, calls } = makeSql(engineFixtures());
-      const fetchImpl = fakeAnthropicFetch("Sure — what day works for you?");
+      const llm = fakeLlm({ chat: () => chatText("Sure — what day works for you?") });
       const deps: TextAgentDeps = {
         sql,
         logger: silentLogger,
-        anthropicFetch: fetchImpl,
-        anthropicApiKey: "key",
-        model: "claude-sonnet-5",
+        llm,
         appBaseUrl: "https://heyloo.app",
         turnTimeoutMs: 2000,
       };
@@ -222,13 +208,11 @@ describe("processInboundSms", () => {
           ],
         }),
       );
-      const fetchImpl = vi.fn();
+      const llm = fakeLlm({ chat: () => chatText("should never be reached") });
       const deps: TextAgentDeps = {
         sql,
         logger: silentLogger,
-        anthropicFetch: fetchImpl as unknown as typeof fetch,
-        anthropicApiKey: "key",
-        model: "claude-sonnet-5",
+        llm,
         appBaseUrl: "https://heyloo.app",
       };
 
@@ -259,13 +243,11 @@ describe("processInboundSms", () => {
           ],
         }),
       );
-      const fetchImpl = vi.fn();
+      const llm = fakeLlm({ chat: () => chatText("should never be reached") });
       const deps: TextAgentDeps = {
         sql,
         logger: silentLogger,
-        anthropicFetch: fetchImpl as unknown as typeof fetch,
-        anthropicApiKey: "key",
-        model: "claude-sonnet-5",
+        llm,
         appBaseUrl: "https://heyloo.app",
       };
 
@@ -276,7 +258,7 @@ describe("processInboundSms", () => {
       );
 
       expect(result.replyBody).toBeUndefined();
-      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(llm.calls.chat).toHaveLength(0);
       expect(calls.some((c) => c.includes("insert into public.messages_inbound"))).toBe(true);
     });
 
