@@ -61,8 +61,7 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
   });
 const accepted = () => new Response(null, { status: 202, headers: { "request-id": "req-abc" } });
 const isToken = (c: Call) => c.url.includes("/oauth2/v2.0/token");
-const authOf = (c: Call | undefined) =>
-  (c?.init.headers as Record<string, string> | undefined)?.authorization;
+const authOf = (c: Call | undefined) => new Headers(c?.init.headers).get("authorization");
 
 let cache: GraphTokenCache;
 beforeEach(() => {
@@ -182,7 +181,7 @@ describe("Microsoft Graph adapter: request shapes", () => {
 
     expect(sendCall.url).toBe("https://graph.microsoft.com/v1.0/users/ms%40heycuey.com/sendMail");
     const headers = sendCall.init.headers as Record<string, string>;
-    expect(headers.authorization).toBe("Bearer tok-1");
+    expect(authOf(sendCall)).toBe("Bearer tok-1");
     expect(headers["content-type"]).toBe("application/json");
     expect(headers["client-request-id"]).toBe("client-req-1");
     expect(JSON.parse(String(sendCall.init.body))).toEqual({

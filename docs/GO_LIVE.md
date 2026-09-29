@@ -51,7 +51,7 @@ What remains for the owner before accepting real tenant calls. Automation has al
 
 **Why**: Transactional email for owner alerts (and, with Supabase Auth custom SMTP, sign-up/reset/invite).
 
-**Owner decision (MSG-3): use your own domain mailbox over SMTP instead of Resend.** Follow `docs/SETUP_EMAIL.md` (Google Workspace or Zoho; port 465 only; also configure the same mailbox as Supabase Auth custom SMTP, or sign-up emails stop after 2 per hour). The Resend steps below apply only with `EMAIL_PROVIDER=resend`.
+**Update (EMAIL-MSGRAPH): all email, product and account, now goes through your Microsoft 365 mailbox over HTTPS: follow `docs/SETUP_EMAIL_MICROSOFT.md` instead of the SMTP paragraph below (Microsoft 365 cannot use SMTP from Edge Functions).** **Owner decision (MSG-3): use your own domain mailbox over SMTP instead of Resend.** Follow `docs/SETUP_EMAIL.md` (Google Workspace or Zoho; port 465 only; also configure the same mailbox as Supabase Auth custom SMTP, or sign-up emails stop after 2 per hour). The Resend steps below apply only with `EMAIL_PROVIDER=resend`.
 
 **Steps**:
 1. Create account, add and verify sending domain (DNS: SPF/DKIM)

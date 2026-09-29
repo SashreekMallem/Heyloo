@@ -75,7 +75,11 @@ describe("templates stay in step with supabase/templates/*.html", () => {
       .replaceAll("{{ .Token }}", "123456");
     const link =
       type === null ? undefined : buildConfirmLink(SITE, HASH, type, resolveNext(type, "", SITE));
-    const rendered = renderContent(key, { link, newEmail: NEW_EMAIL, code: "123456" });
+    const rendered = renderContent(key, {
+      newEmail: NEW_EMAIL,
+      code: "123456",
+      ...(link ? { link } : {}),
+    });
     expect(normalize(rendered.html)).toBe(normalize(template));
   });
 

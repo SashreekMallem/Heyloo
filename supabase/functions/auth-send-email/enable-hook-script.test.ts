@@ -73,7 +73,7 @@ function fakeApi(
       method,
       path,
       body,
-      auth: (init.headers as Record<string, string>).authorization ?? null,
+      auth: new Headers(init.headers).get("authorization"),
     });
     const key = `${method} ${path}`;
     if (s.failOn === key) {

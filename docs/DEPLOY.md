@@ -360,6 +360,8 @@ not fetched from a vendor dashboard.
 | `NODE_ENV` | `production` in every real deploy |
 | `APP_BASE_URL` | Your production domain, e.g. `https://heyloo.app` |
 | `EMAIL_PROVIDER`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM_ADDRESS` | Your domain mailbox, `docs/SETUP_EMAIL.md` (§1.7); `EMAIL_PROVIDER=smtp` |
+| `EMAIL_PROVIDER=microsoft_graph`, `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `EMAIL_FROM_ADDRESS` | Your Microsoft 365 mailbox over HTTPS, `docs/SETUP_EMAIL_MICROSOFT.md` (Entra app restricted to the one mailbox with Exchange RBAC for Applications) |
+| `SEND_EMAIL_HOOK_SECRET` | Not chosen by hand: `scripts/enable-auth-email-hook.ts --apply` generates it and sets it here and on the Auth config (`docs/SETUP_EMAIL_MICROSOFT.md` Step 4) |
 | `RESEND_API_KEY` / `RESEND_FROM_ADDRESS` | Alternative to SMTP: Resend dashboard, after domain verification (§1.7) |
 | `GEOCODE_API_KEY` | Whichever provider you pick (Geocodio or Google — still an open `VERIFY:`, `docs/VERIFY.md`) |
 | `CRON_INVOKE_SECRET` | Generated — shared secret every `worker-*`/`job-*` function checks on its `x-cron-secret` header |
@@ -534,7 +536,7 @@ current split (do not invert):
 
 | `verify_jwt = false` (function does its own auth) | `verify_jwt = true` (Supabase verifies the bearer JWT; function then checks decoded claims itself) |
 |---|---|
-| `voice-inbound`, `voice-tools`, `voice-events` (Retell HMAC) | `admin` (platform_admin + AAL2) |
+| `voice-inbound`, `voice-tools`, `voice-events` (Retell HMAC), `auth-send-email` (Supabase Auth Send Email Hook, Standard Webhooks signature) | `admin` (platform_admin + AAL2) |
 | `webhooks-stripe`, `webhooks-twilio-sms`, `webhooks-outreach`, `webhooks-pos` (each vendor's own HMAC) | `api-provision` (tenant_id + role) |
 | `api-demo-agent` (public marketing flow) | `api-checkout` (authenticated user's own JWT `sub`) |
 | `worker-messages-outbound`, `worker-recording-fetch`, `worker-adapter-push` (cron secret) | `api-a2p-register` (tenant-owner JWT or internal secret) |
