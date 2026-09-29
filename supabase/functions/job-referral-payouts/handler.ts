@@ -24,6 +24,13 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
  * block the rest of the batch and is retried next cycle once the partner's
  * ... PayPal-account issue is resolved."
  *
+ * W-9 hold (PT-04): a partner whose year-to-date payouts plus this batch reach
+ * the IRS $600 reporting threshold (`W9_THRESHOLD_CENTS`, mirrors
+ * `apps/web/.../refer/ensure-link/funnel.ts`) is NOT paid until
+ * `referral_partners.w9_status = 'verified'`. Their commissions stay
+ * `'accrued'` (never lost) and are picked up on the first run after an admin
+ * verifies the W-9 (`PATCH /api/admin/admin-referral-partners/[id]/w9`).
+ *
  * Item-level payout status (`PAYMENT.PAYOUTS-ITEM.SUCCEEDED`/`FAILED`/
  * `BLOCKED`/`UNCLAIMED`, per A.4) arrives asynchronously via PayPal
  * webhooks — `/webhooks-paypal` (CLUSTER-F) now consumes those and flips
@@ -46,6 +53,17 @@ interface AccruedPartnerRow {
   paypal_email: string | null;
   name: string;
   total_cents: number;
+  w9_status?: string | null;
+  ytd_payout_cents?: number | null;
+}
+
+/** IRS 1099 reporting threshold, integer cents. */
+export const W9_THRESHOLD_CENTS = 60000;
+
+/** True when paying this partner now would cross $600 YTD without a verified W-9. */
+export function requiresW9Hold(partner: AccruedPartnerRow): boolean {
+  if (partner.w9_status === "verified") return false;
+  return (partner.ytd_payout_cents ?? 0) + partner.total_cents >= W9_THRESHOLD_CENTS;
 }
 
 export function currentPeriod(now: Date): string {
@@ -58,11 +76,13 @@ export async function findAccruedByPartner(sql: SqlClient): Promise<AccruedPartn
       rp.id as referral_partner_id,
       rp.paypal_email,
       rp.name,
+      rp.w9_status,
+      rp.ytd_payout_cents,
       sum(ce.amount_cents)::int as total_cents
     from public.commission_events ce
     join public.referral_partners rp on rp.id = ce.referral_partner_id
     where ce.status = 'accrued'
-    group by rp.id, rp.paypal_email, rp.name
+    group by rp.id, rp.paypal_email, rp.name, rp.w9_status, rp.ytd_payout_cents
     having sum(ce.amount_cents) > 0
   `;
 }
@@ -79,6 +99,8 @@ export interface ReferralPayoutRunResult {
   batchId?: string;
   partnersPaid: number;
   partnersSkippedNoEmail: number;
+  /** Held back at/over the $600 YTD threshold with no verified W-9. */
+  partnersHeldNoW9: number;
 }
 
 export async function runReferralPayouts(
@@ -90,16 +112,30 @@ export async function runReferralPayouts(
 
   if (await alreadyRanForPeriod(sql, period)) {
     deps.logger.info("job_referral_payouts_already_ran", { period });
-    return { ran: false, partnersPaid: 0, partnersSkippedNoEmail: 0 };
+    return { ran: false, partnersPaid: 0, partnersSkippedNoEmail: 0, partnersHeldNoW9: 0 };
   }
 
-  const partners = await findAccruedByPartner(sql);
+  const accrued = await findAccruedByPartner(sql);
+  const held = accrued.filter(requiresW9Hold);
+  for (const partner of held) {
+    deps.logger.warn("job_referral_payouts_held_no_w9", {
+      period,
+      referral_partner_id: partner.referral_partner_id,
+    });
+  }
+  const partners = accrued.filter((p) => !requiresW9Hold(p));
   const payable = partners.filter((p) => !!p.paypal_email);
   const skipped = partners.length - payable.length;
+  const heldNoW9 = held.length;
 
   if (payable.length === 0) {
-    deps.logger.info("job_referral_payouts_nothing_to_pay", { period, skipped });
-    return { ran: true, partnersPaid: 0, partnersSkippedNoEmail: skipped };
+    deps.logger.info("job_referral_payouts_nothing_to_pay", { period, skipped, held: heldNoW9 });
+    return {
+      ran: true,
+      partnersPaid: 0,
+      partnersSkippedNoEmail: skipped,
+      partnersHeldNoW9: heldNoW9,
+    };
   }
 
   const tokenResult = await getAccessToken(
@@ -110,7 +146,12 @@ export async function runReferralPayouts(
   );
   if (!tokenResult.ok || !tokenResult.accessToken) {
     deps.logger.error("job_referral_payouts_oauth_failed", { period, status: tokenResult.status });
-    return { ran: true, partnersPaid: 0, partnersSkippedNoEmail: skipped };
+    return {
+      ran: true,
+      partnersPaid: 0,
+      partnersSkippedNoEmail: skipped,
+      partnersHeldNoW9: heldNoW9,
+    };
   }
 
   const items: PayoutItem[] = payable.map((p) => ({
@@ -141,7 +182,12 @@ export async function runReferralPayouts(
       status: batchResult.status,
     });
     // Commissions stay 'accrued' — never lost, retried next cycle (BACKEND_SPEC §8).
-    return { ran: true, partnersPaid: 0, partnersSkippedNoEmail: skipped };
+    return {
+      ran: true,
+      partnersPaid: 0,
+      partnersSkippedNoEmail: skipped,
+      partnersHeldNoW9: heldNoW9,
+    };
   }
 
   for (const partner of payable) {
@@ -160,7 +206,14 @@ export async function runReferralPayouts(
     batch_id: batchId,
     partners_paid: payable.length,
     partners_skipped: skipped,
+    partners_held_no_w9: heldNoW9,
   });
 
-  return { ran: true, batchId, partnersPaid: payable.length, partnersSkippedNoEmail: skipped };
+  return {
+    ran: true,
+    batchId,
+    partnersPaid: payable.length,
+    partnersSkippedNoEmail: skipped,
+    partnersHeldNoW9: heldNoW9,
+  };
 }
