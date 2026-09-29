@@ -20,9 +20,17 @@ export const VERTICALS = [
   "generic",
 ] as const;
 
+/**
+ * COCKPIT-F06: the only qualification rule `fn_check_referral_qualification`
+ * understands is `paid_invoices_gte` (+ `value`, the number of paid invoices);
+ * accepting any other free text would save a rule nothing ever reads.
+ */
+export const REFERRAL_QUALIFICATION_RULES = ["paid_invoices_gte"] as const;
+
 export const AdminReferralSettingSchema = z.object({
   flat_amount_cents: z.number().int().nonnegative(),
-  qualification_rule: z.string().trim().min(1).max(500),
+  qualification_rule: z.enum(REFERRAL_QUALIFICATION_RULES),
+  qualification_value: z.number().int().min(1).max(24).optional(),
 });
 
 export const PlatformPricingTableSchema = z.object({

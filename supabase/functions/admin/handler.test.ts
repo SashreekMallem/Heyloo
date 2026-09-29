@@ -1308,8 +1308,8 @@ describe("routeAdminRequest — platform settings group", () => {
   it("loads the real referral + price-card rows, defaulting unset ones", async () => {
     const { sql } = makeSql({
       "key = any": [
-        { key: "referral_flat_amount_cents", value: { amount_cents: 15000 } },
-        { key: "referral_qualification_rule", value: { rule: "2nd paid month" } },
+        { key: "referral_flat_amount_cents", value: { flat_amount_cents: 15000 } },
+        { key: "referral_qualification_rule", value: { rule: "paid_invoices_gte", value: 3 } },
         {
           key: "price_card_auto",
           value: { base_cents: 29900, included_minutes: 300, overage_cents: 45 },
@@ -1328,7 +1328,8 @@ describe("routeAdminRequest — platform settings group", () => {
     };
     expect(body.referral).toEqual({
       flat_amount_cents: 15000,
-      qualification_rule: "2nd paid month",
+      qualification_rule: "paid_invoices_gte",
+      qualification_value: 3,
     });
     expect(body.price_cards["auto"]).toEqual({
       base_cents: 29900,
@@ -1359,7 +1360,7 @@ describe("routeAdminRequest — platform settings group", () => {
       baseCtx({
         method: "PATCH",
         path: "/admin-platform-settings/referral",
-        body: { flat_amount_cents: 20000, qualification_rule: "3rd paid month" },
+        body: { flat_amount_cents: 20000, qualification_rule: "paid_invoices_gte" },
       }),
       logger,
     );

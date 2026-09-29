@@ -794,15 +794,23 @@ async function handlePlatformSettings(
       ]})
     `;
     const byKey = new Map(rows.map((r) => [r.key, r.value]));
+    // COCKPIT-F06: the seeded/DB shapes are `{flat_amount_cents}` and
+    // `{rule, value}` (what fn_check_referral_qualification reads); the old
+    // route looked for `amount_cents`, so the page showed $0.00. The legacy key
+    // is still accepted for rows the old route wrote.
+    const flat = byKey.get("referral_flat_amount_cents") as
+      | { flat_amount_cents?: number; amount_cents?: number }
+      | undefined;
+    const qualification = byKey.get("referral_qualification_rule") as
+      | { rule?: string; value?: number }
+      | undefined;
     return {
       status: 200,
       body: {
         referral: {
-          flat_amount_cents:
-            (byKey.get("referral_flat_amount_cents") as { amount_cents?: number })?.amount_cents ??
-            0,
-          qualification_rule:
-            (byKey.get("referral_qualification_rule") as { rule?: string })?.rule ?? "",
+          flat_amount_cents: flat?.flat_amount_cents ?? flat?.amount_cents ?? 0,
+          qualification_rule: qualification?.rule ?? "paid_invoices_gte",
+          qualification_value: qualification?.value ?? 2,
         },
         price_cards: Object.fromEntries(
           VERTICALS.map((v) => [v, byKey.get(`price_card_${v}`) ?? null]),
@@ -826,14 +834,29 @@ async function handlePlatformSettings(
     `;
     const before = Object.fromEntries(beforeRows.map((r) => [r.key, r.value]));
 
+    // Merge onto the stored values (never replace the blob) and write the keys
+    // fn_check_referral_qualification reads: `flat_amount_cents`, `rule`, `value`.
+    const { amount_cents: _legacyAmount, ...flatBefore } = (before["referral_flat_amount_cents"] ??
+      {}) as Record<string, unknown>;
+    const qualificationBefore = (before["referral_qualification_rule"] ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const flatValue = { ...flatBefore, flat_amount_cents: parsed.data.flat_amount_cents };
+    const qualificationValue = {
+      ...qualificationBefore,
+      rule: parsed.data.qualification_rule,
+      value: parsed.data.qualification_value ?? qualificationBefore["value"] ?? 2,
+    };
+
     await sql`
       insert into public.platform_settings (key, value)
-      values ('referral_flat_amount_cents', ${{ amount_cents: parsed.data.flat_amount_cents }}::jsonb)
+      values ('referral_flat_amount_cents', ${flatValue}::jsonb)
       on conflict (key) do update set value = excluded.value, updated_by = ${ctx.adminUserId}, updated_at = now()
     `;
     await sql`
       insert into public.platform_settings (key, value)
-      values ('referral_qualification_rule', ${{ rule: parsed.data.qualification_rule }}::jsonb)
+      values ('referral_qualification_rule', ${qualificationValue}::jsonb)
       on conflict (key) do update set value = excluded.value, updated_by = ${ctx.adminUserId}, updated_at = now()
     `;
 
@@ -843,12 +866,24 @@ async function handlePlatformSettings(
         action: "platform_settings_referral_edit",
         targetType: "other",
         before,
-        after: parsed.data,
+        after: {
+          referral_flat_amount_cents: flatValue,
+          referral_qualification_rule: qualificationValue,
+        },
         ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
         ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
       });
     }
-    return { status: 200, body: { referral: parsed.data } };
+    return {
+      status: 200,
+      body: {
+        referral: {
+          flat_amount_cents: parsed.data.flat_amount_cents,
+          qualification_rule: parsed.data.qualification_rule,
+          qualification_value: qualificationValue.value,
+        },
+      },
+    };
   }
 
   if (ctx.method === "POST" && parts[1] === "pricing") {
