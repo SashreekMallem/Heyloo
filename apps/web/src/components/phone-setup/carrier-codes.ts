@@ -1,6 +1,13 @@
 import type { CARRIERS } from "@heyloo/canonical-types";
 
 export type Carrier = (typeof CARRIERS)[number];
+export const CARRIER_LABELS: Record<Carrier, string> = {
+  att: "AT&T",
+  verizon: "Verizon",
+  tmobile: "T-Mobile",
+  other_landline: "Other / landline",
+};
+
 export type ForwardingMode = "conditional" | "full";
 
 export interface ForwardingCodeTemplate {

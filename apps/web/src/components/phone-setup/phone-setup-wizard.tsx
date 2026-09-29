@@ -1,22 +1,11 @@
 "use client";
 
-import {
-  CARRIERS,
-  type PhonePortInRequest,
-  phonePortInRequestSchema,
-} from "@heyloo/canonical-types";
-import { Button, CarrierForwardingCard, Input, Label, WizardStepper } from "@heyloo/ui";
+import { CARRIERS } from "@heyloo/canonical-types";
+import { Button, CarrierForwardingCard, Label, WizardStepper } from "@heyloo/ui";
 import { useState } from "react";
-import { toast } from "sonner";
 import { useRouter } from "@/i18n/navigation";
-import { CARRIER_CODES, dialableNumber } from "./carrier-codes";
-
-const CARRIER_LABELS: Record<(typeof CARRIERS)[number], string> = {
-  att: "AT&T",
-  verizon: "Verizon",
-  tmobile: "T-Mobile",
-  other_landline: "Other / landline",
-};
+import { CARRIER_CODES, CARRIER_LABELS, dialableNumber } from "./carrier-codes";
+import { PortInForm } from "./port-in-form";
 
 type Stage = "carrier" | "verify" | "success" | "port_in";
 
@@ -177,73 +166,6 @@ export function PhoneSetupWizard({
           </p>
         </div>
       )}
-    </div>
-  );
-}
-
-function PortInForm({ onBack }: { onBack: () => void }) {
-  const [submitted, setSubmitted] = useState(false);
-  const [form, setForm] = useState<Partial<PhonePortInRequest>>({});
-
-  async function submit() {
-    const parsed = phonePortInRequestSchema.safeParse(form);
-    if (!parsed.success) {
-      toast.error("Please fill in every field.");
-      return;
-    }
-    const res = await fetch("/api/phone/port-in", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(parsed.data),
-    });
-    if (res.ok) setSubmitted(true);
-    else toast.error("Something went wrong — please try again.");
-  }
-
-  if (submitted) {
-    return (
-      <div className="mx-auto max-w-md space-y-2 text-center">
-        <p className="font-medium text-success">Port-in requested</p>
-        <p className="text-sm text-muted-foreground">
-          This can take several business days — we&apos;ll email you as it progresses.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="mx-auto max-w-md space-y-4">
-      <button type="button" onClick={onBack} className="text-xs text-muted-foreground underline">
-        ← Back to forwarding
-      </button>
-      <Input
-        placeholder="Current number"
-        onChange={(e) => setForm((f) => ({ ...f, current_number: e.target.value }))}
-      />
-      <Input
-        placeholder="Account number"
-        onChange={(e) => setForm((f) => ({ ...f, account_number: e.target.value }))}
-      />
-      <Input
-        placeholder="Account PIN"
-        onChange={(e) => setForm((f) => ({ ...f, account_pin: e.target.value }))}
-      />
-      <select
-        className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-        onChange={(e) =>
-          setForm((f) => ({ ...f, carrier: e.target.value as PhonePortInRequest["carrier"] }))
-        }
-      >
-        <option value="">Select carrier</option>
-        {CARRIERS.map((c) => (
-          <option key={c} value={c}>
-            {CARRIER_LABELS[c]}
-          </option>
-        ))}
-      </select>
-      <Button className="w-full" onClick={submit}>
-        Request port-in
-      </Button>
     </div>
   );
 }
