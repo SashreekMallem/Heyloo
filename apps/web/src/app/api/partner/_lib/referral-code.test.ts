@@ -23,7 +23,9 @@ describe("generateReferralCode (SEC-11)", () => {
   });
 });
 
-function makeService(results: Array<{ data: { code: string } | null; error: { code?: string } | null }>) {
+function makeService(
+  results: Array<{ data: { code: string } | null; error: { code?: string } | null }>,
+) {
   const codes: string[] = [];
   let call = 0;
   const service = {

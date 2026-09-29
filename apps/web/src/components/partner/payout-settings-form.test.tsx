@@ -60,7 +60,10 @@ describe("PayoutSettingsForm (PT-02, PT-08)", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Saved"));
-    expect(update).toHaveBeenCalledWith({ paypal_email: "new@example.com", payout_method: "paypal" });
+    expect(update).toHaveBeenCalledWith({
+      paypal_email: "new@example.com",
+      payout_method: "paypal",
+    });
     expect(eq).toHaveBeenCalledWith("id", "partner-1");
     expect(select).toHaveBeenCalledWith("id");
   });

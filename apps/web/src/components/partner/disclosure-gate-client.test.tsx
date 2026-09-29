@@ -47,7 +47,9 @@ describe("DisclosureGateClient (PT-03)", () => {
   it("shows an error toast on a server error and keeps the button usable", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 500 })));
     const button = await acknowledge();
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith("Could not save, please try again"));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("Could not save, please try again"),
+    );
     expect(push).not.toHaveBeenCalled();
     await waitFor(() => expect(button).toBeEnabled());
   });
@@ -55,7 +57,9 @@ describe("DisclosureGateClient (PT-03)", () => {
   it("shows an error toast and re-enables the button when the request itself fails", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
     const button = await acknowledge();
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith("Could not save, please try again"));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("Could not save, please try again"),
+    );
     await waitFor(() => expect(button).toBeEnabled());
   });
 });

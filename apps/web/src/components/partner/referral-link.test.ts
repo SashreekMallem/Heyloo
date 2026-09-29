@@ -21,7 +21,11 @@ describe("requestOrigin", () => {
   it("prefers the forwarded host and proto", () => {
     expect(
       requestOrigin(
-        h({ "x-forwarded-host": "heyloo.app", "x-forwarded-proto": "https", host: "internal:3000" }),
+        h({
+          "x-forwarded-host": "heyloo.app",
+          "x-forwarded-proto": "https",
+          host: "internal:3000",
+        }),
         "http://fallback",
       ),
     ).toBe("https://heyloo.app");
