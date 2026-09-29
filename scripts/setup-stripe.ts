@@ -28,8 +28,13 @@
  *   STRIPE_SECRET_KEY
  *   STRIPE_METER_EVENT_NAME   the Billing Meter's event_name (must match
  *                             what job-billing-cycle reports usage under)
- *   SUPABASE_URL              e.g. https://<project-ref>.supabase.co
- *   SUPABASE_SECRET_KEY       service-role/secret key (bypasses RLS)
+ * plus ONE way to reach platform_settings:
+ *   SUPABASE_URL + SUPABASE_SECRET_KEY        PostgREST with the project's
+ *                             secret key (sb_secret_… goes in `apikey` only;
+ *                             a legacy JWT key also goes in Authorization)
+ *   or SUPABASE_PROJECT_REF + SUPABASE_ACCESS_TOKEN   the Management API
+ *                             raw-SQL endpoint (same one
+ *                             scripts/republish-fleet.ts uses)
  *
  * VERIFY (docs/VERIFY.md): Stripe Billing Meters / metered-Price field names
  * below are the indexed-search-confirmed 2026 shape (`docs.stripe.com` is
@@ -48,8 +53,21 @@ function env(name: string): string {
 
 const STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY");
 const STRIPE_METER_EVENT_NAME = env("STRIPE_METER_EVENT_NAME");
-const SUPABASE_URL = env("SUPABASE_URL");
-const SUPABASE_SECRET_KEY = env("SUPABASE_SECRET_KEY");
+function optionalEnv(name: string): string | undefined {
+  return process.env[name] || undefined;
+}
+
+const SUPABASE_URL = optionalEnv("SUPABASE_URL");
+const SUPABASE_SECRET_KEY = optionalEnv("SUPABASE_SECRET_KEY");
+const SUPABASE_PROJECT_REF = optionalEnv("SUPABASE_PROJECT_REF");
+const SUPABASE_ACCESS_TOKEN = optionalEnv("SUPABASE_ACCESS_TOKEN");
+const USE_MANAGEMENT_API = !!(SUPABASE_PROJECT_REF && SUPABASE_ACCESS_TOKEN);
+if (!USE_MANAGEMENT_API && !(SUPABASE_URL && SUPABASE_SECRET_KEY)) {
+  console.error(
+    "Missing database access: set SUPABASE_URL + SUPABASE_SECRET_KEY, or SUPABASE_PROJECT_REF + SUPABASE_ACCESS_TOKEN",
+  );
+  process.exit(1);
+}
 
 const STRIPE_BASE_URL = "https://api.stripe.com/v1";
 
@@ -94,23 +112,86 @@ async function supabaseRest(
   path: string,
   body?: unknown,
 ): Promise<{ ok: boolean; status: number; json: unknown }> {
+  const key = SUPABASE_SECRET_KEY as string;
+  const headers: Record<string, string> = {
+    apikey: key,
+    "Content-Type": "application/json",
+    Prefer: "return=representation",
+  };
+  // New sb_secret_… keys are not JWTs: sending one as a Bearer token makes the
+  // gateway reject the request. Only a legacy JWT key goes in Authorization.
+  if (key.split(".").length === 3) headers["Authorization"] = `Bearer ${key}`;
   const res = await fetch(`${SUPABASE_URL}${path}`, {
     method,
-    headers: {
-      apikey: SUPABASE_SECRET_KEY,
-      Authorization: `Bearer ${SUPABASE_SECRET_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: "return=representation",
-    },
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
   return { ok: res.ok, status: res.status, json: text ? JSON.parse(text) : undefined };
 }
 
+async function managementQuery(query: string): Promise<unknown> {
+  const res = await fetch(
+    `https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/database/query`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${SUPABASE_ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query }),
+    },
+  );
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Management API query failed: status ${res.status} ${text}`);
+  return text ? JSON.parse(text) : undefined;
+}
+
+/** Dollar-quotes a JSON document for the Management API SQL path. */
+function sqlJsonLiteral(value: unknown): string {
+  const json = JSON.stringify(value);
+  if (json.includes("$pc$")) throw new Error("price card JSON contains the quote tag");
+  return `$pc$${json}$pc$::jsonb`;
+}
+
+/** Reads one price card; undefined only when the row truly does not exist. */
+async function readPriceCard(key: string): Promise<PriceCardValue | undefined> {
+  if (USE_MANAGEMENT_API) {
+    const rows = (await managementQuery(
+      `select value from public.platform_settings where key = '${key}'`,
+    )) as Array<{ value: PriceCardValue }>;
+    return rows[0]?.value;
+  }
+  const res = await supabaseRest(
+    "GET",
+    `/rest/v1/platform_settings?key=eq.${encodeURIComponent(key)}&select=value`,
+  );
+  if (!res.ok)
+    throw new Error(`Failed to read ${key}: status ${res.status} ${JSON.stringify(res.json)}`);
+  return (res.json as Array<{ value: PriceCardValue }>)[0]?.value;
+}
+
+async function writePriceCard(key: string, value: PriceCardValue): Promise<void> {
+  if (USE_MANAGEMENT_API) {
+    await managementQuery(
+      `update public.platform_settings set value = ${sqlJsonLiteral(value)} where key = '${key}'`,
+    );
+    return;
+  }
+  const res = await supabaseRest(
+    "PATCH",
+    `/rest/v1/platform_settings?key=eq.${encodeURIComponent(key)}`,
+    { value },
+  );
+  if (!res.ok) throw new Error(`Failed to write ${key}: status ${res.status}`);
+}
+
+// Must match packages/canonical-types/src/vertical.ts VERTICALS (the
+// platform_settings keys are price_card_<vertical>); scripts/ stays
+// dependency-free, so the list is repeated here.
 const VERTICALS = [
-  "auto_repair",
-  "veterinary",
+  "auto",
+  "vet",
   "legal",
   "dental",
   "real_estate",
@@ -156,12 +237,7 @@ interface PriceCardValue {
 
 async function setupVertical(vertical: string, meterId: string): Promise<void> {
   const key = `price_card_${vertical}`;
-  const rows = await supabaseRest(
-    "GET",
-    `/rest/v1/platform_settings?key=eq.${encodeURIComponent(key)}&select=value`,
-  );
-  const existingRows = rows.json as Array<{ value: PriceCardValue }> | undefined;
-  const current = existingRows?.[0]?.value;
+  const current = await readPriceCard(key);
   if (!current) {
     console.warn(`Skipping ${vertical}: no ${key} row in platform_settings (seed missing).`);
     return;
@@ -212,14 +288,7 @@ async function setupVertical(vertical: string, meterId: string): Promise<void> {
     stripe_meter_price_id: meterPrice.body["id"] as string,
   };
 
-  const update = await supabaseRest(
-    "PATCH",
-    `/rest/v1/platform_settings?key=eq.${encodeURIComponent(key)}`,
-    { value: merged },
-  );
-  if (!update.ok) {
-    throw new Error(`Failed to write price ids back for ${vertical}: status ${update.status}`);
-  }
+  await writePriceCard(key, merged);
   console.log(
     `${vertical}: product=${productId} base=${basePrice.body["id"]} meter_price=${meterPrice.body["id"]}`,
   );
