@@ -15,6 +15,7 @@ import {
   readCustomQuestions,
   withoutCustomAnswers,
 } from "./custom-questions";
+import { CUSTOM_QUESTIONS_MIN_COMPILER_VERSION } from "./publish-status";
 import { customQuestionsRequestSchema } from "./schemas";
 
 // Vitest runs with the app (apps/web) as cwd.
@@ -30,6 +31,15 @@ describe("drift guards against the runtime (Deno) sources", () => {
     expect(num("CUSTOM_QUESTION_LABEL_MAX_CHARS")).toBe(CUSTOM_QUESTION_LABEL_MAX_CHARS);
     expect(num("CUSTOM_QUESTION_HINT_MAX_CHARS")).toBe(CUSTOM_QUESTION_HINT_MAX_CHARS);
     expect(source).toContain('["booking", "message", "both"]');
+  });
+
+  it("the tool gate's minimum compiler version equals the portal's (an agent below it is never held to custom questions)", () => {
+    const handler = readFileSync(
+      resolve(process.cwd(), "../../supabase/functions/voice-tools/handler.ts"),
+      "utf8",
+    );
+    const gate = Number(/const CUSTOM_QUESTIONS_MIN_COMPILER_VERSION = (\d+);/.exec(handler)?.[1]);
+    expect(gate).toBe(CUSTOM_QUESTIONS_MIN_COMPILER_VERSION);
   });
 
   it("the database CHECK uses the same limits (migration 20260930230000)", () => {

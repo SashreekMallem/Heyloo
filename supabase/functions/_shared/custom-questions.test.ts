@@ -197,6 +197,25 @@ describe("applyCustomAnswers", () => {
     });
   });
 
+  it("a refused required question is stored as declined (never blocks forever); an optional refusal stores nothing; ids tolerate stray case", () => {
+    const { missing, args } = applyCustomAnswers("take_message", questions, {
+      structured_payload: {
+        custom_answers: [
+          { question_id: " Q_REQ ", answer: "Declined." },
+          { question_id: "q_opt", answer: "declined" },
+        ],
+      },
+    });
+    expect(missing).toEqual([]);
+    expect(args).toEqual({
+      structured_payload: {
+        custom_answers: [
+          { question_id: "q_req", question: "Gate code?", answer: "Declined to answer" },
+        ],
+      },
+    });
+  });
+
   it("caps an answer and strips control characters", () => {
     const cleaned = cleanCustomAnswer(`  hi\u0000​ there\n\n ${"z".repeat(900)}`);
     expect(cleaned.startsWith("hi there z")).toBe(true);

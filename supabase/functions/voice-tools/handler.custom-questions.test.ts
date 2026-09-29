@@ -28,7 +28,11 @@ function q(overrides: Partial<Question> & Pick<Question, "id" | "label">): Quest
   return { required: false, applies_to: "both", position: 0, active: true, ...overrides };
 }
 
-function makeDeps(opts: { questions?: Question[] | "throw"; vertical?: string }) {
+function makeDeps(opts: {
+  questions?: Question[] | "throw";
+  vertical?: string;
+  compiledWithVersion?: number | null;
+}) {
   const calls: { text: string; values: unknown[] }[] = [];
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join(" ");
@@ -47,7 +51,13 @@ function makeDeps(opts: { questions?: Question[] | "throw"; vertical?: string })
     }
     if (text.includes("dynamic_variable_overrides -> 'custom_questions'")) {
       if (opts.questions === "throw") return Promise.reject(new Error("db down"));
-      return Promise.resolve([{ custom_questions: opts.questions ?? null }]);
+      return Promise.resolve([
+        {
+          custom_questions: opts.questions ?? null,
+          compiled_with_version:
+            opts.compiledWithVersion === undefined ? 2 : opts.compiledWithVersion,
+        },
+      ]);
     }
     return Promise.resolve([]);
   }) as SqlClient;
@@ -165,6 +175,65 @@ describe("INTAKE-Q-1: custom questions on take_message", () => {
     const update = callLogUpdate(calls);
     const payloads = (update?.values ?? []).filter((v) => v && typeof v === "object");
     expect(JSON.stringify(payloads)).not.toContain("custom_answers");
+  });
+
+  it("a required question the caller refuses is recorded as declined, so the message is not lost (an optional refusal stores nothing)", async () => {
+    const { deps, calls } = makeDeps({
+      questions: [
+        q({ id: "q_gate", label: "What is the gate code?", required: true, position: 0 }),
+        q({ id: "q_pet", label: "Any pets on site?", position: 1 }),
+      ],
+    });
+    const result = await dispatchTool(deps, CALL_ID, "take_message", {
+      ...baseMessage,
+      structured_payload: {
+        custom_answers: [
+          { question_id: "Q_GATE ", answer: "Declined." },
+          { question_id: "q_pet", answer: "declined" },
+        ],
+      },
+    });
+    expect(result).toEqual({ result: { recorded: true } });
+    const stored = callLogUpdate(calls)?.values.find(
+      (v) => v && typeof v === "object" && "custom_answers" in (v as object),
+    ) as { custom_answers: unknown };
+    expect(stored.custom_answers).toEqual([
+      { question_id: "q_gate", question: "What is the gate code?", answer: "Declined to answer" },
+    ]);
+  });
+
+  it("does not enforce questions for an agent published before custom questions existed (it was never told to ask them)", async () => {
+    for (const compiledWithVersion of [1, null]) {
+      const { deps } = makeDeps({
+        compiledWithVersion,
+        questions: [q({ id: "q_gate", label: "What is the gate code?", required: true })],
+      });
+      const result = await dispatchTool(deps, CALL_ID, "take_message", baseMessage);
+      expect(result).toEqual({ result: { recorded: true } });
+    }
+  });
+
+  it("skips the extra read when the call's own dynamic variables say no custom questions were given", async () => {
+    const { deps, calls } = makeDeps({
+      questions: [q({ id: "q_gate", label: "What is the gate code?", required: true })],
+    });
+    const result = await dispatchTool(deps, CALL_ID, "take_message", baseMessage, {
+      retell_llm_dynamic_variables: { custom_questions_text: "(no custom questions)" },
+    });
+    expect(result).toEqual({ result: { recorded: true } });
+    expect(
+      calls.some((c) => c.text.includes("dynamic_variable_overrides -> 'custom_questions'")),
+    ).toBe(false);
+    // A call whose variables list questions (or carry none) still reads the database.
+    const other = makeDeps({
+      questions: [q({ id: "q_gate", label: "What is the gate code?", required: true })],
+    });
+    const blocked = await dispatchTool(other.deps, CALL_ID, "take_message", baseMessage, {
+      retell_llm_dynamic_variables: {
+        custom_questions_text: '1. [id q_gate] "What is the gate code?"',
+      },
+    });
+    expect(blocked.result).toMatchObject({ error: "missing_required_fields" });
   });
 
   it("fails OPEN when the questions cannot be read: the message is still recorded", async () => {

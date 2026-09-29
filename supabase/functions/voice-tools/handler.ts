@@ -1,6 +1,7 @@
 import {
   applyCustomAnswers,
   type CustomQuestion,
+  NO_CUSTOM_QUESTIONS_TEXT,
   resolveCustomQuestions,
 } from "../_shared/custom-questions.ts";
 import type { GeocodeFetch } from "../_shared/providers/geocode.ts";
@@ -228,13 +229,17 @@ export function isKnownTool(name: string): boolean {
  *     `missingFieldsEnvelope` — naming exactly what to ask, so the model
  *     has an actionable next step — instead of writing an incomplete row.
  *
- * Zero new DB round trips either way (hot-path budget, CLAUDE.md Rule 2):
- * pure object manipulation over data already in hand (`ctx` was already
- * resolved for this call; `args` already parsed).
+ * No new DB round trips for the built-in fields (hot-path budget, CLAUDE.md
+ * Rule 2): pure object manipulation over data already in hand (`ctx` was
+ * already resolved for this call; `args` already parsed). The owner's custom
+ * questions (INTAKE-Q-1) add at most ONE indexed read, only for create_booking
+ * / take_message, and none at all when the call's own dynamic variables say
+ * the agent was given no custom questions (`loadCustomQuestions`).
  */
 async function applyIntakeGate<T extends Record<string, unknown>>(
   deps: DispatchDeps,
   ctx: CallContext,
+  call: ToolCall | undefined,
   tool: "create_booking" | "create_order" | "take_message",
   args: T,
   phoneField: "customer" | "caller_phone",
@@ -254,7 +259,7 @@ async function applyIntakeGate<T extends Record<string, unknown>>(
   // Built-in misses are reported first, in the same envelope, then the owner's
   // required questions — so the model asks everything still needed in one go.
   if (tool !== "create_order") {
-    const questions = await loadCustomQuestions(deps, ctx);
+    const questions = await loadCustomQuestions(deps, ctx, call);
     const custom = applyCustomAnswers(tool, questions, next);
     next = custom.args as T;
     missing.push(...custom.missing);
@@ -265,27 +270,54 @@ async function applyIntakeGate<T extends Record<string, unknown>>(
   return { ok: true, args: next };
 }
 
+/** INTAKE-Q-1: first `AGENT_COMPILER_VERSION` whose agents can ask custom questions (the portal mirrors it as `CUSTOM_QUESTIONS_MIN_COMPILER_VERSION`). */
+const CUSTOM_QUESTIONS_MIN_COMPILER_VERSION = 2;
+
 /**
  * INTAKE-Q-1: the tenant's active custom intake questions, from
  * `agent_configs.dynamic_variable_overrides.custom_questions` — one indexed
  * single-row read (`agent_configs.tenant_id`), only on the two write tools that
  * can carry them (create_booking, take_message), scoped by the verified call
- * context's tenant, never by args. Fails OPEN on a read error (warn + `[]`): an
- * unreadable optional owner config must not block a real booking or message
- * (Rule 2 graceful fallback); the built-in required fields are unaffected.
+ * context's tenant, never by args.
+ *
+ * Enforced only when the PUBLISHED agent can actually ask them
+ * (`compiled_with_version >= CUSTOM_QUESTIONS_MIN_COMPILER_VERSION`): an agent
+ * compiled before this feature has neither the procedure nor the `custom_answers`
+ * tool parameter, so a required question saved before the owner republishes
+ * would otherwise block every booking and message with a question the agent was
+ * never told to ask.
+ *
+ * Skips the read when the call's own dynamic variables (set by `/voice-inbound`,
+ * never by a caller) say the agent was given no custom questions: nothing was
+ * asked, so nothing can be required. Any other value, or a payload without the
+ * variable (older/other callers), reads the database.
+ *
+ * Fails OPEN on a read error (warn + `[]`): an unreadable optional owner config
+ * must not block a real booking or message (Rule 2 graceful fallback); the
+ * built-in required fields are unaffected.
  */
 async function loadCustomQuestions(
   deps: DispatchDeps,
   ctx: CallContext,
+  call: ToolCall | undefined,
 ): Promise<CustomQuestion[]> {
+  if (call?.retell_llm_dynamic_variables?.["custom_questions_text"] === NO_CUSTOM_QUESTIONS_TEXT) {
+    return [];
+  }
   try {
-    const rows = await deps.sql<{ custom_questions: unknown }>`
-      select dynamic_variable_overrides -> 'custom_questions' as custom_questions
+    const rows = await deps.sql<{
+      custom_questions: unknown;
+      compiled_with_version: number | null;
+    }>`
+      select dynamic_variable_overrides -> 'custom_questions' as custom_questions,
+        compiled_with_version
       from public.agent_configs
       where tenant_id = ${ctx.tenantId}
       limit 1
     `;
-    return resolveCustomQuestions({ custom_questions: rows[0]?.custom_questions });
+    const row = rows[0];
+    if ((row?.compiled_with_version ?? 0) < CUSTOM_QUESTIONS_MIN_COMPILER_VERSION) return [];
+    return resolveCustomQuestions({ custom_questions: row?.custom_questions });
   } catch (err) {
     deps.logger.warn("voice_tools_custom_questions_read_failed", {
       tenant_id: ctx.tenantId,
@@ -317,7 +349,7 @@ export async function dispatchTool(
   if (deps.telemetry) deps.telemetry.tenantId = ctx.tenantId;
 
   try {
-    return await runTool(deps, ctx, callId, name, rawArgs, startedAt);
+    return await runTool(deps, ctx, callId, name, rawArgs, startedAt, call);
   } finally {
     if (deps.telemetry) deps.telemetry.toolMs = now() - contextDoneAt;
   }
@@ -330,6 +362,7 @@ async function runTool(
   name: string,
   rawArgs: unknown,
   startedAt: number,
+  call?: ToolCall,
 ): Promise<ToolResultEnvelope> {
   const { sql, logger, geocode } = deps;
   switch (name) {
@@ -351,7 +384,14 @@ async function runTool(
           message: MANUAL_MODE_BOOKING_MESSAGE,
         });
       }
-      const gated = await applyIntakeGate(deps, ctx, "create_booking", parsed.data, "customer");
+      const gated = await applyIntakeGate(
+        deps,
+        ctx,
+        call,
+        "create_booking",
+        parsed.data,
+        "customer",
+      );
       if (!gated.ok) return gated.envelope;
       return toolEnvelope(await createBookingWithinBudget(deps, ctx, gated.args, startedAt));
     }
@@ -387,7 +427,14 @@ async function runTool(
     case "take_message": {
       const parsed = TakeMessageArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
-      const gated = await applyIntakeGate(deps, ctx, "take_message", parsed.data, "caller_phone");
+      const gated = await applyIntakeGate(
+        deps,
+        ctx,
+        call,
+        "take_message",
+        parsed.data,
+        "caller_phone",
+      );
       if (!gated.ok) return gated.envelope;
       return toolEnvelope(await takeMessage(sql, ctx, gated.args, { logger, defer: deps.defer }));
     }
@@ -406,7 +453,7 @@ async function runTool(
           message: MANUAL_MODE_ORDER_MESSAGE,
         });
       }
-      const gated = await applyIntakeGate(deps, ctx, "create_order", parsed.data, "customer");
+      const gated = await applyIntakeGate(deps, ctx, call, "create_order", parsed.data, "customer");
       if (!gated.ok) return gated.envelope;
       return toolEnvelope(
         await createOrder(sql, ctx, gated.args, logger, {

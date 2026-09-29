@@ -56,6 +56,19 @@ export type CustomQuestionAppliesTo = (typeof CUSTOM_QUESTION_APPLIES_TO)[number
 
 export const NO_CUSTOM_QUESTIONS_TEXT = "(no custom questions)";
 
+/**
+ * The one answer the model may give for a REQUIRED question the caller
+ * refuses (after asking twice, per the compiled procedure): without it a
+ * caller who won't say, e.g., a gate code could never book or even leave a
+ * message. The server can't tell a real refusal from a lazy model either way
+ * (it can't hear the call), so this doesn't weaken enforcement beyond what a
+ * fabricated answer already does; it gives the honest path a name and shows
+ * the owner that the caller declined. Stored as `CUSTOM_ANSWER_DECLINED_TEXT`.
+ * On an OPTIONAL question it is treated as no answer (nothing stored).
+ */
+export const CUSTOM_ANSWER_DECLINED_TOKEN = "declined";
+export const CUSTOM_ANSWER_DECLINED_TEXT = "Declined to answer";
+
 const ID_PATTERN = /^[a-z0-9_-]{1,32}$/;
 const REDACTION_MARKER = "[redacted]";
 
@@ -216,7 +229,9 @@ export function applyCustomAnswers(
   if (Array.isArray(rawAnswers)) {
     for (const entry of rawAnswers) {
       const item = record(entry);
-      const id = typeof item?.["question_id"] === "string" ? item["question_id"] : "";
+      // Ids are lowercase by construction; tolerate a model that echoes one back with stray case/space.
+      const id =
+        typeof item?.["question_id"] === "string" ? item["question_id"].trim().toLowerCase() : "";
       const answer = cleanCustomAnswer(item?.["answer"]);
       if (id && answer && !byId.has(id)) byId.set(id, answer);
     }
@@ -225,13 +240,18 @@ export function applyCustomAnswers(
   const answers: CustomAnswer[] = [];
   const missing: RequiredIntakeField[] = [];
   for (const question of applicable) {
-    const answer = byId.get(question.id);
+    let answer = byId.get(question.id);
+    if (answer && answer.toLowerCase().replace(/[.!\s]+$/, "") === CUSTOM_ANSWER_DECLINED_TOKEN) {
+      // The caller refused: a required question records that (so the booking or message is not
+      // lost); an optional one just stays unanswered.
+      answer = question.required ? CUSTOM_ANSWER_DECLINED_TEXT : undefined;
+    }
     if (answer) {
       answers.push({ question_id: question.id, question: question.label, answer });
     } else if (question.required) {
       missing.push({
         path: `structured_payload.custom_answers.${question.id}`,
-        askFor: `the answer to this question, asked exactly as written: "${question.label}" (record it under question_id ${question.id})`,
+        askFor: `the answer to this question, in the owner's words (translated only if the call is in another language): "${question.label}" (record it under question_id ${question.id})`,
       });
     }
   }
