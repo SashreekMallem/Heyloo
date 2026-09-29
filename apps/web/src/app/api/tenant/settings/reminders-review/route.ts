@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { claimsFromSupabaseClient } from "@/lib/auth/claims";
+import { parseBody, requireTenantWriter, updateResult } from "@/lib/settings/route-auth";
 import { reminderReviewRequestSchema } from "@/lib/settings/schemas";
-import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
@@ -14,46 +13,28 @@ export const runtime = "nodejs";
  *
  * SETTINGS-1: `reminderReviewRequestSchema` (`lib/settings/schemas.ts`) —
  * blank link clears it, http(s) only, and review requests need a link.
+ *
+ * QA-1 SEC-07: owner/admin only (`requireTenantWriter`) and a write RLS
+ * filtered to zero rows is a 404 — a `member`'s POST used to answer
+ * `{ok: true}` while `tenants_update` silently dropped it.
  */
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerComponentClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
+  const auth = await requireTenantWriter();
+  if (!auth.ok) return auth.response;
+  const body = await parseBody(request, reminderReviewRequestSchema);
+  if (!body.ok) return body.response;
 
-  // AUTH-1 fix (docs/BUILD_NOTES.md, SIGNUP-1 root cause #3): claims live
-  // only in the JWT itself, never in the User/session object's
-  // app_metadata; claimsFromUser(user) always evaluated to {} for a real
-  // tenant/admin/partner here.
-  const claims = await claimsFromSupabaseClient(supabase);
-  if (!claims.tenant_id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
-
-  let json: unknown;
-  try {
-    json = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid_json" }, { status: 400 });
-  }
-
-  const parsed = reminderReviewRequestSchema.safeParse(json);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "invalid_request", issues: parsed.error.issues },
-      { status: 422 },
-    );
-  }
-
-  const { error } = await supabase
+  const result = await auth.supabase
     .from("tenants")
     .update({
-      voice_reminders_enabled: parsed.data.voice_reminders_enabled,
-      review_request_enabled: parsed.data.review_request_enabled,
-      review_url: parsed.data.review_url,
-      avg_transaction_value_cents: parsed.data.avg_transaction_value_cents,
+      voice_reminders_enabled: body.data.voice_reminders_enabled,
+      review_request_enabled: body.data.review_request_enabled,
+      review_url: body.data.review_url,
+      avg_transaction_value_cents: body.data.avg_transaction_value_cents,
     })
-    .eq("id", claims.tenant_id);
-
-  if (error) return NextResponse.json({ error: "update_failed" }, { status: 500 });
+    .eq("id", auth.tenantId)
+    .select("id");
+  const written = updateResult(result);
+  if (!written.ok) return written.response;
   return NextResponse.json({ ok: true });
 }

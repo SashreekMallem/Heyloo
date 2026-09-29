@@ -2,6 +2,7 @@ import type { InsertOf, ResourceRow } from "@heyloo/supabase-client";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { claimsFromSupabaseClient } from "@/lib/auth/claims";
+import { parseBody, requireTenantWriter } from "@/lib/settings/route-auth";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-role";
 
@@ -60,38 +61,20 @@ export async function GET() {
   return NextResponse.json({ resources: data ?? [] });
 }
 
+/** QA-1 SEC-07: owner/admin only — a member's insert used to fail RLS as a bare 500. */
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerComponentClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-  // AUTH-1 fix (docs/BUILD_NOTES.md, SIGNUP-1 root cause #3): claims live
-  // only in the JWT itself, never in the User/session object's
-  // app_metadata; claimsFromUser(user) always evaluated to {} for a real
-  // tenant/admin/partner here.
-  const claims = await claimsFromSupabaseClient(supabase);
-  if (!claims.tenant_id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
-
-  let json: unknown;
-  try {
-    json = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid_json" }, { status: 400 });
-  }
-  const parsed = resourceSchema.safeParse(json);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "invalid_request", issues: parsed.error.issues },
-      { status: 422 },
-    );
-  }
+  const auth = await requireTenantWriter();
+  if (!auth.ok) return auth.response;
+  const { supabase, tenantId } = auth;
+  const body = await parseBody(request, resourceSchema);
+  if (!body.ok) return body.response;
+  const parsed = body;
 
   const { slot_minutes: slotMinutes, ...resource } = parsed.data;
   const row = {
     ...resource,
     metadata: slotMinutes ? { ...resource.metadata, slot_minutes: slotMinutes } : resource.metadata,
-    tenant_id: claims.tenant_id,
+    tenant_id: tenantId,
   };
   const { data, error } = await supabase
     .from("resources")
@@ -120,7 +103,7 @@ export async function POST(request: Request) {
   // by functions & triggers via service_role") and is not `security
   // definer`, so it can't be called under the tenant owner's own RLS-scoped
   // session above — narrowly scoped service-role client instead, called
-  // ONLY with this request's own already-authorized `claims.tenant_id` and
+  // ONLY with this request's own already-authorized `tenantId` and
   // the resource id this same request's insert just created (never
   // client-supplied), mirroring `refer/ensure-link/route.ts`'s existing
   // narrow service-role-in-a-Route-Handler pattern. Best-effort: a failure
@@ -129,13 +112,13 @@ export async function POST(request: Request) {
   // logged instead.
   const service = createSupabaseServiceRoleServerClient();
   const { error: slotsError } = await service.rpc("fn_regenerate_availability_slots", {
-    p_tenant_id: claims.tenant_id,
+    p_tenant_id: tenantId,
     p_resource_id: data.id,
     p_days_ahead: null,
   });
   if (slotsError) {
     console.error("resource_availability_slots_regeneration_failed", {
-      tenant_id: claims.tenant_id,
+      tenant_id: tenantId,
       resource_id: data.id,
       error: slotsError,
     });
