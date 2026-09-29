@@ -22,8 +22,11 @@ import type { Logger } from "../_shared/types.ts";
  * - "An empty response with a status code of 200 is taken as a successful
  *   response"; errors are `{"error": {"http_code": <n>, "message": "..."}}`;
  * - Auth retries recoverable errors (429, 503) up to three times with a
- *   two-second back-off, so those statuses are used ONLY for problems a retry
- *   can fix (provider throttling, a slow provider); a permanent failure or a
+ *   two-second back-off, all inside ONE 5-second budget ("total time budget of
+ *   5s including all retry requests"; with our 4.2 s send deadline a retry
+ *   rarely fits, which is fine: the user can request the email again), so
+ *   those statuses are used ONLY for problems a retry can fix (provider
+ *   throttling, a slow provider); a permanent failure or a
  *   misconfiguration answers 500 so a signup does not wait through retries
  *   that cannot succeed.
  *

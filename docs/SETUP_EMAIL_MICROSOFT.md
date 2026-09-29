@@ -286,8 +286,10 @@ Exchange Online limits, per mailbox
 
 Graph may also answer **429 Too Many Requests** with a `Retry-After` header
 ([throttling](https://learn.microsoft.com/en-us/graph/throttling)). Heyloo
-honours it: the message is parked and retried after that delay, and an
-account email is retried by Supabase Auth. This is plenty for launch (owner
+honours it: a product message is parked and retried after that delay. An
+account email is different: Supabase Auth gives the whole exchange 5 seconds
+(retries included), so if Microsoft throttles at that moment the person just
+asks for the email again. This is plenty for launch (owner
 alerts and account mail). Microsoft says Exchange Online "isn't suited to
 accommodate bulk-mailing scenarios", so if you ever send marketing volume,
 add a transactional provider (Resend) for that rather than raising these.

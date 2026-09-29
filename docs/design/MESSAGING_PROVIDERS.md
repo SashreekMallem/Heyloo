@@ -353,7 +353,10 @@ test reads the route's `VALID_TYPES`).
 - **Errors.** Bad or missing signature: 401. Missing `SEND_EMAIL_HOOK_SECRET`
   or unconfigured provider: 500 (retrying cannot help). Provider throttling:
   429 with `Retry-After`. Provider slow or transient: 503 (Auth retries 429 and
-  503 up to three times). Permanent provider failure: 500. Bad payload or an
+  503 up to three times, but inside ONE 5-second budget shared with the first
+  attempt, and this function already uses up to 4.2 s, so in practice a
+  throttled or slow send is not retried and the user has to ask for the email
+  again). Permanent provider failure: 500. Bad payload or an
   unknown `email_action_type`: 400. The message returned to Auth is generic;
   the real reason (`ms_forbidden`, ...) is in the function logs and Sentry.
 - **Idempotency.** Each email carries `auth-email:<webhook-id>:<slot>`; Resend
