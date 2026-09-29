@@ -116,12 +116,43 @@ async function extractSummary(
   };
 }
 
+/**
+ * QA-1 F-06: server-side cost backstop. The web layer's per-IP limiter is
+ * in-memory per warm instance and the function is public (verify_jwt false),
+ * so a direct caller could otherwise run the LLM scrape (create) or mint Retell
+ * call tokens (confirm) without bound. These are GLOBAL hourly ceilings counted
+ * from `demo_sessions` itself (no client IP reaches this function), sized like
+ * the web layer's own global limit (240/h for instant calls).
+ */
+export const DEMO_CREATE_MAX_PER_HOUR = 240;
+export const DEMO_CONFIRM_MAX_PER_HOUR = 240;
+
+async function countRecent(
+  sql: SqlClient,
+  kind: "created" | "confirmed",
+  now: Date,
+): Promise<number> {
+  const since = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+  const rows =
+    kind === "created"
+      ? await sql<{ n: number }>`
+          select count(*)::int as n from public.demo_sessions where created_at > ${since}::timestamptz
+        `
+      : await sql<{ n: number }>`
+          select count(*)::int as n from public.demo_sessions
+          where retell_call_token is not null and created_at > ${since}::timestamptz
+        `;
+  const n = rows[0]?.n;
+  return typeof n === "number" ? n : 0;
+}
+
 export type CreateDemoResult =
   | {
       status: 200;
       body: { demo_session_id: string; needs_confirmation: true; agent_summary: AgentSummary };
     }
   | { status: 400; body: { error: string } }
+  | { status: 429; body: { error: "rate_limited" } }
   | { status: 503; body: ReturnType<typeof aiNotConfiguredBody> };
 
 export async function handleCreateDemo(
@@ -135,6 +166,10 @@ export async function handleCreateDemo(
   const llm = deps.llm.client;
   if (!/^https?:\/\//i.test(req.url)) {
     return { status: 400, body: { error: "invalid_url" } };
+  }
+  if ((await countRecent(sql, "created", deps.now ?? new Date())) >= DEMO_CREATE_MAX_PER_HOUR) {
+    deps.logger.warn("demo_create_rate_limited", {});
+    return { status: 429, body: { error: "rate_limited" } };
   }
 
   const html = await deps.fetchUrl(req.url);
@@ -174,6 +209,7 @@ export type ConfirmDemoResult =
       };
     }
   | { status: 404; body: { error: string } }
+  | { status: 429; body: { error: "rate_limited" } }
   | { status: 502; body: { error: string } }
   | { status: 503; body: { error: "not_configured" } };
 
@@ -197,6 +233,11 @@ export async function handleConfirmDemo(
   const now = deps.now ?? new Date();
   if (!session || new Date(session.expires_at) < now) {
     return { status: 404, body: { error: "demo_session_not_found_or_expired" } };
+  }
+
+  if ((await countRecent(sql, "confirmed", now)) >= DEMO_CONFIRM_MAX_PER_HOUR) {
+    deps.logger.warn("demo_confirm_rate_limited", {});
+    return { status: 429, body: { error: "rate_limited" } };
   }
 
   const stored = session.scraped_summary ?? GENERIC_SUMMARY(session.business_name);
