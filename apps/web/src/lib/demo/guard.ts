@@ -39,7 +39,7 @@ export function forbiddenOriginResponse(request: Request): NextResponse | null {
   return null;
 }
 
-/** Per-IP window first, so one address flooding can't eat the global budget (a denied attempt still counts as a hit in both). */
+/** Per-IP window first and short-circuiting: an address that is already over its own limit is refused without spending any of the global budget. */
 export function rateLimitedResponse(
   request: Request,
   perIp: SlidingWindowRateLimiter,

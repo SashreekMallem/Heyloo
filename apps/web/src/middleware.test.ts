@@ -8,11 +8,22 @@ let mockUser: unknown = null;
 // Custom Access Token Hook never writes to). This mock's shape matches
 // that fix; see middleware.ts / claims.ts's doc comments for the full story.
 let mockClaimsAppMetadata: unknown = {};
+/** When set, `getUser()` behaves like a token refresh and writes this cookie. */
+let mockRefreshedCookie: { name: string; value: string } | null = null;
 
 vi.mock("@supabase/ssr", () => ({
-  createServerClient: () => ({
+  createServerClient: (
+    _url: string,
+    _key: string,
+    options: {
+      cookies: { setAll: (c: { name: string; value: string; options: object }[]) => void };
+    },
+  ) => ({
     auth: {
-      getUser: () => Promise.resolve({ data: { user: mockUser } }),
+      getUser: () => {
+        if (mockRefreshedCookie) options.cookies.setAll([{ ...mockRefreshedCookie, options: {} }]);
+        return Promise.resolve({ data: { user: mockUser } });
+      },
       getClaims: () =>
         Promise.resolve({
           data: { claims: { app_metadata: mockClaimsAppMetadata } },
@@ -101,6 +112,19 @@ describe("middleware — guard #1 redirect matrix (FRONTEND_SPEC.md §0.1)", () 
     expect(new URL(withNext.headers.get("location") ?? "").pathname).toBe("/dashboard/calls");
     const evil = await middleware(req("/login?next=//evil.example"));
     expect(new URL(evil.headers.get("location") ?? "").pathname).toBe("/dashboard");
+  });
+
+  it("F-13: keeps a just-refreshed session cookie on the redirects it issues", async () => {
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
+    mockRefreshedCookie = { name: "sb-abc-auth-token", value: "rotated" };
+    try {
+      const res = await middleware(req("/login"));
+      expect(res.status).toBe(307);
+      expect(res.cookies.get("sb-abc-auth-token")?.value).toBe("rotated");
+    } finally {
+      mockRefreshedCookie = null;
+    }
   });
 
   it("F-13: sends a signed-in tenant member from /signup step 1 to /signup/resume, leaves later steps alone", async () => {

@@ -81,7 +81,7 @@ export async function middleware(request: NextRequest) {
       // admins and partners have no tenant by design and really are in the
       // wrong place.
       if (claims.platform_admin || claims.referral_partner_id) return redirectToWrongRole(request);
-      return redirectTo(request, "/signup/resume");
+      return redirectTo(request, "/signup/resume", response);
     }
   } else if (pathname.startsWith("/cockpit")) {
     if (!user) return redirectToLogin();
@@ -98,20 +98,27 @@ export async function middleware(request: NextRequest) {
     // send them where they were going (a same-origin `next`) or the dashboard.
     if (user && claims.tenant_id) {
       const next = sameOriginPath(request.nextUrl.searchParams.get("next"), request.nextUrl.origin);
-      return redirectTo(request, next ?? "/dashboard");
+      return redirectTo(request, next ?? "/dashboard", response);
     }
   } else if (pathname === "/signup") {
     // Step 1 of the wizard for a signed-in tenant member: `/signup/resume`
     // routes them by tenant state (unpaid -> checkout, provisioning, dashboard).
-    if (user && claims.tenant_id) return redirectTo(request, "/signup/resume");
+    if (user && claims.tenant_id) return redirectTo(request, "/signup/resume", response);
   }
   // `/mfa/*`, `/reset-password*` and the rest of the wizard stay public.
 
   return response;
 }
 
-function redirectTo(request: NextRequest, target: string) {
-  return NextResponse.redirect(new URL(target, request.nextUrl.origin));
+/**
+ * Redirects a signed-in visitor. `carry` is the response the Supabase session
+ * refresh wrote its Set-Cookie headers to: a redirect built from scratch would
+ * drop a just-rotated refresh token and log the visitor out on the next hop.
+ */
+function redirectTo(request: NextRequest, target: string, carry: NextResponse) {
+  const redirect = NextResponse.redirect(new URL(target, request.nextUrl.origin));
+  for (const cookie of carry.cookies.getAll()) redirect.cookies.set(cookie);
+  return redirect;
 }
 
 function redirectToWrongRole(request: NextRequest) {
