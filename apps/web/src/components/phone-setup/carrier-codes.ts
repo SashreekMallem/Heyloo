@@ -84,3 +84,9 @@ export function dialableNumber(e164: string): string {
   const match = /^\+1(\d{10})$/.exec(e164.trim());
   return match?.[1] ?? e164.trim();
 }
+
+/** `+12627551967` -> `(262) 755-1967` for reading aloud to a phone company; other numbers as dialed. */
+export function displayNumber(e164: string): string {
+  const d = dialableNumber(e164);
+  return /^\d{10}$/.test(d) ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : d;
+}

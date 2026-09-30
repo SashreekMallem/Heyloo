@@ -4,7 +4,7 @@ import { CARRIERS } from "@heyloo/canonical-types";
 import { Button, CarrierForwardingCard, Label, WizardStepper } from "@heyloo/ui";
 import { useState } from "react";
 import { useRouter } from "@/i18n/navigation";
-import { CARRIER_CODES, CARRIER_LABELS, dialableNumber } from "./carrier-codes";
+import { CARRIER_CODES, CARRIER_LABELS, dialableNumber, displayNumber } from "./carrier-codes";
 import { PortInForm } from "./port-in-form";
 
 type Stage = "carrier" | "verify" | "success" | "port_in";
@@ -109,21 +109,37 @@ export function PhoneSetupWizard({
             ))}
           </div>
 
-          <div className="flex items-center gap-2 rounded-md border border-border p-3 text-sm">
-            <input
-              type="checkbox"
-              id="full-forward"
-              checked={mode === "full"}
-              onChange={(e) => setMode(e.target.checked ? "full" : "conditional")}
-            />
-            <Label htmlFor="full-forward" className="font-normal">
-              Forward all calls instead (faster setup, no fallback if our AI is briefly down)
-            </Label>
-          </div>
+          <p className="text-xs text-muted-foreground">
+            On a prepaid or other carrier? Pick the network it runs on: Tello, Mint and Metro use
+            T-Mobile; Cricket uses AT&amp;T; Visible uses Verizon.
+          </p>
+
+          {carrier === "other_landline" ? (
+            // Landline phone companies each use their own "forward when unanswered"
+            // code, so only forward-all (*72) is offered; a toggle that changed
+            // nothing looked broken.
+            <p className="rounded-md border border-border p-3 text-sm text-muted-foreground">
+              The code below forwards <strong>every</strong> call to your AI receptionist. To keep
+              your phone ringing first, ask your phone company to turn on &ldquo;call forwarding on
+              no answer&rdquo; to {displayNumber(forwardingNumber)}.
+            </p>
+          ) : (
+            <div className="flex items-center gap-2 rounded-md border border-border p-3 text-sm">
+              <input
+                type="checkbox"
+                id="full-forward"
+                checked={mode === "full"}
+                onChange={(e) => setMode(e.target.checked ? "full" : "conditional")}
+              />
+              <Label htmlFor="full-forward" className="font-normal">
+                Forward all calls instead (faster setup, no fallback if our AI is briefly down)
+              </Label>
+            </div>
+          )}
 
           <CarrierForwardingCard
             carrier={CARRIER_LABELS[carrier]}
-            codes={CARRIER_CODES[carrier][mode]}
+            codes={CARRIER_CODES[carrier][carrier === "other_landline" ? "full" : mode]}
             forwardingNumber={dialableNumber(forwardingNumber)}
           />
 
@@ -144,16 +160,36 @@ export function PhoneSetupWizard({
 
       {stage === "verify" && (
         <div className="space-y-4 text-center">
+          {/* forwarding-verify never places a call itself: it waits ~55 s for
+              a call to land on the Heyloo number. The old copy ("We'll place a
+              test call") left owners watching "Testing…" for a call that was
+              never coming. */}
           <p className="text-sm text-muted-foreground">
-            We&apos;ll place a test call to confirm forwarding is working.
+            {testing
+              ? "Call your business number now from a different phone and let it ring. We're listening for about a minute."
+              : "Press Start, then within a minute call your business number from a different phone and let it ring. When your AI receptionist answers, forwarding works."}
           </p>
           <Button size="lg" className="w-full" onClick={runTest} disabled={testing}>
-            {testing ? "Testing…" : "Test it"}
+            {testing
+              ? "Waiting for your call…"
+              : testResult === "fail"
+                ? "Try again"
+                : "Start test"}
           </Button>
           {testResult === "fail" && (
             <p className="text-sm text-destructive">
-              We didn&apos;t receive the call — check the code was entered correctly and try again.
+              No forwarded call arrived within a minute. Check the code was dialed from your
+              business phone and that you called it from a different phone, then try again.
             </p>
+          )}
+          {onboarding && (
+            <button
+              type="button"
+              className="w-full text-center text-xs text-muted-foreground underline"
+              onClick={() => router.push("/dashboard")}
+            >
+              Skip for now — go to my dashboard
+            </button>
           )}
         </div>
       )}
