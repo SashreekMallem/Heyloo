@@ -305,8 +305,18 @@ async function runTenantRegression(
         where a.rule = ${rule}
           and a.status = 'open'
           and a.tenant_id = ${tenant.id}
-          and a.created_at > now() - interval '20 hours'
       )
+    `;
+  } else {
+    // QA-1 BE-15: no time window on the dedupe above (a failing suite used to
+    // raise a new alert every day), so the open one is retired here once the
+    // suite is green again.
+    await sql`
+      update public.alerts
+      set status = 'resolved'
+      where tenant_id = ${tenant.id}
+        and status = 'open'
+        and rule in ('agent_regression_failure', 'agent_regression_error', 'agent_regression_timeout')
     `;
   }
 
