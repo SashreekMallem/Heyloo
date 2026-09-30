@@ -164,6 +164,16 @@ describe("BillingPage text conversations usage tile", () => {
     await screen.findByText("No invoices yet");
     expect(invoicesChain?.["neq"]).toHaveBeenCalledWith("status", "void");
   });
+
+  it("does not list a not-yet-finalized `draft` invoice (QA-1 F-25)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ included_minutes: 100 })),
+    );
+    renderPage();
+    await screen.findByText("No invoices yet");
+    expect(invoicesChain?.["neq"]).toHaveBeenCalledWith("status", "draft");
+  });
 });
 
 describe("BillingPage Manage payment method (QA-1 F-12)", () => {

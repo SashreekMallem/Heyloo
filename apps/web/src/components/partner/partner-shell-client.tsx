@@ -3,12 +3,13 @@
 import { AppShell, AppSidebarNav, type NavSection, TopBar } from "@heyloo/ui";
 import { FileCheck2, Gauge, Handshake, Settings, Users, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
+import { SidebarAccount, UserMenu } from "@/components/shell/user-menu";
 import { Link, usePathname } from "@/i18n/navigation";
 
 const SECTIONS: NavSection[] = [
   {
     items: [
-      { label: "Dashboard", href: "/portal", icon: Gauge },
+      { label: "Dashboard", href: "/portal", icon: Gauge, exact: true },
       { label: "Customers", href: "/portal/customers", icon: Users },
       { label: "Payouts", href: "/portal/payouts", icon: Wallet },
       { label: "W-9", href: "/portal/w9", icon: FileCheck2 },
@@ -42,6 +43,7 @@ export function PartnerShellClient({
                 Partner Portal
               </span>
             }
+            footer={<SidebarAccount roleLabel="Referral partner" />}
             renderLink={(item, isActive) => (
               <Link href={item.href} data-active={isActive}>
                 {item.icon && <item.icon className="size-4" aria-hidden="true" />}
@@ -54,6 +56,7 @@ export function PartnerShellClient({
       topBar={
         <TopBar>
           <span className="text-small font-medium">{partnerName}</span>
+          <UserMenu roleLabel="Referral partner" />
         </TopBar>
       }
     >

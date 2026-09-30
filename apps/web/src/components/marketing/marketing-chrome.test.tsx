@@ -82,6 +82,25 @@ describe("MarketingHeader", () => {
     await user.click(within(menu).getByRole("link", { name: "Pricing" }));
     expect(screen.queryByRole("navigation", { name: "Mobile" })).toBeNull();
   });
+
+  it("closes the phone menu on Escape and returns focus to the toggle (QA-1 F-15)", async () => {
+    const user = userEvent.setup();
+    render(withIntl(<MarketingHeader />));
+    await user.click(screen.getByRole("button", { name: "Open menu" }));
+    expect(screen.getByRole("navigation", { name: "Mobile" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("navigation", { name: "Mobile" })).toBeNull();
+    const toggle = screen.getByRole("button", { name: "Open menu" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveFocus();
+  });
+
+  it("ignores Escape while the menu is closed (no stray focus steal)", async () => {
+    const user = userEvent.setup();
+    render(withIntl(<MarketingHeader />));
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "Open menu" })).not.toHaveFocus();
+  });
 });
 
 describe("MarketingHeader — session awareness and keyboard (F-13, MAP-16)", () => {

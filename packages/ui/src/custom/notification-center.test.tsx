@@ -60,3 +60,12 @@ describe("NotificationCenter (QA-1 F-04)", () => {
     expect(screen.queryByText("Jamie Cruz booked")).not.toBeInTheDocument();
   });
 });
+
+describe("NotificationCenter (QA-1 MAP-11)", () => {
+  it("opens a popover dialog that has an accessible name", async () => {
+    const user = userEvent.setup();
+    render(<NotificationCenter items={[]} unreadCount={0} onOpen={() => {}} />);
+    await user.click(screen.getByRole("button", { name: "Notifications" }));
+    expect(screen.getByRole("dialog", { name: "Notifications" })).toBeInTheDocument();
+  });
+});

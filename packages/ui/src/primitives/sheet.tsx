@@ -43,7 +43,7 @@ export function SheetContent({ side = "right", className, children, ...props }: 
       <SheetOverlay />
       <DialogPrimitive.Content className={cn(sheetVariants({ side }), className)} {...props}>
         {children}
-        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring">
+        <DialogPrimitive.Close className="absolute right-2 top-2 flex size-11 items-center justify-center rounded-sm opacity-70 hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring lg:right-4 lg:top-4 lg:size-6">
           <X className="size-4" />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>

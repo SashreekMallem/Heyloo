@@ -16,7 +16,11 @@ export function WizardStepper({ steps, current, completed, className }: WizardSt
         const isDone = completed.includes(index);
         const isCurrent = index === current;
         return (
-          <li key={step} className="flex flex-1 items-center gap-2">
+          <li
+            key={step}
+            aria-current={isCurrent ? "step" : undefined}
+            className="flex min-w-0 flex-1 items-center gap-2"
+          >
             <div
               className={cn(
                 "flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-medium",
@@ -29,15 +33,18 @@ export function WizardStepper({ steps, current, completed, className }: WizardSt
             >
               {isDone ? <Check className="size-3.5" /> : index + 1}
             </div>
+            {/* Labels never wrap (QA-1 F-18: "Business info" broke onto two
+                lines at 1440). Below lg only the current step keeps its label
+                so a 4-step header still fits on one line. */}
             <span
               className={cn(
-                "hidden text-sm sm:inline",
-                isCurrent ? "font-medium" : "text-muted-foreground",
+                "hidden whitespace-nowrap text-sm",
+                isCurrent ? "font-medium sm:inline" : "text-muted-foreground lg:inline",
               )}
             >
               {step}
             </span>
-            {index < steps.length - 1 && <div className="h-px flex-1 bg-border" />}
+            {index < steps.length - 1 && <div className="h-px min-w-3 flex-1 bg-border" />}
           </li>
         );
       })}

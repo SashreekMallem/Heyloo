@@ -88,4 +88,22 @@ describe("tokens", () => {
       expect(css).toContain(`${token}: `);
     }
   });
+
+  it("re-binds the primary utilities inside the shell so bg-primary follows the remap (QA-1 F-18)", () => {
+    // The theme's `--color-primary: var(--primary)` is resolved on :root, so
+    // remapping `--primary` alone left signup/demo/intake buttons orange next
+    // to the near-black header CTA. The trio must be declared in a `.mk` block.
+    const shellBlocks = css
+      .split(/\.mk\s*\{/)
+      .slice(1)
+      .map((block) => block.slice(0, block.indexOf("}")));
+    for (const name of ["primary", "primary-hover", "primary-foreground"]) {
+      expect(shellBlocks.some((block) => block.includes(`--color-${name}: var(--${name})`))).toBe(
+        true,
+      );
+    }
+    // ...and stays the same token the header's .btn-p uses (ink on ground).
+    expect(css).toContain("--primary: var(--ink)");
+    expect(css).toContain("--primary-foreground: var(--ground)");
+  });
 });

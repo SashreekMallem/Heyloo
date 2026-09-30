@@ -61,7 +61,7 @@ export function ThemeToggle({ className }: { className?: string }) {
       aria-label={mounted ? LABEL[pref] : LABEL.system}
       title={mounted ? LABEL[pref] : LABEL.system}
       className={cn(
-        "inline-flex size-9 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors duration-(--duration-fast) ease-(--ease-out) hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+        "inline-flex size-11 items-center lg:size-9 justify-center rounded-md border border-border text-muted-foreground transition-colors duration-(--duration-fast) ease-(--ease-out) hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
         className,
       )}
     >

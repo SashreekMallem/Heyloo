@@ -120,6 +120,10 @@ export default function BillingPage() {
         // computation for a period Stripe already invoiced): showing them next to
         // the real Stripe invoice would look like a second, cancelled charge.
         .neq("status", "void")
+        // A `draft` invoice is Stripe's not-yet-finalized preview of the
+        // current period — showing "$299.00 Draft" next to real invoices
+        // reads as a charge that already happened (QA-1 F-25).
+        .neq("status", "draft")
         .order("period_start", { ascending: false });
       return (data ?? []) as Invoice[];
     },

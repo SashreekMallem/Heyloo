@@ -46,7 +46,9 @@ const previewModeActive =
  */
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  // AUTH-13: baseline security headers (nosniff, referrer policy, anti-framing).
+  // QA-1 F-08: don't advertise the framework.
+  poweredByHeader: false,
+  // QA-1 F-08: baseline security headers (src/lib/security-headers.ts).
   headers: async () => securityHeaderRules(),
   transpilePackages: ["@heyloo/ui", "@heyloo/canonical-types", "@heyloo/supabase-client"],
   experimental: {

@@ -7,6 +7,7 @@ import {
   ManualModeBanner,
   MobileTabBar,
   MobileTabBarLabel,
+  MobileTabBarMenuButton,
   NAV_ICONS,
   type NavItem,
   type NavSection,
@@ -18,6 +19,7 @@ import { NotificationCenter } from "@heyloo/ui/notification";
 import { useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
+import { SidebarAccount, UserMenu } from "@/components/shell/user-menu";
 import { Link, usePathname, useRouter } from "@/i18n/navigation";
 import {
   markNotificationsSeen,
@@ -32,7 +34,9 @@ import { TenantIdProvider } from "@/lib/tenant/tenant-context";
 const OPERATE_SECTION: NavSection = {
   label: "Operate",
   items: [
-    { label: "Overview", href: "/dashboard", icon: NAV_ICONS.overview },
+    // `exact`: "/dashboard" prefixes every other route, so without it Overview
+    // stayed highlighted on every page (QA-1 F-01).
+    { label: "Overview", href: "/dashboard", icon: NAV_ICONS.overview, exact: true },
     { label: "Calls", href: "/dashboard/calls", icon: NAV_ICONS.calls },
     { label: "Bookings", href: "/dashboard/bookings", icon: NAV_ICONS.bookings },
     { label: "Customers", href: "/dashboard/customers", icon: NAV_ICONS.customers },
@@ -70,12 +74,15 @@ const GROW_SECTION: NavSection = {
   ],
 };
 
+/** The "More" tab is not a destination — it opens the navigation drawer (QA-1 F-13). Its href is only a stable key; it never matches a real path. */
+const MORE_TAB_HREF = "#more";
+
 const MOBILE_TABS: NavItem[] = [
-  { label: "Overview", href: "/dashboard", icon: NAV_ICONS.overview },
+  { label: "Overview", href: "/dashboard", icon: NAV_ICONS.overview, exact: true },
   { label: "Calls", href: "/dashboard/calls", icon: NAV_ICONS.calls },
   { label: "Bookings", href: "/dashboard/bookings", icon: NAV_ICONS.bookings },
   { label: "Customers", href: "/dashboard/customers", icon: NAV_ICONS.customers },
-  { label: "More", href: "/dashboard/support", icon: MoreHorizontal },
+  { label: "More", href: MORE_TAB_HREF, icon: MoreHorizontal, exact: true },
 ];
 
 const SECTIONS: NavSection[] = [OPERATE_SECTION, CONFIGURE_SECTION, GROW_SECTION];
@@ -112,10 +119,11 @@ function TopBarContent({ tenantId, tenantName }: { tenantId: string; tenantName:
       <Link
         href="/dashboard/agent"
         aria-label="Agent settings"
-        className="flex size-8 items-center justify-center rounded-full bg-secondary transition-colors duration-(--duration-fast) ease-(--ease-out) hover:bg-secondary/70"
+        className="flex size-11 items-center justify-center rounded-full bg-secondary transition-colors duration-(--duration-fast) ease-(--ease-out) hover:bg-secondary/70 lg:size-8"
       >
         <SettingsIcon className="size-4" />
       </Link>
+      <UserMenu />
     </>
   );
 }
@@ -150,6 +158,7 @@ export function TenantShellClient({
             sections={SECTIONS}
             activeHref={pathname}
             header={<span className="px-2 text-sm font-semibold">Heyloo</span>}
+            footer={<SidebarAccount />}
             renderLink={(item, isActive) => (
               <Link href={item.href} data-active={isActive}>
                 {item.icon && <item.icon className="size-4" />}
@@ -184,11 +193,15 @@ export function TenantShellClient({
           <MobileTabBar
             items={MOBILE_TABS}
             activeHref={pathname}
-            renderLink={(item, isActive) => (
-              <Link href={item.href}>
-                <MobileTabBarLabel item={item} isActive={isActive} />
-              </Link>
-            )}
+            renderLink={(item, isActive) =>
+              item.href === MORE_TAB_HREF ? (
+                <MobileTabBarMenuButton item={item} />
+              ) : (
+                <Link href={item.href}>
+                  <MobileTabBarLabel item={item} isActive={isActive} />
+                </Link>
+              )
+            }
           />
         }
       >

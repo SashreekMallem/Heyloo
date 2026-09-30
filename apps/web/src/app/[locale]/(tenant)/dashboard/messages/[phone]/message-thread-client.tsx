@@ -324,7 +324,11 @@ export function MessageThreadClient({ tenantId, phone }: { tenantId: string; pho
   }
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] flex-col gap-4">
+    // Height = viewport minus what the shell reserves around <main>: on phones
+    // the 56px top bar, 16px top padding and the 80px bottom padding that
+    // clears the fixed tab bar (9.5rem); from md up the tab bar is gone
+    // (8rem). The old fixed 8rem left the composer under the tab bar (QA-1 F-25).
+    <div className="flex h-[calc(100dvh-9.5rem)] flex-col gap-4 md:h-[calc(100dvh-8rem)]">
       <DataState
         query={query}
         empty={{
@@ -392,7 +396,7 @@ export function MessageThreadClient({ tenantId, phone }: { tenantId: string; pho
                       className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${authorBubbleClass(m.author)}`}
                     >
                       {m.author !== "customer" && (
-                        <p className="mb-0.5 flex items-center gap-1 text-[10px] font-medium uppercase opacity-80">
+                        <p className="mb-0.5 flex items-center gap-1 text-[11px] font-medium uppercase opacity-90">
                           {m.author === "ai" ? (
                             <>
                               <Bot className="size-3" /> AI
@@ -405,8 +409,8 @@ export function MessageThreadClient({ tenantId, phone }: { tenantId: string; pho
                         </p>
                       )}
                       <p>{m.text}</p>
-                      {m.note && <p className="mt-1 text-[10px] font-medium uppercase">{m.note}</p>}
-                      <p className="mt-1 text-[10px] opacity-70">
+                      {m.note && <p className="mt-1 text-[11px] font-medium uppercase">{m.note}</p>}
+                      <p className="mt-1 text-[11px] opacity-90">
                         {new Date(m.createdAt).toLocaleString()}
                       </p>
                     </div>
