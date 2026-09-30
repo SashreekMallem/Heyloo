@@ -2,7 +2,7 @@
 
 import { ThemeToggle } from "@heyloo/ui";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "@/i18n/navigation";
 
 /**
@@ -20,6 +20,20 @@ export function MarketingHeader() {
   const t = useTranslations("Nav");
   const [open, setOpen] = useState(false);
   const close = () => setOpen(false);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+
+  // QA-1 F-15: Escape closes the open menu and hands focus back to the
+  // toggle (WAI-ARIA disclosure pattern) — listening only while open.
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      toggleRef.current?.focus();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open]);
 
   const chapters = [
     { href: "/#call", label: t("call") },
@@ -55,6 +69,7 @@ export function MarketingHeader() {
             <ThemeToggle />
           </div>
           <button
+            ref={toggleRef}
             type="button"
             className="hdr-menu"
             aria-label={open ? t("closeMenu") : t("openMenu")}

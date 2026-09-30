@@ -3,6 +3,7 @@ import { withSentryConfig } from "@sentry/nextjs";
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 import { previewModeAliases } from "./src/lib/preview/preview-mode-aliases";
+import { securityHeaderRules } from "./src/lib/security-headers";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
@@ -45,6 +46,10 @@ const previewModeActive =
  */
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // QA-1 F-08: don't advertise the framework.
+  poweredByHeader: false,
+  // QA-1 F-08: baseline security headers (src/lib/security-headers.ts).
+  headers: async () => securityHeaderRules(),
   transpilePackages: ["@heyloo/ui", "@heyloo/canonical-types", "@heyloo/supabase-client"],
   experimental: {
     // Vercel's fluid-compute pricing model FRONTEND_STACK.md cites depends on
