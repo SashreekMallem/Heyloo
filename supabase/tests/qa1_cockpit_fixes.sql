@@ -1,4 +1,4 @@
--- QA-1 cockpit regression test (migration 20260930200400_qa1_cockpit_fixes.sql).
+-- QA-1 cockpit regression test (migration 20260930251400_qa1_cockpit_fixes.sql).
 --
 -- Runs as the database owner against a migrated database (CI: `supabase
 -- start`, then `psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f

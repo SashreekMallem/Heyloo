@@ -110,7 +110,7 @@ export async function evaluateToolFailureSpike(sql: SqlClient): Promise<Alert[]>
  * `negative_margin` rows for one tenant). Now an existing open row is kept and
  * its payload refreshed with the latest numbers; a new row is inserted only
  * when none is open (acking or resolving an alert lets the condition fire
- * again). `uq_alerts_open_rule_tenant` (migration 20260930200400) backs this up
+ * again). `uq_alerts_open_rule_tenant` (migration 20260930251400) backs this up
  * against a concurrent run, hence `on conflict do nothing`.
  */
 export async function upsertAlert(sql: SqlClient, alert: Alert): Promise<void> {

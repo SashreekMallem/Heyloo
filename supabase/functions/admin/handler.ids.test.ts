@@ -48,6 +48,17 @@ describe("routeAdminRequest — malformed path ids", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("PATCH admin-templates/<slug> answers 404 without a Postgres uuid cast", async () => {
+    const { sql, calls } = makeSql();
+    const result = await routeAdminRequest(
+      sql,
+      ctx({ method: "PATCH", path: "/admin-templates/real_estate", body: { system_prompt: "x" } }),
+      logger,
+    );
+    expect(result).toEqual({ status: 404, body: { error: "template_not_found" } });
+    expect(calls).toHaveLength(0);
+  });
+
   it("still routes list endpoints and slug-keyed template lookups", async () => {
     const { sql } = makeSql();
     expect((await routeAdminRequest(sql, ctx({ path: "/admin-tenants" }), logger)).status).toBe(

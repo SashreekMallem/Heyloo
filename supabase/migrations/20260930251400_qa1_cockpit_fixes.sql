@@ -64,8 +64,10 @@ $$;
 update public.alerts a
 set status = 'resolved'
 where a.status = 'open'
-  and a.rule in ('negative_margin', 'usage_spike', 'tool_failure_spike',
-                 'agent_regression_failure', 'agent_regression_error', 'agent_regression_timeout')
+  -- Only the three rules the index below covers: the per-run agent_regression_*
+  -- alerts are distinct events (44 open rows across 6 distinct scenarios on the
+  -- live project) and must not be auto-resolved here.
+  and a.rule in ('negative_margin', 'usage_spike', 'tool_failure_spike')
   and exists (
     select 1 from public.alerts b
     where b.status = 'open'

@@ -1373,6 +1373,9 @@ async function handleTemplates(
   }
 
   if (ctx.method === "PATCH" && templateId && parts[2] === undefined) {
+    // The lookup below is `where id = $1` against a uuid column: a vertical slug
+    // or other junk must answer 404, not surface as a Postgres cast error (500).
+    if (!UUID_RE.test(templateId)) return { status: 404, body: { error: "template_not_found" } };
     const before = (
       await sql<
         Record<string, unknown>
