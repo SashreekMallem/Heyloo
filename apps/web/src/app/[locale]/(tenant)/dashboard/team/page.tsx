@@ -38,7 +38,7 @@ export default function TeamPage() {
     queryKey: ["tenant", tenantId, "team"],
     queryFn: async (): Promise<TeamListResponse> => {
       const res = await fetch("/api/tenant/team");
-      if (!res.ok) throw new Error("failed to load team");
+      if (!res.ok) throw new Error("We couldn't load your team. Try again.");
       return (await res.json()) as TeamListResponse;
     },
     enabled: !!tenantId,

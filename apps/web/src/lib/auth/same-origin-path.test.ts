@@ -16,6 +16,10 @@ describe("sameOriginPath", () => {
     ["tab-smuggled host", "/\t/evil.example"],
     ["newline-smuggled host", "/\n/evil.example"],
     ["javascript scheme", "javascript:alert(1)"],
+    ["backslash inside the path", "/dashboard\\..\\evil"],
+    ["NUL byte", "/dash\u0000board"],
+    ["percent-encoded slashes are not a path", "%2F%2Fevil.example"],
+    ["scheme with slashes", "https:/evil.example"],
     ["no leading slash", "evil.example"],
     ["empty", ""],
   ])("rejects %s", (_name, raw) => {

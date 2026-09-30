@@ -10,6 +10,8 @@ let mockSession: { user: unknown; access_token: string } | null = {
 // below to decouple `getClaims()`'s answer from `getSession()`'s, proving
 // the route honors the JWT-only claim rather than `session.user.app_metadata`.
 let mockClaimsOverride: Record<string, unknown> | undefined;
+// SEC-01: the JWT `aal` claim the mocked getClaims() reports.
+let mockAal: "aal1" | "aal2" = "aal2";
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({
@@ -22,7 +24,9 @@ vi.mock("@/lib/supabase/server", () => ({
       getClaims: async () => {
         const s = mockSession?.user as { app_metadata?: unknown } | undefined;
         return {
-          data: { claims: { app_metadata: mockClaimsOverride ?? s?.app_metadata ?? {} } },
+          data: {
+            claims: { aal: mockAal, app_metadata: mockClaimsOverride ?? s?.app_metadata ?? {} },
+          },
           error: null,
         };
       },
@@ -84,6 +88,24 @@ describe("GET /api/admin/[...path]", () => {
     });
 
     expect(res.status).toBe(401);
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
+  it("SEC-01: 403s aal2_required for a platform_admin token at aal1, without calling fetch", async () => {
+    mockSession = { user: mockUser, access_token: "token-aal1" };
+    mockAal = "aal1";
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const res = await GET(getRequest("admin-tenants"), {
+      params: Promise.resolve({ path: ["admin-tenants"] }),
+    });
+
+    mockAal = "aal2";
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "aal2_required" });
     expect(fetchSpy).not.toHaveBeenCalled();
 
     vi.unstubAllGlobals();

@@ -3,6 +3,7 @@ import "server-only";
 import { redirect } from "next/navigation";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 import { claimsFromSupabaseClient } from "./claims";
+import { NO_ACCESS_PATH } from "./role-home";
 
 const CURRENT_FTC_POLICY_VERSION = "2026-09";
 
@@ -16,7 +17,7 @@ export async function requirePartnerSession(nextPath: string) {
 
   // SIGNUP-1 fix (docs/BUILD_NOTES.md): see claims.ts's doc comment.
   const claims = await claimsFromSupabaseClient(supabase);
-  if (!claims.referral_partner_id) redirect("/?toast=no_access");
+  if (!claims.referral_partner_id) redirect(NO_ACCESS_PATH);
 
   const { data: partner } = await supabase
     .from("referral_partners")
@@ -24,7 +25,7 @@ export async function requirePartnerSession(nextPath: string) {
     .eq("id", claims.referral_partner_id)
     .maybeSingle();
 
-  if (!partner) redirect("/?toast=no_access");
+  if (!partner) redirect(NO_ACCESS_PATH);
 
   const acknowledged =
     !!partner.ftc_acknowledged_at &&

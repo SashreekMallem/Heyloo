@@ -6,7 +6,7 @@ import { TenantIdProvider } from "@/lib/tenant/tenant-context";
 import TeamPage from "./page";
 
 function renderPage() {
-  const client = new QueryClient();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <TenantIdProvider tenantId="t1">
       <QueryClientProvider client={client}>
@@ -61,5 +61,15 @@ describe("TeamPage", () => {
     );
     renderPage();
     expect(await screen.findByText("owner@example.com")).toBeInTheDocument();
+  });
+
+  it("MAP-20: a failed load reads as a sentence-case message, not 'failed to load team'", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("{}", { status: 500 })),
+    );
+    renderPage();
+    expect(await screen.findByText("We couldn't load your team. Try again.")).toBeInTheDocument();
+    expect(screen.queryByText("failed to load team")).not.toBeInTheDocument();
   });
 });

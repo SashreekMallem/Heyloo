@@ -12,7 +12,7 @@ vi.mock("@/i18n/navigation", () => ({
 import ReferPage from "./page";
 
 function renderPage() {
-  const client = new QueryClient();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <TenantIdProvider tenantId="t1">
       <QueryClientProvider client={client}>
@@ -68,5 +68,24 @@ describe("ReferPage", () => {
     );
     renderPage();
     expect(await screen.findByText(/couldn't generate your link/i)).toBeInTheDocument();
+  });
+
+  it("MAP-20: shows a friendly message, not raw parser text, when the API answers with a non-JSON error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("", { status: 500 })),
+    );
+    renderPage();
+    expect(await screen.findByText(/couldn't load your referral link/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Unexpected end of JSON/i)).not.toBeInTheDocument();
+  });
+
+  it("MAP-20: also survives a 200 with a non-JSON body", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("<html>oops</html>", { status: 200 })),
+    );
+    renderPage();
+    expect(await screen.findByText(/couldn't load your referral link/i)).toBeInTheDocument();
   });
 });

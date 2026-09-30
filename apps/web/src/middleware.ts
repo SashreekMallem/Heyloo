@@ -2,7 +2,8 @@ import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 import createIntlMiddleware from "next-intl/middleware";
 import { routing } from "./i18n/routing";
-import { claimsFromSupabaseClient } from "./lib/auth/claims";
+import { sessionAssuranceFromSupabaseClient } from "./lib/auth/claims";
+import { NO_ACCESS_PATH, roleHome } from "./lib/auth/role-home";
 import { sameOriginPath } from "./lib/auth/same-origin-path";
 import { env } from "./lib/env";
 
@@ -63,12 +64,19 @@ export async function middleware(request: NextRequest) {
   // the Custom Access Token Hook's tenant_id/role/platform_admin/
   // referral_partner_id — only the JWT's own claims do. `getClaims()`
   // (verified, falls back to {} on no/invalid session) is the correct read.
-  const claims = await claimsFromSupabaseClient(supabase);
+  // SEC-01: `platform_admin` exists only on an aal2 token; a platform admin
+  // below aal2 carries the inert `admin_mfa_required` marker instead.
+  const { claims, adminMfaRequired } = await sessionAssuranceFromSupabaseClient(supabase);
+
+  /** AUTH-12: the requested path WITHOUT the locale prefix, query included, so a deep link survives login intact. */
+  const requestedPath = pathname + request.nextUrl.search;
 
   function redirectToLogin() {
-    const url = request.nextUrl.clone();
-    url.pathname = "/login";
-    url.searchParams.set("next", request.nextUrl.pathname);
+    // A fresh URL, not a clone of the request URL: cloning kept the original
+    // query (`/login?x=1&next=...`) and, for a locale-prefixed request, put
+    // the prefixed pathname in `next`.
+    const url = new URL("/login", request.url);
+    url.searchParams.set("next", requestedPath);
     return NextResponse.redirect(url);
   }
 
@@ -77,35 +85,58 @@ export async function middleware(request: NextRequest) {
     if (!claims.tenant_id) {
       // A confirmed customer whose tenant doesn't exist yet (they verified
       // their email but never reached checkout) is mid-signup, not lost:
-      // resume the wizard instead of a "no access" toast (QA F-02). Platform
-      // admins and partners have no tenant by design and really are in the
-      // wrong place.
-      if (claims.platform_admin || claims.referral_partner_id) return redirectToWrongRole(request);
+      // resume the wizard instead of a dead end (QA F-02). Platform admins
+      // (including an aal1 one, who carries `admin_mfa_required` instead of
+      // `platform_admin`) and partners have no tenant by design and really
+      // are in the wrong place.
+      if (claims.platform_admin || adminMfaRequired || claims.referral_partner_id) {
+        return redirectToNoAccess(request);
+      }
       return redirectTo(request, "/signup/resume", response);
     }
   } else if (pathname.startsWith("/cockpit")) {
     if (!user) return redirectToLogin();
-    if (!claims.platform_admin) return redirectToWrongRole(request);
-    // AAL2 step-up itself is enforced by the (admin) layout (server
-    // component, reads `supabase.auth.mfa.getAuthenticatorAssuranceLevel()`
-    // — that call needs a full session object middleware's lightweight
-    // `getUser()` doesn't fetch) per §0.2; middleware only gates role here.
+    if (!claims.platform_admin && !adminMfaRequired) return redirectToNoAccess(request);
+    if (!claims.platform_admin) {
+      // AUTH-11 / COCKPIT-F19: a password-only (aal1) admin is stepped up
+      // here, where the real requested path is known, so the challenge
+      // returns them to /cockpit/tenants rather than always /cockpit.
+      // `getAuthenticatorAssuranceLevel()` reads the session locally:
+      // nextLevel is aal2 iff a verified factor exists.
+      const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      const target = aal?.nextLevel === "aal2" ? "/mfa/challenge" : "/mfa/enroll";
+      const url = new URL(target, request.url);
+      if (target === "/mfa/challenge") url.searchParams.set("next", requestedPath);
+      return NextResponse.redirect(url);
+    }
+    // A stale aal1 token that still carries the legacy `platform_admin`
+    // claim is stepped up by the (admin) layout's requireAdminSession, which
+    // reads the session's real assurance level (guard #2).
   } else if (pathname.startsWith("/portal")) {
     if (!user) return redirectToLogin();
-    if (!claims.referral_partner_id) return redirectToWrongRole(request);
+    if (!claims.referral_partner_id) return redirectToNoAccess(request);
   } else if (pathname === "/login") {
-    // A signed-in tenant member has nothing to do on the login form (QA F-13):
-    // send them where they were going (a same-origin `next`) or the dashboard.
-    if (user && claims.tenant_id) {
-      const next = sameOriginPath(request.nextUrl.searchParams.get("next"), request.nextUrl.origin);
-      return redirectTo(request, next ?? "/dashboard", response);
+    // AUTH-09: an already-signed-in visitor has no business on the login
+    // form. Honour a safe `next`, otherwise the role home. A failed email
+    // link (`?toast=confirm_failed`) still gets to show its explanation. A
+    // signed-in user with no role or workspace yet (mid-signup, QA F-13) has
+    // no home to bounce to and can still use the form.
+    if (user && request.nextUrl.searchParams.get("toast") !== "confirm_failed") {
+      const home = roleHome(claims, { adminMfaRequired });
+      if (home !== NO_ACCESS_PATH) {
+        const next = sameOriginPath(
+          request.nextUrl.searchParams.get("next"),
+          request.nextUrl.origin,
+        );
+        return redirectTo(request, next ?? home, response);
+      }
     }
   } else if (pathname === "/signup") {
     // Step 1 of the wizard for a signed-in tenant member: `/signup/resume`
     // routes them by tenant state (unpaid -> checkout, provisioning, dashboard).
     if (user && claims.tenant_id) return redirectTo(request, "/signup/resume", response);
   }
-  // `/mfa/*`, `/reset-password*` and the rest of the wizard stay public.
+  // `/mfa/*`, `/reset-password*` and the rest of the wizard stay public (they run their own checks).
 
   return response;
 }
@@ -121,11 +152,11 @@ function redirectTo(request: NextRequest, target: string, carry: NextResponse) {
   return redirect;
 }
 
-function redirectToWrongRole(request: NextRequest) {
-  const url = request.nextUrl.clone();
-  url.pathname = "/";
-  url.searchParams.set("toast", "no_access");
-  return NextResponse.redirect(url);
+function redirectToNoAccess(request: NextRequest) {
+  // AUTH-05: a signed-in user who lacks the role/workspace for the route
+  // goes to a real explanation page (next steps + log out), not the
+  // marketing home with a toast that vanishes.
+  return NextResponse.redirect(new URL(NO_ACCESS_PATH, request.url));
 }
 
 function withoutLocalePrefix(pathname: string): string {

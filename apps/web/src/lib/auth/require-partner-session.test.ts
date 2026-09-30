@@ -63,26 +63,26 @@ describe("requirePartnerSession", () => {
     expect(dest).toBe(`/login?next=${encodeURIComponent("/portal")}`);
   });
 
-  it("redirects to the no_access toast when the caller has no referral_partner_id claim", async () => {
+  it("redirects to /no-access when the caller has no referral_partner_id claim", async () => {
     mockUser = { id: "u1", app_metadata: {} };
     mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
     const dest = await redirectedTo(requirePartnerSession("/portal"));
-    expect(dest).toBe("/?toast=no_access");
+    expect(dest).toBe("/no-access");
   });
 
-  it("redirects to the no_access toast when the claim doesn't resolve to a real partner row", async () => {
+  it("redirects to /no-access when the claim doesn't resolve to a real partner row", async () => {
     mockUser = { id: "u1", app_metadata: {} };
     mockClaimsAppMetadata = { referral_partner_id: "p1" };
     partnerResult = { data: null, error: null };
     const dest = await redirectedTo(requirePartnerSession("/portal"));
-    expect(dest).toBe("/?toast=no_access");
+    expect(dest).toBe("/no-access");
   });
 
   it("SIGNUP-1 regression: ignores a stale referral_partner_id in user.app_metadata that isn't in the JWT's own claims", async () => {
     mockUser = { id: "u1", app_metadata: { referral_partner_id: "stale-partner" } };
     mockClaimsAppMetadata = {};
     const dest = await redirectedTo(requirePartnerSession("/portal"));
-    expect(dest).toBe("/?toast=no_access");
+    expect(dest).toBe("/no-access");
   });
 
   it("reports unacknowledged when ftc_acknowledged_version doesn't match the current policy version", async () => {

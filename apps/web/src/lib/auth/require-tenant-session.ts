@@ -3,6 +3,7 @@ import "server-only";
 import { redirect } from "next/navigation";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 import { claimsFromSupabaseClient } from "./claims";
+import { NO_ACCESS_PATH } from "./role-home";
 
 /**
  * Guard #2 (the real backstop, FRONTEND_SPEC.md §0.1) for every page that
@@ -23,7 +24,7 @@ export async function requireTenantSession(nextPath: string) {
   // comment) — `claimsFromUser(user)` never sees the Custom Access Token
   // Hook's tenant_id/role here.
   const claims = await claimsFromSupabaseClient(supabase);
-  if (!claims.tenant_id) redirect("/?toast=no_access");
+  if (!claims.tenant_id) redirect(NO_ACCESS_PATH);
 
   const { data: tenant } = await supabase
     .from("tenants")
@@ -33,7 +34,7 @@ export async function requireTenantSession(nextPath: string) {
     .eq("id", claims.tenant_id)
     .maybeSingle();
 
-  if (!tenant) redirect("/?toast=no_access");
+  if (!tenant) redirect(NO_ACCESS_PATH);
 
   return { supabase, user, claims, tenant };
 }

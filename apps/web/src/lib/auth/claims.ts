@@ -52,6 +52,40 @@ export async function claimsFromSupabaseClient(
 }
 
 /**
+ * SEC-01: the verified JWT claims plus the session assurance level. The
+ * Custom Access Token Hook stamps `platform_admin` only onto aal2 tokens
+ * (20260930250000_platform_admin_requires_aal2.sql), and stamps the inert
+ * `admin_mfa_required` marker on a platform admin's lower-assurance token so
+ * the guards can route them to MFA instead of "no access". Every admin API
+ * guard uses this so the check is `platform_admin && aal === "aal2"` in code
+ * too, not only in the token hook and RLS. Fails closed to `{}` / `null`.
+ */
+export interface SessionAssurance {
+  claims: AppMetadataClaims;
+  /** The JWT's own `aal` claim; `null` when absent or unrecognised. */
+  aal: Aal | null;
+  /** True for a platform admin whose current token is below aal2. */
+  adminMfaRequired: boolean;
+}
+
+export async function sessionAssuranceFromSupabaseClient(
+  supabase: Pick<SupabaseClient, "auth">,
+): Promise<SessionAssurance> {
+  const { data, error } = await supabase.auth.getClaims();
+  if (error || !data) return { claims: {}, aal: null, adminMfaRequired: false };
+  const raw = data.claims as { aal?: unknown; app_metadata?: unknown };
+  const appMetadata =
+    raw.app_metadata && typeof raw.app_metadata === "object"
+      ? (raw.app_metadata as Record<string, unknown>)
+      : undefined;
+  return {
+    claims: extractClaims(data.claims.app_metadata),
+    aal: raw.aal === "aal2" ? "aal2" : raw.aal === "aal1" ? "aal1" : null,
+    adminMfaRequired: appMetadata?.["admin_mfa_required"] === true,
+  };
+}
+
+/**
  * AUTH-1 (docs/BUILD_NOTES.md): `impersonated_by` is stamped into the JWT's
  * own `app_metadata` by `custom_access_token_hook`
  * (`supabase/migrations/20260910110000_impersonation_claim.sql`) — the

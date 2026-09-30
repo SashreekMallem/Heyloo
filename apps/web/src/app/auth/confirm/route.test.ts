@@ -94,6 +94,22 @@ describe("GET /auth/confirm", () => {
     expect(location.searchParams.get("toast")).toBe("confirm_failed");
   });
 
+  it("AUTH-04: a failed recovery link goes back to the reset form flagged as expired, not to a bare /login", async () => {
+    mockVerifyOtp = async () => ({ error: new Error("Token has expired or is invalid") });
+    const res = await GET(req("?token_hash=bad&type=recovery&next=%2Freset-password%2Fconfirm"));
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.pathname).toBe("/reset-password");
+    expect(location.searchParams.get("error")).toBe("expired");
+    expect(location.searchParams.get("toast")).toBeNull();
+  });
+
+  it("AUTH-04: a recovery link with no next also lands on the expired reset form", async () => {
+    const res = await GET(req("?token_hash=bad&type=recovery"));
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.pathname).toBe("/reset-password");
+    expect(location.searchParams.get("error")).toBe("expired");
+  });
+
   it("rejects a missing token_hash/type without calling verifyOtp", async () => {
     const spy = vi.fn();
     mockVerifyOtp = async (args) => {
@@ -134,6 +150,17 @@ describe("GET /auth/confirm", () => {
   it("never treats a backslash-prefixed next as a redirect target (URL parser treats /\\host as //host)", async () => {
     mockVerifyOtp = async () => ({ error: null });
     const res = await GET(req("?token_hash=abc123&type=invite&next=%2F%5Cevil.example.com"));
+    expect(res.headers.get("location")).toBe("https://app.example.com/dashboard");
+  });
+
+  it.each([
+    "%2F%5C%2Fevil.example.com",
+    "%2F%09%2Fevil.example.com",
+    "javascript%3Aalert(1)",
+    "%2Fdash%5Cboard",
+  ])("AUTH-07: rejects the unsafe next %s and falls back to the default", async (next) => {
+    mockVerifyOtp = async () => ({ error: null });
+    const res = await GET(req(`?token_hash=abc123&type=invite&next=${next}`));
     expect(res.headers.get("location")).toBe("https://app.example.com/dashboard");
   });
 });

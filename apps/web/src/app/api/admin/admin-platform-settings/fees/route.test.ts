@@ -22,6 +22,8 @@ function makeFrom(queue: Record<string, unknown[]>) {
 const adminUser = { id: "admin1", app_metadata: { platform_admin: true } };
 let mockSession: { user: unknown } | null = { user: adminUser };
 let serviceQueue: Record<string, unknown[]> = {};
+// SEC-01: the JWT `aal` claim the mocked getClaims() reports.
+let mockAal: "aal1" | "aal2" = "aal2";
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({
@@ -34,7 +36,10 @@ vi.mock("@/lib/supabase/server", () => ({
       // authorization outcome unchanged.
       getClaims: async () => {
         const s = mockSession?.user as { app_metadata?: unknown } | undefined;
-        return { data: { claims: { app_metadata: s?.app_metadata ?? {} } }, error: null };
+        return {
+          data: { claims: { aal: mockAal, app_metadata: s?.app_metadata ?? {} } },
+          error: null,
+        };
       },
     },
   }),
@@ -55,6 +60,15 @@ describe("GET /api/admin/admin-platform-settings/fees", () => {
     mockSession = null;
     const res = await GET();
     expect(res.status).toBe(401);
+  });
+
+  it("SEC-01: 403s aal2_required for a platform_admin token at aal1", async () => {
+    mockSession = { user: adminUser };
+    mockAal = "aal1";
+    const res = await GET();
+    mockAal = "aal2";
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "aal2_required" });
   });
 
   it("returns defaults for every vertical when nothing is configured", async () => {

@@ -80,8 +80,13 @@ export async function GET(request: Request) {
   const type = url.searchParams.get("type");
   const code = url.searchParams.get("code");
   const next = safeNext(url.searchParams.get("next"), defaultNext(type), url.origin);
-  const errorRedirect = new URL("/login", url.origin);
-  errorRedirect.searchParams.set("toast", "confirm_failed");
+  // AUTH-04: a failed or expired link must land somewhere that says so. A
+  // recovery link goes back to the reset form (with a way to request another);
+  // every other type lands on /login, which renders the confirm_failed notice.
+  const isRecovery = type === "recovery" || next.startsWith("/reset-password");
+  const errorRedirect = new URL(isRecovery ? "/reset-password" : "/login", url.origin);
+  if (isRecovery) errorRedirect.searchParams.set("error", "expired");
+  else errorRedirect.searchParams.set("toast", "confirm_failed");
 
   // PKCE `code` links: what GoTrue's own `{{ .ConfirmationURL }}` produces when
   // the project still uses the stock email templates and the browser that

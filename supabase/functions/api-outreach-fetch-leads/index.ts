@@ -4,7 +4,7 @@
 // verification alone is not treated as sufficient), same pattern as
 // `admin/index.ts`.
 
-import { isPlatformAdmin } from "../_shared/admin-auth.ts";
+import { isAal2, isPlatformAdmin } from "../_shared/admin-auth.ts";
 import { getSql } from "../_shared/deno/db.ts";
 import { requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
@@ -40,6 +40,10 @@ Deno.serve(async (req: Request) => {
   const claims = decodeJwtPayload(req.headers.get("authorization"));
   if (!isPlatformAdmin(claims)) {
     return jsonResponse({ error: "not_a_platform_admin" }, { status: 403 });
+  }
+  // SEC-01: admin authority requires an aal2 (MFA-completed) session.
+  if (!isAal2(claims)) {
+    return jsonResponse({ error: "aal2_required" }, { status: 403 });
   }
 
   let rawBody: unknown;

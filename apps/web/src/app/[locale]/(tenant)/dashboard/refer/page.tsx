@@ -29,7 +29,12 @@ export default function ReferPage() {
     queryKey: ["tenant", tenantId, "referral_links"],
     queryFn: async (): Promise<ReferralFunnel> => {
       const res = await fetch("/api/tenant/refer/ensure-link", { method: "POST" });
-      const body = (await res.json()) as {
+      // MAP-20: an error response is not always JSON — parsing it threw the
+      // raw "Unexpected end of JSON input" into the error state.
+      if (!res.ok) throw new Error("We couldn't load your referral link. Try again.");
+      const body = (await res.json().catch(() => {
+        throw new Error("We couldn't load your referral link. Try again.");
+      })) as {
         code?: string;
         funnel?: { signups: number; qualified: number; paid: number };
         approaching_w9_threshold?: boolean;
