@@ -16,13 +16,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // not the fictional `/functions/v1/api-intake/{token}` shape the old,
 // buggy implementation (and any test built against it) assumed.
 
+const VALID_KEY = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
 let capturedHandler: ((req: Request) => Response | Promise<Response>) | undefined;
 
 vi.stubGlobal("Deno", {
   serve: (handler: (req: Request) => Response | Promise<Response>) => {
     capturedHandler = handler;
   },
-  env: { get: (name: string) => (name === "INTAKE_ENCRYPTION_KEY" ? "test-key" : undefined) },
+  env: {
+    get: (name: string) =>
+      name === "INTAKE_ENCRYPTION_KEY" ? (process.env.TEST_INTAKE_KEY ?? VALID_KEY) : undefined,
+  },
 });
 
 vi.mock("../_shared/deno/db.ts", () => ({
@@ -107,5 +112,70 @@ describe("api-intake function entrypoint — URL to token extraction", () => {
     expect(tokenArg).toBe("posttoken789");
     expect(res?.status).toBe(200);
     expect(body).toEqual({ ok: true, receivedToken: "posttoken789" });
+  });
+
+  // QA-1 F-05 (fails before: OPTIONS fell through to the 405 branch with no
+  // Access-Control-Allow-Origin).
+  it("answers the browser CORS preflight 204 with allow-origin and the supabase-js invoke headers", async () => {
+    const res = await capturedHandler?.(
+      new Request("https://project.supabase.co/api-intake/xyz", {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://heyloo-voice.vercel.app",
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "authorization,apikey,content-type,x-client-info",
+        },
+      }),
+    );
+    expect(res?.status).toBe(204);
+    expect(res?.headers.get("access-control-allow-origin")).toBe("https://heyloo-voice.vercel.app");
+    const allowHeaders = res?.headers.get("access-control-allow-headers") ?? "";
+    for (const h of ["authorization", "apikey", "content-type", "x-client-info"]) {
+      expect(allowHeaders).toContain(h);
+    }
+    expect(res?.headers.get("access-control-allow-methods")).toContain("POST");
+    expect(getIntakeStatusSpy).not.toHaveBeenCalled();
+  });
+
+  it("adds CORS headers to GET, POST and error responses too", async () => {
+    const origin = "https://heyloo-voice.vercel.app";
+    const get = await capturedHandler?.(
+      new Request("https://project.supabase.co/api-intake/tok", { headers: { origin } }),
+    );
+    expect(get?.headers.get("access-control-allow-origin")).toBe(origin);
+    const post = await capturedHandler?.(
+      new Request("https://project.supabase.co/api-intake/tok", {
+        method: "POST",
+        headers: { origin, "content-type": "application/json" },
+        body: JSON.stringify({ date_of_birth: "1990-01-15" }),
+      }),
+    );
+    expect(post?.headers.get("access-control-allow-origin")).toBe(origin);
+    const put = await capturedHandler?.(
+      new Request("https://project.supabase.co/api-intake/tok", {
+        method: "PUT",
+        headers: { origin },
+      }),
+    );
+    expect(put?.status).toBe(405);
+    expect(put?.headers.get("access-control-allow-origin")).toBe(origin);
+  });
+
+  it("answers 503 not_configured (before any DB work) when INTAKE_ENCRYPTION_KEY is misshapen", async () => {
+    process.env.TEST_INTAKE_KEY = "test-key";
+    try {
+      const res = await capturedHandler?.(
+        new Request("https://project.supabase.co/api-intake/tok", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ date_of_birth: "1990-01-15" }),
+        }),
+      );
+      expect(res?.status).toBe(503);
+      expect(await res?.json()).toEqual({ ok: false, error: "not_configured" });
+      expect(submitIntakeSpy).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.TEST_INTAKE_KEY;
+    }
   });
 });

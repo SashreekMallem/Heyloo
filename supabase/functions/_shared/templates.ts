@@ -180,7 +180,14 @@ export function renderTemplate(
     case "weekly_value_summary":
       return {
         subject: "Your week with Heyloo",
-        body: `This week: ${str("calls_answered", "0")} calls answered, ${str("bookings_captured", "0")} bookings captured.`,
+        // QA-1 BE-17: "~$X saved" (job-value-email computes it from the
+        // tenant's average ticket x bookings captured) is the point of the
+        // email; it is omitted when there is no figure or it is zero.
+        body: `This week: ${str("calls_answered", "0")} calls answered, ${str("bookings_captured", "0")} bookings captured${
+          (num("value_saved_cents") ?? 0) > 0 && str("value_saved_display")
+            ? ` (~${str("value_saved_display")} saved)`
+            : ""
+        }.`,
       };
     case "support_ticket_update":
       return {

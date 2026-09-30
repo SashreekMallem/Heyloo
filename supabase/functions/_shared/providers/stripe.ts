@@ -287,3 +287,22 @@ export async function createBillingMeterEvent(
     payload: { stripe_customer_id: params.stripeCustomerId, value: params.value },
   });
 }
+
+/**
+ * POST /v1/billing_portal/sessions — a Customer Portal session for one
+ * customer (docs.stripe.com/api/customer_portal/sessions/create, verified
+ * 2026-09-30): `customer` (the `cus_...` id) and `return_url` (where the
+ * portal's back link goes); the response's `url` is the redirect target.
+ * Needs a default portal configuration saved in the Stripe dashboard (or an
+ * explicit `configuration` id).
+ */
+export async function createBillingPortalSession(
+  fetchImpl: StripeFetch,
+  secretKey: string,
+  params: { customerId: string; returnUrl: string },
+) {
+  return stripeRequest(fetchImpl, secretKey, "POST", "/billing_portal/sessions", {
+    customer: params.customerId,
+    return_url: params.returnUrl,
+  });
+}

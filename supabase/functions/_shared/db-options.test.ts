@@ -5,6 +5,7 @@ import {
   buildConnectionOptions,
   HOT_PATH_DATE_TYPE,
   HOT_PATH_MAX_CONNECTIONS,
+  selectDbUrl,
   serializeTimestampParam,
   UNPARSEABLE_TIMESTAMP_SENTINEL,
 } from "./db-options.ts";
@@ -51,6 +52,40 @@ describe("buildConnectionOptions", () => {
       connection: { statement_timeout: 1_200 },
       types: { date: HOT_PATH_DATE_TYPE },
     });
+  });
+});
+
+describe("QA-1 BE-14: pooled connection profile", () => {
+  it("pooled default profile: one connection, no prepared statements, no startup statement_timeout", () => {
+    expect(buildConnectionOptions({ pooled: true, statementTimeoutMs: 900 })).toEqual({
+      prepare: false,
+      max: 1,
+      idle_timeout: 20,
+      connect_timeout: 5,
+    });
+  });
+
+  it("the hot path ignores `pooled` and keeps the direct-connection options", () => {
+    const opts = buildConnectionOptions({
+      profile: "hot_path",
+      pooled: true,
+      statementTimeoutMs: 900,
+    });
+    expect(opts.prepare).toBe(true);
+    expect(opts.max).toBe(1);
+    expect(opts.connection).toEqual({ statement_timeout: 900 });
+  });
+
+  it("selectDbUrl: pooler only for non-hot-path and only when set", () => {
+    const env = { direct: "postgres://direct", pooler: "postgres://pooler" };
+    expect(selectDbUrl(undefined, env)).toEqual({ url: "postgres://pooler", pooled: true });
+    expect(selectDbUrl("default", env)).toEqual({ url: "postgres://pooler", pooled: true });
+    expect(selectDbUrl("hot_path", env)).toEqual({ url: "postgres://direct", pooled: false });
+    expect(selectDbUrl(undefined, { direct: "postgres://direct", pooler: undefined })).toEqual({
+      url: "postgres://direct",
+      pooled: false,
+    });
+    expect(selectDbUrl(undefined, { direct: "postgres://direct", pooler: "" }).pooled).toBe(false);
   });
 });
 

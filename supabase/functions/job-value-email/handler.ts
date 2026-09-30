@@ -32,12 +32,9 @@ import type { SqlClient } from "../_shared/types.ts";
  * calling Resend directly (matches every other "job enqueues, worker
  * sends" job in this codebase, e.g. `job-reminder-scheduler`).
  *
- * VERIFY/FIX_REQUESTS: `_shared/templates.ts`'s `weekly_value_summary` case
- * renders `calls_answered`/`bookings_captured` today but not a dollar
- * figure — this job already computes and passes `value_saved_cents`/
- * `value_saved_display` in the payload; a one-case template update (outside
- * this cluster's ownership of `_shared`) is requested in
- * docs/audit/FIX_REQUESTS.md to render it.
+ * QA-1 BE-17: `_shared/templates.ts` now renders the "~$X saved" figure this
+ * job passes as `value_saved_display`; a tenant with no calls and no bookings
+ * that week, and `is_test` tenants, get no email.
  */
 export interface ValueEmailCandidateRow {
   tenant_id: string;
@@ -70,6 +67,7 @@ export async function findValueEmailCandidates(sql: SqlClient): Promise<ValueEma
       ) as owner_email
     from public.tenants t
     where t.status = 'active'
+      and not t.is_test
       and t.deleted_at is null
       and not exists (
         select 1 from public.messages_outbound mo
@@ -85,13 +83,18 @@ export function formatValueSavedDisplay(cents: number): string {
   return `$${dollars.toLocaleString("en-US")}`;
 }
 
-export type ValueEmailOutcome = "sent" | "skipped_no_owner_email";
+export type ValueEmailOutcome = "sent" | "skipped_no_owner_email" | "skipped_no_activity";
 
 export async function sendOneValueEmail(
   sql: SqlClient,
   row: ValueEmailCandidateRow,
 ): Promise<ValueEmailOutcome> {
   if (!row.owner_email) return "skipped_no_owner_email";
+  // QA-1 BE-17: a week with no calls and no bookings has nothing to
+  // congratulate the owner on; "0 calls answered, 0 bookings captured" reads
+  // as the product doing nothing. Skipped, and not recorded, so the next
+  // weekly run re-evaluates the tenant.
+  if (row.calls_answered === 0 && row.bookings_captured === 0) return "skipped_no_activity";
 
   const valueSavedCents = row.avg_transaction_value_cents * row.bookings_captured;
   const payload = {
@@ -113,16 +116,26 @@ export async function sendOneValueEmail(
   return "sent";
 }
 
-export async function runValueEmails(
-  sql: SqlClient,
-): Promise<{ sent: number; skipped_no_owner_email: number; total: number }> {
+export async function runValueEmails(sql: SqlClient): Promise<{
+  sent: number;
+  skipped_no_owner_email: number;
+  skipped_no_activity: number;
+  total: number;
+}> {
   const rows = await findValueEmailCandidates(sql);
   let sent = 0;
-  let skipped = 0;
+  let skippedNoOwner = 0;
+  let skippedNoActivity = 0;
   for (const row of rows) {
     const outcome = await sendOneValueEmail(sql, row);
     if (outcome === "sent") sent += 1;
-    else skipped += 1;
+    else if (outcome === "skipped_no_activity") skippedNoActivity += 1;
+    else skippedNoOwner += 1;
   }
-  return { sent, skipped_no_owner_email: skipped, total: rows.length };
+  return {
+    sent,
+    skipped_no_owner_email: skippedNoOwner,
+    skipped_no_activity: skippedNoActivity,
+    total: rows.length,
+  };
 }

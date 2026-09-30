@@ -209,6 +209,18 @@ export async function handleCallStarted(
   }
 }
 
+/** Retell disconnection reasons for which the call produced no recording. */
+const NO_RECORDING_REASONS: ReadonlySet<string> = new Set(["error_user_not_joined"]);
+
+/** QA-1 BE-13: true when a recording can never exist for this call. */
+export function hasNoRecording(
+  durationSeconds: number | null,
+  disconnectionReason: string | undefined,
+): boolean {
+  if (durationSeconds === 0) return true;
+  return disconnectionReason !== undefined && NO_RECORDING_REASONS.has(disconnectionReason);
+}
+
 export async function handleCallEnded(
   sql: SqlClient,
   call: RetellCallObject,
@@ -261,11 +273,24 @@ export async function handleCallEnded(
   // window (SYSTEM_DESIGN §2) — enqueue immediately, never inline (a fetch
   // to Retell/Storage has no place adding latency/failure surface to this
   // background task, let alone the original request).
-  await enqueue(sql, QUEUE_NAMES.recordingFetch, {
-    call_id: callRow.id,
-    retell_call_id: call.call_id,
-    attempt: 0,
-  });
+  //
+  // QA-1 BE-13: a call that never connected (zero duration, or Retell's
+  // error_user_not_joined for a web call nobody joined) has no recording, so
+  // queueing a fetch only retried it into the DLQ (35 such rows live). It is
+  // skipped with an info log; every other call is still enqueued.
+  if (hasNoRecording(durationSeconds, call.disconnection_reason)) {
+    logger.info("voice_events_recording_fetch_skipped_no_recording", {
+      call_id: call.call_id,
+      duration_seconds: durationSeconds,
+      disconnection_reason: call.disconnection_reason ?? null,
+    });
+  } else {
+    await enqueue(sql, QUEUE_NAMES.recordingFetch, {
+      call_id: callRow.id,
+      retell_call_id: call.call_id,
+      attempt: 0,
+    });
+  }
 
   // COCKPIT-1: idempotent upsert (call_ended and call_analyzed both carry
   // `call_cost`; a redelivery or the get-call backfill can never double

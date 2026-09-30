@@ -7,6 +7,8 @@ import type { SqlClient } from "../_shared/types.ts";
 import { VERTICAL_DEFAULTS } from "../_shared/vertical-defaults.ts";
 import type { DemoAgentDeps } from "./handler.ts";
 import {
+  DEMO_CONFIRM_MAX_PER_HOUR,
+  DEMO_CREATE_MAX_PER_HOUR,
   DEMO_MAX_CALL_MS,
   DEMO_RETELL_BACKSTOP_MS,
   DEMO_TENANT_SLUG,
@@ -175,6 +177,61 @@ describe("handleCreateDemo", () => {
     if (result.status !== 200) throw new Error("unreachable");
     expect(result.body.agent_summary.hours_detected).toBe("Mon-Fri 9-5");
     expect(result.body.agent_summary.services_detected).toHaveLength(20);
+  });
+});
+
+describe("QA-1 F-06: global hourly cost backstops", () => {
+  it("create answers 429 rate_limited (before scraping or the LLM) once the hourly ceiling is reached", async () => {
+    let fetched = 0;
+    const { sql, calls } = makeRoutedSql({ "count(*)::int": [{ n: DEMO_CREATE_MAX_PER_HOUR }] });
+    const result = await handleCreateDemo(
+      sql,
+      { business_name: "Acme", url: "https://acme.example" },
+      makeDeps({
+        fetchUrl: async () => {
+          fetched += 1;
+          return "<html></html>";
+        },
+      }),
+    );
+    expect(result).toEqual({ status: 429, body: { error: "rate_limited" } });
+    expect(fetched).toBe(0);
+    expect(calls.some((c) => c.text.includes("insert into public.demo_sessions"))).toBe(false);
+  });
+
+  it("create still proceeds below the ceiling", async () => {
+    const { sql } = makeRoutedSql({
+      "count(*)::int": [{ n: DEMO_CREATE_MAX_PER_HOUR - 1 }],
+      "insert into public.demo_sessions": [{ id: "demo_9" }],
+    });
+    const result = await handleCreateDemo(
+      sql,
+      { business_name: "Acme", url: "https://acme.example" },
+      makeDeps(),
+    );
+    expect(result.status).toBe(200);
+  });
+
+  it("confirm answers 429 before minting a Retell token once the hourly ceiling is reached", async () => {
+    const captured: Captured = { calls: 0 };
+    const { sql } = makeRoutedSql({
+      "from public.demo_sessions where id": [
+        {
+          id: "demo_1",
+          business_name: "Acme",
+          scraped_summary: null,
+          expires_at: "2027-01-01T00:00:00Z",
+        },
+      ],
+      "retell_call_token is not null": [{ n: DEMO_CONFIRM_MAX_PER_HOUR }],
+    });
+    const result = await handleConfirmDemo(
+      sql,
+      { demo_session_id: "demo_1", confirmed: true },
+      makeDeps({ retellFetch: retellOk(captured) as never }),
+    );
+    expect(result).toEqual({ status: 429, body: { error: "rate_limited" } });
+    expect(captured.calls).toBe(0);
   });
 });
 

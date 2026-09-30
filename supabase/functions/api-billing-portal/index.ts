@@ -5,13 +5,15 @@
 // (`POST /api/billing/portal`) also sends `{ tenant_id }` in the body, which
 // is deliberately ignored here.
 import { getSql } from "../_shared/deno/db.ts";
-import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
+import { optionalEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { createTenantBillingPortalSession } from "./handler.ts";
 
 const logger = createLogger({ fn: "api-billing-portal" });
-const STRIPE_SECRET_KEY = requireEnv("STRIPE_SECRET_KEY");
+// Read at load but never `requireEnv`: an unset Stripe key answers a clean 503
+// instead of an opaque WORKER_ERROR at boot (OPS-1/OPS-5).
+const STRIPE_SECRET_KEY = optionalEnv("STRIPE_SECRET_KEY");
 const APP_BASE_URL = optionalEnv("APP_BASE_URL") ?? "https://heyloo.app";
 
 interface JwtClaims {
@@ -37,6 +39,11 @@ Deno.serve(async (req: Request) => {
   const claims = decodeJwtClaims(req.headers.get("authorization"));
   if (!claims?.app_metadata?.tenant_id || !claims.sub) {
     return jsonResponse({ error: "forbidden" }, { status: 403 });
+  }
+
+  if (!STRIPE_SECRET_KEY) {
+    logger.error("api_billing_portal_stripe_not_configured");
+    return jsonResponse({ error: "not_configured" }, { status: 503 });
   }
 
   const sql = getSql();

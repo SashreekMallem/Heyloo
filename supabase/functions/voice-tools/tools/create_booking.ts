@@ -56,6 +56,7 @@ export type CreateBookingResult =
         | "offering_not_found"
         | "start_in_past"
         | "too_soon"
+        | "outside_hours"
         | "invalid_time"
         | "manual_mode"
         | "not_completed";
@@ -71,6 +72,10 @@ export const START_IN_PAST_MESSAGE =
  * (the owner's minimum booking notice, `tenants.booking_min_notice_minutes`). */
 export const TOO_SOON_MESSAGE =
   "That time is sooner than the business takes bookings for, so it was NOT booked. Call check_availability again and offer the caller one of the times it returns.";
+
+/** QA-1 BE-06: the model-facing instruction for `reason: "outside_hours"`. */
+export const OUTSIDE_HOURS_MESSAGE =
+  "That time is outside the hours this business takes bookings for (closed, before opening, after closing, or beyond how far ahead it books), so it was NOT booked. Call check_availability again and offer the caller one of the times it returns.";
 
 /** HOTPATH-REVIEW: the model-facing instruction for `reason: "invalid_time"`. */
 export const INVALID_TIME_MESSAGE =
@@ -236,6 +241,15 @@ interface PreflightRow {
    * never for a day-length night). `check_availability` already withholds
    * such slots; this stops a caller-supplied time from skipping that. */
   too_soon?: boolean;
+  /** QA-1 BE-06: a slot row (generated, or otherwise available) of the exact
+   * resource contains the requested start. `availability_slots` only exist
+   * for open windows inside the booking horizon, so `false` means a closed
+   * day, before/after hours, or beyond the horizon. `null`/absent = not
+   * evaluated (no exact resource). Only an explicit `false` refuses. */
+  exact_in_hours?: boolean | null;
+  /** Same for ANY active resource; evaluated only when there is no exact
+   * resource (name / first-available tiers), else `null`. */
+  any_in_hours?: boolean | null;
   tz: string | null;
   deposit_overrides: Record<string, unknown> | null;
 }
@@ -302,6 +316,20 @@ async function preflight(
         else ${args.start}::timestamptz < now() + make_interval(mins => (select notice from tn))
       end as too_soon,
       (select timezone from tn) as tz,
+      case when (select id from ex) is not null then exists (
+        select 1 from public.availability_slots s
+        where s.tenant_id = ${ctx.tenantId} and s.resource_id = (select id from ex)
+          and s.slot_range @> ${args.start}::timestamptz
+          and (s.is_available or s.source = 'generated')
+      ) end as exact_in_hours,
+      case when (select id from ex) is null then exists (
+        select 1 from public.availability_slots s
+        join public.resources r on r.id = s.resource_id and r.active
+          and r.tenant_id = s.tenant_id
+        where s.tenant_id = ${ctx.tenantId}
+          and s.slot_range @> ${args.start}::timestamptz
+          and (s.is_available or s.source = 'generated')
+      ) end as any_in_hours,
       case when ${isMotel} then (
         select dynamic_variable_overrides from public.agent_configs
         where tenant_id = ${ctx.tenantId}
@@ -479,6 +507,16 @@ export async function createBooking(
   }
   if (!resolvedResourceId) {
     return { confirmed: false, reason: "resource_not_found" };
+  }
+  // QA-1 BE-06: the model's start must fall inside a real slot of the resource
+  // it lands on. Validation used to be delegated to the model calling
+  // check_availability, so a closed Sunday, 3 AM or a date 8 months out was
+  // confirmed (an exact resource_id never consulted availability_slots). The
+  // GIST exclusion constraint stays the race backstop below.
+  const inHours =
+    resolvedResourceId === pre.exact_resource_id ? pre.exact_in_hours : pre.any_in_hours;
+  if (inHours === false) {
+    return { confirmed: false, reason: "outside_hours", message: OUTSIDE_HOURS_MESSAGE };
   }
   if (resolvedResourceId !== args.resource_id) {
     deps?.logger.warn("create_booking_resource_id_resolved_fallback", {

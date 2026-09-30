@@ -7,6 +7,7 @@
 // tenant + role, per CLAUDE.md Rule 2 ("every secret-key edge function
 // still explicitly filters by a verified tenant_id" — service_role callers
 // bypass RLS but not this check).
+import { timingSafeEqual } from "../_shared/crypto.ts";
 import { getSql } from "../_shared/deno/db.ts";
 import { requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
@@ -68,7 +69,10 @@ Deno.serve(async (req: Request) => {
   if (!tenantId) return jsonResponse({ error: "missing_tenant_id" }, { status: 422 });
 
   const internalSecret = req.headers.get("x-internal-secret");
-  const isInternalCall = !!internalSecret && internalSecret === SERVICE_ROLE_INTERNAL_SECRET;
+  // QA-1 BE-23: constant-time compare (a plain `===` leaks the matching prefix
+  // length through response timing), same helper as the api-admin-* functions.
+  const isInternalCall =
+    !!internalSecret && timingSafeEqual(internalSecret, SERVICE_ROLE_INTERNAL_SECRET);
 
   const deps: ProvisionDeps = {
     retellFetch: fetch,

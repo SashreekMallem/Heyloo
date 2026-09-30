@@ -281,6 +281,42 @@ describe("handleCallEnded", () => {
     expect(calls.some((c) => c.text.includes("insert into public.cost_events"))).toBe(false);
   });
 
+  it("QA-1 BE-13: does not queue a recording fetch for a zero-duration call", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "update public.call_logs": [{ id: "cl1", tenant_id: "t1", is_test_call: false }],
+    });
+    await handleCallEnded(
+      sql,
+      {
+        call_id: "call_zero",
+        start_timestamp: 1_700_000_000_000,
+        end_timestamp: 1_700_000_000_000,
+        disconnection_reason: "user_hangup",
+      },
+      logger,
+    );
+    expect(calls.some((c) => c.text.includes("pgmq.send"))).toBe(false);
+  });
+
+  it("QA-1 BE-13: does not queue a recording fetch for error_user_not_joined even with a duration", async () => {
+    const { sql, calls } = makeRecordingSql({
+      "update public.call_logs": [{ id: "cl1", tenant_id: "t1", is_test_call: false }],
+    });
+    await handleCallEnded(
+      sql,
+      {
+        call_id: "call_nj",
+        start_timestamp: 1_700_000_000_000,
+        end_timestamp: 1_700_000_030_000,
+        disconnection_reason: "error_user_not_joined",
+      },
+      logger,
+    );
+    expect(calls.some((c) => c.text.includes("pgmq.send"))).toBe(false);
+    // the billing meter row for the call is still written
+    expect(calls.some((c) => c.text.includes("insert into public.usage_events"))).toBe(true);
+  });
+
   it("COCKPIT-1: leaves cost unknown (no cost stamp) when call_ended carries no call_cost", async () => {
     const { sql, calls } = makeRecordingSql({
       "update public.call_logs": [{ id: "cl1", tenant_id: "t1", is_test_call: false }],

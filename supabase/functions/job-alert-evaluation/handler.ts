@@ -104,36 +104,118 @@ export async function evaluateToolFailureSpike(sql: SqlClient): Promise<Alert[]>
 }
 
 /**
- * COCKPIT-F07: ONE open alert per rule + tenant (+ tool for
- * `tool_failure_spike`). The old guard only looked at alerts younger than an
- * hour, so a persistent condition inserted a fresh open row every hour (193
- * `negative_margin` rows for one tenant). Now an existing open row is kept and
- * its payload refreshed with the latest numbers; a new row is inserted only
- * when none is open (acking or resolving an alert lets the condition fire
- * again). `uq_alerts_open_rule_tenant` (migration 20260930251400) backs this up
- * against a concurrent run, hence `on conflict do nothing`.
+ * QA-1 BE-05: cron health. `pg_cron` only records that `pg_net` QUEUED the
+ * request, so `cron.job_run_details` says "succeeded" while the function
+ * answered 500 or timed out (live: 22 x 500, 2 null and 1 x 546 next to 797 x
+ * 200 in six hours, 3,538 "succeeded" runs). `net._http_response` (columns id,
+ * status_code, content_type, headers, content, timed_out, error_msg, created;
+ * retained 6 hours by default - supabase.com/docs/guides/database/extensions/pg_net)
+ * holds the real outcome. It does NOT keep the request URL, so the rule is a
+ * platform-wide count of failed responses with the status breakdown, not a
+ * per-job one (per-job attribution needs heartbeats; see BUILD_NOTES). Read
+ * defensively: if the `net` schema is not readable the rule yields nothing
+ * rather than aborting the other rules.
+ */
+export const JOB_HEALTH_WINDOW_MINUTES = 30;
+export const JOB_HEALTH_MIN_FAILURES = 3;
+
+export async function evaluateJobHealth(sql: SqlClient): Promise<Alert[]> {
+  let rows: { status: string; n: number }[];
+  try {
+    rows = await sql<{ status: string; n: number }>`
+      select coalesce(status_code::text, case when timed_out then 'timeout' else 'no_status' end) as status,
+        count(*)::int as n
+      from net._http_response
+      where created > now() - make_interval(mins => ${JOB_HEALTH_WINDOW_MINUTES}::int)
+        and (status_code is null or status_code < 200 or status_code >= 300)
+      group by 1
+      order by 2 desc
+    `;
+  } catch {
+    return [];
+  }
+  const failed = rows.reduce((sum, r) => sum + Number(r.n), 0);
+  if (failed < JOB_HEALTH_MIN_FAILURES) return [];
+  const byStatus: Record<string, number> = {};
+  for (const r of rows) byStatus[r.status] = Number(r.n);
+  return [
+    {
+      rule: "job_failures",
+      severity: "warning",
+      tenant_id: null,
+      payload: {
+        source: "pg_net",
+        window_minutes: JOB_HEALTH_WINDOW_MINUTES,
+        failed,
+        by_status: byStatus,
+      },
+    },
+  ];
+}
+
+/**
+ * QA-1 BE-15: what makes two alerts "the same condition" besides rule and
+ * tenant. Stored in the row's payload as `dedupe_key`.
+ */
+export function alertKey(alert: Alert): string {
+  const k = alert.payload["tool_name"] ?? alert.payload["period"] ?? alert.payload["source"];
+  return typeof k === "string" ? k : "";
+}
+
+/**
+ * QA-1 BE-15: one OPEN alert per (rule, tenant, key), however long the
+ * condition persists. It used to insert again once the open alert was an hour
+ * old, so a lasting condition re-raised every hour until someone acked it (193
+ * open negative_margin rows for one tenant). An already-open alert now has its
+ * payload refreshed and `last_seen_at` stamped instead of a new row.
+ * `uq_alerts_open_rule_tenant` (migration 20260930251400, COCKPIT-F07) backs
+ * this up against a concurrent run, hence `on conflict do nothing`.
  */
 export async function upsertAlert(sql: SqlClient, alert: Alert): Promise<void> {
-  const toolName = typeof alert.payload["tool_name"] === "string" ? alert.payload["tool_name"] : "";
+  const key = alertKey(alert);
+  const payload = { ...alert.payload, dedupe_key: key, last_seen_at: new Date().toISOString() };
   await sql`
-    update public.alerts
-    set payload = ${alert.payload}::jsonb, severity = ${alert.severity}
-    where rule = ${alert.rule}
-      and status = 'open'
-      and coalesce(tenant_id::text, '') = coalesce(${alert.tenant_id}, '')
-      and coalesce(payload->>'tool_name', '') = ${toolName}
-  `;
-  await sql`
-    insert into public.alerts (rule, severity, tenant_id, payload, status)
-    select ${alert.rule}, ${alert.severity}, ${alert.tenant_id}, ${alert.payload}::jsonb, 'open'
-    where not exists (
-      select 1 from public.alerts a
+    with refreshed as (
+      update public.alerts a
+      set payload = a.payload || ${payload}::jsonb, severity = ${alert.severity}
       where a.rule = ${alert.rule}
         and a.status = 'open'
         and coalesce(a.tenant_id::text, '') = coalesce(${alert.tenant_id}, '')
-        and coalesce(a.payload->>'tool_name', '') = ${toolName}
+        and coalesce(a.payload->>'dedupe_key', '') = ${key}
+      returning a.id
     )
+    insert into public.alerts (rule, severity, tenant_id, payload, status)
+    select ${alert.rule}, ${alert.severity}, ${alert.tenant_id}, ${payload}::jsonb, 'open'
+    where not exists (select 1 from refreshed)
     on conflict do nothing
+  `;
+}
+
+/** The rules this job owns; only these are ever auto-resolved. */
+export const MANAGED_RULES = [
+  "negative_margin",
+  "usage_spike",
+  "tool_failure_spike",
+  "job_failures",
+] as const;
+
+/**
+ * QA-1 BE-15: auto-resolve. An open alert of a managed rule whose condition
+ * did not fire in this evaluation has cleared, so it is marked `resolved`
+ * (acked alerts are left alone). This also retires the historical hourly
+ * duplicates the old dedupe left open.
+ */
+export async function resolveClearedAlerts(sql: SqlClient, current: Alert[]): Promise<void> {
+  const active = current.map((a) => `${a.tenant_id ?? ""}|${a.rule}|${alertKey(a)}`);
+  await sql`
+    update public.alerts a
+    set status = 'resolved'
+    where a.status = 'open'
+      and a.rule in (select jsonb_array_elements_text(${[...MANAGED_RULES]}::jsonb))
+      and not exists (
+        select 1 from jsonb_array_elements_text(${active}::jsonb) k
+        where k = coalesce(a.tenant_id::text, '') || '|' || a.rule || '|' || coalesce(a.payload->>'dedupe_key', '')
+      )
   `;
 }
 
@@ -142,9 +224,11 @@ export async function runAlertEvaluation(sql: SqlClient): Promise<Alert[]> {
     ...(await evaluateNegativeMargin(sql)),
     ...(await evaluateUsageSpike(sql)),
     ...(await evaluateToolFailureSpike(sql)),
+    ...(await evaluateJobHealth(sql)),
   ];
   for (const alert of alerts) {
     await upsertAlert(sql, alert);
   }
+  await resolveClearedAlerts(sql, alerts);
   return alerts;
 }

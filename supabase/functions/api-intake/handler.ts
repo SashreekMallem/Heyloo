@@ -23,6 +23,10 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
  *           expects.
  */
 
+/** Names the key in `..._invalid_length` errors (QA-1 BE-02: the message used
+ * to say `adapter_token_encryption_key` even for the intake key). */
+const INTAKE_KEY_LABEL = "intake_encryption_key";
+
 interface IntakeTokenRow {
   id: string;
   tenant_id: string;
@@ -104,15 +108,19 @@ export async function submitIntake(
     return { status: 200, body: { ok: false, error: "already_submitted" } };
   }
 
-  const dobEncrypted = await encryptSecret(input.date_of_birth, deps.intakeEncryptionKey);
+  const dobEncrypted = await encryptSecret(
+    input.date_of_birth,
+    deps.intakeEncryptionKey,
+    INTAKE_KEY_LABEL,
+  );
   const insuranceProviderEncrypted = input.insurance_provider
-    ? await encryptSecret(input.insurance_provider, deps.intakeEncryptionKey)
+    ? await encryptSecret(input.insurance_provider, deps.intakeEncryptionKey, INTAKE_KEY_LABEL)
     : null;
   const insuranceMemberIdEncrypted = input.insurance_member_id
-    ? await encryptSecret(input.insurance_member_id, deps.intakeEncryptionKey)
+    ? await encryptSecret(input.insurance_member_id, deps.intakeEncryptionKey, INTAKE_KEY_LABEL)
     : null;
   const insuranceGroupIdEncrypted = input.insurance_group_id
-    ? await encryptSecret(input.insurance_group_id, deps.intakeEncryptionKey)
+    ? await encryptSecret(input.insurance_group_id, deps.intakeEncryptionKey, INTAKE_KEY_LABEL)
     : null;
 
   // Single-use enforcement (CLAUDE.md Rule 2 — never check-then-insert):

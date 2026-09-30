@@ -77,6 +77,92 @@ describe("handleAdapterConnect: auth/authorization", () => {
   });
 });
 
+describe("QA-1 BE-04: unset provider secrets degrade to 503 not_configured, per action", () => {
+  const NO_SECRETS: AdapterConnectDeps = {
+    fetchImpl: BASE_DEPS.fetchImpl,
+    nonce: () => "n",
+    logger: createLogger(),
+  };
+
+  it("still authorizes first: a non-owner gets 403, not a config error", async () => {
+    const sql = makeSql({ membership: null });
+    const result = await handleAdapterConnect(
+      sql,
+      "user_1",
+      { action: "initiate", provider: "square" },
+      NO_SECRETS,
+    );
+    expect(result).toEqual({ ok: false, status: 403, error: "not_a_tenant_owner_or_admin" });
+  });
+
+  it("initiate for a provider whose secrets are unset answers 503, other providers still work", async () => {
+    const sql = makeSql({ membership: OWNER_MEMBERSHIP });
+    const onlyGoogle: AdapterConnectDeps = {
+      ...NO_SECRETS,
+      stateSecret: "state-secret",
+      googleCalendar: BASE_DEPS.googleCalendar,
+    };
+    const square = await handleAdapterConnect(
+      sql,
+      "user_1",
+      { action: "initiate", provider: "square" },
+      onlyGoogle,
+    );
+    expect(square).toEqual({ ok: false, status: 503, error: "not_configured" });
+    const google = await handleAdapterConnect(
+      sql,
+      "user_1",
+      { action: "initiate", provider: "google_calendar" },
+      onlyGoogle,
+    );
+    expect(google.ok).toBe(true);
+  });
+
+  it("paste_key answers 503 for a missing or misshapen token encryption key, before any provider call", async () => {
+    let fetched = 0;
+    const deps: AdapterConnectDeps = {
+      ...NO_SECRETS,
+      fetchImpl: (async () => {
+        fetched += 1;
+        return jsonResponse({});
+      }) as unknown as typeof fetch,
+    };
+    const sql = makeSql({ membership: OWNER_MEMBERSHIP });
+    for (const tokenEncryptionKey of [undefined, btoa("short")]) {
+      const result = await handleAdapterConnect(
+        sql,
+        "user_1",
+        { action: "paste_key", provider: "shopmonkey", api_key: "k" },
+        { ...deps, tokenEncryptionKey },
+      );
+      expect(result).toEqual({ ok: false, status: 503, error: "not_configured" });
+    }
+    expect(fetched).toBe(0);
+  });
+
+  it("ezyvet paste_key without the partner secrets answers 503 (shopmonkey needs none of them)", async () => {
+    const sql = makeSql({ membership: OWNER_MEMBERSHIP });
+    const result = await handleAdapterConnect(
+      sql,
+      "user_1",
+      { action: "paste_key", provider: "ezyvet", base_url: "https://api.ezyvet.example" },
+      { ...NO_SECRETS, tokenEncryptionKey: TEST_TOKEN_ENCRYPTION_KEY },
+    );
+    expect(result).toEqual({ ok: false, status: 503, error: "not_configured" });
+  });
+
+  it("disconnect needs no provider secret at all", async () => {
+    const sql = makeSql({ membership: OWNER_MEMBERSHIP });
+    const result = await handleAdapterConnect(
+      sql,
+      "user_1",
+      { action: "disconnect", provider: "square" },
+      NO_SECRETS,
+    );
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe("handleAdapterConnect: initiate", () => {
   it("returns a Square authorize URL carrying a signed, tenant-bound state", async () => {
     const sql = makeSql({ membership: OWNER_MEMBERSHIP });
@@ -114,7 +200,7 @@ describe("handleAdapterConnect: initiate", () => {
 
 describe("handleAdapterConnect: callback", () => {
   it("exchanges the code and upserts a connected Square connection", async () => {
-    const state = await signOAuthState(BASE_DEPS.stateSecret, {
+    const state = await signOAuthState("state-secret", {
       tenantId: "tenant_1",
       provider: "square",
       nonce: "n1",
@@ -153,7 +239,7 @@ describe("handleAdapterConnect: callback", () => {
   });
 
   it("rejects a callback whose state was signed for a different tenant (fail closed)", async () => {
-    const state = await signOAuthState(BASE_DEPS.stateSecret, {
+    const state = await signOAuthState("state-secret", {
       tenantId: "some_other_tenant",
       provider: "square",
       nonce: "n1",
@@ -181,7 +267,7 @@ describe("handleAdapterConnect: callback", () => {
   });
 
   it("surfaces a 502 when the provider's token exchange itself fails", async () => {
-    const state = await signOAuthState(BASE_DEPS.stateSecret, {
+    const state = await signOAuthState("state-secret", {
       tenantId: "tenant_1",
       provider: "square",
       nonce: "n1",

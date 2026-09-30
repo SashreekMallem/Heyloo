@@ -87,6 +87,32 @@ describe("runAgentRegression", () => {
     expect(alertInsert).toBeUndefined();
   });
 
+  it("QA-1 BE-15: resolves the tenant's open regression alerts once the suite passes again", async () => {
+    const { sql, calls } = makeSql(tenantFixtures());
+    await runAgentRegression(sql, deps());
+    const resolve = calls.find((c) => c.text.includes("update public.alerts"));
+    expect(resolve?.text).toContain("set status = 'resolved'");
+    expect(resolve?.values).toContain(TENANT.id);
+  });
+
+  it("QA-1 BE-15: keeps ONE open alert per tenant and rule however long the failure lasts (no time window)", async () => {
+    const results = [scenarioResult({ case_id: "b", status: "fail" })];
+    const { sql, calls } = makeSql(tenantFixtures());
+    await runAgentRegression(
+      sql,
+      deps({
+        fetchImpl: fakeFetch([
+          { status: 200, body: { batch_job_id: "b1", settled: true, started_at: "t", results } },
+        ]),
+      }),
+    );
+    const alertInsert = calls.find((c) => c.text.includes("into public.alerts"));
+    expect(alertInsert?.text).toContain("a.status = 'open'");
+    expect(alertInsert?.text).not.toContain("created_at");
+    expect(alertInsert?.text).not.toContain("interval");
+    expect(calls.some((c) => c.text.includes("update public.alerts"))).toBe(false);
+  });
+
   it("writes an agent_regression_failure alert when the pass ratio drops below 5/6", async () => {
     const results = [
       scenarioResult({ case_id: "a", status: "pass" }),
