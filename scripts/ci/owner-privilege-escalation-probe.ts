@@ -273,6 +273,8 @@ async function main(): Promise<void> {
       hours_exceptions: [],
       language_config: { primary: "en", bilingual: false },
       owner_test_phone: "+15555550100",
+      business_phone: "+15555550101",
+      website_url: "https://example.com",
       manual_mode: false,
       manual_mode_enabled_at: null,
       voice_reminders_enabled: true,
@@ -289,6 +291,15 @@ async function main(): Promise<void> {
       booking_min_notice_minutes: 30,
       booking_horizon_days: 21,
     },
+    ownerToken,
+  );
+  // LAUNCH-forwarding: the forwarding test dials business_phone and it becomes
+  // the transfer destination, so only E.164 may be stored, whatever the client.
+  await expectRejected(
+    "owner PATCH of tenants.business_phone to a non-E.164 value",
+    `/rest/v1/tenants?id=eq.${tenantId}`,
+    "PATCH",
+    { business_phone: "12345" },
     ownerToken,
   );
   // SEC-2 review: an unknown zone would abort fn_cron_usage_rollup for every
