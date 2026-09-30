@@ -8,6 +8,7 @@ import {
   findCommittedBooking,
   INVALID_TIME_MESSAGE,
   START_IN_PAST_MESSAGE,
+  OUTSIDE_HOURS_MESSAGE,
   TOO_SOON_MESSAGE,
 } from "./create_booking.ts";
 
@@ -43,6 +44,8 @@ interface PreflightFixture {
   offering_ok: boolean;
   start_in_past: boolean;
   too_soon?: boolean;
+  exact_in_hours?: boolean | null;
+  any_in_hours?: boolean | null;
   tz: string | null;
   deposit_overrides: Record<string, unknown> | null;
 }
@@ -86,7 +89,7 @@ const W = {
 } as const;
 
 /** Positions of the preflight statement's bound values (0-based). */
-const P = { exactResourceId: 2, lookupFirstAvailable: 5, isMotel: 20 } as const;
+const P = { exactResourceId: 2, lookupFirstAvailable: 5, isMotel: 24 } as const;
 
 type Reply = { rows?: unknown[]; throws?: unknown };
 
@@ -424,6 +427,66 @@ describe("createBooking — owner minimum notice (VOICE-ALERTS-1 review)", () =>
     expect(text).toContain("to_jsonb(t) ->> 'booking_min_notice_minutes'");
     expect(text).toContain("(select notice from tn) is null then false");
     expect(text).not.toMatch(/t\.booking_min_notice_minutes/);
+  });
+});
+
+describe("createBooking — business hours and horizon (QA-1 BE-06)", () => {
+  it("refuses a start outside every availability slot of the exact resource and never writes", async () => {
+    const { sql, calls } = makeSql(bookingRoutes({ preflight: { exact_in_hours: false } }));
+    const result = await createBooking(sql, ctx, args);
+    expect(result).toEqual({
+      confirmed: false,
+      reason: "outside_hours",
+      message: OUTSIDE_HOURS_MESSAGE,
+    });
+    expect(calls.some((c) => c.text.includes(WRITE))).toBe(false);
+  });
+
+  it("books when the exact resource has a slot covering the start", async () => {
+    const { sql } = makeSql(bookingRoutes({ preflight: { exact_in_hours: true } }));
+    const result = await createBooking(sql, ctx, args);
+    expect(result).toMatchObject({ confirmed: true });
+  });
+
+  it("uses the any-resource check when no exact resource matched (name / first-available tiers)", async () => {
+    const { sql, calls } = makeSql(
+      bookingRoutes({
+        preflight: {
+          exact_resource_id: null,
+          first_available_resource_id: RESOURCE_ID,
+          exact_in_hours: null,
+          any_in_hours: false,
+        },
+      }),
+    );
+    const result = await createBooking(sql, ctx, { ...args, resource_id: undefined });
+    expect(result).toMatchObject({ confirmed: false, reason: "outside_hours" });
+    expect(calls.some((c) => c.text.includes(WRITE))).toBe(false);
+  });
+
+  it("does not refuse a replay of the caller's own booking", async () => {
+    const { sql } = makeSql(
+      bookingRoutes({
+        preflight: {
+          replay_id: "booking_1",
+          replay_start: args.start,
+          replay_end: args.end,
+          exact_in_hours: false,
+        },
+      }),
+    );
+    const result = await createBooking(sql, ctx, args);
+    expect(result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
+  });
+
+  it("computes hours from availability_slots in the same preflight statement (generated slots count so a taken slot still answers slot_taken)", async () => {
+    const { sql, textsMatching } = makeSql(bookingRoutes({}));
+    await createBooking(sql, ctx, args);
+    const text = textsMatching(PREFLIGHT)[0]?.text ?? "";
+    expect(text).toContain("as exact_in_hours");
+    expect(text).toContain("as any_in_hours");
+    expect(text).toContain("s.slot_range @>");
+    expect(text).toContain("s.source = 'generated'");
   });
 });
 

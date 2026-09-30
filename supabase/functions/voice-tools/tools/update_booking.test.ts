@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
+import {
+  OUTSIDE_HOURS_MESSAGE,
+  START_IN_PAST_MESSAGE,
+  TOO_SOON_MESSAGE,
+} from "./create_booking.ts";
 import { updateBooking } from "./update_booking.ts";
 
 const ctx: CallContext = {
@@ -131,5 +136,117 @@ describe("updateBooking - Manual Mode (VOICE-ALERTS-1 review)", () => {
     const result = await updateBooking(sql, { ...ctx, manualMode: true }, args);
     expect(result).toMatchObject({ confirmed: false, reason: "manual_mode" });
     expect(queries).toBe(0);
+  });
+});
+
+describe("updateBooking - time rules and local rendering (QA-1 BE-07 / BE-08)", () => {
+  const okUpdate = { rows: [{ id: "booking_1", start_at: args.new_start, end_at: args.new_end }] };
+
+  function recordingSql(steps: Step[]): { sql: SqlClient; texts: string[] } {
+    const texts: string[] = [];
+    let i = 0;
+    const sql = ((strings: TemplateStringsArray) => {
+      texts.push(strings.join(" "));
+      const step = steps[i];
+      i += 1;
+      if (step?.throws) return Promise.reject(step.throws);
+      return Promise.resolve(step?.rows ?? []);
+    }) as SqlClient;
+    return { sql, texts };
+  }
+
+  it("refuses a reschedule into the past and never runs the UPDATE", async () => {
+    const { sql, texts } = recordingSql([
+      { rows: [{ ...bookingRow, start_in_past: true }] },
+      okUpdate,
+    ]);
+    const result = await updateBooking(sql, ctx, args);
+    expect(result).toEqual({
+      confirmed: false,
+      reason: "start_in_past",
+      message: START_IN_PAST_MESSAGE,
+    });
+    expect(texts.some((t) => t.includes("update public.bookings"))).toBe(false);
+  });
+
+  it("refuses a time inside the owner's minimum notice", async () => {
+    const { sql, texts } = recordingSql([{ rows: [{ ...bookingRow, too_soon: true }] }, okUpdate]);
+    const result = await updateBooking(sql, ctx, args);
+    expect(result).toEqual({ confirmed: false, reason: "too_soon", message: TOO_SOON_MESSAGE });
+    expect(texts.some((t) => t.includes("update public.bookings"))).toBe(false);
+  });
+
+  it("refuses a time outside the booking's availability slots (closed day, off hours, beyond the horizon)", async () => {
+    const { sql, texts } = recordingSql([{ rows: [{ ...bookingRow, in_hours: false }] }, okUpdate]);
+    const result = await updateBooking(sql, ctx, args);
+    expect(result).toEqual({
+      confirmed: false,
+      reason: "outside_hours",
+      message: OUTSIDE_HOURS_MESSAGE,
+    });
+    expect(texts.some((t) => t.includes("update public.bookings"))).toBe(false);
+  });
+
+  it("does not leak time-rule outcomes to an unverified caller (identity is checked first)", async () => {
+    const { sql } = recordingSql([
+      { rows: [{ ...bookingRow, in_hours: false, start_in_past: true }] },
+    ]);
+    const result = await updateBooking(sql, { ...ctx, callerNumber: "+15559998888" }, args);
+    expect(result).toEqual({ confirmed: false, reason: "identity_verification_failed" });
+  });
+
+  it("answers invalid_time for an unparseable or backwards range before any SQL", async () => {
+    const { sql, texts } = recordingSql([{ rows: [bookingRow] }]);
+    const bad = await updateBooking(sql, ctx, { ...args, new_start: "not a time" });
+    expect(bad).toMatchObject({ confirmed: false, reason: "invalid_time" });
+    const backwards = await updateBooking(sql, ctx, {
+      ...args,
+      new_start: args.new_end,
+      new_end: args.new_start,
+    });
+    expect(backwards).toMatchObject({ confirmed: false, reason: "invalid_time" });
+    expect(texts).toHaveLength(0);
+  });
+
+  it("maps a Postgres datetime error from the lookup to invalid_time", async () => {
+    const { sql } = recordingSql([{ throws: { code: "22008" } }]);
+    const result = await updateBooking(sql, ctx, args);
+    expect(result).toMatchObject({ confirmed: false, reason: "invalid_time" });
+  });
+
+  it("evaluates the rules in the lookup statement itself (past, notice, slots of the booking's resource)", async () => {
+    const { sql, texts } = recordingSql([{ rows: [] }]);
+    await updateBooking(sql, ctx, args);
+    const text = texts[0] ?? "";
+    expect(text).toContain("< now()");
+    expect(text).toContain("to_jsonb(t) ->> 'booking_min_notice_minutes'");
+    expect(text).toContain("s.resource_id = b.resource_id");
+    expect(text).toContain("s.slot_range @>");
+  });
+
+  it("returns the confirmed times in the tenant's timezone, not raw UTC", async () => {
+    const { sql } = recordingSql([
+      { rows: [{ ...bookingRow, tz: "America/New_York" }] },
+      {
+        rows: [
+          {
+            id: "booking_1",
+            start_at: "2026-10-02T17:00:00.000Z",
+            end_at: "2026-10-02T17:30:00.000Z",
+          },
+        ],
+      },
+      { rows: [] },
+    ]);
+    const result = await updateBooking(sql, ctx, {
+      ...args,
+      new_start: "2026-10-02T13:00:00-04:00",
+      new_end: "2026-10-02T13:30:00-04:00",
+    });
+    expect(result).toEqual({
+      confirmed: true,
+      start: "2026-10-02T13:00:00-04:00",
+      end: "2026-10-02T13:30:00-04:00",
+    });
   });
 });
