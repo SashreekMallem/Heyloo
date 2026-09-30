@@ -49,6 +49,7 @@ import { lookupCustomer } from "./tools/lookup_customer.ts";
 import { sendPaymentLink } from "./tools/send_payment_link.ts";
 import { sendSmsConfirmation } from "./tools/send_sms_confirmation.ts";
 import { takeMessage } from "./tools/take_message.ts";
+import { localizeNaiveTimes } from "./tools/time-args.ts";
 import { updateBooking } from "./tools/update_booking.ts";
 
 /**
@@ -390,11 +391,31 @@ async function runTool(
       : Promise.resolve(false);
     return smsAvailability;
   };
+  // F1: an offset-less time from the model means the tenant's wall clock,
+  // not the edge runtime's (UTC). Rewritten once here so check_availability,
+  // create_booking (and its idempotency key), update_booking and
+  // join_waitlist all see the same unambiguous instant.
+  const localize = <V extends Record<string, string | undefined>>(values: V): Promise<V> =>
+    localizeNaiveTimes(
+      async () => {
+        const rows = await sql<{ timezone: string | null }>`
+          select timezone from public.tenants where id = ${ctx.tenantId}
+        `;
+        return rows[0]?.timezone ?? null;
+      },
+      values,
+      (err) =>
+        logger.warn("voice_tools_timezone_read_failed", {
+          tenant_id: ctx.tenantId,
+          error: String(err),
+        }),
+    );
   switch (name) {
     case "check_availability": {
       const parsed = CheckAvailabilityArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
-      return toolEnvelope(await checkAvailability(sql, ctx, parsed.data));
+      const range = await localize(parsed.data.date_range);
+      return toolEnvelope(await checkAvailability(sql, ctx, { ...parsed.data, date_range: range }));
     }
     case "create_booking": {
       const parsed = CreateBookingArgsSchema.safeParse(rawArgs);
@@ -409,14 +430,11 @@ async function runTool(
           message: MANUAL_MODE_BOOKING_MESSAGE,
         });
       }
-      const gated = await applyIntakeGate(
-        deps,
-        ctx,
-        call,
-        "create_booking",
-        parsed.data,
-        "customer",
-      );
+      const localized = {
+        ...parsed.data,
+        ...(await localize({ start: parsed.data.start, end: parsed.data.end })),
+      };
+      const gated = await applyIntakeGate(deps, ctx, call, "create_booking", localized, "customer");
       if (!gated.ok) return gated.envelope;
       return toolEnvelope(await createBookingWithinBudget(deps, ctx, gated.args, startedAt));
     }
@@ -430,7 +448,26 @@ async function runTool(
           message: MANUAL_MODE_CHANGE_MESSAGE,
         });
       }
-      return toolEnvelope(await updateBooking(sql, ctx, parsed.data));
+      const times = await localize({
+        new_start: parsed.data.new_start,
+        new_end: parsed.data.new_end,
+        appointment_time: parsed.data.verify?.appointment_time,
+      });
+      return toolEnvelope(
+        await updateBooking(sql, ctx, {
+          ...parsed.data,
+          new_start: times.new_start,
+          new_end: times.new_end,
+          ...(parsed.data.verify
+            ? {
+                verify: {
+                  ...parsed.data.verify,
+                  appointment_time: times.appointment_time ?? parsed.data.verify.appointment_time,
+                },
+              }
+            : {}),
+        }),
+      );
     }
     case "cancel_booking": {
       const parsed = CancelBookingArgsSchema.safeParse(rawArgs);
@@ -441,6 +478,19 @@ async function runTool(
           reason: "manual_mode",
           message: MANUAL_MODE_CANCEL_MESSAGE,
         });
+      }
+      const verify = parsed.data.verify;
+      if (verify) {
+        const times = await localize({ appointment_time: verify.appointment_time });
+        return toolEnvelope(
+          await cancelBooking(sql, ctx, {
+            ...parsed.data,
+            verify: {
+              ...verify,
+              appointment_time: times.appointment_time ?? verify.appointment_time,
+            },
+          }),
+        );
       }
       return toolEnvelope(await cancelBooking(sql, ctx, parsed.data));
     }
@@ -501,7 +551,13 @@ async function runTool(
     case "join_waitlist": {
       const parsed = JoinWaitlistArgsSchema.safeParse(rawArgs);
       if (!parsed.success) return fallbackEnvelope();
-      return toolEnvelope(await joinWaitlist(sql, ctx, parsed.data, { smsAvailable }));
+      const window = await localize({
+        preferred_window_start: parsed.data.preferred_window_start,
+        preferred_window_end: parsed.data.preferred_window_end,
+      });
+      return toolEnvelope(
+        await joinWaitlist(sql, ctx, { ...parsed.data, ...window }, { smsAvailable }),
+      );
     }
     case "list_offerings": {
       const parsed = ListOfferingsArgsSchema.safeParse(rawArgs);
