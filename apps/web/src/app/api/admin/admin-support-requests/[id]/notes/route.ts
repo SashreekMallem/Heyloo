@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireAdminApiSession } from "@/app/api/admin/_lib/admin-auth";
+import { adminRoute, requireAdminApiSession } from "@/app/api/admin/_lib/admin-auth";
 import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-role";
 
 export const runtime = "nodejs";
@@ -9,7 +9,10 @@ export const runtime = "nodejs";
  * true); `{ visible_to_tenant: false }` stores an internal note the tenant never
  * sees (COCKPIT-F25).
  */
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export const POST = adminRoute(async function POST(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   const session = await requireAdminApiSession();
   if (!session.ok) return session.response;
   const { id } = await params;
@@ -53,4 +56,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (error || !note) return NextResponse.json({ error: "insert_failed" }, { status: 500 });
 
   return NextResponse.json({ note });
-}
+});

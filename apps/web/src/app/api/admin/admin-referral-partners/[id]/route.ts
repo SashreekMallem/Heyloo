@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  adminRoute,
   fromUntypedTable,
   requireAdminApiSession,
   writeAdminAction,
@@ -28,7 +29,10 @@ interface OverrideRow {
   duration_months: number | null;
 }
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+export const GET = adminRoute(async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   const session = await requireAdminApiSession();
   if (!session.ok) return session.response;
   const { id } = await params;
@@ -55,9 +59,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     partner: partner as unknown as PartnerDetail,
     overrides: (overrides ?? []) as unknown as OverrideRow[],
   });
-}
+});
 
-export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export const PATCH = adminRoute(async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   const session = await requireAdminApiSession();
   if (!session.ok) return session.response;
   const { id } = await params;
@@ -103,4 +110,4 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   });
 
   return NextResponse.json({ partner: after });
-}
+});

@@ -81,3 +81,23 @@ describe("Platform settings — referral", () => {
     expect(patches).toHaveLength(0);
   });
 });
+
+// COCKPIT-F03
+describe("Platform settings — fees read failure", () => {
+  it("shows a human error with Retry in the Fees tab instead of an empty panel", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (String(url).includes("platform-settings/fees")) {
+          return Response.json({ error: "admin_query_failed" }, { status: 500 });
+        }
+        return Response.json(SETTINGS);
+      }),
+    );
+    renderPage();
+    await userEvent.click(await screen.findByRole("tab", { name: "Fees" }));
+    expect(await screen.findByText("Something went wrong. Please retry.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    expect(screen.queryByText(/admin_query_failed/)).not.toBeInTheDocument();
+  });
+});

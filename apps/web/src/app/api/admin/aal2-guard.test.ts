@@ -28,7 +28,7 @@ vi.mock("@/lib/supabase/service-role", () => ({
 }));
 
 const ID = { id: "3f2a9c1e-0000-4000-8000-000000000001" };
-const params = (p: Record<string, string>) => ({ params: Promise.resolve(p) });
+const params = <T extends object>(p: T) => ({ params: Promise.resolve(p) });
 const req = (method: string) =>
   new Request("http://localhost/api/admin/x", {
     method,
@@ -50,10 +50,7 @@ const calls: [string, () => Promise<Response>][] = [
   ["GET referral partners", () => partners.GET()],
   ["GET referral partner", () => partner.GET(req("GET"), params(ID))],
   ["PATCH referral partner", () => partner.PATCH(req("PATCH"), params(ID))],
-  [
-    "PUT partner override",
-    () => override.PUT(req("PUT"), params({ ...ID, vertical: "auto" })),
-  ],
+  ["PUT partner override", () => override.PUT(req("PUT"), params({ ...ID, vertical: "auto" }))],
   [
     "DELETE partner override",
     () => override.DELETE(req("DELETE"), params({ ...ID, vertical: "auto" })),

@@ -1,6 +1,10 @@
 import { VERTICALS } from "@heyloo/canonical-types";
 import { NextResponse } from "next/server";
-import { requireAdminApiSession, writeAdminAction } from "@/app/api/admin/_lib/admin-auth";
+import {
+  adminRoute,
+  requireAdminApiSession,
+  writeAdminAction,
+} from "@/app/api/admin/_lib/admin-auth";
 import { DEFAULT_FEES, platformFeesSchema } from "@/app/api/admin/_lib/fees-schema";
 import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-role";
 
@@ -16,7 +20,7 @@ export const runtime = "nodejs";
  * `platform_admin` claim + `admin_actions` audit trail) as its sibling
  * `referral`/`pricing` routes there.
  */
-export async function GET() {
+export const GET = adminRoute(async function GET() {
   const session = await requireAdminApiSession();
   if (!session.ok) return session.response;
 
@@ -35,9 +39,9 @@ export async function GET() {
     VERTICALS.map((v) => [v, { ...DEFAULT_FEES, ...(byKey.get(`fees_${v}`) ?? {}) }]),
   );
   return NextResponse.json({ fees });
-}
+});
 
-export async function POST(request: Request) {
+export const POST = adminRoute(async function POST(request: Request) {
   const session = await requireAdminApiSession();
   if (!session.ok) return session.response;
 
@@ -79,4 +83,4 @@ export async function POST(request: Request) {
   });
 
   return NextResponse.json({ vertical, fees: value });
-}
+});

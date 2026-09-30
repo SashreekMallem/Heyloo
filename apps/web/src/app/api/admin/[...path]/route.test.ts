@@ -220,19 +220,22 @@ describe("AAL2 enforcement (COCKPIT-F01)", () => {
   ];
   const handlers = { GET, POST, PATCH, DELETE } as const;
 
-  it.each(cases)("%s %j 403s aal2_required for a password-only admin, nothing forwarded", async (method, path) => {
-    mockSession = aal1Admin();
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-    const res = await handlers[method as keyof typeof handlers](
-      new Request("http://localhost/api/admin/x", { method }),
-      { params: Promise.resolve({ path }) },
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: "aal2_required" });
-    expect(fetchSpy).not.toHaveBeenCalled();
-    vi.unstubAllGlobals();
-  });
+  it.each(cases)(
+    "%s %j 403s aal2_required for a password-only admin, nothing forwarded",
+    async (method, path) => {
+      mockSession = aal1Admin();
+      const fetchSpy = vi.fn();
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await handlers[method as keyof typeof handlers](
+        new Request("http://localhost/api/admin/x", { method }),
+        { params: Promise.resolve({ path }) },
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "aal2_required" });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      vi.unstubAllGlobals();
+    },
+  );
 
   it("403s when the JWT carries no aal claim at all (fail closed)", async () => {
     mockSession = {

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireAdminApiSession } from "@/app/api/admin/_lib/admin-auth";
+import { adminRoute, requireAdminApiSession } from "@/app/api/admin/_lib/admin-auth";
 import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-role";
 
 export const runtime = "nodejs";
@@ -29,7 +29,7 @@ interface PartnerRow {
   duration_months: number | null;
 }
 
-export async function GET() {
+export const GET = adminRoute(async function GET() {
   const session = await requireAdminApiSession();
   if (!session.ok) return session.response;
 
@@ -44,4 +44,4 @@ export async function GET() {
   if (error) return NextResponse.json({ error: "query_failed" }, { status: 500 });
 
   return NextResponse.json({ rows: (data ?? []) as unknown as PartnerRow[] });
-}
+});

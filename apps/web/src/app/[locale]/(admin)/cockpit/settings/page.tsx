@@ -415,14 +415,25 @@ export default function PlatformSettingsPage() {
               initial={data.price_cards?.[vertical] ?? null}
               onSaved={() => void settingsQuery.refetch()}
             />
-            {feesQuery.data && (
+            {feesQuery.data ? (
               <FeesTab
                 key={`fees-${vertical}`}
                 vertical={vertical}
                 onVerticalChange={setVertical}
-                initial={feesQuery.data?.fees?.[vertical] ?? DEFAULT_VERTICAL_FEES}
+                initial={feesQuery.data.fees?.[vertical] ?? DEFAULT_VERTICAL_FEES}
                 onSaved={() => void feesQuery.refetch()}
               />
+            ) : (
+              // COCKPIT-F03: a failed/loading fees read used to leave the tab
+              // header with an empty panel; show the same loading / retry
+              // state every other admin read gets.
+              <TabsContent value="fees" className="space-y-4">
+                <DataState
+                  query={feesQuery}
+                  empty={{ title: "No fee settings found" }}
+                  render={() => null}
+                />
+              </TabsContent>
             )}
           </Tabs>
         )}

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  adminRoute,
   fromUntypedTable,
   requireAdminApiSession,
   writeAdminAction,
@@ -14,7 +15,10 @@ function isTicketStatus(value: string): value is TicketStatus {
   return (VALID_STATUSES as readonly string[]).includes(value);
 }
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+export const GET = adminRoute(async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   const session = await requireAdminApiSession();
   if (!session.ok) return session.response;
   const { id } = await params;
@@ -60,9 +64,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       author_role: adminIds.has(n.author_id) ? "admin" : "tenant",
     })),
   });
-}
+});
 
-export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export const PATCH = adminRoute(async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   const session = await requireAdminApiSession();
   if (!session.ok) return session.response;
   const { id } = await params;
@@ -105,4 +112,4 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   });
 
   return NextResponse.json({ ticket: after });
-}
+});

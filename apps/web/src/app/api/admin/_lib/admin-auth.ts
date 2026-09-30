@@ -58,6 +58,26 @@ export async function requireAdminApiSession(): Promise<
   return { ok: true, adminUserId: session.user.id };
 }
 
+/**
+ * COCKPIT-F03: an exception thrown inside a direct-Postgres admin handler
+ * (a missing service-role secret, a network blip) used to surface as Next's
+ * empty-body 500, which the cockpit could only render as a generic failure.
+ * Wrap each exported verb so an unexpected throw is logged and answered with
+ * a JSON `{ error }` body like every other failure of these routes.
+ */
+export function adminRoute<A extends unknown[]>(
+  handler: (...args: A) => Promise<Response>,
+): (...args: A) => Promise<Response> {
+  return async (...args: A) => {
+    try {
+      return await handler(...args);
+    } catch (err) {
+      console.error("admin_route_failed", err instanceof Error ? err.message : String(err));
+      return NextResponse.json({ error: "internal_error" }, { status: 500 });
+    }
+  };
+}
+
 export type AdminActionTargetType =
   | "tenant"
   | "call"
