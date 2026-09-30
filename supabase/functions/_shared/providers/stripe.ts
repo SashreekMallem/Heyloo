@@ -46,6 +46,7 @@ async function stripeRequest(
   method: "GET" | "POST",
   path: string,
   params?: Record<string, unknown>,
+  options?: { idempotencyKey?: string },
 ): Promise<{ ok: boolean; status: number; body: unknown }> {
   const query =
     method === "GET" && params ? `?${new URLSearchParams(flattenStripeParams(params))}` : "";
@@ -55,6 +56,11 @@ async function stripeRequest(
       authorization: `Bearer ${secretKey}`,
       "content-type": "application/x-www-form-urlencoded",
       "Stripe-Version": STRIPE_API_VERSION,
+      // docs.stripe.com/api/idempotent_requests (fetched 2026-09-30): any POST accepts
+      // `Idempotency-Key` (<= 255 chars); keys are pruned after >= 24 h.
+      ...(options?.idempotencyKey && method === "POST"
+        ? { "Idempotency-Key": options.idempotencyKey }
+        : {}),
     },
     ...(method === "POST" && params
       ? { body: new URLSearchParams(flattenStripeParams(params)).toString() }
@@ -255,14 +261,114 @@ export async function retrieveBalanceTransaction(
   );
 }
 
+/**
+ * Meter event `payload[value]` must be a plain decimal with at most 12 decimal
+ * places and at most 15 digits (BILL-1: live sums such as 300.000000000000005
+ * or 3.566666666666667 were rejected with HTTP 400, so overage was never
+ * reported). Usage is reported to 6 decimals (a microminute), far below a cent
+ * at any overage rate; trailing zeros are dropped and exponent form is never
+ * produced.
+ */
+export const METER_VALUE_DECIMALS = 6;
+const METER_VALUE_MAX_DIGITS = 15;
+
+export function formatMeterValue(value: number | string): string {
+  const n = typeof value === "string" ? Number(value) : value;
+  if (!Number.isFinite(n) || n < 0) {
+    throw new RangeError("meter value must be a finite, non-negative number");
+  }
+  const fixed = n.toFixed(METER_VALUE_DECIMALS); // exponent form only from 1e21 up
+  const [intPart = "0", frac = ""] = fixed.split(".");
+  if (intPart.length > METER_VALUE_MAX_DIGITS) {
+    throw new RangeError("meter value has more than 15 digits");
+  }
+  const fracDigits = frac.slice(0, METER_VALUE_MAX_DIGITS - intPart.length).replace(/0+$/, "");
+  return fracDigits ? `${intPart}.${fracDigits}` : intPart;
+}
+
+/**
+ * POST /v1/billing/meter_events (docs.stripe.com/api/billing/meter-event/create,
+ * fetched 2026-09-30). `identifier` is de-duplicated by Stripe for a rolling
+ * period of at least 24 h. `timestamp` (Unix seconds) must be within the past
+ * 35 days or up to 5 minutes ahead and defaults to now, so a month's usage
+ * reported on the 1st would otherwise be stamped in the NEXT subscription
+ * period (BILL-12): callers pass a time inside the period being reported.
+ */
 export async function createBillingMeterEvent(
   fetchImpl: StripeFetch,
   secretKey: string,
-  params: { eventName: string; stripeCustomerId: string; value: number; identifier: string },
+  params: {
+    eventName: string;
+    stripeCustomerId: string;
+    value: number | string;
+    identifier: string;
+    timestamp?: number;
+  },
 ) {
   return stripeRequest(fetchImpl, secretKey, "POST", "/billing/meter_events", {
     event_name: params.eventName,
     identifier: params.identifier,
-    payload: { stripe_customer_id: params.stripeCustomerId, value: params.value },
+    payload: {
+      stripe_customer_id: params.stripeCustomerId,
+      value: formatMeterValue(params.value),
+    },
+    ...(params.timestamp === undefined ? {} : { timestamp: Math.floor(params.timestamp) }),
+  });
+}
+
+/**
+ * POST /v1/invoiceitems (docs.stripe.com/api/invoiceitems/create, fetched
+ * 2026-09-30): with no `invoice`/`subscription` the item joins the next invoice
+ * created for the customer, which is how a period's text-reply overage (BILL-4)
+ * rides on the subscription's next renewal. `idempotencyKey` guards a retry
+ * inside Stripe's 24 h window; the caller also records the created item id
+ * locally so a later retry never creates a second one.
+ */
+export async function createInvoiceItem(
+  fetchImpl: StripeFetch,
+  secretKey: string,
+  params: {
+    customerId: string;
+    amountCents: number;
+    currency: string;
+    description: string;
+    periodStart: number;
+    periodEnd: number;
+    metadata?: Record<string, string>;
+    idempotencyKey: string;
+  },
+) {
+  return stripeRequest(
+    fetchImpl,
+    secretKey,
+    "POST",
+    "/invoiceitems",
+    {
+      customer: params.customerId,
+      amount: params.amountCents,
+      currency: params.currency,
+      description: params.description,
+      period: { start: Math.floor(params.periodStart), end: Math.floor(params.periodEnd) },
+      ...(params.metadata ? { metadata: params.metadata } : {}),
+    },
+    { idempotencyKey: params.idempotencyKey },
+  );
+}
+
+/**
+ * POST /v1/billing_portal/sessions (docs.stripe.com/api/customer_portal/sessions/create,
+ * fetched 2026-09-30): `customer` + `return_url` -> `{ url }`. Uses the account's
+ * default portal configuration unless `configurationId` is given; a portal
+ * configuration must be saved in the Stripe Dashboard first (docs/VERIFY.md).
+ */
+export async function createBillingPortalSession(
+  fetchImpl: StripeFetch,
+  secretKey: string,
+  params: { customerId: string; returnUrl: string; configurationId?: string },
+) {
+  return stripeRequest(fetchImpl, secretKey, "POST", "/billing_portal/sessions", {
+    customer: params.customerId,
+    return_url: params.returnUrl,
+    ...(params.configurationId ? { configuration: params.configurationId } : {}),
   });
 }
