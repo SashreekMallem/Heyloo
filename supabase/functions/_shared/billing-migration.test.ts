@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 // skips test, not-yet-existing and long-canceled tenants. This guards the
 // properties that matter so a later CREATE OR REPLACE cannot silently drop them.
 const sql = readFileSync(
-  new URL("../../migrations/20260930220000_billing_behavior_fixes.sql", import.meta.url),
+  new URL("../../migrations/20260930250000_billing_behavior_fixes.sql", import.meta.url),
   "utf8",
 );
 
@@ -51,7 +51,19 @@ describe("billing behavior migration", () => {
     expect(sql).not.toMatch(/\bdrop (table|column)\b/i);
   });
 
-  it("marks test-* tenants as test tenants so they are never invoiced (BILL-10)", () => {
-    expect(sql).toMatch(/set is_test = true\s+where slug like 'test-%'/);
+  it("does not flip is_test on the test-* QA tenants (it would silence their owner alerts and billable usage)", () => {
+    expect(sql).not.toMatch(/set is_test = true/);
+  });
+
+  it("re-stamps the default average ticket when an unpaid tenant's vertical changes (BILL-6)", () => {
+    expect(sql).toContain("before update of vertical on public.tenants");
+    expect(sql).toContain(
+      "old.avg_transaction_value_cents = public.fn_vertical_default_avg_ticket(old.vertical)",
+    );
+  });
+
+  it("bounds the per-day rollup to the calls that can fall on that day (hourly job)", () => {
+    expect(sql).toContain("cl.started_at >= ((p_date - 1)::timestamp at time zone v_tz)");
+    expect(sql).toContain("cl.started_at < ((p_date + 2)::timestamp at time zone v_tz)");
   });
 });

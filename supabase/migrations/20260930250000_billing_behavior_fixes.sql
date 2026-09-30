@@ -88,6 +88,10 @@ begin
   from public.call_logs cl
   left join public.usage_events ue on ue.call_id = cl.id
   where cl.tenant_id = p_tenant_id
+    -- only the calls that can fall on p_date (a day of slack either side for
+    -- DST): the hourly rollup must not rescan a tenant's whole history.
+    and cl.started_at >= ((p_date - 1)::timestamp at time zone v_tz)
+    and cl.started_at < ((p_date + 2)::timestamp at time zone v_tz)
   on conflict (tenant_id, date) do update set
     total_calls = excluded.total_calls,
     total_minutes = excluded.total_minutes,
@@ -154,10 +158,45 @@ begin
 end;
 $$;
 
--- 5. Test tenants are not billable (BILL-10): the admin test-tenant provisioner names
---    them test-<name>, and they were created with is_test = false, so the billing
---    job drafted full-base invoices for them. (The eight demo-* tenants were already
---    marked by 20260929190000.)
-update public.tenants
-set is_test = true
-where slug like 'test-%' and is_test = false;
+
+-- 5. Vertical change on an unpaid tenant (BILL-6). api-checkout reuses an abandoned
+--    trialing tenant for a new Checkout and updates its vertical to the one picked now
+--    (webhooks-stripe also re-syncs it from the paid session's metadata). The default
+--    average ticket is stamped from the vertical on INSERT only, so a switch would leave
+--    an `auto` ticket on a `dental` tenant: re-stamp it, but only while it still holds
+--    the old vertical's untouched default (never overwrite an owner-entered value).
+create or replace function public.fn_vertical_default_avg_ticket(p_vertical text)
+returns int language sql immutable as $$
+  select case p_vertical
+    when 'auto'        then 55000
+    when 'vet'         then 17500
+    when 'legal'       then 250000
+    when 'dental'      then 65000
+    when 'real_estate' then 800000
+    when 'motel'       then 12500
+    when 'restaurant'  then 4500
+    else 10000
+  end;
+$$;
+
+create or replace function public.fn_tenants_restamp_avg_ticket()
+returns trigger language plpgsql as $$
+begin
+  if new.vertical is distinct from old.vertical
+     and new.avg_transaction_value_cents is not distinct from old.avg_transaction_value_cents
+     and old.avg_transaction_value_cents = public.fn_vertical_default_avg_ticket(old.vertical) then
+    new.avg_transaction_value_cents := public.fn_vertical_default_avg_ticket(new.vertical);
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_tenants_restamp_avg_ticket on public.tenants;
+create trigger trg_tenants_restamp_avg_ticket
+  before update of vertical on public.tenants
+  for each row execute function public.fn_tenants_restamp_avg_ticket();
+
+-- Test tenants are kept out of billing by job-billing-cycle itself (is_test, and no
+-- Stripe customer). The eight `test-*` QA tenants are deliberately NOT flagged is_test
+-- here: that flag also turns off owner alerts, reminders and billable usage for them,
+-- which the QA runs exercise.
