@@ -60,6 +60,26 @@ export function optionalServiceRoleKey(): string | undefined {
   }
 }
 
+/**
+ * Publishable API key (safe for browsers). Supabase injects
+ * `SUPABASE_PUBLISHABLE_KEYS` (JSON dictionary, e.g. `{"default":"sb_publishable_..."}`)
+ * into every function (supabase.com/docs/guides/functions/secrets, verified
+ * 2026-09-30); `SB_PUBLISHABLE_KEY` is honoured first as an explicit override.
+ */
+export function optionalPublishableKey(): string | undefined {
+  const explicit = Deno.env.get("SB_PUBLISHABLE_KEY");
+  if (explicit) return explicit;
+  const raw = Deno.env.get("SUPABASE_PUBLISHABLE_KEYS");
+  if (!raw) return undefined;
+  try {
+    const dict = JSON.parse(raw) as Record<string, unknown>;
+    const candidate = dict.default ?? Object.values(dict)[0];
+    return typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function requireServiceRoleKey(): string {
   const key = optionalServiceRoleKey();
   if (!key) {

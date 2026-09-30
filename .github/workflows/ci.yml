@@ -359,6 +359,11 @@ jobs:
       - name: Run QA-1 cockpit fixes SQL test
         if: steps.migrations.outputs.count != '0'
         run: psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/qa1_cockpit_fixes.sql
+      # QA-2 backend: admin_actions.target_type accepts every audited type
+      # (COCKPIT-F02) and the realtime keep-alive cron is scheduled (BE-03).
+      - name: Run QA-2 backend SQL test
+        if: steps.migrations.outputs.count != '0'
+        run: psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/qa2_backend.sql
       - name: Run owner privilege-escalation probe
         if: steps.migrations.outputs.count != '0'
         run: node --experimental-strip-types scripts/ci/owner-privilege-escalation-probe.ts
