@@ -99,18 +99,18 @@ export async function handleCheckout(
 
   // Idempotent re-submit: reuse an existing not-yet-paid trialing tenant
   // for this owner rather than creating a second one (e.g. the tenant hit
-  // "back" on Stripe Checkout and retried signup). BILL-6: only a tenant of
-  // the SAME vertical is reused: the Checkout Session bills the price card of
-  // the vertical picked now, and nothing re-syncs the tenant's vertical after
-  // payment, so reusing an `auto` tenant for a `dental` checkout would charge
-  // dental prices for an auto-template tenant. A different vertical gets its
-  // own new tenant.
+  // "back" on Stripe Checkout and retried signup). BILL-6: the reused tenant
+  // takes the vertical picked NOW (provisioning reads `tenants.vertical` after
+  // payment, and the Checkout Session bills that vertical's price card), so a
+  // dental Checkout can never end up on an auto-template tenant. It is reused
+  // rather than duplicated because the access-token hook always lands the owner
+  // on their EARLIEST membership: a second tenant would leave the paying owner
+  // signed into the abandoned first one.
   const existing = await sql<{ id: string }>`
     select t.id from public.tenants t
     join public.memberships m on m.tenant_id = t.id
     where m.user_id = ${userId} and m.role = 'owner'
       and t.status = 'trialing' and t.stripe_subscription_id is null
-      and t.vertical = ${vertical}
       and t.deleted_at is null
     order by t.created_at desc
     limit 1
@@ -118,10 +118,11 @@ export async function handleCheckout(
 
   let tenantId = existing[0]?.id;
   if (tenantId) {
-    // Same vertical, possibly a corrected business name / time zone.
+    // Possibly a corrected business name / time zone / vertical.
     await sql`
       update public.tenants
-      set name = ${business_name}, timezone = coalesce(${timezone ?? null}, timezone)
+      set name = ${business_name}, vertical = ${vertical},
+          timezone = coalesce(${timezone ?? null}, timezone)
       where id = ${tenantId} and status = 'trialing' and stripe_subscription_id is null
     `;
   } else {

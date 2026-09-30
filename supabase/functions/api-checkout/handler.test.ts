@@ -111,29 +111,14 @@ describe("handleCheckout", () => {
     expect(calls.some((c) => c.text.includes("insert into public.memberships"))).toBe(false);
   });
 
-  it("BILL-6: an abandoned trialing tenant of ANOTHER vertical is not reused for a different pick", async () => {
-    // Tiny in-memory model of the reuse query: only an owner-trialing tenant whose
-    // vertical equals the bound `vertical` parameter comes back.
-    const tenants = [{ id: "auto-tenant", vertical: "auto" }];
-    const calls: { text: string; values: unknown[] }[] = [];
-    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-      const text = strings.join(" ");
-      calls.push({ text, values });
-      if (text.includes("from public.platform_settings where key")) {
-        return Promise.resolve([{ value: { ...PRICE_CARD } }]);
-      }
-      if (text.includes("from public.tenants t")) {
-        const filtersVertical = text.includes("t.vertical =");
-        return Promise.resolve(
-          tenants
-            .filter((t) => !filtersVertical || values.includes(t.vertical))
-            .map((t) => ({ id: t.id })),
-        );
-      }
-      if (text.includes("insert into public.tenants"))
-        return Promise.resolve([{ id: "dental-tenant" }]);
-      return Promise.resolve([]);
-    }) as SqlClient;
+  it("BILL-6: an abandoned trialing tenant is reused for a different pick and takes the new vertical", async () => {
+    // The owner's earliest membership decides which tenant they land in after paying
+    // (custom_access_token_hook), so a second tenant would strand a paying dental
+    // owner on the abandoned auto one: the tenant is reused and re-verticalled.
+    const { sql, calls } = makeSql({
+      "platform_settings:price_card_dental": [{ value: PRICE_CARD }],
+      "from public.tenants t": [{ id: "auto-tenant" }],
+    });
 
     const dental = await handleCheckout(
       sql,
@@ -141,16 +126,13 @@ describe("handleCheckout", () => {
       { ...VALID_BODY, vertical: "dental" },
       makeDeps(),
     );
-    expect(dental).toMatchObject({ ok: true, tenant_id: "dental-tenant" });
-    expect(calls.some((c) => c.text.includes("insert into public.tenants"))).toBe(true);
-    const insert = calls.find((c) => c.text.includes("insert into public.tenants"));
-    expect(insert?.values).toContain("dental");
-
-    // The same vertical still resubmits idempotently onto the existing tenant.
-    calls.length = 0;
-    const again = await handleCheckout(sql, "user-1", VALID_BODY, makeDeps());
-    expect(again).toMatchObject({ ok: true, tenant_id: "auto-tenant" });
+    expect(dental).toMatchObject({ ok: true, tenant_id: "auto-tenant" });
     expect(calls.some((c) => c.text.includes("insert into public.tenants"))).toBe(false);
+    const update = calls.find((c) => c.text.includes("update public.tenants"));
+    expect(update?.text).toContain("vertical =");
+    expect(update?.values).toContain("dental");
+    // ...and only while it is still unpaid.
+    expect(update?.text).toContain("stripe_subscription_id is null");
   });
 
   it("surfaces a checkout_session_create_failed error when Stripe rejects the session", async () => {

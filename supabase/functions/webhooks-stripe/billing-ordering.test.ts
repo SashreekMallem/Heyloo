@@ -92,6 +92,9 @@ function makeDb() {
         .filter((t) => t.stripe_subscription_id === v[0])
         .map((t) => ({ id: t.id }));
     }
+    if (text.includes("update public.tenants set vertical =")) {
+      return []; // BILL-6 vertical re-sync from the session metadata (not under test here)
+    }
     if (text.includes("update public.tenants set status = 'active', stripe_customer_id")) {
       // checkout.session.completed activation: [customer, subscription, tenantId]
       const t = tenants.get(v[2] as string);

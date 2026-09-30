@@ -1,3 +1,4 @@
+import { CheckoutRequestSchema } from "../_shared/schemas/checkout.ts";
 import type { StripeEvent } from "../_shared/schemas/stripe-event.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import {
@@ -61,6 +62,18 @@ export async function processStripeEvent(
 
       if (metadata["tenant_id"]) {
         const tenantId = metadata["tenant_id"];
+        // BILL-6: the vertical the customer PAID for is the one on the session
+        // (api-checkout stamps it in metadata); provisioning builds the agent from
+        // `tenants.vertical`, so re-sync it first, in case a second Checkout tab changed
+        // the tenant's vertical after this session was opened. Only before the first
+        // subscription (never re-verticals a live tenant) and only for a known vertical.
+        const paidVertical = CheckoutRequestSchema.shape.vertical.safeParse(metadata["vertical"]);
+        if (paidVertical.success) {
+          await sql`
+            update public.tenants set vertical = ${paidVertical.data}
+            where id = ${tenantId} and stripe_subscription_id is null
+          `;
+        }
         await sql`
           update public.tenants
           set status = 'active', stripe_customer_id = coalesce(${customerId}, stripe_customer_id),

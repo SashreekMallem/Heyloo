@@ -44,6 +44,56 @@ describe("processStripeEvent", () => {
     expect(update?.values).toContain("cus_1");
   });
 
+  it("BILL-6: re-syncs the paid vertical from the session metadata, only before the first subscription", async () => {
+    const { sql, calls } = makeSql();
+    await processStripeEvent(
+      sql,
+      {
+        id: "evt_v",
+        type: "checkout.session.completed",
+        data: {
+          object: {
+            id: "cs_v",
+            customer: "cus_1",
+            subscription: "sub_1",
+            metadata: { tenant_id: "t1", vertical: "dental" },
+          },
+        },
+      },
+      logger,
+    );
+    const updates = calls.filter((c) => c.text.includes("update public.tenants"));
+    // The vertical re-sync runs FIRST (it is guarded on no subscription yet, which the
+    // activation update then sets).
+    expect(updates[0]?.text).toContain("set vertical =");
+    expect(updates[0]?.text).toContain("stripe_subscription_id is null");
+    expect(updates[0]?.values).toEqual(["dental", "t1"]);
+    expect(updates[1]?.text).toContain("set status = 'active'");
+  });
+
+  it("BILL-6: an unknown metadata vertical never reaches the tenants CHECK constraint", async () => {
+    const { sql, calls } = makeSql();
+    await processStripeEvent(
+      sql,
+      {
+        id: "evt_v2",
+        type: "checkout.session.completed",
+        data: {
+          object: {
+            id: "cs_v2",
+            customer: "cus_1",
+            subscription: "sub_1",
+            metadata: { tenant_id: "t1", vertical: "spaceship" },
+          },
+        },
+      },
+      logger,
+    );
+    const updates = calls.filter((c) => c.text.includes("update public.tenants"));
+    expect(updates).toHaveLength(1); // only the activation update
+    expect(updates.some((u) => u.values.includes("spaceship"))).toBe(false);
+  });
+
   it("marks a payment_link paid and confirms the order on a phone-payment checkout", async () => {
     const { sql, calls } = makeSql();
     const event: StripeEvent = {
