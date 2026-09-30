@@ -4,7 +4,7 @@ import { Badge, DataState, formatPhoneDisplay, PageHeader } from "@heyloo/ui";
 import { Globe, Phone } from "lucide-react";
 import { useRouter } from "@/i18n/navigation";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
-import { describeOutboundMessage } from "@/lib/messages/outbound-preview";
+import { describeOutboundMessage, isOutboundDelivered } from "@/lib/messages/outbound-preview";
 import { webChatKey } from "@/lib/messages/text-conversations";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
@@ -36,7 +36,11 @@ export function MessagesListClient({ tenantId }: { tenantId: string }) {
     "messages_inbound",
     ["threads"],
     async () => {
-      const [{ data: inbound }, { data: outbound }, { data: conversations }] = await Promise.all([
+      const [
+        { data: inbound, error: inboundError },
+        { data: outbound, error: outboundError },
+        { data: conversations, error: conversationsError },
+      ] = await Promise.all([
         supabaseBrowserClient
           .from("messages_inbound")
           .select("from_e164, body, handled, created_at")
@@ -45,7 +49,7 @@ export function MessagesListClient({ tenantId }: { tenantId: string }) {
           .limit(300),
         supabaseBrowserClient
           .from("messages_outbound")
-          .select("recipient, template_key, payload, created_at")
+          .select("recipient, template_key, payload, status, created_at")
           .eq("tenant_id", tenantId)
           .eq("channel", "sms")
           .order("created_at", { ascending: false })
@@ -61,6 +65,10 @@ export function MessagesListClient({ tenantId }: { tenantId: string }) {
           .order("updated_at", { ascending: false })
           .limit(300),
       ]);
+
+      // Surface a failed load instead of rendering it as "No messages yet".
+      const loadError = inboundError ?? outboundError ?? conversationsError;
+      if (loadError) throw new Error(loadError.message);
 
       const byPhone = new Map<string, ThreadRow>();
 
@@ -88,10 +96,15 @@ export function MessagesListClient({ tenantId }: { tenantId: string }) {
       }
 
       for (const m of outbound ?? []) {
+        // Inbox previews are built from inbound texts and messages that were
+        // actually sent: a failed / queued / pending-verification system SMS
+        // must not make a thread look like we replied (QA-1 F-03).
+        if (!isOutboundDelivered(m.status)) continue;
         const existing = byPhone.get(m.recipient);
         const { text } = describeOutboundMessage(
           m.template_key,
           (m.payload ?? {}) as Record<string, unknown>,
+          m.status,
         );
         if (!existing) {
           byPhone.set(m.recipient, {

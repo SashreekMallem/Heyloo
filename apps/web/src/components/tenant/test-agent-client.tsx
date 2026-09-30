@@ -18,6 +18,7 @@ import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { scenariosFor } from "@/components/tenant/test-agent-scenarios";
 import { Link } from "@/i18n/navigation";
+import { normalizeTranscript } from "@/lib/calls/transcript";
 import { saveErrorMessage, sendJson } from "@/lib/settings/client";
 import { isBlankOrValidPhone, PHONE_ERROR_MESSAGE } from "@/lib/settings/phone";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
@@ -30,7 +31,8 @@ interface LatestTestCall {
   call_summary: string | null;
   message_text: string | null;
   structured_booking_payload: Record<string, unknown> | null;
-  transcript: Array<{ speaker: string; text: string; ts: number }> | null;
+  /** Stored provider-shaped or canonical turns — always read through `normalizeTranscript`. */
+  transcript: unknown;
   duration_seconds: number | null;
 }
 
@@ -329,8 +331,8 @@ export function TestAgentClient({
                 </pre>
               </div>
             )}
-            {latestCall.transcript && latestCall.transcript.length > 0 && (
-              <TranscriptViewer turns={latestCall.transcript} />
+            {normalizeTranscript(latestCall.transcript).length > 0 && (
+              <TranscriptViewer turns={normalizeTranscript(latestCall.transcript)} />
             )}
           </CardContent>
         </Card>

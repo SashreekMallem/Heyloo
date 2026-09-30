@@ -1,10 +1,11 @@
 "use client";
 
-import { messageReplySchema } from "@heyloo/canonical-types";
+import { E164_PATTERN, messageReplySchema } from "@heyloo/canonical-types";
 import {
   Badge,
   Button,
   DataState,
+  EmptyState,
   Form,
   FormControl,
   FormField,
@@ -21,25 +22,34 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
-import { describeOutboundMessage } from "@/lib/messages/outbound-preview";
+import {
+  describeOutboundMessage,
+  isConversationTemplate,
+  undeliveredReason,
+} from "@/lib/messages/outbound-preview";
 import { parseThreadKey, statusLabel } from "@/lib/messages/text-conversations";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 
 const replyFormSchema = z.object({ body: messageReplySchema.shape.body });
 type ReplyFormValues = z.infer<typeof replyFormSchema>;
 
-type Author = "customer" | "ai" | "human";
+/** `system` = an automated notice (booking confirmation, cancellation, ...) rendered as a muted event, never as a chat bubble. */
+type Author = "customer" | "ai" | "human" | "system";
 
 interface ThreadMessage {
   id: string;
   author: Author;
   text: string;
   createdAt: string;
+  /** Delivery caveat for an owner reply that did not go out ("not sent - ..."). */
+  note?: string | null;
 }
 
 interface ThreadData {
   messages: ThreadMessage[];
   customerName: string | null;
+  /** A `customers` row exists for this number in the tenant. */
+  customerFound: boolean;
   smsOptOut: boolean;
   /** Present whenever `text_conversations` has a row for this thread
    * (BACKEND_SPEC.md §13.1) — every SMS conversation the text-agent engine
@@ -65,6 +75,9 @@ interface ThreadData {
 export function MessageThreadClient({ tenantId, phone }: { tenantId: string; phone: string }) {
   const queryClient = useQueryClient();
   const threadKey = parseThreadKey(phone);
+  // A phone thread whose URL segment is not an E.164 number ("/messages/abc")
+  // has nothing to load and must never offer a composer (QA-1 F-22).
+  const validThread = threadKey.kind === "web_chat" || E164_PATTERN.test(threadKey.phone);
 
   const query = useTenantQuery(
     tenantId,
@@ -102,6 +115,7 @@ export function MessageThreadClient({ tenantId, phone }: { tenantId: string; pho
       ]);
 
       let customerName = customerByPhone.data?.name ?? null;
+      const customerFound = !!customerByPhone.data;
       const smsOptOut = customerByPhone.data?.sms_opt_out ?? false;
 
       if (conversationRow) {
@@ -123,6 +137,7 @@ export function MessageThreadClient({ tenantId, phone }: { tenantId: string; pho
 
         return {
           customerName,
+          customerFound,
           smsOptOut,
           conversation: {
             id: conversationRow.id,
@@ -145,7 +160,13 @@ export function MessageThreadClient({ tenantId, phone }: { tenantId: string; pho
         // the only place a web-chat turn is stored at all) — reaching here
         // means the id in the URL doesn't resolve to one, e.g. a stale
         // link. Surface as empty rather than guessing.
-        return { customerName: null, smsOptOut: false, conversation: null, messages: [] };
+        return {
+          customerName: null,
+          customerFound: false,
+          smsOptOut: false,
+          conversation: null,
+          messages: [],
+        };
       }
 
       const [{ data: inbound }, { data: outbound }] = await Promise.all([
@@ -157,7 +178,7 @@ export function MessageThreadClient({ tenantId, phone }: { tenantId: string; pho
           .order("created_at", { ascending: true }),
         supabaseBrowserClient
           .from("messages_outbound")
-          .select("id, template_key, payload, created_at")
+          .select("id, template_key, payload, status, created_at")
           .eq("tenant_id", tenantId)
           .eq("channel", "sms")
           .eq("recipient", threadKey.phone)
@@ -171,25 +192,38 @@ export function MessageThreadClient({ tenantId, phone }: { tenantId: string; pho
           text: m.body,
           createdAt: m.created_at,
         })),
-        ...(outbound ?? []).map((m) => {
+        ...(outbound ?? []).map((m): ThreadMessage => {
           const { text } = describeOutboundMessage(
             m.template_key,
             (m.payload ?? {}) as Record<string, unknown>,
+            m.status,
           );
-          // Legacy view has no way to tell an AI reply from a human one —
-          // shown as "human" (the pre-existing owner-reply bubble style)
-          // rather than guessing.
-          return { id: m.id, author: "human" as const, text, createdAt: m.created_at };
+          // Only real conversation content (an owner's typed reply, a caller's
+          // taken message) is a chat bubble; the legacy view has no way to tell
+          // an AI reply from a human one, so those stay "human". Automated
+          // templates are muted system events whose wording reflects the real
+          // delivery status (QA-1 F-03) — never a "YOU" bubble saying "sent"
+          // for a message that failed or was never queued to a provider.
+          if (isConversationTemplate(m.template_key)) {
+            return {
+              id: m.id,
+              author: "human",
+              text,
+              createdAt: m.created_at,
+              note: undeliveredReason(m.status),
+            };
+          }
+          return { id: m.id, author: "system", text, createdAt: m.created_at };
         }),
       ].sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
 
-      return { messages, customerName, smsOptOut, conversation: null };
+      return { messages, customerName, customerFound, smsOptOut, conversation: null };
     },
     // No broadcast trigger on messages_inbound/outbound yet
     // (docs/audit/FIX_REQUESTS.md); text_conversations/text_conversation_
     // messages DO broadcast (fn_broadcast_tenant_update), but polling
     // covers both uniformly without a second live-update code path here.
-    { refetchInterval: 15000 },
+    { refetchInterval: 15000, enabled: validThread },
   );
 
   const form = useForm<ReplyFormValues>({
@@ -214,27 +248,12 @@ export function MessageThreadClient({ tenantId, phone }: { tenantId: string; pho
   async function onSubmit(values: ReplyFormValues) {
     const conversation = query.data?.conversation;
 
-    if (conversation) {
-      const { error } = await supabaseBrowserClient.from("text_conversation_messages").insert({
-        tenant_id: tenantId,
-        conversation_id: conversation.id,
-        author: "human",
-        body: values.body,
-      });
-      if (error) {
-        toast.error("Couldn't send — please try again.");
-        return;
-      }
-      if (conversation.channel === "web_chat") {
-        toast.success("Saved — the visitor will see this the next time they message you.");
-      }
-    }
-
-    // SMS delivery: unchanged path, and still the ONLY way a reply reaches
-    // an SMS customer (web-chat has no live-push mechanism yet — the
-    // insert above is transcript-only for that channel, per the toast
-    // above).
     if (threadKey.kind === "phone") {
+      // SMS delivery is the ONLY way a reply reaches an SMS customer, so it
+      // goes first: a transcript row is written only once the send API has
+      // accepted (queued) the message. Writing the row first left a phantom
+      // "You" bubble behind — and a duplicate on retry — whenever the send
+      // failed (QA-1 F-11).
       const res = await fetch(`/api/tenant/messages/${encodeURIComponent(threadKey.phone)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -249,7 +268,38 @@ export function MessageThreadClient({ tenantId, phone }: { tenantId: string; pho
         );
         return;
       }
-      if (!conversation) toast.success("Message queued");
+      if (conversation) {
+        const { error } = await supabaseBrowserClient.from("text_conversation_messages").insert({
+          tenant_id: tenantId,
+          conversation_id: conversation.id,
+          author: "human",
+          body: values.body,
+        });
+        if (error) toast.error("Sent, but it couldn't be added to the transcript.");
+        // The first owner reply pauses the AI for this thread (the engine only
+        // stands down when status === 'human'); "Hand back to AI" reverses it.
+        if (conversation.status === "open") {
+          await supabaseBrowserClient
+            .from("text_conversations")
+            .update({ status: "human" })
+            .eq("id", conversation.id);
+        }
+      } else {
+        toast.success("Message queued");
+      }
+    } else if (conversation) {
+      // Web chat has no live-push mechanism yet: the transcript row IS the reply.
+      const { error } = await supabaseBrowserClient.from("text_conversation_messages").insert({
+        tenant_id: tenantId,
+        conversation_id: conversation.id,
+        author: "human",
+        body: values.body,
+      });
+      if (error) {
+        toast.error("Couldn't send — please try again.");
+        return;
+      }
+      toast.success("Saved — the visitor will see this the next time they message you.");
     }
 
     form.reset({ body: "" });
@@ -264,11 +314,25 @@ export function MessageThreadClient({ tenantId, phone }: { tenantId: string; pho
     return "bg-primary text-primary-foreground";
   }
 
+  if (!validThread) {
+    return (
+      <EmptyState
+        title="That isn't a valid phone number"
+        description="Open a conversation from the Messages list or a customer's page."
+      />
+    );
+  }
+
   return (
     <div className="flex h-[calc(100vh-8rem)] flex-col gap-4">
       <DataState
         query={query}
-        empty={{ title: "No messages with this number yet" }}
+        empty={{
+          title: "No messages with this number yet",
+          // No conversation, no history and no matching customer: nothing to show
+          // and nobody to reply to — no composer (QA-1 F-22).
+          isEmpty: (d) => !d.conversation && d.messages.length === 0 && !d.customerFound,
+        }}
         render={(data) => (
           <>
             <PageHeader
@@ -310,34 +374,45 @@ export function MessageThreadClient({ tenantId, phone }: { tenantId: string; pho
               }
             />
             <div className="flex-1 space-y-2 overflow-y-auto rounded-md border border-border p-3">
-              {data.messages.map((m) => (
-                <div
-                  key={m.id}
-                  className={m.author === "customer" ? "flex justify-start" : "flex justify-end"}
-                >
-                  <div
-                    className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${authorBubbleClass(m.author)}`}
+              {data.messages.map((m) =>
+                m.author === "system" ? (
+                  <p
+                    key={m.id}
+                    data-testid="system-event"
+                    className="text-center text-xs text-muted-foreground"
                   >
-                    {m.author !== "customer" && (
-                      <p className="mb-0.5 flex items-center gap-1 text-[10px] font-medium uppercase opacity-80">
-                        {m.author === "ai" ? (
-                          <>
-                            <Bot className="size-3" /> AI
-                          </>
-                        ) : (
-                          <>
-                            <User className="size-3" /> You
-                          </>
-                        )}
+                    {m.text} · {new Date(m.createdAt).toLocaleString()}
+                  </p>
+                ) : (
+                  <div
+                    key={m.id}
+                    className={m.author === "customer" ? "flex justify-start" : "flex justify-end"}
+                  >
+                    <div
+                      className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${authorBubbleClass(m.author)}`}
+                    >
+                      {m.author !== "customer" && (
+                        <p className="mb-0.5 flex items-center gap-1 text-[10px] font-medium uppercase opacity-80">
+                          {m.author === "ai" ? (
+                            <>
+                              <Bot className="size-3" /> AI
+                            </>
+                          ) : (
+                            <>
+                              <User className="size-3" /> You
+                            </>
+                          )}
+                        </p>
+                      )}
+                      <p>{m.text}</p>
+                      {m.note && <p className="mt-1 text-[10px] font-medium uppercase">{m.note}</p>}
+                      <p className="mt-1 text-[10px] opacity-70">
+                        {new Date(m.createdAt).toLocaleString()}
                       </p>
-                    )}
-                    <p>{m.text}</p>
-                    <p className="mt-1 text-[10px] opacity-70">
-                      {new Date(m.createdAt).toLocaleString()}
-                    </p>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ),
+              )}
             </div>
             {data.smsOptOut && threadKey.kind === "phone" ? (
               <p className="text-sm text-muted-foreground">

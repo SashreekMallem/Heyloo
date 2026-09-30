@@ -9,6 +9,11 @@ vi.mock("@/i18n/navigation", () => ({
   ),
 }));
 
+let attributionLive = true;
+vi.mock("@/lib/referrals/attribution", () => ({
+  isReferralAttributionLive: () => attributionLive,
+}));
+
 import ReferPage from "./page";
 
 function renderPage() {
@@ -25,6 +30,18 @@ function renderPage() {
 describe("ReferPage", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    attributionLive = true;
+  });
+
+  it("promises nothing while referral attribution is not live (QA-1 F-24): no link, no fetch, coming-soon copy", () => {
+    attributionLive = false;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+    expect(screen.getByText("Referral rewards are coming soon")).toBeInTheDocument();
+    expect(screen.queryByText("Your referral link")).not.toBeInTheDocument();
+    expect(screen.queryByText(/earn a referral bonus/i)).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("shows a loading state — never the real link/funnel — before the fetch resolves", () => {
@@ -49,8 +66,9 @@ describe("ReferPage", () => {
     );
     renderPage();
     expect(await screen.findByText(/\/signup\?ref=abc123/)).toBeInTheDocument();
-    // Every funnel tile shows a real number, never blank space.
-    expect(screen.getByText("Clicks")).toBeInTheDocument();
+    // Every funnel tile shows a real number, never blank space — and there is no
+    // hard-coded "Clicks 0" tile (nothing tracks clicks).
+    expect(screen.queryByText("Clicks")).not.toBeInTheDocument();
     expect(screen.getAllByText("0").length).toBeGreaterThan(0);
     expect(screen.getByText("2")).toBeInTheDocument();
   });

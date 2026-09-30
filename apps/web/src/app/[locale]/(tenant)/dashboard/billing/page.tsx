@@ -16,7 +16,7 @@ import {
 } from "@heyloo/ui";
 import { useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { toast } from "sonner";
+import { useState } from "react";
 import type { TenantPlanResponse } from "@/app/api/platform-settings/tenant-plan/route";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
@@ -47,8 +47,24 @@ const columns: ColumnDef<Invoice, unknown>[] = [
   },
 ];
 
+const SUPPORT_MAILTO = "mailto:support@heyloo.com?subject=Billing%20help";
+
+/** What to tell the owner when the billing portal could not be opened (edge-function error codes). */
+export function portalErrorMessage(code: string | undefined): string {
+  switch (code) {
+    case "not_tenant_owner":
+      return "Only the account owner can change the payment method.";
+    case "no_billing_account":
+      return "There's no billing account yet — finish checkout first.";
+    default:
+      return "The billing portal is temporarily unavailable.";
+  }
+}
+
 export default function BillingPage() {
   const tenantId = useCurrentTenantId();
+  const [portalIssue, setPortalIssue] = useState<string | null>(null);
+  const [openingPortal, setOpeningPortal] = useState(false);
 
   const usageQuery = useQuery({
     queryKey: ["tenant", tenantId, "usage_daily", "billing"],
@@ -110,10 +126,21 @@ export default function BillingPage() {
   });
 
   async function openPortal() {
-    const res = await fetch("/api/billing/portal", { method: "POST" });
-    const body = (await res.json()) as { url?: string };
-    if (res.ok && body.url) window.location.href = body.url;
-    else toast.error("Billing portal isn't available yet — please contact support.");
+    setPortalIssue(null);
+    setOpeningPortal(true);
+    try {
+      const res = await fetch("/api/billing/portal", { method: "POST" });
+      const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      if (res.ok && body.url) {
+        window.location.href = body.url;
+        return;
+      }
+      setPortalIssue(portalErrorMessage(body.error));
+    } catch {
+      setPortalIssue(portalErrorMessage(undefined));
+    } finally {
+      setOpeningPortal(false);
+    }
   }
 
   return (
@@ -160,9 +187,18 @@ export default function BillingPage() {
                   </span>
                 </div>
               </div>
-              <Button variant="outline" onClick={openPortal}>
+              <Button variant="outline" onClick={openPortal} disabled={openingPortal}>
                 Manage payment method
               </Button>
+              {portalIssue && (
+                <p role="alert" className="text-sm text-destructive">
+                  {portalIssue}{" "}
+                  <a href={SUPPORT_MAILTO} className="underline underline-offset-2">
+                    Email support
+                  </a>{" "}
+                  and we&apos;ll update your payment method for you.
+                </p>
+              )}
             </CardContent>
           </Card>
         )}

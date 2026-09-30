@@ -20,6 +20,7 @@ function chain(result: unknown) {
   return obj;
 }
 
+let latestCallData: unknown = null;
 const startCallMock = vi.fn(async () => undefined);
 const stopCallMock = vi.fn();
 const retellOnHandlers: Record<string, (...args: unknown[]) => void> = {};
@@ -41,7 +42,7 @@ vi.mock("@/lib/supabase/browser", () => ({
   supabaseBrowserClient: {
     from: vi.fn((table: string) => {
       if (table === "tenants") return chain({ data: { owner_test_phone: null }, error: null });
-      if (table === "call_logs") return chain({ data: null, error: null });
+      if (table === "call_logs") return chain({ data: latestCallData, error: null });
       return chain({ data: null, error: null });
     }),
   },
@@ -68,6 +69,7 @@ function renderClient(overrides: Partial<Parameters<typeof TestAgentClient>[0]> 
 
 describe("TestAgentClient", () => {
   afterEach(() => {
+    latestCallData = null;
     vi.unstubAllGlobals();
     startCallMock.mockClear();
     stopCallMock.mockClear();
@@ -122,5 +124,28 @@ describe("TestAgentClient", () => {
     renderClient();
     expect(await screen.findByText("Book a cleaning")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /turn on forwarding/i })).not.toBeInTheDocument();
+  });
+
+  it("renders a real provider-shaped transcript (role/content/words) with speakers and timestamps, not NaN:NaN (QA-1 F-3 / MAP-02)", async () => {
+    latestCallData = {
+      id: "call-1",
+      started_at: "2026-09-29T15:30:00Z",
+      ended_at: "2026-09-29T15:31:00Z",
+      classification: "new_booking",
+      call_summary: null,
+      message_text: null,
+      structured_booking_payload: null,
+      duration_seconds: 60,
+      transcript: [
+        { role: "agent", content: "Thanks for calling!", words: [{ word: "Thanks", start: 0.5 }] },
+        { role: "user", content: "Can I book a cleaning?", words: [{ word: "Can", start: 4 }] },
+      ],
+    };
+    renderClient();
+    expect(await screen.findByText("Thanks for calling!")).toBeInTheDocument();
+    expect(screen.getByText("Can I book a cleaning?")).toBeInTheDocument();
+    expect(screen.getByText("AI assistant · 0:00")).toBeInTheDocument();
+    expect(screen.getByText("Caller · 0:04")).toBeInTheDocument();
+    expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
   });
 });

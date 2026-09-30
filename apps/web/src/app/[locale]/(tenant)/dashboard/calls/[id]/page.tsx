@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { CallDetailClient, type CallDetailData } from "@/components/tenant/call-detail-client";
 import { requireTenantSession } from "@/lib/auth/require-tenant-session";
+import { normalizeTranscript } from "@/lib/calls/transcript";
 
 export const metadata: Metadata = { title: "Call detail — Heyloo" };
 
@@ -12,13 +13,23 @@ export default async function CallDetailPage({ params }: { params: Promise<{ id:
   const { data: call } = await supabase
     .from("call_logs")
     .select(
-      "id, classification, transcript, state_trace, recording_url, stereo_recording_url, duration_seconds, ended_at, structured_booking_payload, urgency_flag, call_summary, sentiment, follow_up_needed, legal_advice_given, extracted_entities, message_text, outcome",
+      "id, caller_number, started_at, classification, transcript, state_trace, recording_url, stereo_recording_url, duration_seconds, ended_at, structured_booking_payload, urgency_flag, call_summary, sentiment, follow_up_needed, legal_advice_given, extracted_entities, message_text, outcome",
     )
     .eq("tenant_id", tenant.id)
     .eq("id", id)
     .maybeSingle();
 
   if (!call) notFound();
+
+  // Who called: match the caller's number to one of this tenant's customers.
+  const { data: customer } = call.caller_number
+    ? await supabase
+        .from("customers")
+        .select("id, name")
+        .eq("tenant_id", tenant.id)
+        .eq("phone_e164", call.caller_number)
+        .maybeSingle()
+    : { data: null };
 
   const recordingStatus: CallDetailData["recordingStatus"] = call.recording_url
     ? "ready"
@@ -30,11 +41,13 @@ export default async function CallDetailPage({ params }: { params: Promise<{ id:
   const data: CallDetailData = {
     id: call.id,
     classification: call.classification,
-    transcript: (call.transcript ?? []).map((t) => ({
-      speaker: t.speaker,
-      text: t.text,
-      ts: t.ts,
-    })),
+    callerNumber: call.caller_number,
+    startedAt: call.started_at,
+    customer: customer ? { id: customer.id, name: customer.name } : null,
+    // `call_logs.transcript` holds the provider's `{ role, content, words }` turns
+    // for real calls (and canonical `{ speaker, text, ts }` elsewhere) — normalise
+    // both so no row renders blank / "NaN:NaN" (QA-1 F-3 / MAP-02).
+    transcript: normalizeTranscript(call.transcript),
     stateTrace: (call.state_trace ?? []).map((s) => ({ state: s.state, enteredAt: s.enteredAt })),
     // DASH-1 (docs/BUILD_NOTES.md): the raw `recording_url`/
     // `stereo_recording_url` columns are object paths in the PRIVATE

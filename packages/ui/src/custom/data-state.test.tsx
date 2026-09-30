@@ -29,7 +29,9 @@ describe("DataState", () => {
         render={() => <p>content</p>}
       />,
     );
-    expect(screen.getByText("boom")).toBeInTheDocument();
+    // The raw error text is never shown to the owner (QA-1 F-23).
+    expect(screen.queryByText("boom")).not.toBeInTheDocument();
+    expect(screen.getByText("Something went wrong loading this.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
 

@@ -15,12 +15,18 @@ import {
   TopBar,
 } from "@heyloo/ui";
 import { NotificationCenter } from "@heyloo/ui/notification";
+import { useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
-import { Link, usePathname } from "@/i18n/navigation";
-import { useTenantNotifications } from "@/lib/hooks/use-tenant-notifications";
+import { Link, usePathname, useRouter } from "@/i18n/navigation";
+import {
+  markNotificationsSeen,
+  notificationsQueryKey,
+  useTenantNotifications,
+} from "@/lib/hooks/use-tenant-notifications";
 import { useImpersonationBanner } from "@/lib/impersonation/use-impersonation-banner";
 import { useTenantRealtimeStatus } from "@/lib/realtime/tenant-realtime-provider";
+import { isReferralAttributionLive } from "@/lib/referrals/attribution";
 import { TenantIdProvider } from "@/lib/tenant/tenant-context";
 
 const OPERATE_SECTION: NavSection = {
@@ -55,7 +61,11 @@ const GROW_SECTION: NavSection = {
   label: "Account",
   items: [
     { label: "Billing", href: "/dashboard/billing", icon: NAV_ICONS.billing },
-    { label: "Refer & earn", href: "/dashboard/refer", icon: NAV_ICONS.refer },
+    // Hidden until referral attribution works end to end (QA-1 F-24) — see
+    // lib/referrals/attribution.ts.
+    ...(isReferralAttributionLive()
+      ? [{ label: "Refer & earn", href: "/dashboard/refer", icon: NAV_ICONS.refer }]
+      : []),
     { label: "Support", href: "/dashboard/support", icon: NAV_ICONS.support },
   ],
 };
@@ -73,6 +83,8 @@ const SECTIONS: NavSection[] = [OPERATE_SECTION, CONFIGURE_SECTION, GROW_SECTION
 function TopBarContent({ tenantId, tenantName }: { tenantId: string; tenantName: string }) {
   const status = useTenantRealtimeStatus();
   const { data: notifications } = useTenantNotifications(tenantId);
+  const router = useRouter();
+  const queryClient = useQueryClient();
   const SettingsIcon = NAV_ICONS.settings;
 
   return (
@@ -82,7 +94,19 @@ function TopBarContent({ tenantId, tenantName }: { tenantId: string; tenantName:
       <NotificationCenter
         items={notifications?.items ?? []}
         unreadCount={notifications?.unreadCount ?? 0}
-        onOpen={() => {}}
+        // Clicking an item opens the booking / call / thread it describes (QA-1 F-04).
+        onOpen={(item) => {
+          if (item.href) router.push(item.href);
+        }}
+        // Opening the bell marks everything read (writes the member's own
+        // last_seen_notifications_at), so the badge clears and stays cleared.
+        onOpenChange={(open) => {
+          if (!open || !notifications?.unreadCount) return;
+          void markNotificationsSeen(tenantId).then((ok) => {
+            if (ok)
+              void queryClient.invalidateQueries({ queryKey: notificationsQueryKey(tenantId) });
+          });
+        }}
       />
       <ThemeToggle />
       <Link

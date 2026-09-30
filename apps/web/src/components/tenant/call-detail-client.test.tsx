@@ -21,10 +21,18 @@ vi.mock("@/i18n/navigation", () => ({
   ),
 }));
 
-import { CallDetailClient, type CallDetailData } from "./call-detail-client";
+import {
+  CallDetailClient,
+  type CallDetailData,
+  keyValueEntries,
+  noRecordingMessage,
+} from "./call-detail-client";
 
 const BASE: CallDetailData = {
   id: "call-1",
+  callerNumber: "+15125551000",
+  startedAt: "2026-09-29T15:30:00Z",
+  customer: null,
   classification: "new_booking",
   transcript: [],
   stateTrace: [],
@@ -52,7 +60,7 @@ describe("CallDetailClient — recording (DASH-1)", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     render(<CallDetailClient call={{ ...BASE, recordingStatus: "none" }} />);
-    expect(await screen.findByText(/No recording for this call/i)).toBeInTheDocument();
+    expect(await screen.findByText(/No recording/i)).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -157,5 +165,103 @@ describe("CallDetailClient — custom question answers (INTAKE-Q-1)", () => {
     );
     expect(screen.getByText("Answers to your questions")).toBeInTheDocument();
     expect(screen.queryByText("Captured on the call")).not.toBeInTheDocument();
+  });
+});
+
+describe("CallDetailClient — header (QA-1 F-06)", () => {
+  it("identifies the caller by number with date and duration when there is no customer record", () => {
+    render(<CallDetailClient call={{ ...BASE, durationSeconds: 62 }} />);
+    expect(screen.getByRole("heading", { name: "(512) 555-1000" })).toBeInTheDocument();
+    expect(screen.queryByText("Call detail")).not.toBeInTheDocument();
+    expect(screen.getByText("1m 2s")).toBeInTheDocument();
+    expect(
+      screen.getByText(new Date(BASE.startedAt as string).toLocaleString()),
+    ).toBeInTheDocument();
+  });
+
+  it("uses the customer's name as the title, shows the number and links to the customer", () => {
+    render(<CallDetailClient call={{ ...BASE, customer: { id: "cust-9", name: "Jamie Cruz" } }} />);
+    expect(screen.getByRole("heading", { name: "Jamie Cruz" })).toBeInTheDocument();
+    expect(screen.getByText("(512) 555-1000")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View customer" })).toHaveAttribute(
+      "href",
+      "/dashboard/customers/cust-9",
+    );
+  });
+
+  it("falls back to 'Unknown caller' with no number", () => {
+    render(<CallDetailClient call={{ ...BASE, callerNumber: null, startedAt: null }} />);
+    expect(screen.getByRole("heading", { name: "Unknown caller" })).toBeInTheDocument();
+    expect(screen.getByText("Call in progress")).toBeInTheDocument();
+  });
+
+  it("renders normalised transcript speakers as 'AI assistant' / 'Caller' with real timestamps", () => {
+    render(
+      <CallDetailClient
+        call={{
+          ...BASE,
+          transcript: [
+            { speaker: "AI assistant", text: "Hello, thanks for calling.", ts: 0.5 },
+            { speaker: "Caller", text: "I need an appointment.", ts: 75 },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("AI assistant · 0:00")).toBeInTheDocument();
+    expect(screen.getByText("Caller · 1:15")).toBeInTheDocument();
+    expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
+  });
+});
+
+describe("CallDetailClient — payload rendering (QA-1 F-18)", () => {
+  it("flattens nested objects, hides id fields and never prints [object Object]", () => {
+    expect(
+      keyValueEntries({
+        booking_id: "465a5f63-aaaa-bbbb-cccc-1234567890ab",
+        reason: "Consult",
+        nested: { inner_value: "x", deeper: { leaf: 3 }, question_id: "q1" },
+        tags: ["a", "b"],
+        urgent: true,
+        empty: "",
+      }),
+    ).toEqual([
+      ["reason", "Consult"],
+      ["nested inner value", "x"],
+      ["nested deeper leaf", "3"],
+      ["tags", "a, b"],
+      ["urgent", "Yes"],
+    ]);
+  });
+
+  it("does not show the raw booking id and deep-links 'View booking' to that booking", () => {
+    render(
+      <CallDetailClient
+        call={{
+          ...BASE,
+          linkedBookingId: "465a5f63-1111-2222-3333-444455556666",
+          structuredPayload: {
+            booking_id: "465a5f63-1111-2222-3333-444455556666",
+            reason: "Consult",
+            nested: { a: "b" },
+          },
+        }}
+      />,
+    );
+    expect(screen.queryByText(/465a5f63/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument();
+    expect(screen.getByText("nested a")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View booking" })).toHaveAttribute(
+      "href",
+      "/dashboard/bookings?booking=465a5f63-1111-2222-3333-444455556666",
+    );
+  });
+
+  it("words the no-recording message by reason instead of claiming 'very short/spam calls aren't archived'", () => {
+    expect(noRecordingMessage(4)).toMatch(/ended before there was anything to record/);
+    expect(noRecordingMessage(null)).toMatch(/ended before there was anything to record/);
+    expect(noRecordingMessage(62)).not.toMatch(/short|spam/i);
+    expect(noRecordingMessage(62)).toMatch(/contact support/);
+    render(<CallDetailClient call={{ ...BASE, durationSeconds: 62, recordingStatus: "none" }} />);
+    expect(screen.queryByText(/very short\/spam/)).not.toBeInTheDocument();
   });
 });

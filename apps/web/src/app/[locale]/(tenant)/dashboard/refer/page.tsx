@@ -8,12 +8,14 @@ import {
   CardHeader,
   CardTitle,
   DataState,
+  EmptyState,
   PageHeader,
 } from "@heyloo/ui";
 import { FunnelChart } from "@heyloo/ui/charts";
 import { useQuery } from "@tanstack/react-query";
 import { Copy } from "lucide-react";
 import { toast } from "sonner";
+import { isReferralAttributionLive } from "@/lib/referrals/attribution";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
 interface ReferralFunnel {
@@ -24,6 +26,7 @@ interface ReferralFunnel {
 
 export default function ReferPage() {
   const tenantId = useCurrentTenantId();
+  const attributionLive = isReferralAttributionLive();
 
   const query = useQuery({
     queryKey: ["tenant", tenantId, "referral_links"],
@@ -45,11 +48,25 @@ export default function ReferPage() {
         approaching_w9_threshold: body.approaching_w9_threshold ?? false,
       };
     },
-    enabled: !!tenantId,
+    enabled: !!tenantId && attributionLive,
   });
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const link = query.data?.code ? `${origin}/signup?ref=${query.data.code}` : "";
+
+  if (!attributionLive) {
+    // No link is generated (and nothing fetched) while `?ref=` attribution does
+    // not exist: a shared link would earn the owner nothing (QA-1 F-24).
+    return (
+      <div className="space-y-6">
+        <PageHeader title="Refer & earn" />
+        <EmptyState
+          title="Referral rewards are coming soon"
+          description="We're finishing the referral program. Once it's live you'll find your personal link here."
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -109,11 +126,12 @@ export default function ReferPage() {
                 </p>
                 {/* Explicit numeric labels alongside the chart — the bar chart
                    alone can look blank at all-zero values, so the funnel
-                   tiles must always show a real number. */}
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                   tiles must always show a real number. There is no click
+                   tracking, so there is no "Clicks" stage (it used to be a
+                   hard-coded 0). */}
+                <div className="grid grid-cols-3 gap-3">
                   {(
                     [
-                      { label: "Clicks", count: 0 },
                       { label: "Signups", count: data.funnel.signups },
                       { label: "Qualified", count: data.funnel.qualified },
                       { label: "Paid", count: data.funnel.paid },
@@ -130,7 +148,6 @@ export default function ReferPage() {
                 </div>
                 <FunnelChart
                   stages={[
-                    { label: "Clicks", count: 0 },
                     { label: "Signups", count: data.funnel.signups },
                     { label: "Qualified", count: data.funnel.qualified },
                     { label: "Paid", count: data.funnel.paid },

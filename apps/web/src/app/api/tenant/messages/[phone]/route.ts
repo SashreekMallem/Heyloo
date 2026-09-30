@@ -1,4 +1,4 @@
-import { messageReplySchema } from "@heyloo/canonical-types";
+import { messageReplySchema, normalizeToE164 } from "@heyloo/canonical-types";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { claimsFromSupabaseClient } from "@/lib/auth/claims";
@@ -8,6 +8,18 @@ import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-ro
 export const runtime = "nodejs";
 
 const replyBodySchema = z.object({ body: messageReplySchema.shape.body });
+
+/** Per-tenant sliding window for owner replies (DB-backed: counts recent `owner_reply` rows). */
+const OWNER_REPLY_WINDOW_MS = 10 * 60 * 1000;
+const OWNER_REPLY_MAX_PER_WINDOW = 30;
+
+function decodeSegment(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
 
 /**
  * Reply into a customer SMS thread (MASTER_SPEC.md §3.3/§3.10). Written via
@@ -25,7 +37,7 @@ const replyBodySchema = z.object({ body: messageReplySchema.shape.body });
  * at `status: 'queued'` forever and never actually send.
  */
 export async function POST(request: Request, { params }: { params: Promise<{ phone: string }> }) {
-  const { phone } = await params;
+  const { phone: rawPhone } = await params;
   const supabase = await createSupabaseServerComponentClient();
   const {
     data: { user },
@@ -48,6 +60,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ pho
   const parsed = replyBodySchema.safeParse(json);
   if (!parsed.success) return NextResponse.json({ error: "invalid_request" }, { status: 422 });
 
+  // CLAUDE.md Rule 2: phones are normalized to E.164 at every boundary — the URL
+  // segment is untrusted input, never stored as `recipient` verbatim (QA-1 SEC-10/F-22).
+  const phone = normalizeToE164(decodeSegment(rawPhone));
+  if (!phone) return NextResponse.json({ error: "invalid_phone" }, { status: 422 });
+
   const service = createSupabaseServiceRoleServerClient();
   const { data: customer } = await service
     .from("customers")
@@ -57,6 +74,40 @@ export async function POST(request: Request, { params }: { params: Promise<{ pho
     .maybeSingle();
   if (customer?.sms_opt_out) {
     return NextResponse.json({ error: "opted_out" }, { status: 422 });
+  }
+
+  // The number must belong to a customer or an existing thread of THIS tenant:
+  // a signed-in member cannot use the portal to text arbitrary numbers.
+  if (!customer) {
+    const [{ data: conversation }, { data: inbound }] = await Promise.all([
+      service
+        .from("text_conversations")
+        .select("id")
+        .eq("tenant_id", claims.tenant_id)
+        .eq("phone_e164", phone)
+        .limit(1)
+        .maybeSingle(),
+      service
+        .from("messages_inbound")
+        .select("id")
+        .eq("tenant_id", claims.tenant_id)
+        .eq("from_e164", phone)
+        .limit(1)
+        .maybeSingle(),
+    ]);
+    if (!conversation && !inbound) {
+      return NextResponse.json({ error: "unknown_recipient" }, { status: 404 });
+    }
+  }
+
+  const { count: recentReplies } = await service
+    .from("messages_outbound")
+    .select("id", { count: "exact", head: true })
+    .eq("tenant_id", claims.tenant_id)
+    .eq("template_key", "owner_reply")
+    .gte("created_at", new Date(Date.now() - OWNER_REPLY_WINDOW_MS).toISOString());
+  if ((recentReplies ?? 0) >= OWNER_REPLY_MAX_PER_WINDOW) {
+    return NextResponse.json({ error: "rate_limited" }, { status: 429 });
   }
 
   const { data: message, error } = await service
@@ -76,7 +127,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ pho
     p_message_id: message.id,
   });
   if (enqueueError) {
+    // The row would sit at 'queued' forever and the client would record a "You"
+    // message that never goes out (QA-1 F-11): fail the row and the request.
     console.error("fn_enqueue_message_outbound failed", enqueueError);
+    await service
+      .from("messages_outbound")
+      .update({ status: "failed", error: "enqueue_failed" })
+      .eq("id", message.id)
+      .eq("tenant_id", claims.tenant_id);
+    return NextResponse.json({ error: "send_failed" }, { status: 502 });
   }
 
   return NextResponse.json({ ok: true, message_id: message.id });

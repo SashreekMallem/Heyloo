@@ -10,11 +10,13 @@ export const metadata: Metadata = { title: "Customer — Heyloo" };
 
 export default async function CustomerDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { supabase, tenant } = await requireTenantSession(`/dashboard/customers/${id}`);
+  const { supabase, tenant, user } = await requireTenantSession(`/dashboard/customers/${id}`);
 
   const { data: customer } = await supabase
     .from("customers")
-    .select("id, name, phone_e164, email, segment, lifetime_value_cents, metadata, consent")
+    .select(
+      "id, name, phone_e164, email, segment, lifetime_value_cents, metadata, consent, sms_opt_out",
+    )
     .eq("tenant_id", tenant.id)
     .eq("id", id)
     .maybeSingle();
@@ -50,6 +52,7 @@ export default async function CustomerDetailPage({ params }: { params: Promise<{
     lifetimeValueCents: customer.lifetime_value_cents,
     metadata: customer.metadata ?? {},
     consent: customer.consent ?? null,
+    smsOptOut: customer.sms_opt_out === true,
     calls: (calls ?? []).map((c) => ({
       id: c.id,
       startedAt: c.started_at,
@@ -58,5 +61,5 @@ export default async function CustomerDetailPage({ params }: { params: Promise<{
     bookings: (bookings ?? []).map((b) => ({ id: b.id, startAt: b.start_at, status: b.status })),
   };
 
-  return <CustomerDetailClient customer={data} />;
+  return <CustomerDetailClient customer={data} currentUserId={user.id} />;
 }

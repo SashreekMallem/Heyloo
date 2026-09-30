@@ -103,6 +103,14 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     .maybeSingle();
   if (fetchError || !booking) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
+  // Only a live booking can be confirmed / rescheduled / cancelled: resurrecting
+  // a completed, cancelled or no-show booking (or re-cancelling it and texting
+  // the customer again) is never intended, and the dashboard no longer offers
+  // those actions on such bookings (QA-1 F-07).
+  if (booking.status !== "scheduled" && booking.status !== "confirmed") {
+    return NextResponse.json({ error: "invalid_status", status: booking.status }, { status: 409 });
+  }
+
   const { data: tenant } = await supabase
     .from("tenants")
     .select("timezone")
@@ -177,6 +185,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     }
     const range = parseTstzrange(slot.slot_range);
     if (!range) return NextResponse.json({ error: "slot_not_found" }, { status: 422 });
+    // `fn_regenerate_availability_slots` keeps ended slots as history, so a past
+    // slot can still be `is_available` — never move a booking into the past.
+    if (Date.parse(range.start) <= Date.now()) {
+      return NextResponse.json({ error: "slot_in_past" }, { status: 422 });
+    }
 
     templateKey = "booking_confirmation";
     payload = { start_local: formatLocal(range.start, timeZone) };

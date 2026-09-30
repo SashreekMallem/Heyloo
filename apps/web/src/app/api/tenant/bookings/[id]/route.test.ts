@@ -55,6 +55,15 @@ vi.mock("@/lib/supabase/service-role", () => ({
 
 const { PATCH } = await import("./route");
 
+function slotRange(offsetMs: number) {
+  const start = new Date(Date.now() + offsetMs);
+  const end = new Date(start.getTime() + 30 * 60 * 1000);
+  const fmt = (d: Date) => `${d.toISOString().replace("T", " ").replace("Z", "+00")}`;
+  return `["${fmt(start)}","${fmt(end)}")`;
+}
+const FUTURE_SLOT = slotRange(48 * 60 * 60 * 1000);
+const PAST_SLOT = slotRange(-48 * 60 * 60 * 1000);
+
 function patchRequest(body: unknown) {
   return new Request("http://localhost/api/tenant/bookings/b1", {
     method: "PATCH",
@@ -106,7 +115,7 @@ describe("PATCH /api/tenant/bookings/[id]", () => {
         {
           data: {
             id: "s1",
-            slot_range: '["2026-09-08 09:00:00+00","2026-09-08 09:30:00+00")',
+            slot_range: FUTURE_SLOT,
             resource_id: "r1",
             is_available: true,
           },
@@ -149,7 +158,7 @@ describe("PATCH /api/tenant/bookings/[id]", () => {
         {
           data: {
             id: "s1",
-            slot_range: '["2026-09-08 09:00:00+00","2026-09-08 09:30:00+00")',
+            slot_range: FUTURE_SLOT,
             resource_id: "r1",
             is_available: true,
           },
@@ -193,4 +202,57 @@ describe("PATCH /api/tenant/bookings/[id]", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, sms_queued: true });
   });
+
+  it("refuses to reschedule into a slot that already ended, even if it is still marked available (QA-1 F-07)", async () => {
+    serverQueue = {
+      bookings: [
+        {
+          data: { id: "b1", customer_id: "c1", resource_id: "r1", status: "scheduled" },
+          error: null,
+        },
+      ],
+      tenants: [{ data: { timezone: "America/New_York" }, error: null }],
+      availability_slots: [
+        {
+          data: { id: "s1", slot_range: PAST_SLOT, resource_id: "r1", is_available: true },
+          error: null,
+        },
+      ],
+    };
+    serviceQueue = { bookings: [{ error: null }] };
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    const res = await PATCH(patchRequest({ action: "reschedule", new_slot_id: "s1" }), {
+      params: Promise.resolve({ id: "b1" }),
+    });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: "slot_in_past" });
+    // the update result was never consumed
+    expect(serviceQueue["bookings"]).toHaveLength(1);
+  });
+
+  it.each(["completed", "cancelled", "no_show", "rescheduled", "checked_in"])(
+    "409s an action on a %s booking (only scheduled/confirmed bookings are actionable) (QA-1 F-07)",
+    async (status) => {
+      serverQueue = {
+        bookings: [
+          { data: { id: "b1", customer_id: "c1", resource_id: "r1", status }, error: null },
+        ],
+      };
+      serviceQueue = { bookings: [{ error: null }] };
+      mockGetUser = async () => ({ data: { user: mockUser } });
+      for (const action of ["cancel", "confirm"]) {
+        serverQueue = {
+          bookings: [
+            { data: { id: "b1", customer_id: "c1", resource_id: "r1", status }, error: null },
+          ],
+        };
+        const res = await PATCH(patchRequest({ action }), {
+          params: Promise.resolve({ id: "b1" }),
+        });
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toBe("invalid_status");
+      }
+      expect(serviceQueue["bookings"]).toHaveLength(1);
+    },
+  );
 });

@@ -62,7 +62,9 @@ export function DataState<TData>({
         className={className}
         eventId={errorEventId}
         onRetry={query.refetch}
-        message={query.error instanceof Error ? query.error.message : undefined}
+        // Never surface the raw error text ("Unexpected end of JSON input",
+        // "failed to load team", a PostgREST message ...) to an owner: ErrorState's
+        // default copy is the friendly one (QA-1 F-23).
       />
     );
   }

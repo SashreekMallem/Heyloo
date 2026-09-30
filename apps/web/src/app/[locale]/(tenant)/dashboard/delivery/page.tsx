@@ -1,6 +1,6 @@
 "use client";
 
-import { Callout, ConnectionLifecycleCard, PageHeader } from "@heyloo/ui";
+import { Callout, ConnectionLifecycleCard, PageHeader, Skeleton } from "@heyloo/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -117,14 +117,21 @@ export default function DeliveryPage() {
 
       {tenantId && <OwnerAlertsCard tenantId={tenantId} textingOn={a2pStatus === "verified"} />}
 
-      <ConnectionLifecycleCard
-        provider="Airtable"
-        status={airtableQuery.data?.status ?? "disconnected"}
-        lastSyncAt={airtableQuery.data?.last_synced_at ?? undefined}
-        onConnect={connectAirtable}
-        onDisconnect={() => void disconnectAirtable()}
-        onSyncNow={() => void syncNowAirtable()}
-      />
+      {airtableQuery.isPending ? (
+        // Reserve the card's height (h-36 = 144px) while the status loads: rendering the
+        // card as "Not connected" and then swapping to the real state shoved the
+        // content below it down (QA-1 MAP-07, CLS 0.16).
+        <Skeleton data-testid="airtable-card-skeleton" className="h-36 w-full rounded-lg" />
+      ) : (
+        <ConnectionLifecycleCard
+          provider="Airtable"
+          status={airtableQuery.data?.status ?? "disconnected"}
+          lastSyncAt={airtableQuery.data?.last_synced_at ?? undefined}
+          onConnect={connectAirtable}
+          onDisconnect={() => void disconnectAirtable()}
+          onSyncNow={() => void syncNowAirtable()}
+        />
+      )}
 
       {(() => {
         // Defensive: never assume the response matches AirtableStatusResponse
