@@ -360,6 +360,16 @@ export async function handleCallAnalyzed(
   const parsed = parseCustomAnalysisData(customData);
   // A connected (or attempted) hand-off to a human: the call may then really be a transfer.
   const transferred = (call.disconnection_reason ?? "").startsWith("transfer_");
+  // The post-call model says a booking/order was made. Checked against what the call
+  // actually wrote in the UPDATE below: a claim with nothing saved is a lost lead the
+  // owner would otherwise read as "Booked" (live QA 2026-09-30: a call cut off at the
+  // duration cap came back "Booked an oil change appointment..." with no booking).
+  // Reschedule/cancel/status calls act on a booking an EARLIER call created (its
+  // source_call_id is not this call), so their "scheduled for Tuesday" is never a claim.
+  const claimsWrite =
+    parsed.classification === "new_booking" ||
+    (!EXISTING_BOOKING_CLASSES.has(parsed.classification ?? "") &&
+      claimsBookingMade(parsed.outcome));
 
   const rows = await sql<{
     id: string;
@@ -395,8 +405,19 @@ export async function handleCallAnalyzed(
             then 'question_faq'
           else ${parsed.classification}::text
         end,
-        outcome = coalesce(${parsed.outcome}, outcome),
-        follow_up_needed = follow_up_needed or ${parsed.followUpNeeded},
+        outcome = case
+          when ${claimsWrite}::boolean
+               and ${parsed.outcome}::text is not null
+               and not exists (select 1 from public.bookings wb where wb.source_call_id = call_logs.id)
+               and not exists (select 1 from public.orders wo where wo.source_call_id = call_logs.id)
+            then ${UNSAVED_WRITE_PREFIX}::text || ${parsed.outcome}::text
+          else coalesce(${parsed.outcome}, outcome)
+        end,
+        follow_up_needed = follow_up_needed or ${parsed.followUpNeeded} or (
+          ${claimsWrite}::boolean
+          and not exists (select 1 from public.bookings wb where wb.source_call_id = call_logs.id)
+          and not exists (select 1 from public.orders wo where wo.source_call_id = call_logs.id)
+        ),
         extracted_entities = coalesce(${customData}::jsonb, extracted_entities),
         transcript = coalesce(${call.transcript_object ?? null}::jsonb, transcript)
     where retell_call_id = ${call.call_id}
@@ -501,6 +522,37 @@ const NON_CUSTOMER_CLASSES: ReadonlySet<string> = new Set([
   "wrong_number",
   "spam_robocall",
 ]);
+
+/**
+ * The post-call outcome says an appointment/order was made ("Booked an oil change",
+ * "Scheduled a cleaning", "Placed an order for..."). Only ever used together with "and
+ * nothing was saved", so a loose match can at worst add a true "Not booked" prefix.
+ */
+const BOOKING_CLAIM_PATTERN =
+  /\b(?:booked|scheduled|reserved)\b|\b(?:placed|took|taken)\b.{0,20}\border\b|\bappointment\b.{0,30}\b(?:confirmed|set|made)\b/i;
+
+/** Calls about a booking that already exists; never read as claiming a new one. */
+const EXISTING_BOOKING_CLASSES: ReadonlySet<string> = new Set([
+  "reschedule",
+  "cancel",
+  "status_check",
+]);
+
+/** Wording that describes changing or looking up an existing booking, not making one. */
+const EXISTING_BOOKING_PATTERN =
+  /\b(?:cancel\w*|reschedul\w*|moved|changed|updated|modif\w*|look(?:ed)? up)\b/i;
+
+export const UNSAVED_WRITE_PREFIX =
+  "Not booked: no appointment or order was saved during this call. The AI summary said: ";
+
+/** True when the analysis outcome claims a booking/order was made. Exported for tests. */
+export function claimsBookingMade(outcome: string | null | undefined): boolean {
+  return (
+    typeof outcome === "string" &&
+    BOOKING_CLAIM_PATTERN.test(outcome) &&
+    !EXISTING_BOOKING_PATTERN.test(outcome)
+  );
+}
 
 /** True when the analysis text claims a message/callback was taken. Exported for tests. */
 export function claimsMessageTaken(...texts: (string | null | undefined)[]): boolean {

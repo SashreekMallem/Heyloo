@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import type { RetellCallObject } from "../_shared/schemas/voice-events.ts";
 import type { SqlClient } from "../_shared/types.ts";
-import { claimsMessageTaken, handleCallAnalyzed } from "./handler.ts";
+import {
+  claimsBookingMade,
+  claimsMessageTaken,
+  handleCallAnalyzed,
+  UNSAVED_WRITE_PREFIX,
+} from "./handler.ts";
 
 /**
  * F-CLASS-1 / F11 / F3(d) (BEHAVIOR-voice-agent): post-call analysis is
@@ -74,7 +79,8 @@ describe("F-CLASS-1 / F11: the stored classification follows what the call wrote
     const plain = makeSql([ROW]);
     await handleCallAnalyzed(
       plain.sql,
-      analyzed({ disconnection_reason: "user_hangup" }),
+      // A non-booking class, so the only boolean that could be true is the transfer flag.
+      analyzed({ disconnection_reason: "user_hangup" }, { classification: "question_faq" }),
       createLogger(),
     );
     const p = plain.calls.find((c) => c.text.includes("classification = case"));
@@ -87,6 +93,69 @@ describe("F-CLASS-1 / F11: the stored classification follows what the call wrote
     const update = calls.find((c) => c.text.includes("classification = case"));
     expect(update?.text).toContain("not ");
     expect(update?.values).toContain(true);
+  });
+});
+
+describe("a booking claimed in the outcome but never saved is not shown as booked", () => {
+  it("recognises booking/order claims and ignores calls that were not about one", () => {
+    expect(
+      claimsBookingMade("Booked an oil change appointment for a 2019 Honda Civic on Monday"),
+    ).toBe(true);
+    expect(claimsBookingMade("Scheduled a cleaning for Tuesday at 10")).toBe(true);
+    expect(claimsBookingMade("Placed an order for two large pizzas")).toBe(true);
+    expect(claimsBookingMade("Appointment confirmed for Friday")).toBe(true);
+    expect(claimsBookingMade("Answered a question about opening hours")).toBe(false);
+    expect(claimsBookingMade("Recorded a message for the owner")).toBe(false);
+    expect(claimsBookingMade(null)).toBe(false);
+    // Acting on a booking an earlier call made is not a new-booking claim.
+    expect(claimsBookingMade("Rescheduled the oil change to Thursday at 2 PM")).toBe(false);
+    expect(claimsBookingMade("Cancelled the appointment scheduled for Tuesday")).toBe(false);
+    expect(claimsBookingMade("Looked up the booking scheduled for Friday")).toBe(false);
+  });
+
+  it("never raises the claim for reschedule / cancel / status calls", async () => {
+    for (const classification of ["reschedule", "cancel", "status_check"]) {
+      const { sql, calls } = makeSql([ROW]);
+      await handleCallAnalyzed(
+        sql,
+        analyzed({}, { classification, outcome: "Booking scheduled for Friday at 9" }),
+        createLogger(),
+      );
+      const update = calls.find((c) => c.text.includes("classification = case"));
+      expect(update?.values).not.toContain(true);
+    }
+  });
+
+  it("prefixes the outcome and flags follow-up only when no booking/order exists for the call", async () => {
+    const { sql, calls } = makeSql([ROW]);
+    await handleCallAnalyzed(
+      sql,
+      analyzed({}, { classification: "question_faq", outcome: "Booked an oil change for Monday" }),
+      createLogger(),
+    );
+    const update = calls.find((c) => c.text.includes("classification = case"));
+    const text = update?.text ?? "";
+    expect(text).toMatch(
+      /outcome = case[\s\S]*not exists \(select 1 from public\.bookings wb where wb\.source_call_id = call_logs\.id\)[\s\S]*not exists \(select 1 from public\.orders wo[\s\S]*\|\|/,
+    );
+    expect(text).toMatch(
+      /follow_up_needed = follow_up_needed or[\s\S]*not exists \(select 1 from public\.bookings/,
+    );
+    expect(update?.values).toContain(UNSAVED_WRITE_PREFIX);
+    expect(update?.values).toContain("Booked an oil change for Monday");
+    // The claim flag reaches SQL as true.
+    expect(update?.values).toContain(true);
+  });
+
+  it("passes no claim for an outcome that never says booked on a non-booking class", async () => {
+    const { sql, calls } = makeSql([ROW]);
+    await handleCallAnalyzed(
+      sql,
+      analyzed({}, { classification: "question_faq", outcome: "Answered a question about hours" }),
+      createLogger(),
+    );
+    const update = calls.find((c) => c.text.includes("classification = case"));
+    expect(update?.values).not.toContain(true);
   });
 });
 
