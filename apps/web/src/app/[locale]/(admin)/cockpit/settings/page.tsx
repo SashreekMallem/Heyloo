@@ -48,13 +48,43 @@ const referralFormSchema = adminReferralSettingSchema.extend({
   qualification_value: z.number().int().min(1).max(24),
 });
 
+interface ReferralSettings {
+  flat_amount_cents: number;
+  qualification_rule: string;
+  qualification_value: number;
+}
+
 interface PlatformSettingsResponse {
-  referral: {
-    flat_amount_cents: number;
-    qualification_rule: string;
-    qualification_value?: number;
-  };
+  /** Absent or partial when the admin edge function is older than this build (see `currentReferralSettings`). */
+  referral?: Partial<ReferralSettings> | null;
   price_cards: Record<string, PriceCard | null>;
+}
+
+/**
+ * COCKPIT-F06 (round 2): deploy-order guard. The current `admin` edge function
+ * always answers with all three referral fields (`qualification_value`
+ * defaults to 2). A build that reaches an older function gets no
+ * `qualification_value` and a `flat_amount_cents` of 0 for the seeded
+ * `{flat_amount_cents: 20000}` row, and Save would then write that 0 over the
+ * real amount. So anything short of the full current shape is "unavailable":
+ * the form is not rendered at all (fail closed) instead of guessing a value.
+ */
+function currentReferralSettings(
+  referral: PlatformSettingsResponse["referral"],
+): ReferralSettings | null {
+  if (
+    !referral ||
+    !Number.isInteger(referral.flat_amount_cents) ||
+    typeof referral.qualification_value !== "number" ||
+    typeof referral.qualification_rule !== "string"
+  ) {
+    return null;
+  }
+  return {
+    flat_amount_cents: referral.flat_amount_cents as number,
+    qualification_rule: referral.qualification_rule,
+    qualification_value: referral.qualification_value,
+  };
 }
 
 /**
@@ -67,11 +97,25 @@ function ReferralTab({
   initial,
   onSaved,
 }: {
-  initial: PlatformSettingsResponse["referral"];
+  initial: ReferralSettings | null;
   onSaved: () => void;
 }) {
+  if (!initial) {
+    return (
+      <TabsContent value="referral" className="space-y-2">
+        <p role="alert" className="text-sm text-destructive">
+          Referral settings are unavailable: the admin service returned an out-of-date response.
+          Nothing was changed. Ask an engineer to deploy the latest admin function, then reload.
+        </p>
+      </TabsContent>
+    );
+  }
+  return <ReferralForm initial={initial} onSaved={onSaved} />;
+}
+
+function ReferralForm({ initial, onSaved }: { initial: ReferralSettings; onSaved: () => void }) {
   const [flatAmount, setFlatAmount] = useState<number | undefined>(initial.flat_amount_cents);
-  const [paidInvoices, setPaidInvoices] = useState(initial.qualification_value ?? 2);
+  const [paidInvoices, setPaidInvoices] = useState(initial.qualification_value);
 
   async function saveReferral() {
     const parsed = referralFormSchema.safeParse({
@@ -408,13 +452,7 @@ export default function PlatformSettingsPage() {
               <TabsTrigger value="fees">Fees</TabsTrigger>
             </TabsList>
             <ReferralTab
-              initial={
-                data.referral ?? {
-                  flat_amount_cents: 0,
-                  qualification_rule: QUALIFICATION_RULE,
-                  qualification_value: 2,
-                }
-              }
+              initial={currentReferralSettings(data.referral)}
               onSaved={() => void settingsQuery.refetch()}
             />
             <PricingTab

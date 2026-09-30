@@ -17,7 +17,7 @@ const SETTINGS = {
   price_cards: {},
 };
 
-function stubApi() {
+function stubApi(settings: unknown = SETTINGS) {
   const patches: { url: string; body: unknown }[] = [];
   vi.stubGlobal(
     "fetch",
@@ -27,7 +27,7 @@ function stubApi() {
         return Response.json({});
       }
       if (String(url).includes("platform-settings/fees")) return Response.json({ fees: {} });
-      return Response.json(SETTINGS);
+      return Response.json(settings);
     }),
   );
   return patches;
@@ -79,6 +79,48 @@ describe("Platform settings — referral", () => {
     await userEvent.type(invoices, "0");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(patches).toHaveLength(0);
+  });
+});
+
+// COCKPIT-F06 (round 2): the web build can reach an admin edge function that
+// has not been redeployed yet. That older function answers with no
+// `qualification_value` and a flat amount of 0 for the seeded
+// `{flat_amount_cents: 20000}` row; showing $0.00 and letting Save write it
+// would silently wipe the real amount.
+describe("Platform settings — referral against a stale admin edge function", () => {
+  const STALE = {
+    referral: { flat_amount_cents: 0, qualification_rule: "" },
+    price_cards: {},
+  };
+
+  it("does not render an editable $0.00 amount or a Save button", async () => {
+    const patches = stubApi(STALE);
+    renderPage();
+    expect(await screen.findByText(/referral settings are unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Flat referral amount")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(patches).toHaveLength(0);
+  });
+
+  it("treats a response with no referral block the same way", async () => {
+    stubApi({ price_cards: {} });
+    renderPage();
+    expect(await screen.findByText(/referral settings are unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+  });
+
+  it("still accepts a legitimately stored $0.00 from the current function", async () => {
+    stubApi({
+      referral: {
+        flat_amount_cents: 0,
+        qualification_rule: "paid_invoices_gte",
+        qualification_value: 2,
+      },
+      price_cards: {},
+    });
+    renderPage();
+    expect(await screen.findByLabelText("Flat referral amount")).toHaveValue("0.00");
+    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
   });
 });
 
