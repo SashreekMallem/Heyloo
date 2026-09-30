@@ -9433,3 +9433,14 @@ Branch `wave/BEHAVIOR-voice-agent` (from `claude/voice-ai-agent-architecture-dcw
 - F4(b) secondary write path (append the message to `webhook_events`/`call_logs` from `voice-events` on persistent failure) and F4(d) capping `api-intake` connection use: separate owners.
 - The seed/source template drift itself (see above).
 - No live Postgres was available in this environment (`su`/`initdb` not permitted), so the new SQL (`range_agg` slot cover in update_booking, the offering-guess subselects, the classification CASE) is covered by statement-shape tests only. Run one `update_booking` and one `create_booking` against a scratch DB before the deploy.
+
+## LAUNCH-merge-fix — usage rollup clobbered by merge order (2026-09-30)
+
+`20260930260000_billing_behavior_fixes` (BILL-7) re-created `fn_upsert_usage_daily`
+from the pre-QA-1 body and sorts after `20260930200200_qa1_portal_core`, so it
+undid QA-1 F-02/F-21 (test calls counted, `usage_events` join fan-out, test
+bookings/orders counted). CI on main caught it (`qa1_portal_core.sql`) along with
+two `supabase db lint` shadowed-loop-variable warnings. Fixed additively in
+`20260930270000_usage_rollup_merge_fix.sql` (QA-1 body + BILL-7/12 rounding and
+3-day window, re-bucket of the last ~2 months); `billing-migration.test.ts` now
+asserts the properties on whichever migration defines the functions last.

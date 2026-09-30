@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 // BEHAVIOR-billing: the SQL itself was exercised against an in-process Postgres
@@ -65,5 +65,42 @@ describe("billing behavior migration", () => {
   it("bounds the per-day rollup to the calls that can fall on that day (hourly job)", () => {
     expect(sql).toContain("cl.started_at >= ((p_date - 1)::timestamp at time zone v_tz)");
     expect(sql).toContain("cl.started_at < ((p_date + 2)::timestamp at time zone v_tz)");
+  });
+});
+
+// The rollup functions have been re-created by three migrations; a merge once
+// let an older body (test calls counted, usage_events join fan-out) replace
+// QA-1's fix. Whatever migration defines them LAST must keep every property.
+function latestDefinition(fn: string): string {
+  const dir = new URL("../../migrations/", import.meta.url);
+  const marker = `create or replace function public.${fn}(`;
+  const file = readdirSync(dir)
+    .filter((f) => f.endsWith(".sql"))
+    .sort()
+    .filter((f) => readFileSync(new URL(f, dir), "utf8").includes(marker))
+    .at(-1);
+  if (!file) throw new Error(`no migration defines ${fn}`);
+  const text = readFileSync(new URL(file, dir), "utf8");
+  const start = text.indexOf(marker);
+  return text.slice(start, text.indexOf("\n$$;", start));
+}
+
+describe("latest usage rollup definitions", () => {
+  it("fn_upsert_usage_daily: tenant-local window, no test data, no join fan-out, 6-dp minutes", () => {
+    const body = latestDefinition("fn_upsert_usage_daily");
+    expect(body).toContain("v_start := p_date::timestamp at time zone v_tz");
+    expect(body).toContain("not cl.is_test_call");
+    expect(body).toContain("not b.is_test");
+    expect(body).toContain("not o.is_test");
+    expect(body).toContain("cl.channel in ('phone', 'web_voice')");
+    expect(body).not.toMatch(/left join public\.usage_events/);
+    expect(body.match(/round\(coalesce\(/g)).toHaveLength(2);
+    expect(body).not.toContain("text_messages_out");
+  });
+
+  it("fn_cron_usage_rollup: last three local days, no shadowed loop variable", () => {
+    const body = latestDefinition("fn_cron_usage_rollup");
+    expect(body).toContain("for d in 0..2 loop");
+    expect(body).not.toMatch(/^\s*d int;/m);
   });
 });
