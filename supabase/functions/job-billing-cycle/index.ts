@@ -39,26 +39,40 @@ Deno.serve(async (req: Request) => {
   const tenants = await findTenantsForBilling(sql, periodStart, periodEnd);
 
   let invoiced = 0;
+  let errored = 0;
   for (const row of tenants) {
-    const ok = await billOneTenant(sql, row, periodStart, periodEnd, {
-      stripeFetch: fetch,
-      stripeSecretKey: STRIPE_SECRET_KEY,
-      billingMeterEventName: STRIPE_METER_EVENT_NAME,
-      logger,
-    });
-    if (ok) invoiced += 1;
+    // One tenant's failure (Stripe unreachable, a bad row) must not stop the others
+    // from being billed: its invoice row stays `stripe_report_pending` and the next
+    // daily run retries it.
+    try {
+      const ok = await billOneTenant(sql, row, periodStart, periodEnd, {
+        stripeFetch: fetch,
+        stripeSecretKey: STRIPE_SECRET_KEY,
+        billingMeterEventName: STRIPE_METER_EVENT_NAME,
+        logger,
+      });
+      if (ok) invoiced += 1;
+    } catch (err) {
+      errored += 1;
+      logger.error("job_billing_cycle_tenant_failed", {
+        tenant_id: row.tenant_id,
+        error: String(err),
+      });
+    }
   }
 
   logger.info("job_billing_cycle_complete", {
     period_start: periodStart,
     period_end: periodEnd,
     invoiced,
+    errored,
     total: tenants.length,
   });
   return jsonResponse({
     period_start: periodStart,
     period_end: periodEnd,
     invoiced,
+    errored,
     total: tenants.length,
     ...(missingStripe.length > 0
       ? { stripe_meter_reporting: "skipped_not_configured", missing: missingStripe }

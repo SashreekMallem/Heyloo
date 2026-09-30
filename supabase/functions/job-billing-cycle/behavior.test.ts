@@ -262,6 +262,8 @@ describe("BILL-7 / BILL-10: which usage and which tenants the job selects", () =
     const text = await selectionText();
     expect(text).toContain("coalesce(t.is_test, false) = false");
     expect(text).toContain("t.created_at <");
+    // test-* QA tenants are not is_test: a tenant with no Stripe customer is never billed.
+    expect(text).toContain("t.stripe_customer_id is not null");
     expect(text).toContain("t.status = 'canceled' and t.canceled_at >=");
   });
 });

@@ -135,6 +135,10 @@ export async function findTenantsForBilling(
       and li.period_start = ${periodStart}::date and li.period_end = ${periodEnd}::date
     where t.deleted_at is null
       and coalesce(t.is_test, false) = false
+      -- Every paying tenant has a Stripe customer (checkout sets it); one without is a
+      -- QA/comped tenant (the test-* tenants are deliberately not is_test) and must not
+      -- get a full-base draft invoice.
+      and t.stripe_customer_id is not null
       and t.created_at < ${periodEnd}::date
       and (
         t.status in ('active', 'past_due')
