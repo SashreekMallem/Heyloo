@@ -15,7 +15,11 @@
 // missing optional one used to crash the whole function at module load
 // (WORKER_ERROR), taking the instant demo down with it; now the flow that needs
 // it answers a clean 503 `not_configured` instead.
-import { demoSessionAlreadyMinted, demoSessionCeilingReached } from "../_shared/demo-mint-limit.ts";
+import {
+  claimDemoSessionMint,
+  demoSessionCeilingReached,
+  releaseDemoSessionMint,
+} from "../_shared/demo-mint-limit.ts";
 import { getSql } from "../_shared/deno/db.ts";
 import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { resolveLlmFromEnv } from "../_shared/deno/llm.ts";
@@ -75,11 +79,18 @@ Deno.serve(async (req: Request) => {
 
   const confirmParsed = ConfirmDemoRequestSchema.safeParse(body);
   if (confirmParsed.success) {
-    if (await demoSessionAlreadyMinted(sql, confirmParsed.data.demo_session_id)) {
-      return jsonResponse({ error: "demo_already_started" }, { status: 409 });
+    const sessionId = confirmParsed.data.demo_session_id;
+    const claim = await claimDemoSessionMint(sql, sessionId);
+    if (claim === "taken") return jsonResponse({ error: "demo_already_started" }, { status: 409 });
+    try {
+      const result = await handleConfirmDemo(sql, confirmParsed.data, deps);
+      if (claim === "claimed" && result.status !== 200)
+        await releaseDemoSessionMint(sql, sessionId);
+      return jsonResponse(result.body, { status: result.status });
+    } catch (error) {
+      if (claim === "claimed") await releaseDemoSessionMint(sql, sessionId).catch(() => undefined);
+      throw error;
     }
-    const result = await handleConfirmDemo(sql, confirmParsed.data, deps);
-    return jsonResponse(result.body, { status: result.status });
   }
 
   // The instant shape is recognised by `instant: true`; a `vertical` outside

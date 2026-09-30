@@ -27,18 +27,39 @@ export async function demoSessionCeilingReached(
   return (rows[0]?.n ?? 0) >= max;
 }
 
+/** Placeholder written while a confirm is minting; replaced by the real token on success, cleared on failure. */
+const MINT_IN_PROGRESS = "minting";
+
 /**
- * True when this session already had a call token minted. The browser mints
- * exactly one per session (confirm, then the call), so a second confirm for
- * the same id is a caller looping on a valid session id to farm tokens.
+ * Atomically claims the one call-token mint a session is allowed. The browser
+ * mints exactly one per session (confirm, then the call), so a second confirm
+ * for the same id is a caller looping on a valid session id to farm tokens.
+ * A read-then-mint check would let parallel requests all pass before the first
+ * one stores its token, so the claim is a single conditional UPDATE: exactly
+ * one caller sees a returned row. Returns "unknown" when the session does not
+ * exist (the handler then answers its normal 404) and "taken" when a token was
+ * already minted or is being minted.
  */
-export async function demoSessionAlreadyMinted(
+export async function claimDemoSessionMint(
   sql: SqlClient,
   demoSessionId: string,
-): Promise<boolean> {
-  const rows = await sql<{ minted: boolean }>`
-    select (retell_call_token is not null) as minted
-    from public.demo_sessions where id = ${demoSessionId}
+): Promise<"claimed" | "taken" | "unknown"> {
+  const claimed = await sql<{ id: string }>`
+    update public.demo_sessions set retell_call_token = ${MINT_IN_PROGRESS}
+    where id = ${demoSessionId} and retell_call_token is null
+    returning id
   `;
-  return rows[0]?.minted === true;
+  if (claimed.length > 0) return "claimed";
+  const existing = await sql<{ id: string }>`
+    select id from public.demo_sessions where id = ${demoSessionId}
+  `;
+  return existing.length > 0 ? "taken" : "unknown";
+}
+
+/** Gives the mint back after a failed confirm (Retell refused, edit rejected...) so the visitor can retry. */
+export async function releaseDemoSessionMint(sql: SqlClient, demoSessionId: string): Promise<void> {
+  await sql`
+    update public.demo_sessions set retell_call_token = null
+    where id = ${demoSessionId} and retell_call_token = ${MINT_IN_PROGRESS}
+  `;
 }
