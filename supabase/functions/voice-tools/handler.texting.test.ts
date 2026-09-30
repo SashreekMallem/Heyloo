@@ -97,6 +97,10 @@ function setup(
     }
     if (text.includes("insert into public.messages_outbound"))
       return Promise.resolve([{ id: "msg_1" }]);
+    // F8: a confirmation with no id falls back to what this call created.
+    if (text.includes("from public.bookings") && text.includes("source_call_id")) {
+      return Promise.resolve([{ id: "booking_1" }]);
+    }
     if (text.includes("insert into public.customers")) return Promise.resolve([{ id: "cust_1" }]);
     if (text.includes("insert into public.waitlist_entries"))
       return Promise.resolve([{ id: "wl_1" }]);

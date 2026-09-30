@@ -591,16 +591,21 @@ async function runTool(
       if (verify) {
         const times = await localize({ appointment_time: verify.appointment_time });
         return toolEnvelope(
-          await cancelBooking(sql, ctx, {
-            ...parsed.data,
-            verify: {
-              ...verify,
-              appointment_time: times.appointment_time ?? verify.appointment_time,
+          await cancelBooking(
+            sql,
+            ctx,
+            {
+              ...parsed.data,
+              verify: {
+                ...verify,
+                appointment_time: times.appointment_time ?? verify.appointment_time,
+              },
             },
-          }),
+            { smsAvailable },
+          ),
         );
       }
-      return toolEnvelope(await cancelBooking(sql, ctx, parsed.data));
+      return toolEnvelope(await cancelBooking(sql, ctx, parsed.data, { smsAvailable }));
     }
     case "lookup_customer": {
       const parsed = LookupCustomerArgsSchema.safeParse(rawArgs);

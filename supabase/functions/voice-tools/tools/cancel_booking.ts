@@ -9,6 +9,13 @@ import { MANUAL_MODE_CANCEL_MESSAGE } from "../manual-mode.ts";
 
 type Args = z.infer<typeof CancelBookingArgsSchema>;
 
+export interface CancelBookingDeps {
+  /** Whether a customer text would really be sent (`isSmsAvailable`), the same gate
+   * `send_sms_confirmation` uses (MSG-3). When it says no, no cancellation text is
+   * queued (VCC-9). Omitted (the text agent's own caller): the text is queued as before. */
+  smsAvailable?: () => Promise<boolean>;
+}
+
 export type CancelBookingResult =
   | { cancelled: true }
   | { cancelled: false; reason: "not_found" | "identity_verification_failed" }
@@ -29,6 +36,7 @@ export async function cancelBooking(
   sql: SqlClient,
   ctx: CallContext,
   args: Args,
+  deps: CancelBookingDeps = {},
 ): Promise<CancelBookingResult> {
   // VOICE-ALERTS-1 review: Manual Mode also means no cancelling. Refused
   // before any SQL (the flag rode in on the call context).
@@ -78,16 +86,23 @@ export async function cancelBooking(
 
   const row = rows[0];
   if (row) {
-    const messageRows = await sql<{ id: string }>`
-      insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload, related_booking_id)
-      select ${ctx.tenantId}, 'sms', c.phone_e164, 'booking_cancelled', '{}'::jsonb, ${row.id}
-      from public.customers c
-      where c.id = ${row.customer_id}
-      returning id
-    `;
-    const message = messageRows[0];
-    if (message) {
-      await enqueue(sql, QUEUE_NAMES.messagesOutbound, { message_id: message.id });
+    // VCC-9: a cancellation text is queued only when the business can really text
+    // (the MSG-3 gate `send_sms_confirmation` uses). Queued unconditionally it sat
+    // in messages_outbound with no verified sender, and a stale "cancelled" text
+    // could go out to the caller once texting is enabled later.
+    const canText = deps.smsAvailable ? await deps.smsAvailable() : true;
+    if (canText) {
+      const messageRows = await sql<{ id: string }>`
+        insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload, related_booking_id, related_call_id)
+        select ${ctx.tenantId}, 'sms', c.phone_e164, 'booking_cancelled', '{}'::jsonb, ${row.id}, ${ctx.callLogId}
+        from public.customers c
+        where c.id = ${row.customer_id}
+        returning id
+      `;
+      const message = messageRows[0];
+      if (message) {
+        await enqueue(sql, QUEUE_NAMES.messagesOutbound, { message_id: message.id });
+      }
     }
 
     // E2E_FLOWS_AUDIT B4 (producer side): cancellation path enqueues too.

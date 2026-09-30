@@ -127,3 +127,43 @@ describe("cancelBooking - Manual Mode (VOICE-ALERTS-1 review)", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe("cancelBooking - VCC-9: the cancellation text follows the texting gate", () => {
+  const steps = (): Step[] => [
+    { rows: [bookingRow] },
+    { rows: [{ id: "booking_1", customer_id: "customer_1" }] },
+    { rows: [{ id: "msg_1" }] },
+    { rows: [] },
+    { rows: [] },
+  ];
+
+  it("queues no messages_outbound row and enqueues nothing when texting is unavailable", async () => {
+    const { sql, calls } = makeStepSql(steps());
+    const result = await cancelBooking(sql, ctx, args, { smsAvailable: async () => false });
+    expect(result).toEqual({ cancelled: true });
+    expect(calls.some((c) => c.text.includes("insert into public.messages_outbound"))).toBe(false);
+    expect(calls.some((c) => c.text.includes("pgmq.send"))).toBe(false);
+    // The cancellation itself still happened.
+    expect(calls.some((c) => c.text.includes("set status = 'cancelled'"))).toBe(true);
+  });
+
+  it("still queues the text (linked to the call) when texting is available", async () => {
+    const { sql, calls } = makeStepSql(steps());
+    const result = await cancelBooking(sql, ctx, args, { smsAvailable: async () => true });
+    expect(result).toEqual({ cancelled: true });
+    const insert = calls.find((c) => c.text.includes("insert into public.messages_outbound"));
+    expect(insert?.text).toContain("related_call_id");
+  });
+
+  it("asks availability only after the booking was really cancelled", async () => {
+    let asked = 0;
+    const { sql } = makeStepSql([{ rows: [{ ...bookingRow, status: "cancelled" }] }]);
+    await cancelBooking(sql, ctx, args, {
+      smsAvailable: async () => {
+        asked += 1;
+        return true;
+      },
+    });
+    expect(asked).toBe(0);
+  });
+});
