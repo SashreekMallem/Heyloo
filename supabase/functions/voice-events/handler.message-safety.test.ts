@@ -100,6 +100,11 @@ describe("F3(d): a message claimed in the summary but never stored is flagged", 
     expect(claimsMessageTaken("Answered a question about opening hours")).toBe(false);
     expect(claimsMessageTaken("Booked an oil change", "Caller will call in tomorrow")).toBe(false);
     expect(claimsMessageTaken(null, undefined)).toBe(false);
+    // The caller's own "call back" is not a message or a callback request.
+    expect(
+      claimsMessageTaken("Answered hours question", "Caller said they will call back later."),
+    ).toBe(false);
+    expect(claimsMessageTaken("Someone from the office will call the caller back")).toBe(true);
   });
 
   it("sets follow_up_needed, logs, and alerts the owner when nothing was stored", async () => {

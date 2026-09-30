@@ -466,10 +466,10 @@ export async function handleCallAnalyzed(
  * F3(d): phrases in the post-call outcome/summary that say a message was taken or a callback
  * was arranged ("took a message", "message passed to the office", "requested a callback").
  * Deliberately about the message/callback itself, not any mention of "call": an FAQ call that
- * ends "caller will call back later" does not need the owner paged.
+ * ends "caller will call back later" does not need the owner paged (a bare "call back" is the caller's own verb, so only the noun "callback" or a staff member calling back counts).
  */
 const MESSAGE_CLAIM_PATTERN =
-  /\b(?:took|take|taken|left|leave|recorded|passed|relayed|forwarded|noted)\b.{0,40}\bmessage\b|\bmessage\b.{0,40}\b(?:taken|recorded|passed|relayed|forwarded|left|for the (?:office|team|owner|manager|staff|firm|clinic|shop))\b|\bcall[- ]?back\b/i;
+  /\b(?:took|take|taken|left|leave|recorded|passed|relayed|forwarded|noted)\b.{0,40}\bmessage\b|\bmessage\b.{0,40}\b(?:taken|recorded|passed|relayed|forwarded|left|for the (?:office|team|owner|manager|staff|firm|clinic|shop))\b|\bcallbacks?\b|\b(?:someone|staff|team|office|owner|manager|attorney|doctor|agent)\b.{0,40}\bcall(?:ed|s)?\b.{0,15}\bback\b/i;
 
 const NON_CUSTOMER_CLASSES: ReadonlySet<string> = new Set([
   "solicitor",

@@ -279,13 +279,24 @@ export function formatBusinessHoursText(
     timeZone,
   ).dateStr;
   const upcoming = exceptions
-    .filter((e) => typeof e.date === "string" && e.date >= today && e.date <= horizon)
+    .filter(
+      (e) =>
+        typeof e.date === "string" &&
+        /^\d{4}-\d{2}-\d{2}$/.test(e.date) &&
+        e.date >= today &&
+        e.date <= horizon,
+    )
     .sort((a, b) => a.date.localeCompare(b.date))
     .slice(0, 12)
     .map((e) => {
       const label = (e as { label?: unknown }).label;
       const suffix =
-        typeof label === "string" && label.trim() ? ` (${label.trim().slice(0, 40)})` : "";
+        typeof label === "string" && label.trim()
+          ? ` (${label
+              .replace(/[^\p{L}\p{N} .,'&-]/gu, "")
+              .trim()
+              .slice(0, 40)})`
+          : "";
       if (e.closed || !e.hours || e.hours.length === 0) return `closed ${e.date}${suffix}`;
       return `${e.date}${suffix} ${formatWindows(e.hours)}`;
     });
