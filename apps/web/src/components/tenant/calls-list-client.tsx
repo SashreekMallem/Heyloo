@@ -286,6 +286,7 @@ export function CallsListClient({
       </div>
 
       <DataTable
+        label="Calls"
         columns={columns}
         data={query.data?.rows ?? []}
         pageCount={query.data?.pageCount}

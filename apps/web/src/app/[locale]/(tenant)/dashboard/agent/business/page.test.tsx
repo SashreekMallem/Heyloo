@@ -13,12 +13,15 @@ vi.mock("@/i18n/navigation", () => ({
     <a href={href}>{children}</a>
   ),
 }));
+const refresh = vi.fn();
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh }) }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import { toast } from "sonner";
 import BusinessTabPage from "./page";
 
 beforeEach(() => {
+  refresh.mockClear();
   fake.reset();
   fake.queue("tenants:select", {
     data: { name: "SIGNUP-1 Test Auto", timezone: "America/New_York", retention_days: 30 },
@@ -49,6 +52,8 @@ describe("BusinessTabPage (SETTINGS-1)", () => {
       name: "Riverside Auto Repair",
       timezone: "America/New_York",
     });
+    // QA-1 F-18: the server-rendered header name must refresh after a rename.
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a one-letter name inline", async () => {

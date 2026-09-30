@@ -6,6 +6,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import type { PublishStatusResponse } from "@/app/api/tenant/agent/publish-status/route";
 import { PUBLISH_REASON_TEXT, publishStatusQueryKey } from "@/lib/settings/publish-status";
+import { formatInTimezone } from "@/lib/settings/timezone";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
 /**
@@ -73,7 +74,7 @@ export function AgentPublishStatus() {
         {status?.pending && <Badge variant="warning">Changes pending</Badge>}
         {status === undefined || status === null ? null : status.publishedAt ? (
           <span className="text-xs text-muted-foreground">
-            Last published {new Date(status.publishedAt).toLocaleString()}
+            Last published {formatInTimezone(status.publishedAt, status.timezone)}
           </span>
         ) : (
           <span className="text-xs text-muted-foreground">Never published</span>

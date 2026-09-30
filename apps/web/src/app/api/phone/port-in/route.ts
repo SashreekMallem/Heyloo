@@ -1,6 +1,7 @@
 import { phonePortInRequestSchema } from "@heyloo/canonical-types";
 import { NextResponse } from "next/server";
 import { claimsFromSupabaseClient } from "@/lib/auth/claims";
+import { normalizePhone, PHONE_ERROR_MESSAGE } from "@/lib/settings/phone";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -11,6 +12,10 @@ export const runtime = "nodejs";
  * records the request as a `support_requests` row (an async, human-
  * followed-up request is exactly that table's paper-trail shape) rather
  * than inventing a new table in a package outside T5's exclusive paths.
+ *
+ * QA-1 F-15: `current_number` is stored as E.164 (422 with a `current_number`
+ * issue otherwise), and there is no PIN: the ticket body is readable text, so
+ * support collects the carrier PIN securely once the port starts.
  */
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerComponentClient();
@@ -41,10 +46,21 @@ export async function POST(request: Request) {
     );
   }
 
+  const currentNumber = normalizePhone(parsed.data.current_number);
+  if (!currentNumber) {
+    return NextResponse.json(
+      {
+        error: "invalid_request",
+        issues: [{ path: ["current_number"], message: PHONE_ERROR_MESSAGE }],
+      },
+      { status: 422 },
+    );
+  }
+
   const { error } = await supabase.from("support_requests").insert({
     tenant_id: claims.tenant_id,
     subject: "Phone number port-in request",
-    body: `Carrier: ${parsed.data.carrier}\nCurrent number: ${parsed.data.current_number}\nAccount number: ${parsed.data.account_number}`,
+    body: `Carrier: ${parsed.data.carrier}\nCurrent number: ${currentNumber}\nAccount number: ${parsed.data.account_number}\nAccount PIN: not collected here, ask the customer securely.`,
     priority: "medium",
     created_by: user.id,
   });

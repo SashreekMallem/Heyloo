@@ -229,6 +229,26 @@ describe("reminder/review schemas", () => {
   });
 });
 
+describe("QA-1 F-17: the review link is https-only, as its own error message says", () => {
+  const base = {
+    voice_reminders_enabled: false,
+    review_request_enabled: true,
+    avg_transaction_value_cents: 0,
+  };
+
+  it("rejects http:// on the server and in the form", () => {
+    const review_url = "http://g.page/r/abc";
+    expect(reminderReviewRequestSchema.safeParse({ ...base, review_url }).success).toBe(false);
+    expect(reminderReviewFormSchema.safeParse({ ...base, review_url }).success).toBe(false);
+  });
+
+  it("still accepts https:// on both", () => {
+    const review_url = "https://g.page/r/abc";
+    expect(reminderReviewRequestSchema.safeParse({ ...base, review_url }).success).toBe(true);
+    expect(reminderReviewFormSchema.safeParse({ ...base, review_url }).success).toBe(true);
+  });
+});
+
 describe("mergeOverrides", () => {
   it("sets, deletes on null, and leaves undefined keys and siblings alone", () => {
     expect(

@@ -59,11 +59,30 @@ describe("ServicesTabPage (SETTINGS-1)", () => {
     });
   });
 
+  it("QA-1 F-14: lists only active services (a removed one no longer shows as a dead-end 'Inactive' row)", async () => {
+    renderWithTenant(<ServicesTabPage />);
+    expect((await screen.findAllByText("Oil change")).length).toBeGreaterThan(0);
+    const select = fake.callsTo("offerings", "select")[0];
+    expect(select?.filters).toContainEqual(["eq", "active", true]);
+    expect(screen.queryByText("Inactive")).not.toBeInTheDocument();
+  });
+
+  it("QA-1 F-5: a member sees the services but no Add/Edit/Delete, with an explanation", async () => {
+    renderWithTenant(<ServicesTabPage />, { canWrite: false });
+    expect(await screen.findByTestId("read-only-note")).toBeInTheDocument();
+    expect((await screen.findAllByText("Oil change")).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /Add service/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Edit Oil change/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Delete Oil change/ })).not.toBeInTheDocument();
+  });
+
   it("asks before removing and reports the result", async () => {
     const routes = stubRoutes({ "/api/tenant/offerings/o1": () => ({ body: { ok: true } }) });
     vi.stubGlobal("fetch", routes.fetchMock);
     renderWithTenant(<ServicesTabPage />);
-    await userEvent.click(await screen.findByRole("button", { name: "Delete Oil change" }));
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: "Delete Oil change" }))[0]!,
+    );
     expect(routes.calls).toHaveLength(0);
     await userEvent.click(screen.getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(routes.calls[0]?.method).toBe("DELETE"));
@@ -74,7 +93,7 @@ describe("ServicesTabPage (SETTINGS-1)", () => {
     const routes = stubRoutes({ "/api/tenant/offerings/o1": () => ({ body: { ok: true } }) });
     vi.stubGlobal("fetch", routes.fetchMock);
     renderWithTenant(<ServicesTabPage />);
-    await userEvent.click(await screen.findByRole("button", { name: "Edit Oil change" }));
+    await userEvent.click((await screen.findAllByRole("button", { name: "Edit Oil change" }))[0]!);
     expect(screen.getByLabelText("Price")).toHaveValue("49.99");
     await userEvent.clear(screen.getByLabelText("Length (minutes)"));
     await userEvent.clear(screen.getByLabelText("Price"));

@@ -18,7 +18,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 import type { BookingRulesResponse } from "@/app/api/tenant/settings/booking-rules/route";
-import { NotLiveNote } from "@/components/tenant/settings/not-live-note";
 import { WeeklyHoursEditor } from "@/components/tenant/settings/weekly-hours-editor";
 import { Link } from "@/i18n/navigation";
 import { saveErrorMessage, sendJson } from "@/lib/settings/client";
@@ -28,9 +27,10 @@ import {
   hoursPayloadSchema,
   scheduleFromStored,
 } from "@/lib/settings/hours";
-import { currentTimeIn } from "@/lib/settings/timezone";
+import { ReadOnlyNote } from "@/lib/settings/read-only-note";
+import { currentTimeIn, timezoneLabel } from "@/lib/settings/timezone";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
-import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
+import { useCanWriteSettings, useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
 interface HoursRow {
   business_hours: unknown;
@@ -64,6 +64,7 @@ export default function HoursTabPage() {
   if (!tenantId || !query.data) return null;
   return (
     <div className="space-y-6">
+      <ReadOnlyNote />
       <HoursCard tenantId={tenantId} row={query.data} />
       <BookingRulesCard tenantId={tenantId} vertical={query.data.vertical} />
     </div>
@@ -72,6 +73,7 @@ export default function HoursTabPage() {
 
 function HoursCard({ tenantId, row }: { tenantId: string; row: HoursRow }) {
   const queryClient = useQueryClient();
+  const canWrite = useCanWriteSettings();
   const [value, setValue] = useState<HoursPayload>(() => ({
     hours: scheduleFromStored(row.business_hours),
     exceptions: exceptionsFromStored(row.hours_exceptions),
@@ -121,7 +123,7 @@ function HoursCard({ tenantId, row }: { tenantId: string; row: HoursRow }) {
         <CardTitle>Business hours</CardTitle>
         <CardDescription>
           Your AI only offers appointment times inside these hours and tells callers when
-          you&apos;re open. Times are in <strong>{row.timezone}</strong>
+          you&apos;re open. Times are in <strong>{timezoneLabel(row.timezone)}</strong>
           {localTime ? ` (${localTime} there now)` : ""} —{" "}
           <Link href="/dashboard/agent/business" className="underline">
             change time zone
@@ -133,10 +135,17 @@ function HoursCard({ tenantId, row }: { tenantId: string; row: HoursRow }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        <WeeklyHoursEditor value={value} onChange={setValue} errors={errors} disabled={saving} />
-        <Button onClick={() => void save()} disabled={saving}>
-          {saving ? "Saving…" : "Save hours"}
-        </Button>
+        <WeeklyHoursEditor
+          value={value}
+          onChange={setValue}
+          errors={errors}
+          disabled={saving || !canWrite}
+        />
+        {canWrite && (
+          <Button onClick={() => void save()} disabled={saving}>
+            {saving ? "Saving…" : "Save hours"}
+          </Button>
+        )}
       </CardContent>
     </Card>
   );
@@ -195,6 +204,7 @@ function BookingRulesForm({
   initial: BookingRulesResponse;
 }) {
   const queryClient = useQueryClient();
+  const canWrite = useCanWriteSettings();
   const [notice, setNotice] = useState(() =>
     optionValue(initial.min_notice_minutes, NOTICE_OPTIONS),
   );
@@ -214,7 +224,11 @@ function BookingRulesForm({
       toast.error(saveErrorMessage(result));
       return;
     }
-    toast.success("Saved.");
+    // QA-1 F-8: the live agent enforces the minimum notice per call; the
+    // booking horizon is baked into the generated slots at the nightly rebuild.
+    toast.success(
+      "Saved — callers get these limits from the next call (the booking horizon updates after the next overnight rebuild).",
+    );
     void queryClient.invalidateQueries({
       queryKey: ["tenant", tenantId, "tenants", "booking_rules"],
     });
@@ -239,7 +253,7 @@ function BookingRulesForm({
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="booking-min-notice">Minimum notice</Label>
-                <Select value={notice} onValueChange={setNotice}>
+                <Select value={notice} onValueChange={setNotice} disabled={!canWrite}>
                   <SelectTrigger id="booking-min-notice">
                     <SelectValue />
                   </SelectTrigger>
@@ -254,7 +268,7 @@ function BookingRulesForm({
               </div>
               <div className="space-y-2">
                 <Label htmlFor="booking-horizon">Book up to</Label>
-                <Select value={horizon} onValueChange={setHorizon}>
+                <Select value={horizon} onValueChange={setHorizon} disabled={!canWrite}>
                   <SelectTrigger id="booking-horizon">
                     <SelectValue />
                   </SelectTrigger>
@@ -268,13 +282,11 @@ function BookingRulesForm({
                 </Select>
               </div>
             </div>
-            <NotLiveNote>
-              Your AI keeps using the defaults above until custom booking windows are switched on
-              for your account. What you choose here is kept and applies automatically then.
-            </NotLiveNote>
-            <Button variant="outline" onClick={() => void save()} disabled={saving}>
-              {saving ? "Saving…" : "Save booking window"}
-            </Button>
+            {canWrite && (
+              <Button variant="outline" onClick={() => void save()} disabled={saving}>
+                {saving ? "Saving…" : "Save booking window"}
+              </Button>
+            )}
           </>
         )}
       </CardContent>

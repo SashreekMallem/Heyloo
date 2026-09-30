@@ -154,9 +154,9 @@ export function WeeklyHoursEditor({
     <div className="space-y-8">
       <fieldset className="space-y-3" disabled={disabled} aria-labelledby="weekly-hours-heading">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 id="weekly-hours-heading" className="text-sm font-medium">
+          <h2 id="weekly-hours-heading" className="text-sm font-medium">
             Weekly hours
-          </h3>
+          </h2>
           <Button type="button" size="sm" variant="outline" onClick={copyMondayToWeekdays}>
             Copy Monday to Tue–Fri
           </Button>
@@ -216,9 +216,9 @@ export function WeeklyHoursEditor({
 
       <fieldset className="space-y-3" disabled={disabled} aria-labelledby="exceptions-heading">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 id="exceptions-heading" className="text-sm font-medium">
+          <h2 id="exceptions-heading" className="text-sm font-medium">
             Holidays and special hours
-          </h3>
+          </h2>
           <Button
             type="button"
             size="sm"

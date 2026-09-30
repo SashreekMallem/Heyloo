@@ -37,6 +37,8 @@ export interface DataTableProps<TData> {
   /** Mobile card-collapse renderer — required to satisfy FRONTEND_SPEC.md §0.5 ("rows collapse to stacked cards below sm"); omit only for tables already card-shaped. */
   renderMobileCard?: (row: TData) => ReactNode;
   className?: string;
+  /** Accessible name for the scrollable table region (QA-1 MAP-15). */
+  label?: string;
 }
 
 /** Generic table on @tanstack/react-table: sort, column filters, server-side pagination, row click, mobile card-collapse (FRONTEND_SPEC.md §1.3). Used by calls/bookings/customers/tenants/outreach leads-replies/alert-rules. */
@@ -51,6 +53,7 @@ export function DataTable<TData>({
   emptyState,
   renderMobileCard,
   className,
+  label = "Data table",
 }: DataTableProps<TData>) {
   const table = useReactTable({
     data,
@@ -131,7 +134,7 @@ export function DataTable<TData>({
           backgroundAttachment: "local, local, scroll, scroll",
         }}
       >
-        <Table>
+        <Table scrollLabel={`${label} (scrollable)`}>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow key={headerGroup.id}>

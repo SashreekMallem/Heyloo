@@ -85,3 +85,40 @@ describe("VerticalDetailsTabPage — honest labels (SETTINGS-2)", () => {
     expect(screen.getByText(/Voice appointment reminders/)).toBeInTheDocument();
   });
 });
+
+describe("VerticalDetailsTabPage — owner-only (QA-1 F-5 / F-17)", () => {
+  it("F-5: a member sees the details read-only — disabled fields, no Save buttons, an explanation", async () => {
+    loadWith({ cancellation_policy: POLICY });
+    vi.stubGlobal("fetch", stubRoutes({}).fetchMock);
+    renderWithTenant(<VerticalDetailsTabPage />, { canWrite: false });
+    expect(await screen.findByTestId("read-only-note")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Vehicle makes serviced (one per line)")).toBeDisabled();
+    expect(screen.getByLabelText("Review link")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+  });
+
+  it("F-17: a cancellation window over a year is rejected before posting", async () => {
+    loadWith({ cancellation_policy: POLICY });
+    const routes = stubRoutes({});
+    vi.stubGlobal("fetch", routes.fetchMock);
+    renderWithTenant(<VerticalDetailsTabPage />);
+    const window = await screen.findByLabelText("Cancellation window (hours)");
+    await userEvent.clear(window);
+    await userEvent.type(window, "999999");
+    await userEvent.click(screen.getAllByRole("button", { name: "Save" })[0] as HTMLElement);
+    expect(await screen.findByText(/Keep the window to a year/)).toBeInTheDocument();
+    expect(routes.calls).toHaveLength(0);
+  });
+
+  it("F-17: an http:// review link is rejected (the message says https://)", async () => {
+    loadWith({ cancellation_policy: POLICY });
+    const routes = stubRoutes({});
+    vi.stubGlobal("fetch", routes.fetchMock);
+    renderWithTenant(<VerticalDetailsTabPage />);
+    const link = await screen.findByLabelText("Review link");
+    await userEvent.type(link, "http://g.page/r/abc");
+    await userEvent.click(screen.getAllByRole("button", { name: "Save" })[1] as HTMLElement);
+    expect(await screen.findByText(/full link starting with https:\/\//)).toBeInTheDocument();
+    expect(routes.calls).toHaveLength(0);
+  });
+});

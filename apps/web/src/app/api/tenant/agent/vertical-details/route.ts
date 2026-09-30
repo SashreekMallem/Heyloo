@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
-import { claimsFromSupabaseClient } from "@/lib/auth/claims";
-import { mergeOverrides } from "@/lib/settings/route-auth";
+import {
+  mergeOverrides,
+  parseBody,
+  requireTenantWriter,
+  updateResult,
+} from "@/lib/settings/route-auth";
 import { verticalDetailsRequestSchema } from "@/lib/settings/schemas";
-import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
@@ -21,61 +24,43 @@ export const runtime = "nodejs";
  * (`lib/settings/schemas.ts`) — the canonical schema plus E.164 contact
  * phones and `null`-to-clear for every optional field (merged with
  * `mergeOverrides`, which deletes a key sent as `null`).
+ *
+ * QA-1 SEC-07: owner/admin only (`requireTenantWriter`); a write RLS
+ * filtered to zero rows is a 404, not `{ok: true}`.
  */
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerComponentClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-
-  // AUTH-1 fix (docs/BUILD_NOTES.md, SIGNUP-1 root cause #3): claims live
-  // only in the JWT itself, never in the User/session object's
-  // app_metadata; claimsFromUser(user) always evaluated to {} for a real
-  // tenant/admin/partner here.
-  const claims = await claimsFromSupabaseClient(supabase);
-  if (!claims.tenant_id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
-
-  let json: unknown;
-  try {
-    json = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid_json" }, { status: 400 });
-  }
-
-  const parsed = verticalDetailsRequestSchema.safeParse(json);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "invalid_request", issues: parsed.error.issues },
-      { status: 422 },
-    );
-  }
+  const auth = await requireTenantWriter();
+  if (!auth.ok) return auth.response;
+  const { supabase, tenantId } = auth;
+  const body = await parseBody(request, verticalDetailsRequestSchema);
+  if (!body.ok) return body.response;
 
   const { data: existing } = await supabase
     .from("agent_configs")
     .select("dynamic_variable_overrides")
-    .eq("tenant_id", claims.tenant_id)
+    .eq("tenant_id", tenantId)
     .maybeSingle();
 
-  const { error } = await supabase
+  const result = await supabase
     .from("agent_configs")
     .update({
-      dynamic_variable_overrides: mergeOverrides(existing?.dynamic_variable_overrides, parsed.data),
+      dynamic_variable_overrides: mergeOverrides(existing?.dynamic_variable_overrides, body.data),
     })
-    .eq("tenant_id", claims.tenant_id);
-
-  if (error) return NextResponse.json({ error: "update_failed" }, { status: 500 });
+    .eq("tenant_id", tenantId)
+    .select("tenant_id");
+  const written = updateResult(result);
+  if (!written.ok) return written.response;
 
   // FIX_REQUESTS.md — `tenants.policies_reviewed_at`: a real, timestamped
   // "reviewed" signal for the setup-progress panel, set the moment a
   // tenant owner/admin actually saves this form with a non-empty
   // cancellation_policy.text (an explicit acknowledgment action, not just
   // an inferred proxy). Best-effort — never fails the save itself.
-  if (parsed.data.cancellation_policy?.text) {
+  if (body.data.cancellation_policy?.text) {
     const { error: reviewedError } = await supabase
       .from("tenants")
       .update({ policies_reviewed_at: new Date().toISOString() })
-      .eq("id", claims.tenant_id);
+      .eq("id", tenantId);
     if (reviewedError) {
       console.error("policies_reviewed_at update failed", reviewedError);
     }

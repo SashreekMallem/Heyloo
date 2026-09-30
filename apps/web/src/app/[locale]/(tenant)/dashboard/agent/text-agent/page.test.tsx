@@ -20,6 +20,9 @@ let tenantRow: {
   quiet_hours: Record<string, unknown>;
 };
 const updateSpy = vi.fn();
+// QA-1: what `.update(...).select("id")` returns. RLS filters a member's
+// write to zero rows (data: []) with no error.
+let updateRows: unknown[] = [{ id: "t1" }];
 
 vi.mock("@/lib/supabase/browser", () => ({
   supabaseBrowserClient: {
@@ -28,7 +31,7 @@ vi.mock("@/lib/supabase/browser", () => ({
       (c as { update: unknown }).update = (patch: unknown) => {
         updateSpy(patch);
         Object.assign(tenantRow, patch);
-        return c;
+        return chain({ data: updateRows, error: null });
       };
       return c;
     }),
@@ -36,6 +39,9 @@ vi.mock("@/lib/supabase/browser", () => ({
 }));
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+import { toast } from "sonner";
+
 vi.mock("@/i18n/navigation", () => ({
   Link: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
     <a href={href} {...rest}>
@@ -47,11 +53,11 @@ vi.mock("@/i18n/navigation", () => ({
 import { TenantIdProvider } from "@/lib/tenant/tenant-context";
 import TextAgentTabPage from "./page";
 
-function renderPage() {
+function renderPage(canWrite = true) {
   const client = new QueryClient();
   return render(
     <QueryClientProvider client={client}>
-      <TenantIdProvider tenantId="t1">
+      <TenantIdProvider tenantId="t1" canWrite={canWrite}>
         <TextAgentTabPage />
       </TenantIdProvider>
     </QueryClientProvider>,
@@ -59,7 +65,61 @@ function renderPage() {
 }
 
 describe("TextAgentTabPage", () => {
-  afterEach(() => updateSpy.mockClear());
+  afterEach(() => {
+    updateSpy.mockClear();
+    updateRows = [{ id: "t1" }];
+    vi.mocked(toast.success).mockClear();
+    vi.mocked(toast.error).mockClear();
+  });
+
+  it("QA-1 F-17: quiet hours are picked from whole hours, so a stored 21:30 shows (and saves) as 21:00", async () => {
+    tenantRow = {
+      text_agent_enabled: true,
+      text_agent_persona: {},
+      quiet_hours: { enabled: true, start: "21:30", end: "08:45" },
+    };
+    renderPage();
+    expect(await screen.findByLabelText("Starts at")).toHaveValue("21:00");
+    expect(screen.getByLabelText("Ends at")).toHaveValue("08:00");
+    expect(screen.getByLabelText("Starts at").tagName).toBe("SELECT");
+  });
+
+  it("QA-1 F-17: refuses quiet hours that start and end at the same hour", async () => {
+    tenantRow = {
+      text_agent_enabled: true,
+      text_agent_persona: {},
+      quiet_hours: { enabled: true, start: "21:00", end: "09:00" },
+    };
+    const user = userEvent.setup();
+    renderPage();
+    await user.selectOptions(await screen.findByLabelText("Ends at"), "21:00");
+    await user.click(screen.getByRole("button", { name: "Save quiet hours" }));
+    expect(toast.error).toHaveBeenCalledWith("Quiet hours must start and end at different times.");
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("QA-1 F-5: a write filtered to zero rows is an error toast, never 'Saved'", async () => {
+    tenantRow = { text_agent_enabled: false, text_agent_persona: {}, quiet_hours: {} };
+    updateRows = [];
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("switch", { name: /Text agent enabled/ }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("Only an owner or admin can change this."),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("QA-1 F-5: a member sees a read-only page (disabled controls, no Save buttons, an explanation)", async () => {
+    tenantRow = { text_agent_enabled: true, text_agent_persona: {}, quiet_hours: {} };
+    renderPage(false);
+    expect(await screen.findByTestId("read-only-note")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: /Text agent enabled/ })).toBeDisabled();
+    expect(screen.getByLabelText("Sign-off (optional)")).toBeDisabled();
+    expect(screen.getByLabelText("Starts at")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Save persona" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save quiet hours" })).not.toBeInTheDocument();
+  });
 
   it("loads existing settings into the form", async () => {
     tenantRow = {

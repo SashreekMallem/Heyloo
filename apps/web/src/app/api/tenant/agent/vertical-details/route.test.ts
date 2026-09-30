@@ -1,180 +1,125 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fake, jsonRequest, MEMBER, OWNER } from "@/test/fake-supabase";
 
-function chain(result: unknown, onUpdate?: (payload: unknown) => void) {
-  const obj: Record<string, unknown> = {};
-  for (const method of ["select", "eq", "maybeSingle"]) {
-    obj[method] = vi.fn(() => obj);
-  }
-  obj["update"] = vi.fn((payload: unknown) => {
-    onUpdate?.(payload);
-    return obj;
-  });
-  // biome-ignore lint/suspicious/noThenProperty: intentional thenable mock of a Supabase query-builder chain.
-  (obj as { then: unknown }).then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
-    Promise.resolve(result).then(resolve, reject);
-  return obj;
-}
-
-/** Records every table's update() payload (keyed by table name) rather than
- * just the last call — this route now issues two updates (agent_configs,
- * then a best-effort tenants.policies_reviewed_at touch). */
-function makeFrom(queue: unknown[], onUpdate?: (table: string, payload: unknown) => void) {
-  return vi.fn((table: string) => {
-    const result = queue.length ? queue.shift() : { data: null, error: null };
-    return chain(result, (payload) => onUpdate?.(table, payload));
-  });
-}
-
-const mockUser = { id: "u1", app_metadata: { tenant_id: "t1", role: "owner" } };
-
-let mockGetUser: () => Promise<{ data: { user: unknown } }> = async () => ({
-  data: { user: null },
+vi.mock("@/lib/supabase/server", async () => {
+  const { fakeClient } = await import("@/test/fake-supabase");
+  return { createSupabaseServerComponentClient: async () => fakeClient() };
 });
-const queue: unknown[] = [];
-let fromMock = makeFrom(queue);
-
-vi.mock("@/lib/supabase/server", () => ({
-  createSupabaseServerComponentClient: async () => ({
-    auth: {
-      getUser: () => mockGetUser(),
-      // AUTH-1 (docs/BUILD_NOTES.md): the route now reads claims via
-      // `auth.getClaims()`, not `user.app_metadata` — bridge it off the
-      // SAME mocked user so every existing `mockGetUser` scenario above
-      // still drives the route's authorization outcome unchanged.
-      getClaims: async () => {
-        const { data } = await mockGetUser();
-        const u = data.user as { app_metadata?: unknown } | null;
-        return { data: { claims: { app_metadata: u?.app_metadata ?? {} } }, error: null };
-      },
-    },
-    from: (table: string) => fromMock(table),
-  }),
-}));
 
 const { POST } = await import("./route");
 
+const url = "/api/tenant/agent/vertical-details";
 const validPayload = {
   cancellation_policy: { window_hours: 24, text: "24-hour notice required" },
 };
 
-function postRequest(body: unknown) {
-  return new Request("http://localhost/api/tenant/agent/vertical-details", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+function overridesOf(payload: unknown) {
+  return (payload as { dynamic_variable_overrides: unknown }).dynamic_variable_overrides;
 }
+
+/** Existing overrides row, then a successful update, then the best-effort tenants touch. */
+function queueSave(existing: Record<string, unknown>) {
+  fake.queue("agent_configs:select", {
+    data: { dynamic_variable_overrides: existing },
+    error: null,
+  });
+  fake.queue("agent_configs:update", { data: [{ tenant_id: "t1" }], error: null });
+  fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+}
+
+beforeEach(() => fake.reset());
 
 describe("POST /api/tenant/agent/vertical-details", () => {
   it("401s when unauthenticated", async () => {
-    mockGetUser = async () => ({ data: { user: null } });
-    const res = await POST(postRequest(validPayload));
-    expect(res.status).toBe(401);
+    expect((await POST(jsonRequest(url, validPayload))).status).toBe(401);
   });
 
   it("403s when the caller has no tenant_id claim", async () => {
-    mockGetUser = async () => ({ data: { user: { id: "u1", app_metadata: {} } } });
-    const res = await POST(postRequest(validPayload));
+    fake.signInAs({});
+    expect((await POST(jsonRequest(url, validPayload))).status).toBe(403);
+  });
+
+  it("QA-1 SEC-07: 403s a member and writes nothing", async () => {
+    fake.signInAs(MEMBER);
+    const res = await POST(jsonRequest(url, validPayload));
     expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "owner_or_admin_required" });
+    expect(fake.callsTo("agent_configs", "update")).toHaveLength(0);
+    expect(fake.callsTo("tenants", "update")).toHaveLength(0);
+  });
+
+  it("QA-1 SEC-07: a write RLS filtered to zero rows is a 404, not {ok:true}", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("agent_configs:select", { data: { dynamic_variable_overrides: {} }, error: null });
+    fake.queue("agent_configs:update", { data: [], error: null });
+    expect((await POST(jsonRequest(url, validPayload))).status).toBe(404);
+    expect(fake.callsTo("tenants", "update")).toHaveLength(0);
   });
 
   it("422s on a payload that fails verticalDetailsSchema", async () => {
-    mockGetUser = async () => ({ data: { user: mockUser } });
-    const res = await POST(postRequest({ cancellation_policy: { window_hours: -1, text: "x" } }));
+    fake.signInAs(OWNER);
+    const res = await POST(
+      jsonRequest(url, { cancellation_policy: { window_hours: -1, text: "x" } }),
+    );
     expect(res.status).toBe(422);
   });
 
   it("merges the new fields into the existing dynamic_variable_overrides, scoped to the caller's own tenant_id", async () => {
-    mockGetUser = async () => ({ data: { user: mockUser } });
-    const updatePayloads: Record<string, unknown> = {};
-    fromMock = makeFrom(
-      [
-        { data: { dynamic_variable_overrides: { manager_name: "Sam" } }, error: null },
-        { error: null },
-        { error: null }, // tenants.policies_reviewed_at best-effort touch
-      ],
-      (table, payload) => {
-        updatePayloads[table] = payload;
-      },
-    );
-
-    const res = await POST(postRequest(validPayload));
+    fake.signInAs(OWNER);
+    queueSave({ manager_name: "Sam" });
+    const res = await POST(jsonRequest(url, validPayload));
     expect(res.status).toBe(200);
-    expect(updatePayloads["agent_configs"]).toEqual({
-      dynamic_variable_overrides: {
-        manager_name: "Sam",
-        cancellation_policy: validPayload.cancellation_policy,
-      },
+    const update = fake.callsTo("agent_configs", "update")[0];
+    expect(update?.filters).toContainEqual(["eq", "tenant_id", "t1"]);
+    expect(overridesOf(update?.payload)).toEqual({
+      manager_name: "Sam",
+      cancellation_policy: validPayload.cancellation_policy,
     });
-    // cancellation_policy.text is non-empty in validPayload — the route
-    // touches tenants.policies_reviewed_at as a real, timestamped
-    // acknowledgment signal (FIX_REQUESTS.md).
-    expect(updatePayloads["tenants"]).toHaveProperty("policies_reviewed_at");
+    // cancellation_policy.text is non-empty — the route touches
+    // tenants.policies_reviewed_at as a real, timestamped acknowledgment.
+    expect(fake.callsTo("tenants", "update")[0]?.payload).toHaveProperty("policies_reviewed_at");
   });
 
   it("SETTINGS-1: normalizes the tow partner phone to E.164 and deletes fields cleared with null", async () => {
-    mockGetUser = async () => ({ data: { user: mockUser } });
-    const updatePayloads: Record<string, unknown> = {};
-    fromMock = makeFrom(
-      [
-        {
-          data: { dynamic_variable_overrides: { manager_name: "Sam", menu_text: "old menu" } },
-          error: null,
-        },
-        { error: null },
-        { error: null },
-      ],
-      (table, payload) => {
-        updatePayloads[table] = payload;
-      },
-    );
+    fake.signInAs(OWNER);
+    queueSave({ manager_name: "Sam", menu_text: "old menu" });
     const res = await POST(
-      postRequest({
+      jsonRequest(url, {
         ...validPayload,
         tow_partner: { name: "Ace Towing", phone: "(610) 555-0199" },
         menu_text: null,
       }),
     );
     expect(res.status).toBe(200);
-    expect(updatePayloads["agent_configs"]).toEqual({
-      dynamic_variable_overrides: {
-        manager_name: "Sam",
-        cancellation_policy: validPayload.cancellation_policy,
-        tow_partner: { name: "Ace Towing", phone: "+16105550199" },
-      },
+    expect(overridesOf(fake.callsTo("agent_configs", "update")[0]?.payload)).toEqual({
+      manager_name: "Sam",
+      cancellation_policy: validPayload.cancellation_policy,
+      tow_partner: { name: "Ace Towing", phone: "+16105550199" },
     });
   });
 
   it("SETTINGS-1 review: an untouched (empty) tow partner arrives as {} — saves and clears instead of 422ing the whole form", async () => {
-    mockGetUser = async () => ({ data: { user: mockUser } });
-    const updatePayloads: Record<string, unknown> = {};
-    fromMock = makeFrom(
-      [{ data: { dynamic_variable_overrides: {} }, error: null }, { error: null }, { error: null }],
-      (table, payload) => {
-        updatePayloads[table] = payload;
-      },
-    );
-    const res = await POST(postRequest({ ...validPayload, tow_partner: {} }));
+    fake.signInAs(OWNER);
+    queueSave({});
+    const res = await POST(jsonRequest(url, { ...validPayload, tow_partner: {} }));
     expect(res.status).toBe(200);
-    expect(updatePayloads["agent_configs"]).toEqual({
-      dynamic_variable_overrides: { cancellation_policy: validPayload.cancellation_policy },
+    expect(overridesOf(fake.callsTo("agent_configs", "update")[0]?.payload)).toEqual({
+      cancellation_policy: validPayload.cancellation_policy,
     });
   });
 
   it("SETTINGS-1: 422s on a tow partner phone that isn't a real number", async () => {
-    mockGetUser = async () => ({ data: { user: mockUser } });
+    fake.signInAs(OWNER);
     const res = await POST(
-      postRequest({ ...validPayload, tow_partner: { name: "Ace", phone: "call us" } }),
+      jsonRequest(url, { ...validPayload, tow_partner: { name: "Ace", phone: "call us" } }),
     );
     expect(res.status).toBe(422);
   });
 
   it("500s when the update fails", async () => {
-    mockGetUser = async () => ({ data: { user: mockUser } });
-    fromMock = makeFrom([
-      { data: { dynamic_variable_overrides: {} }, error: null },
-      { error: { message: "db down" } },
-    ]);
-    const res = await POST(postRequest(validPayload));
-    expect(res.status).toBe(500);
+    fake.signInAs(OWNER);
+    fake.queue("agent_configs:select", { data: { dynamic_variable_overrides: {} }, error: null });
+    fake.queue("agent_configs:update", { data: null, error: { message: "db down" } });
+    expect((await POST(jsonRequest(url, validPayload))).status).toBe(500);
   });
 });

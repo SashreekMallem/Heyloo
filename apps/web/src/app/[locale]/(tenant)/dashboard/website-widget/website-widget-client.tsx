@@ -1,6 +1,14 @@
 "use client";
 
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
   Badge,
   Button,
   Card,
@@ -25,7 +33,15 @@ import { Copy, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
+import { saveErrorMessage, sendJson } from "@/lib/settings/client";
+import { ReadOnlyNote } from "@/lib/settings/read-only-note";
+import {
+  normalizeWidgetOrigin,
+  WIDGET_ACCENT_DEFAULT,
+  widgetSettingsWriteSchema,
+} from "@/lib/settings/widget-settings";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
+import { useCanWriteSettings } from "@/lib/tenant/tenant-context";
 
 type Position = "bottom-right" | "bottom-left";
 type Mode = "voice" | "chat";
@@ -44,23 +60,22 @@ interface UsageRow {
   aiRepliesLast30Days: number;
 }
 
-const DEFAULT_ACCENT = "#d96a3f";
+const DEFAULT_ACCENT = WIDGET_ACCENT_DEFAULT;
 
-function randomPublicKey(): string {
-  const rand =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID().replace(/-/g, "")
-      : Math.random().toString(36).slice(2) + Date.now().toString(36);
-  return `pk_${rand}`;
-}
+/** The bottom tab bar (and so the fixed preview launcher's collision) exists below Tailwind's `md`. */
+const SMALL_SCREEN_QUERY = "(max-width: 767px)";
 
-function isHttpsOrigin(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" && url.pathname === "/" && !url.search && !url.hash;
-  } catch {
-    return false;
-  }
+function useSmallScreen(): boolean {
+  const [small, setSmall] = useState(false);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(SMALL_SCREEN_QUERY);
+    const update = () => setSmall(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return small;
 }
 
 type TenantWidgetRow = {
@@ -146,6 +161,8 @@ function WidgetSettingsPanel({
   usageQuery: ReturnType<typeof useTenantQuery<UsageRow>>;
 }) {
   const queryClient = useQueryClient();
+  const canWrite = useCanWriteSettings();
+  const smallScreen = useSmallScreen();
   // Seeded once, straight from the already-loaded row, when this panel
   // mounts — DataState only renders it once `query.data` exists, so there
   // is no null gap to bridge with a setState-in-effect (a cascading-render
@@ -154,6 +171,8 @@ function WidgetSettingsPanel({
   const [newOrigin, setNewOrigin] = useState("");
   const [saving, setSaving] = useState(false);
   const [rotating, setRotating] = useState(false);
+  const [confirmRotate, setConfirmRotate] = useState(false);
+  const [accentError, setAccentError] = useState<string | null>(null);
   const previewHostRef = useRef<HTMLDivElement>(null);
   const previewScriptOrigin = typeof window !== "undefined" ? window.location.origin : "";
 
@@ -166,7 +185,14 @@ function WidgetSettingsPanel({
   // the relevant fields change, debounced, since the widget script has no
   // "update config" API of its own — each mount is fire-and-forget on
   // load.
+  // QA-1 F-12: the real widget's launcher is `position: fixed` at the
+  // bottom of the viewport, which on a phone sits on the bottom tab bar's
+  // "More" button. Below `md` the preview isn't mounted at all.
   useEffect(() => {
+    if (smallScreen) {
+      document.getElementById("heyloo-widget-host")?.remove();
+      return;
+    }
     const timer = setTimeout(() => {
       document.getElementById("heyloo-widget-host")?.remove();
       document.querySelectorAll("script[data-heyloo-widget-preview]").forEach((n) => {
@@ -189,7 +215,7 @@ function WidgetSettingsPanel({
       document.body.appendChild(script);
     }, 400);
     return () => clearTimeout(timer);
-  }, [form]);
+  }, [form, smallScreen]);
 
   useEffect(() => {
     return () => {
@@ -200,24 +226,50 @@ function WidgetSettingsPanel({
     };
   }, []);
 
+  /** Validates with the same schema as the route, so a bad value is caught inline before a round trip. */
   async function save(next: WidgetSettingsForm) {
+    const parsed = widgetSettingsWriteSchema.safeParse({
+      allowed_origins: next.allowedOrigins,
+      accent: next.accent,
+      position: next.position,
+      greeting: next.greeting,
+      modes: next.modes,
+    });
+    if (!parsed.success) {
+      const issues = parsed.error.issues;
+      setAccentError(issues.find((i) => i.path[0] === "accent")?.message ?? null);
+      toast.error(issues[0]?.message ?? "Please check the widget settings.");
+      return;
+    }
+    setAccentError(null);
     setSaving(true);
-    const { error } = await supabaseBrowserClient
-      .from("tenants")
-      .update({
-        widget_enabled: next.widgetEnabled,
-        widget_settings: {
-          allowed_origins: next.allowedOrigins,
-          accent: next.accent,
-          position: next.position,
-          greeting: next.greeting || null,
-          modes: next.modes,
-        },
-      })
-      .eq("id", tenantId);
+    const result = await sendJson("/api/tenant/settings/widget", {
+      widget_settings: parsed.data,
+    });
     setSaving(false);
-    if (error) {
-      toast.error("Couldn't save — please try again.");
+    if (!result.ok) {
+      toast.error(saveErrorMessage(result));
+      return;
+    }
+    // Show what was actually stored (normalized origins, lower-cased accent).
+    setForm({
+      ...next,
+      allowedOrigins: parsed.data.allowed_origins,
+      accent: parsed.data.accent,
+      greeting: parsed.data.greeting ?? "",
+      modes: parsed.data.modes,
+    });
+    toast.success("Saved");
+    void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "tenants"] });
+  }
+
+  async function setEnabled(checked: boolean) {
+    const previous = form.widgetEnabled;
+    setForm({ ...form, widgetEnabled: checked });
+    const result = await sendJson("/api/tenant/settings/widget", { widget_enabled: checked });
+    if (!result.ok) {
+      setForm((current) => ({ ...current, widgetEnabled: previous }));
+      toast.error(saveErrorMessage(result));
       return;
     }
     toast.success("Saved");
@@ -225,18 +277,23 @@ function WidgetSettingsPanel({
   }
 
   async function rotateKey() {
+    setConfirmRotate(false);
     setRotating(true);
-    const nextKey = randomPublicKey();
-    const { error } = await supabaseBrowserClient
-      .from("tenants")
-      .update({ widget_public_key: nextKey })
-      .eq("id", tenantId);
+    const result = await sendJson<{ widget_public_key?: string }>(
+      "/api/tenant/settings/widget/rotate-key",
+      {},
+    );
     setRotating(false);
-    if (error) {
-      toast.error("Couldn't generate a key — please try again.");
+    const nextKey = result.body?.widget_public_key;
+    if (!result.ok || !nextKey) {
+      toast.error(
+        result.error === "owner_or_admin_required"
+          ? saveErrorMessage(result)
+          : "Couldn't generate a key — please try again.",
+      );
       return;
     }
-    setForm({ ...form, widgetPublicKey: nextKey });
+    setForm((current) => ({ ...current, widgetPublicKey: nextKey }));
     toast.success("New key generated — update your site's snippet with the new one.");
     void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "tenants"] });
   }
@@ -249,17 +306,17 @@ function WidgetSettingsPanel({
   }
 
   function addOrigin() {
-    const trimmed = newOrigin.trim().replace(/\/$/, "");
-    if (!trimmed) return;
-    if (!isHttpsOrigin(trimmed)) {
-      toast.error("Enter a full https:// origin, e.g. https://example.com (no path).");
+    if (!newOrigin.trim()) return;
+    const normalized = normalizeWidgetOrigin(newOrigin);
+    if (!normalized.ok) {
+      toast.error(normalized.message);
       return;
     }
-    if (form.allowedOrigins.includes(trimmed)) {
+    if (form.allowedOrigins.includes(normalized.origin)) {
       toast.error("That domain is already allowed.");
       return;
     }
-    setForm({ ...form, allowedOrigins: [...form.allowedOrigins, trimmed] });
+    setForm({ ...form, allowedOrigins: [...form.allowedOrigins, normalized.origin] });
     setNewOrigin("");
   }
 
@@ -274,6 +331,7 @@ function WidgetSettingsPanel({
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div className="space-y-6">
+        <ReadOnlyNote />
         <Card>
           <CardHeader>
             <CardTitle>Install on your site</CardTitle>
@@ -291,12 +349,9 @@ function WidgetSettingsPanel({
               </div>
               <Switch
                 checked={form.widgetEnabled}
-                onCheckedChange={(checked) => {
-                  const next = { ...form, widgetEnabled: checked };
-                  setForm(next);
-                  void save(next);
-                }}
+                onCheckedChange={(checked) => void setEnabled(checked)}
                 aria-label="Widget enabled"
+                disabled={!canWrite}
               />
             </div>
 
@@ -330,16 +385,18 @@ function WidgetSettingsPanel({
               </p>
             )}
 
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={rotating}
-              onClick={() => void rotateKey()}
-            >
-              <RefreshCw className="mr-2 size-4" />
-              {form.widgetPublicKey ? "Rotate key" : "Generate key"}
-            </Button>
+            {canWrite && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={rotating}
+                onClick={() => (form.widgetPublicKey ? setConfirmRotate(true) : void rotateKey())}
+              >
+                <RefreshCw className="mr-2 size-4" />
+                {form.widgetPublicKey ? "Rotate key" : "Generate key"}
+              </Button>
+            )}
             {form.widgetPublicKey && (
               <p className="text-xs text-muted-foreground">
                 Rotating replaces the key — update the snippet on your site after rotating, or the
@@ -361,6 +418,8 @@ function WidgetSettingsPanel({
             <div className="flex gap-2">
               <Input
                 placeholder="https://example.com"
+                aria-label="Allowed domain"
+                disabled={!canWrite}
                 value={newOrigin}
                 onChange={(e) => setNewOrigin(e.target.value)}
                 onKeyDown={(e) => {
@@ -370,7 +429,7 @@ function WidgetSettingsPanel({
                   }
                 }}
               />
-              <Button type="button" variant="outline" onClick={addOrigin}>
+              <Button type="button" variant="outline" onClick={addOrigin} disabled={!canWrite}>
                 <Plus className="mr-2 size-4" />
                 Add
               </Button>
@@ -392,6 +451,7 @@ function WidgetSettingsPanel({
                       variant="ghost"
                       size="icon"
                       aria-label={`Remove ${origin}`}
+                      disabled={!canWrite}
                       onClick={() => removeOrigin(origin)}
                     >
                       <Trash2 className="size-4" />
@@ -400,9 +460,11 @@ function WidgetSettingsPanel({
                 ))}
               </ul>
             )}
-            <Button type="button" size="sm" disabled={saving} onClick={() => void save(form)}>
-              Save domains
-            </Button>
+            {canWrite && (
+              <Button type="button" size="sm" disabled={saving} onClick={() => void save(form)}>
+                Save domains
+              </Button>
+            )}
           </CardContent>
         </Card>
 
@@ -417,6 +479,7 @@ function WidgetSettingsPanel({
                 <input
                   type="checkbox"
                   checked={form.modes.includes("chat")}
+                  disabled={!canWrite}
                   onChange={(e) => toggleMode("chat", e.target.checked)}
                   className="size-4"
                 />
@@ -426,6 +489,7 @@ function WidgetSettingsPanel({
                 <input
                   type="checkbox"
                   checked={form.modes.includes("voice")}
+                  disabled={!canWrite}
                   onChange={(e) => toggleMode("voice", e.target.checked)}
                   className="size-4"
                 />
@@ -439,6 +503,7 @@ function WidgetSettingsPanel({
                 <Select
                   value={form.position}
                   onValueChange={(v) => setForm({ ...form, position: v as Position })}
+                  disabled={!canWrite}
                 >
                   <SelectTrigger id="widget-position">
                     <SelectValue />
@@ -457,14 +522,22 @@ function WidgetSettingsPanel({
                     type="color"
                     value={/^#[0-9a-fA-F]{6}$/.test(form.accent) ? form.accent : DEFAULT_ACCENT}
                     onChange={(e) => setForm({ ...form, accent: e.target.value })}
+                    disabled={!canWrite}
                     className="h-9 w-10 shrink-0 cursor-pointer rounded-md border border-border p-1"
-                    aria-label="Accent color"
+                    aria-label="Accent color picker"
                   />
                   <Input
                     value={form.accent}
-                    onChange={(e) => setForm({ ...form, accent: e.target.value })}
+                    aria-label="Accent color (hex)"
+                    aria-invalid={!!accentError}
+                    disabled={!canWrite}
+                    onChange={(e) => {
+                      setAccentError(null);
+                      setForm({ ...form, accent: e.target.value });
+                    }}
                   />
                 </div>
+                {accentError && <p className="text-xs text-destructive">{accentError}</p>}
               </div>
             </div>
 
@@ -476,12 +549,16 @@ function WidgetSettingsPanel({
                 value={form.greeting}
                 onChange={(e) => setForm({ ...form, greeting: e.target.value })}
                 rows={2}
+                maxLength={200}
+                disabled={!canWrite}
               />
             </div>
 
-            <Button type="button" disabled={saving} onClick={() => void save(form)}>
-              Save appearance
-            </Button>
+            {canWrite && (
+              <Button type="button" disabled={saving} onClick={() => void save(form)}>
+                Save appearance
+              </Button>
+            )}
           </CardContent>
         </Card>
 
@@ -524,10 +601,11 @@ function WidgetSettingsPanel({
           <CardContent>
             <div
               ref={previewHostRef}
-              className="flex h-40 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground"
+              className="flex h-40 items-center justify-center rounded-md border border-dashed border-border p-3 text-center text-sm text-muted-foreground"
             >
-              Look for the button in the bottom {form.position === "bottom-left" ? "left" : "right"}{" "}
-              corner of this page.
+              {smallScreen
+                ? "The live preview needs a wider screen — open this page on a tablet or computer to try it."
+                : `Look for the button in the bottom ${form.position === "bottom-left" ? "left" : "right"} corner of this page.`}
             </div>
             {form.modes.length === 0 && (
               <Badge variant="warning" className="mt-3">
@@ -537,6 +615,22 @@ function WidgetSettingsPanel({
           </CardContent>
         </Card>
       </div>
+      <AlertDialog open={confirmRotate} onOpenChange={setConfirmRotate}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rotate the widget key?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The widget on your website stops working right away, until you paste the new snippet
+              into your site. Only rotate if your key has leaked or you&apos;re about to update the
+              snippet.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void rotateKey()}>Rotate key</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

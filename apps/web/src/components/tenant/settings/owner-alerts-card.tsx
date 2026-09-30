@@ -24,8 +24,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 import { applyIssues, saveErrorMessage, sendJson } from "@/lib/settings/client";
+import { ReadOnlyNote } from "@/lib/settings/read-only-note";
 import { type NotificationsFormValues, notificationsFormSchema } from "@/lib/settings/schemas";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
+import { useCanWriteSettings } from "@/lib/tenant/tenant-context";
 
 interface AlertsRow {
   transfer_number: string | null;
@@ -92,12 +94,15 @@ function OwnerAlertsForm({
   textingOn: boolean;
 }) {
   const queryClient = useQueryClient();
+  const canWrite = useCanWriteSettings();
   const form = useForm<NotificationsFormValues>({
     resolver: zodResolver(notificationsFormSchema),
     defaultValues: valuesFrom(row),
   });
   const smsEnabled = useWatch({ control: form.control, name: "sms_enabled" });
+  const emailEnabled = useWatch({ control: form.control, name: "email_enabled" });
   const alertPhone = useWatch({ control: form.control, name: "alert_phone" });
+  const allAlertsOff = !smsEnabled && !emailEnabled;
   const noPhoneToText = textingOn && smsEnabled && !alertPhone && !row.transfer_number;
 
   async function onSubmit(values: NotificationsFormValues) {
@@ -118,99 +123,114 @@ function OwnerAlertsForm({
         <CardTitle>Your alerts</CardTitle>
         <CardDescription>Where we reach you when your AI needs you.</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        <ReadOnlyNote />
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5" noValidate>
-            <div className="space-y-3 rounded-md border border-border p-4">
-              <FormField
-                control={form.control}
-                name="sms_enabled"
-                render={({ field }) => (
-                  <FormItem className="flex items-center justify-between gap-4">
-                    <FormLabel>Text me</FormLabel>
-                    <FormControl>
-                      <Switch checked={field.value} onCheckedChange={field.onChange} />
-                    </FormControl>
-                  </FormItem>
+            <fieldset disabled={!canWrite} className="min-w-0 space-y-5">
+              <div className="space-y-3 rounded-md border border-border p-4">
+                <FormField
+                  control={form.control}
+                  name="sms_enabled"
+                  render={({ field }) => (
+                    <FormItem className="flex items-center justify-between gap-4">
+                      <FormLabel>Text me</FormLabel>
+                      <FormControl>
+                        <Switch checked={field.value} onCheckedChange={field.onChange} />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="alert_phone"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Alert phone</FormLabel>
+                      <FormControl>
+                        <PhoneInput value={field.value} onChange={field.onChange} />
+                      </FormControl>
+                      <FormDescription>
+                        {row.transfer_number
+                          ? `Leave blank to use your transfer number, ${formatPhoneDisplay(row.transfer_number)}.`
+                          : "Your cell phone. Leave blank to use your transfer number once you set one."}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                {!textingOn && (
+                  <p className="text-xs text-muted-foreground" role="note">
+                    Texting is off until it&apos;s set up, so every alert is emailed to you for now,
+                    whatever you choose here.
+                  </p>
                 )}
-              />
-              <FormField
-                control={form.control}
-                name="alert_phone"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Alert phone</FormLabel>
-                    <FormControl>
-                      <PhoneInput value={field.value} onChange={field.onChange} />
-                    </FormControl>
-                    <FormDescription>
-                      {row.transfer_number
-                        ? `Leave blank to use your transfer number, ${formatPhoneDisplay(row.transfer_number)}.`
-                        : "Your cell phone. Leave blank to use your transfer number once you set one."}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
+                {noPhoneToText && (
+                  <p className="text-xs text-warning" role="status">
+                    There&apos;s no phone to text yet — add an alert phone here or a transfer number
+                    on Agent → AI Instructions.
+                  </p>
                 )}
-              />
-              {!textingOn && (
-                <p className="text-xs text-muted-foreground" role="note">
-                  Texting is off until it&apos;s set up, so every alert is emailed to you for now,
-                  whatever you choose here.
+              </div>
+
+              <div className="space-y-3 rounded-md border border-border p-4">
+                <FormField
+                  control={form.control}
+                  name="email_enabled"
+                  render={({ field }) => (
+                    <FormItem className="flex items-center justify-between gap-4">
+                      <FormLabel>Email me</FormLabel>
+                      <FormControl>
+                        <Switch checked={field.value} onCheckedChange={field.onChange} />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="notification_email"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Alert email</FormLabel>
+                      <FormControl>
+                        <Input type="email" autoComplete="email" {...field} />
+                      </FormControl>
+                      <FormDescription>Leave blank to use your sign-in email.</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              {allAlertsOff && (
+                <p
+                  className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
+                  role="alert"
+                >
+                  Both text and email alerts are off — you won&apos;t hear about messages, bookings
+                  or urgent calls. They&apos;ll still appear in your dashboard.
                 </p>
               )}
-              {noPhoneToText && (
-                <p className="text-xs text-warning" role="status">
-                  There&apos;s no phone to text yet — add an alert phone here or a transfer number
-                  on Agent → AI Instructions.
+
+              <div className="space-y-1 text-sm">
+                <p className="font-medium">You&apos;re alerted when:</p>
+                <ul className="list-disc space-y-0.5 pl-5 text-muted-foreground">
+                  {ALERT_EVENTS.map((event) => (
+                    <li key={event}>{event}</li>
+                  ))}
+                </ul>
+                <p className="text-xs text-muted-foreground">
+                  Choosing individual alert types isn&apos;t available yet. If texting isn&apos;t
+                  approved for your number yet, alerts are emailed instead.
                 </p>
+              </div>
+
+              {canWrite && (
+                <Button type="submit" disabled={form.formState.isSubmitting}>
+                  {form.formState.isSubmitting ? "Saving…" : "Save alert settings"}
+                </Button>
               )}
-            </div>
-
-            <div className="space-y-3 rounded-md border border-border p-4">
-              <FormField
-                control={form.control}
-                name="email_enabled"
-                render={({ field }) => (
-                  <FormItem className="flex items-center justify-between gap-4">
-                    <FormLabel>Email me</FormLabel>
-                    <FormControl>
-                      <Switch checked={field.value} onCheckedChange={field.onChange} />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="notification_email"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Alert email</FormLabel>
-                    <FormControl>
-                      <Input type="email" autoComplete="email" {...field} />
-                    </FormControl>
-                    <FormDescription>Leave blank to use your sign-in email.</FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-
-            <div className="space-y-1 text-sm">
-              <p className="font-medium">You&apos;re alerted when:</p>
-              <ul className="list-disc space-y-0.5 pl-5 text-muted-foreground">
-                {ALERT_EVENTS.map((event) => (
-                  <li key={event}>{event}</li>
-                ))}
-              </ul>
-              <p className="text-xs text-muted-foreground">
-                Choosing individual alert types isn&apos;t available yet. If texting isn&apos;t
-                approved for your number yet, alerts are emailed instead.
-              </p>
-            </div>
-
-            <Button type="submit" disabled={form.formState.isSubmitting}>
-              {form.formState.isSubmitting ? "Saving…" : "Save alert settings"}
-            </Button>
+            </fieldset>
           </form>
         </Form>
       </CardContent>

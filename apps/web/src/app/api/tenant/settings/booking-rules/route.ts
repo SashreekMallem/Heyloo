@@ -32,8 +32,9 @@ type BookingRulesRow = {
  * `20260929140000_tenant_booking_rules.sql`, applied by the coordinator,
  * not by this task). Until it is applied the read reports
  * `available: false` and the write 503s with `not_available_yet`, so the
- * portal never breaks on a missing column. No call-time reader yet — the
- * Hours tab labels both as "not enforced yet".
+ * portal never breaks on a missing column. The live agent reads the minimum
+ * notice per call (`voice-tools` check_availability/create_booking); the
+ * horizon is applied when `fn_regenerate_availability_slots` next runs.
  */
 export async function GET() {
   const auth = await requireTenantMember();

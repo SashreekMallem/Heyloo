@@ -34,10 +34,11 @@ import { useTenantQuery } from "@/lib/hooks/use-tenant-query";
 import { SAVED_NEXT_CALL, saveErrorMessage, sendJson } from "@/lib/settings/client";
 import { isBlankOrValidPhone, PHONE_ERROR_MESSAGE } from "@/lib/settings/phone";
 import { parseRateTable, type RateEntry, rateTableToText } from "@/lib/settings/rate-table";
+import { ReadOnlyNote } from "@/lib/settings/read-only-note";
 import { type ReminderReviewFormValues, reminderReviewFormSchema } from "@/lib/settings/schemas";
 import { detailsRequestBody } from "@/lib/settings/vertical-details";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
-import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
+import { useCanWriteSettings, useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
 /** One line per array entry — parsed on submit, joined on load (MASTER_SPEC.md §3.5 list-typed fields: insurances_accepted, species_treated, vehicle_makes_serviced, practice_areas). */
 function linesToArray(value: string): string[] {
@@ -186,6 +187,7 @@ function VerticalDetailsForm({
   data: VerticalDetailsData;
   onSaved: () => void;
 }) {
+  const canWrite = useCanWriteSettings();
   const detailsForm = useForm<VerticalDetailsFormValues>({
     resolver: zodResolver(detailsFormSchema),
     defaultValues: {
@@ -270,6 +272,7 @@ function VerticalDetailsForm({
 
   return (
     <div className="space-y-6">
+      <ReadOnlyNote />
       <Card>
         <CardHeader>
           <CardTitle>Vertical details</CardTitle>
@@ -281,199 +284,27 @@ function VerticalDetailsForm({
               className="space-y-4"
               data-tenant-id={tenantId}
             >
-              <div className="text-sm">
-                <span className="font-medium">Cancellation window and late fee</span>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Your AI tells callers the window and fee together with your policy text, from the
-                next call. It states them; it doesn&apos;t enforce the window or charge the fee.
-              </p>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <FormField
-                  control={detailsForm.control}
-                  name="cancellation_policy.window_hours"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Cancellation window (hours)</FormLabel>
-                      <FormControl>
-                        <Input
-                          type="number"
-                          value={field.value ?? 0}
-                          onChange={(e) => field.onChange(Number(e.target.value))}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={detailsForm.control}
-                  name="cancellation_policy.fee_cents"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Late-cancellation fee (optional)</FormLabel>
-                      <FormControl>
-                        <CentsInput value={field.value} onChange={field.onChange} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
-              <FormField
-                control={detailsForm.control}
-                name="cancellation_policy.text"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Cancellation policy (spoken by the agent)</FormLabel>
-                    <FormControl>
-                      <Textarea {...field} value={field.value ?? ""} />
-                    </FormControl>
-                    <FormDescription>
-                      {vertical === "legal"
-                        ? "Stated when a consultation is confirmed, cancelled or rescheduled, or when the caller asks."
-                        : "Stated at booking and again if the customer cancels."}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              {vertical === "dental" && (
-                <FormField
-                  control={detailsForm.control}
-                  name="insurances_accepted"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel className="flex flex-wrap items-center gap-2">
-                        Insurances accepted (one per line)
-                      </FormLabel>
-                      <FormControl>
-                        <Textarea
-                          value={arrayToLines(field.value)}
-                          onChange={(e) => field.onChange(linesToArray(e.target.value))}
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        Your AI confirms a plan only if it&apos;s on this list, and never promises
-                        coverage or what a plan will pay. Applies from the next call.
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              )}
-
-              {vertical === "vet" && (
-                <>
+              {/* QA-1 F-5: a `member` sees the values but can't edit them (RLS drops the write). */}
+              <fieldset disabled={!canWrite} className="min-w-0 space-y-4">
+                <div className="text-sm">
+                  <span className="font-medium">Cancellation window and late fee</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Your AI tells callers the window and fee together with your policy text, from the
+                  next call. It states them; it doesn&apos;t enforce the window or charge the fee.
+                </p>
+                <div className="grid gap-4 sm:grid-cols-2">
                   <FormField
                     control={detailsForm.control}
-                    name="species_treated"
+                    name="cancellation_policy.window_hours"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Species treated (one per line)</FormLabel>
+                        <FormLabel>Cancellation window (hours)</FormLabel>
                         <FormControl>
-                          <Textarea
-                            value={arrayToLines(field.value)}
-                            onChange={(e) => field.onChange(linesToArray(e.target.value))}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <FormField
-                      control={detailsForm.control}
-                      name="emergency_referral.name"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Emergency referral — clinic name</FormLabel>
-                          <FormControl>
-                            <Input {...field} value={field.value ?? ""} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={detailsForm.control}
-                      name="emergency_referral.phone"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Emergency referral — phone</FormLabel>
-                          <FormControl>
-                            <PhoneInput value={field.value ?? ""} onChange={field.onChange} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-                </>
-              )}
-
-              {vertical === "auto" && (
-                <>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <FormField
-                      control={detailsForm.control}
-                      name="tow_partner.name"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Tow partner — name</FormLabel>
-                          <FormControl>
-                            <Input {...field} value={field.value ?? ""} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={detailsForm.control}
-                      name="tow_partner.phone"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Tow partner — phone</FormLabel>
-                          <FormControl>
-                            <PhoneInput value={field.value ?? ""} onChange={field.onChange} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-                  <FormField
-                    control={detailsForm.control}
-                    name="vehicle_makes_serviced"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Vehicle makes serviced (one per line)</FormLabel>
-                        <FormControl>
-                          <Textarea
-                            value={arrayToLines(field.value)}
-                            onChange={(e) => field.onChange(linesToArray(e.target.value))}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </>
-              )}
-
-              {vertical === "legal" && (
-                <>
-                  <FormField
-                    control={detailsForm.control}
-                    name="practice_areas"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Practice areas (one per line)</FormLabel>
-                        <FormControl>
-                          <Textarea
-                            value={arrayToLines(field.value)}
-                            onChange={(e) => field.onChange(linesToArray(e.target.value))}
+                          <Input
+                            type="number"
+                            value={field.value ?? 0}
+                            onChange={(e) => field.onChange(Number(e.target.value))}
                           />
                         </FormControl>
                         <FormMessage />
@@ -482,10 +313,10 @@ function VerticalDetailsForm({
                   />
                   <FormField
                     control={detailsForm.control}
-                    name="consult_fee_cents"
+                    name="cancellation_policy.fee_cents"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Consultation fee (optional)</FormLabel>
+                        <FormLabel>Late-cancellation fee (optional)</FormLabel>
                         <FormControl>
                           <CentsInput value={field.value} onChange={field.onChange} />
                         </FormControl>
@@ -493,22 +324,161 @@ function VerticalDetailsForm({
                       </FormItem>
                     )}
                   />
-                </>
-              )}
+                </div>
+                <FormField
+                  control={detailsForm.control}
+                  name="cancellation_policy.text"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Cancellation policy (spoken by the agent)</FormLabel>
+                      <FormControl>
+                        <Textarea {...field} value={field.value ?? ""} />
+                      </FormControl>
+                      <FormDescription>
+                        {vertical === "legal"
+                          ? "Stated when a consultation is confirmed, cancelled or rescheduled, or when the caller asks."
+                          : "Stated at booking and again if the customer cancels."}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
 
-              {vertical === "motel" && (
-                <>
-                  <div className="grid gap-4 sm:grid-cols-3">
+                {vertical === "dental" && (
+                  <FormField
+                    control={detailsForm.control}
+                    name="insurances_accepted"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="flex flex-wrap items-center gap-2">
+                          Insurances accepted (one per line)
+                        </FormLabel>
+                        <FormControl>
+                          <Textarea
+                            value={arrayToLines(field.value)}
+                            onChange={(e) => field.onChange(linesToArray(e.target.value))}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          Your AI confirms a plan only if it&apos;s on this list, and never promises
+                          coverage or what a plan will pay. Applies from the next call.
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
+
+                {vertical === "vet" && (
+                  <>
                     <FormField
                       control={detailsForm.control}
-                      name="deposit_policy.required"
+                      name="species_treated"
                       render={({ field }) => (
-                        <FormItem className="flex items-center justify-between gap-4 sm:col-span-3">
-                          <FormLabel>Deposit required at booking</FormLabel>
+                        <FormItem>
+                          <FormLabel>Species treated (one per line)</FormLabel>
                           <FormControl>
-                            <Switch
-                              checked={field.value ?? false}
-                              onCheckedChange={field.onChange}
+                            <Textarea
+                              value={arrayToLines(field.value)}
+                              onChange={(e) => field.onChange(linesToArray(e.target.value))}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <FormField
+                        control={detailsForm.control}
+                        name="emergency_referral.name"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Emergency referral — clinic name</FormLabel>
+                            <FormControl>
+                              <Input {...field} value={field.value ?? ""} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={detailsForm.control}
+                        name="emergency_referral.phone"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Emergency referral — phone</FormLabel>
+                            <FormControl>
+                              <PhoneInput value={field.value ?? ""} onChange={field.onChange} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+                  </>
+                )}
+
+                {vertical === "auto" && (
+                  <>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <FormField
+                        control={detailsForm.control}
+                        name="tow_partner.name"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Tow partner — name</FormLabel>
+                            <FormControl>
+                              <Input {...field} value={field.value ?? ""} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={detailsForm.control}
+                        name="tow_partner.phone"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Tow partner — phone</FormLabel>
+                            <FormControl>
+                              <PhoneInput value={field.value ?? ""} onChange={field.onChange} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+                    <FormField
+                      control={detailsForm.control}
+                      name="vehicle_makes_serviced"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Vehicle makes serviced (one per line)</FormLabel>
+                          <FormControl>
+                            <Textarea
+                              value={arrayToLines(field.value)}
+                              onChange={(e) => field.onChange(linesToArray(e.target.value))}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </>
+                )}
+
+                {vertical === "legal" && (
+                  <>
+                    <FormField
+                      control={detailsForm.control}
+                      name="practice_areas"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Practice areas (one per line)</FormLabel>
+                          <FormControl>
+                            <Textarea
+                              value={arrayToLines(field.value)}
+                              onChange={(e) => field.onChange(linesToArray(e.target.value))}
                             />
                           </FormControl>
                           <FormMessage />
@@ -517,10 +487,10 @@ function VerticalDetailsForm({
                     />
                     <FormField
                       control={detailsForm.control}
-                      name="deposit_policy.amount_cents"
+                      name="consult_fee_cents"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Deposit amount (optional)</FormLabel>
+                          <FormLabel>Consultation fee (optional)</FormLabel>
                           <FormControl>
                             <CentsInput value={field.value} onChange={field.onChange} />
                           </FormControl>
@@ -528,187 +498,223 @@ function VerticalDetailsForm({
                         </FormItem>
                       )}
                     />
+                  </>
+                )}
+
+                {vertical === "motel" && (
+                  <>
+                    <div className="grid gap-4 sm:grid-cols-3">
+                      <FormField
+                        control={detailsForm.control}
+                        name="deposit_policy.required"
+                        render={({ field }) => (
+                          <FormItem className="flex items-center justify-between gap-4 sm:col-span-3">
+                            <FormLabel>Deposit required at booking</FormLabel>
+                            <FormControl>
+                              <Switch
+                                checked={field.value ?? false}
+                                onCheckedChange={field.onChange}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={detailsForm.control}
+                        name="deposit_policy.amount_cents"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Deposit amount (optional)</FormLabel>
+                            <FormControl>
+                              <CentsInput value={field.value} onChange={field.onChange} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={detailsForm.control}
+                        name="deposit_policy.hold_window_hours"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Held-but-unpaid window (hours, optional)</FormLabel>
+                            <FormControl>
+                              <Input
+                                type="number"
+                                value={field.value ?? ""}
+                                onChange={(e) =>
+                                  field.onChange(
+                                    e.target.value === "" ? undefined : Number(e.target.value),
+                                  )
+                                }
+                              />
+                            </FormControl>
+                            <FormDescription>
+                              Your AI quotes pickup as &ldquo;around&rdquo; the current time plus
+                              this, from the next call.
+                            </FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
                     <FormField
                       control={detailsForm.control}
-                      name="deposit_policy.hold_window_hours"
+                      name="deposit_policy.text"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Held-but-unpaid window (hours, optional)</FormLabel>
+                          <FormLabel>Deposit policy (spoken by the agent)</FormLabel>
                           <FormControl>
-                            <Input
-                              type="number"
-                              value={field.value ?? ""}
-                              onChange={(e) =>
-                                field.onChange(
-                                  e.target.value === "" ? undefined : Number(e.target.value),
-                                )
-                              }
+                            <Textarea {...field} value={field.value ?? ""} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={detailsForm.control}
+                      name="rate_table"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Nightly rates — one “Room type: $price” per line</FormLabel>
+                          <FormControl>
+                            <Textarea
+                              value={rateTableText}
+                              placeholder={"Standard: $89\nKing Suite: $129.50"}
+                              onChange={(e) => {
+                                setRateTableText(e.target.value);
+                                const parsed = parseRateTable(e.target.value);
+                                setRateTableError(parsed.errors[0] ?? null);
+                                field.onChange(parsed.entries);
+                              }}
                             />
                           </FormControl>
                           <FormDescription>
-                            Your AI quotes pickup as &ldquo;around&rdquo; the current time plus
-                            this, from the next call.
+                            Your AI quotes only these rates. Use the same room type names as your
+                            rooms in Setup → Resources.
+                          </FormDescription>
+                          {rateTableError && (
+                            <p className="text-sm text-destructive" role="alert">
+                              {rateTableError}
+                            </p>
+                          )}
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </>
+                )}
+
+                {vertical === "restaurant" && (
+                  <>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <FormField
+                        control={detailsForm.control}
+                        name="delivery_radius_m"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Delivery radius (meters)</FormLabel>
+                            <FormControl>
+                              <Input
+                                type="number"
+                                value={field.value ?? ""}
+                                onChange={(e) =>
+                                  field.onChange(
+                                    e.target.value === "" ? undefined : Number(e.target.value),
+                                  )
+                                }
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={detailsForm.control}
+                        name="min_order_cents"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Minimum delivery order</FormLabel>
+                            <FormControl>
+                              <CentsInput value={field.value} onChange={field.onChange} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={detailsForm.control}
+                        name="delivery_fee_cents"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Delivery fee</FormLabel>
+                            <FormControl>
+                              <CentsInput value={field.value} onChange={field.onChange} />
+                            </FormControl>
+                            <FormDescription>Leave blank for free delivery.</FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={detailsForm.control}
+                        name="tax_rate_bps"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Sales tax rate</FormLabel>
+                            <FormControl>
+                              <BpsInput value={field.value} onChange={field.onChange} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={detailsForm.control}
+                        name="prep_time_minutes"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel className="flex flex-wrap items-center gap-2">
+                              Typical prep time (minutes)
+                            </FormLabel>
+                            <FormControl>
+                              <Input
+                                type="number"
+                                value={field.value ?? ""}
+                                onChange={(e) =>
+                                  field.onChange(
+                                    e.target.value === "" ? undefined : Number(e.target.value),
+                                  )
+                                }
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+                    <FormField
+                      control={detailsForm.control}
+                      name="menu_text"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Menu override (spoken by the agent)</FormLabel>
+                          <FormControl>
+                            <Textarea {...field} value={field.value ?? ""} />
+                          </FormControl>
+                          <FormDescription>
+                            Leave blank to have the agent read from your active menu items instead.
                           </FormDescription>
                           <FormMessage />
                         </FormItem>
                       )}
                     />
-                  </div>
-                  <FormField
-                    control={detailsForm.control}
-                    name="deposit_policy.text"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Deposit policy (spoken by the agent)</FormLabel>
-                        <FormControl>
-                          <Textarea {...field} value={field.value ?? ""} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={detailsForm.control}
-                    name="rate_table"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Nightly rates — one “Room type: $price” per line</FormLabel>
-                        <FormControl>
-                          <Textarea
-                            value={rateTableText}
-                            placeholder={"Standard: $89\nKing Suite: $129.50"}
-                            onChange={(e) => {
-                              setRateTableText(e.target.value);
-                              const parsed = parseRateTable(e.target.value);
-                              setRateTableError(parsed.errors[0] ?? null);
-                              field.onChange(parsed.entries);
-                            }}
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          Your AI quotes only these rates. Use the same room type names as your
-                          rooms in Setup → Resources.
-                        </FormDescription>
-                        {rateTableError && (
-                          <p className="text-sm text-destructive" role="alert">
-                            {rateTableError}
-                          </p>
-                        )}
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </>
-              )}
+                  </>
+                )}
 
-              {vertical === "restaurant" && (
-                <>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <FormField
-                      control={detailsForm.control}
-                      name="delivery_radius_m"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Delivery radius (meters)</FormLabel>
-                          <FormControl>
-                            <Input
-                              type="number"
-                              value={field.value ?? ""}
-                              onChange={(e) =>
-                                field.onChange(
-                                  e.target.value === "" ? undefined : Number(e.target.value),
-                                )
-                              }
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={detailsForm.control}
-                      name="min_order_cents"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Minimum delivery order</FormLabel>
-                          <FormControl>
-                            <CentsInput value={field.value} onChange={field.onChange} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={detailsForm.control}
-                      name="delivery_fee_cents"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Delivery fee</FormLabel>
-                          <FormControl>
-                            <CentsInput value={field.value} onChange={field.onChange} />
-                          </FormControl>
-                          <FormDescription>Leave blank for free delivery.</FormDescription>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={detailsForm.control}
-                      name="tax_rate_bps"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Sales tax rate</FormLabel>
-                          <FormControl>
-                            <BpsInput value={field.value} onChange={field.onChange} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={detailsForm.control}
-                      name="prep_time_minutes"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel className="flex flex-wrap items-center gap-2">
-                            Typical prep time (minutes)
-                          </FormLabel>
-                          <FormControl>
-                            <Input
-                              type="number"
-                              value={field.value ?? ""}
-                              onChange={(e) =>
-                                field.onChange(
-                                  e.target.value === "" ? undefined : Number(e.target.value),
-                                )
-                              }
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-                  <FormField
-                    control={detailsForm.control}
-                    name="menu_text"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Menu override (spoken by the agent)</FormLabel>
-                        <FormControl>
-                          <Textarea {...field} value={field.value ?? ""} />
-                        </FormControl>
-                        <FormDescription>
-                          Leave blank to have the agent read from your active menu items instead.
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </>
-              )}
-
-              <Button type="submit">Save</Button>
+                {canWrite && <Button type="submit">Save</Button>}
+              </fieldset>
             </form>
           </Form>
         </CardContent>
@@ -721,82 +727,84 @@ function VerticalDetailsForm({
         <CardContent>
           <Form {...reminderForm}>
             <form onSubmit={reminderForm.handleSubmit(saveReminders)} className="space-y-4">
-              <FormField
-                control={reminderForm.control}
-                name="voice_reminders_enabled"
-                render={({ field }) => (
-                  <FormItem className="flex items-center justify-between gap-4">
-                    <div>
-                      <FormLabel className="flex flex-wrap items-center gap-2">
-                        Voice appointment reminders <NotLiveBadge />
-                      </FormLabel>
+              <fieldset disabled={!canWrite} className="min-w-0 space-y-4">
+                <FormField
+                  control={reminderForm.control}
+                  name="voice_reminders_enabled"
+                  render={({ field }) => (
+                    <FormItem className="flex items-center justify-between gap-4">
+                      <div>
+                        <FormLabel className="flex flex-wrap items-center gap-2">
+                          Voice appointment reminders <NotLiveBadge />
+                        </FormLabel>
+                        <FormDescription>
+                          A reminder call ~24h before each booking — not available yet. Customers
+                          who agreed to texts already get a reminder text ~24h before.
+                        </FormDescription>
+                      </div>
+                      <FormControl>
+                        <Switch checked={field.value} onCheckedChange={field.onChange} />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+                <Separator />
+                <FormField
+                  control={reminderForm.control}
+                  name="review_request_enabled"
+                  render={({ field }) => (
+                    <FormItem className="flex items-center justify-between gap-4">
+                      <div>
+                        <FormLabel>Request a review after completed bookings</FormLabel>
+                        <FormDescription>
+                          One SMS per customer, at most once every 90 days.
+                        </FormDescription>
+                      </div>
+                      <FormControl>
+                        <Switch checked={field.value} onCheckedChange={field.onChange} />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={reminderForm.control}
+                  name="review_url"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Review link</FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder="https://g.page/r/..."
+                          {...field}
+                          value={field.value ?? ""}
+                        />
+                      </FormControl>
+                      <FormDescription>Required to send review requests.</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={reminderForm.control}
+                  name="avg_transaction_value_cents"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Average transaction value</FormLabel>
+                      <FormControl>
+                        <CentsInput
+                          value={field.value}
+                          onChange={(cents) => field.onChange(cents ?? 0)}
+                        />
+                      </FormControl>
                       <FormDescription>
-                        A reminder call ~24h before each booking — not available yet. Customers who
-                        agreed to texts already get a reminder text ~24h before.
+                        Feeds your weekly &quot;value saved&quot; summary.
                       </FormDescription>
-                    </div>
-                    <FormControl>
-                      <Switch checked={field.value} onCheckedChange={field.onChange} />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
-              <Separator />
-              <FormField
-                control={reminderForm.control}
-                name="review_request_enabled"
-                render={({ field }) => (
-                  <FormItem className="flex items-center justify-between gap-4">
-                    <div>
-                      <FormLabel>Request a review after completed bookings</FormLabel>
-                      <FormDescription>
-                        One SMS per customer, at most once every 90 days.
-                      </FormDescription>
-                    </div>
-                    <FormControl>
-                      <Switch checked={field.value} onCheckedChange={field.onChange} />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={reminderForm.control}
-                name="review_url"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Review link</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder="https://g.page/r/..."
-                        {...field}
-                        value={field.value ?? ""}
-                      />
-                    </FormControl>
-                    <FormDescription>Required to send review requests.</FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={reminderForm.control}
-                name="avg_transaction_value_cents"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Average transaction value</FormLabel>
-                    <FormControl>
-                      <CentsInput
-                        value={field.value}
-                        onChange={(cents) => field.onChange(cents ?? 0)}
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      Feeds your weekly &quot;value saved&quot; summary.
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <Button type="submit">Save</Button>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                {canWrite && <Button type="submit">Save</Button>}
+              </fieldset>
             </form>
           </Form>
         </CardContent>

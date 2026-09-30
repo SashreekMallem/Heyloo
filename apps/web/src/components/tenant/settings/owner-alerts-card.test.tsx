@@ -58,6 +58,35 @@ describe("OwnerAlertsCard (SETTINGS-1)", () => {
     expect(screen.queryByText(/Texting is off until it's set up/)).not.toBeInTheDocument();
   });
 
+  it("QA-1 F-17: warns when both text and email alerts are off, and only then", async () => {
+    fake.queue("agent_configs:select", {
+      data: {
+        transfer_number: null,
+        dynamic_variable_overrides: { delivery: { sms_enabled: false, email_enabled: true } },
+      },
+      error: null,
+    });
+    renderWithTenant(<OwnerAlertsCard tenantId="t1" textingOn />);
+    await screen.findByLabelText("Alert email");
+    expect(screen.queryByText(/Both text and email alerts are off/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("switch", { name: "Email me" }));
+    expect(await screen.findByText(/Both text and email alerts are off/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("switch", { name: "Text me" }));
+    expect(screen.queryByText(/Both text and email alerts are off/)).not.toBeInTheDocument();
+  });
+
+  it("QA-1 F-5: a member sees the alert settings read-only (disabled, no Save)", async () => {
+    fake.queue("agent_configs:select", {
+      data: { transfer_number: null, dynamic_variable_overrides: {} },
+      error: null,
+    });
+    renderWithTenant(<OwnerAlertsCard tenantId="t1" textingOn />, { canWrite: false });
+    expect(await screen.findByTestId("read-only-note")).toBeInTheDocument();
+    expect(screen.getByLabelText("Alert email")).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Text me" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Save alert settings" })).not.toBeInTheDocument();
+  });
+
   it("blocks an invalid email inline without calling the route", async () => {
     fake.queue("agent_configs:select", {
       data: { transfer_number: null, dynamic_variable_overrides: {} },

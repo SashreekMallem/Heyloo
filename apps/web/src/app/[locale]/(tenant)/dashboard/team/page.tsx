@@ -19,7 +19,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 import type { TeamListResponse } from "@/app/api/tenant/team/route";
-import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
+import { useCurrentTenantId, useIsTenantOwner } from "@/lib/tenant/tenant-context";
 
 /**
  * Team management (docs/audit/FIX_REQUESTS.md — "team-invite UI/backend
@@ -29,6 +29,7 @@ import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
  */
 export default function TeamPage() {
   const tenantId = useCurrentTenantId();
+  const isOwner = useIsTenantOwner();
   const queryClient = useQueryClient();
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<"admin" | "member">("member");
@@ -86,44 +87,55 @@ export default function TeamPage() {
 
       <Card>
         <CardContent className="space-y-4 pt-6">
-          <p className="text-sm text-muted-foreground">
-            Give a teammate their own dashboard sign-in. They&apos;ll get an email invite to set a
-            password.
-          </p>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="flex-1 space-y-1">
-              <Label htmlFor="invite-email">Email</Label>
-              <Input
-                id="invite-email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="teammate@example.com"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label id="invite-role-label">Role</Label>
-              <Select value={role} onValueChange={(v) => setRole(v as "admin" | "member")}>
-                {/* aria-labelledby, not a second aria-label string: the
+          {/* QA-1 AUTH-15: inviting is owner-only in the backend, so a teammate
+              gets an explanation instead of a form that always answers 403. */}
+          {!isOwner && (
+            <p className="text-sm text-muted-foreground" role="note" data-testid="team-owner-only">
+              Ask your account owner to add teammates — only the owner can send invites.
+            </p>
+          )}
+          {isOwner && (
+            <>
+              <p className="text-sm text-muted-foreground">
+                Give a teammate their own dashboard sign-in. They&apos;ll get an email invite to set
+                a password.
+              </p>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <div className="flex-1 space-y-1">
+                  <Label htmlFor="invite-email">Email</Label>
+                  <Input
+                    id="invite-email"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="teammate@example.com"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label id="invite-role-label">Role</Label>
+                  <Select value={role} onValueChange={(v) => setRole(v as "admin" | "member")}>
+                    {/* aria-labelledby, not a second aria-label string: the
                     visible <Label> above is the trigger's real accessible
                     name now, not a duplicated copy of it (DESIGN-4 —
                     previously the visible <Label> had no htmlFor/
                     aria-labelledby wiring at all, so the trigger had no
                     accessible name of its own; axe button-name, critical,
                     round-final tenant review). */}
-                <SelectTrigger className="w-32" aria-labelledby="invite-role-label">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="admin">Admin</SelectItem>
-                  <SelectItem value="member">Member</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <Button onClick={() => void sendInvite()} disabled={inviting || !email.trim()}>
-              {inviting ? "Sending…" : "Send invite"}
-            </Button>
-          </div>
+                    <SelectTrigger className="w-32" aria-labelledby="invite-role-label">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="admin">Admin</SelectItem>
+                      <SelectItem value="member">Member</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button onClick={() => void sendInvite()} disabled={inviting || !email.trim()}>
+                  {inviting ? "Sending…" : "Send invite"}
+                </Button>
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
 
@@ -133,7 +145,9 @@ export default function TeamPage() {
             query={query}
             empty={{
               title: "No teammates yet",
-              description: "Invite one above to give them their own dashboard sign-in.",
+              description: isOwner
+                ? "Invite one above to give them their own dashboard sign-in."
+                : "Your account owner can invite teammates.",
               // Never trust the response shape blindly — a non-matching payload
               // (error fallback, stale cache, etc.) must read as empty, not crash.
               isEmpty: (data) => !Array.isArray(data.members) || data.members.length === 0,

@@ -54,11 +54,18 @@ function stub() {
 }
 
 describe("HoursTabPage (SETTINGS-1)", () => {
+  it("shows a friendly time zone label, not the raw IANA id (QA-1 F-18)", async () => {
+    stub();
+    renderWithTenant(<HoursTabPage />);
+    expect(await screen.findByText("Eastern (New York)")).toBeInTheDocument();
+    expect(screen.queryByText("America/New_York")).not.toBeInTheDocument();
+  });
+
   it("saves the canonical shape — the legacy closed Sunday becomes []", async () => {
     const routes = stub();
     renderWithTenant(<HoursTabPage />);
     expect(await screen.findByRole("checkbox", { name: "Sunday closed" })).toBeChecked();
-    expect(screen.getByText(/America\/New_York/)).toBeInTheDocument();
+    expect(screen.getByText(/Eastern \(New York\)/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Save hours" }));
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith("Saved — your bookable times are updated now."),
@@ -86,5 +93,48 @@ describe("HoursTabPage (SETTINGS-1)", () => {
     stub();
     renderWithTenant(<HoursTabPage />);
     expect(await screen.findByText(/arrive with the next platform update/)).toBeInTheDocument();
+  });
+
+  function stubLiveBookingRules() {
+    const routes = stubRoutes({
+      "/api/tenant/settings/booking-rules": (body) => ({
+        body: body ? { ok: true } : { available: true, min_notice_minutes: 60, horizon_days: 30 },
+      }),
+    });
+    vi.stubGlobal("fetch", routes.fetchMock);
+    return routes;
+  }
+
+  it("QA-1 F-8: the booking window no longer claims defaults apply until 'switched on', and the toast says when it takes effect", async () => {
+    const routes = stubLiveBookingRules();
+    renderWithTenant(<HoursTabPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Save booking window" }));
+    expect(screen.queryByText(/switched on/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Saved, but not used yet/)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        "Saved — callers get these limits from the next call (the booking horizon updates after the next overnight rebuild).",
+      ),
+    );
+    expect(routes.calls.some((c) => c.method === "POST")).toBe(true);
+  });
+
+  it("QA-1 MAP-15: 'Weekly hours' and 'Holidays' are h2 (no skipped heading level under the page h1)", async () => {
+    stub();
+    renderWithTenant(<HoursTabPage />);
+    expect(await screen.findByRole("heading", { name: "Weekly hours", level: 2 })).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: "Holidays and special hours", level: 2 }),
+    ).toBeVisible();
+  });
+
+  it("QA-1 F-5: a member sees hours and the booking window read-only, with no Save buttons", async () => {
+    stubLiveBookingRules();
+    renderWithTenant(<HoursTabPage />, { canWrite: false });
+    expect(await screen.findByTestId("read-only-note")).toBeInTheDocument();
+    expect(await screen.findByRole("checkbox", { name: "Sunday closed" })).toBeDisabled();
+    await screen.findByText("Booking window");
+    expect(screen.queryByRole("button", { name: "Save hours" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save booking window" })).not.toBeInTheDocument();
   });
 });

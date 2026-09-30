@@ -1,52 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fake, jsonRequest, MEMBER, OWNER } from "@/test/fake-supabase";
 
-function chain(result: unknown, onUpdate?: (payload: unknown) => void) {
-  const obj: Record<string, unknown> = { eq: vi.fn(() => obj) };
-  obj["update"] = vi.fn((payload: unknown) => {
-    onUpdate?.(payload);
-    return obj;
-  });
-  // biome-ignore lint/suspicious/noThenProperty: intentional thenable mock of a Supabase query-builder chain.
-  (obj as { then: unknown }).then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
-    Promise.resolve(result).then(resolve, reject);
-  return obj;
-}
-
-const mockUser = { id: "u1", app_metadata: { tenant_id: "t1", role: "owner" } };
-
-let mockGetUser: () => Promise<{ data: { user: unknown } }> = async () => ({
-  data: { user: null },
+vi.mock("@/lib/supabase/server", async () => {
+  const { fakeClient } = await import("@/test/fake-supabase");
+  return { createSupabaseServerComponentClient: async () => fakeClient() };
 });
-let updateResult: unknown = { error: null };
-let lastUpdatePayload: unknown;
-let lastTable: string | undefined;
-const from = vi.fn((table: string) => {
-  lastTable = table;
-  return chain(updateResult, (payload) => {
-    lastUpdatePayload = payload;
-  });
-});
-
-vi.mock("@/lib/supabase/server", () => ({
-  createSupabaseServerComponentClient: async () => ({
-    auth: {
-      getUser: () => mockGetUser(),
-      // AUTH-1 (docs/BUILD_NOTES.md): the route now reads claims via
-      // `auth.getClaims()`, not `user.app_metadata` — bridge it off the
-      // SAME mocked user so every existing `mockGetUser` scenario above
-      // still drives the route's authorization outcome unchanged.
-      getClaims: async () => {
-        const { data } = await mockGetUser();
-        const u = data.user as { app_metadata?: unknown } | null;
-        return { data: { claims: { app_metadata: u?.app_metadata ?? {} } }, error: null };
-      },
-    },
-    from,
-  }),
-}));
 
 const { POST } = await import("./route");
 
+const url = "/api/tenant/settings/reminders-review";
 const validPayload = {
   voice_reminders_enabled: true,
   review_request_enabled: true,
@@ -54,61 +16,71 @@ const validPayload = {
   avg_transaction_value_cents: 12000,
 };
 
-function postRequest(body: unknown) {
-  return new Request("http://localhost/api/tenant/settings/reminders-review", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-}
+beforeEach(() => fake.reset());
 
 describe("POST /api/tenant/settings/reminders-review", () => {
   it("401s when unauthenticated", async () => {
-    mockGetUser = async () => ({ data: { user: null } });
-    const res = await POST(postRequest(validPayload));
-    expect(res.status).toBe(401);
+    expect((await POST(jsonRequest(url, validPayload))).status).toBe(401);
   });
 
   it("403s when the caller has no tenant_id claim", async () => {
-    mockGetUser = async () => ({ data: { user: { id: "u1", app_metadata: {} } } });
-    const res = await POST(postRequest(validPayload));
+    fake.signInAs({});
+    expect((await POST(jsonRequest(url, validPayload))).status).toBe(403);
+  });
+
+  it("QA-1 SEC-07: 403s a member and never touches the tenants row", async () => {
+    fake.signInAs(MEMBER);
+    const res = await POST(jsonRequest(url, validPayload));
     expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "owner_or_admin_required" });
+    expect(fake.callsTo("tenants", "update")).toHaveLength(0);
+  });
+
+  it("QA-1 SEC-07: a write RLS filtered to zero rows is a 404, not {ok:true}", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:update", { data: [], error: null });
+    expect((await POST(jsonRequest(url, validPayload))).status).toBe(404);
   });
 
   it("422s on a payload that fails reminderReviewSettingsSchema", async () => {
-    mockGetUser = async () => ({ data: { user: mockUser } });
-    const res = await POST(postRequest({ ...validPayload, avg_transaction_value_cents: -1 }));
+    fake.signInAs(OWNER);
+    const res = await POST(jsonRequest(url, { ...validPayload, avg_transaction_value_cents: -1 }));
     expect(res.status).toBe(422);
   });
 
   it("422s on an invalid review_url", async () => {
-    mockGetUser = async () => ({ data: { user: mockUser } });
-    const res = await POST(postRequest({ ...validPayload, review_url: "not-a-url" }));
-    expect(res.status).toBe(422);
+    fake.signInAs(OWNER);
+    expect(
+      (await POST(jsonRequest(url, { ...validPayload, review_url: "not-a-url" }))).status,
+    ).toBe(422);
   });
 
   it("SETTINGS-1: 422s when review requests are on but there is no review link", async () => {
-    mockGetUser = async () => ({ data: { user: mockUser } });
-    const res = await POST(postRequest({ ...validPayload, review_url: "" }));
-    expect(res.status).toBe(422);
+    fake.signInAs(OWNER);
+    expect((await POST(jsonRequest(url, { ...validPayload, review_url: "" }))).status).toBe(422);
   });
 
   it("SETTINGS-1: a blank link clears review_url when review requests are off", async () => {
-    mockGetUser = async () => ({ data: { user: mockUser } });
-    updateResult = { error: null };
+    fake.signInAs(OWNER);
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
     const res = await POST(
-      postRequest({ ...validPayload, review_request_enabled: false, review_url: "" }),
+      jsonRequest(url, { ...validPayload, review_request_enabled: false, review_url: "" }),
     );
     expect(res.status).toBe(200);
-    expect(lastUpdatePayload).toMatchObject({ review_request_enabled: false, review_url: null });
+    expect(fake.callsTo("tenants", "update")[0]?.payload).toMatchObject({
+      review_request_enabled: false,
+      review_url: null,
+    });
   });
 
   it("updates the tenants row scoped to the caller's own tenant_id", async () => {
-    mockGetUser = async () => ({ data: { user: mockUser } });
-    updateResult = { error: null };
-    const res = await POST(postRequest(validPayload));
+    fake.signInAs(OWNER);
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    const res = await POST(jsonRequest(url, validPayload));
     expect(res.status).toBe(200);
-    expect(lastTable).toBe("tenants");
-    expect(lastUpdatePayload).toEqual({
+    const update = fake.callsTo("tenants", "update")[0];
+    expect(update?.filters).toContainEqual(["eq", "id", "t1"]);
+    expect(update?.payload).toEqual({
       voice_reminders_enabled: true,
       review_request_enabled: true,
       review_url: "https://reviews.example.com/acme",
@@ -117,9 +89,8 @@ describe("POST /api/tenant/settings/reminders-review", () => {
   });
 
   it("500s when the update fails", async () => {
-    mockGetUser = async () => ({ data: { user: mockUser } });
-    updateResult = { error: { message: "db down" } };
-    const res = await POST(postRequest(validPayload));
-    expect(res.status).toBe(500);
+    fake.signInAs(OWNER);
+    fake.queue("tenants:update", { data: null, error: { message: "db down" } });
+    expect((await POST(jsonRequest(url, validPayload))).status).toBe(500);
   });
 });

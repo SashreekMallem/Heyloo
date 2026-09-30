@@ -9,7 +9,13 @@ import { zCents } from "../primitives.js";
  * tenant on a different vertical simply never sees/sends those keys.
  */
 const zCancellationPolicy = z.object({
-  window_hours: z.number().int().nonnegative(),
+  // QA-1 F-17: bounded — an unbounded window let "999999" through and the
+  // agent would tell callers about a cancellation window of over 100 years.
+  window_hours: z
+    .number()
+    .int("Use whole hours.")
+    .min(0, "Can't be negative.")
+    .max(8760, "Keep the window to a year (8,760 hours) or less."),
   fee_cents: zCents.optional(),
   text: z.string().max(1000),
 });

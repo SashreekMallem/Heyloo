@@ -1,100 +1,89 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fake, jsonRequest, MEMBER, OWNER } from "@/test/fake-supabase";
 
-function chain(result: unknown) {
-  const obj: Record<string, unknown> = {};
-  for (const method of ["select", "eq", "maybeSingle", "update"]) {
-    obj[method] = vi.fn(() => obj);
-  }
-  // biome-ignore lint/suspicious/noThenProperty: intentional thenable mock of a Supabase query-builder chain.
-  (obj as { then: unknown }).then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
-    Promise.resolve(result).then(resolve, reject);
-  return obj;
-}
-
-function makeFrom(queue: Record<string, unknown[]>) {
-  return vi.fn((table: string) => {
-    const q = queue[table];
-    const result = q?.length ? q.shift() : { data: null, error: null };
-    return chain(result);
-  });
-}
-
-const mockUser = { id: "u1", app_metadata: { tenant_id: "t1", role: "owner" } };
-
-let serverQueue: Record<string, unknown[]> = {};
-let mockGetUser: () => Promise<{ data: { user: unknown } }> = async () => ({
-  data: { user: null },
+vi.mock("@/lib/supabase/server", async () => {
+  const { fakeClient } = await import("@/test/fake-supabase");
+  return { createSupabaseServerComponentClient: async () => fakeClient() };
 });
-
-vi.mock("@/lib/supabase/server", () => ({
-  createSupabaseServerComponentClient: async () => ({
-    auth: {
-      getUser: () => mockGetUser(),
-      // AUTH-1 (docs/BUILD_NOTES.md): the route now reads claims via
-      // `auth.getClaims()`, not `user.app_metadata` — bridge it off the
-      // SAME mocked user so every existing `mockGetUser` scenario above
-      // still drives the route's authorization outcome unchanged.
-      getClaims: async () => {
-        const { data } = await mockGetUser();
-        const u = data.user as { app_metadata?: unknown } | null;
-        return { data: { claims: { app_metadata: u?.app_metadata ?? {} } }, error: null };
-      },
-    },
-    from: makeFrom(serverQueue),
-  }),
-}));
 
 const { PATCH, DELETE } = await import("./route");
 
-function patchRequest(body: unknown) {
-  return new Request("http://localhost/api/tenant/offerings/o1", {
-    method: "PATCH",
-    body: JSON.stringify(body),
-  });
-}
+const params = { params: Promise.resolve({ id: "o1" }) };
+const url = "/api/tenant/offerings/o1";
+const del = () => new Request(`http://localhost${url}`, { method: "DELETE" });
+
+beforeEach(() => fake.reset());
 
 describe("PATCH /api/tenant/offerings/[id]", () => {
   it("401s when unauthenticated", async () => {
-    serverQueue = {};
-    mockGetUser = async () => ({ data: { user: null } });
-    const res = await PATCH(patchRequest({ name: "Renamed" }), {
-      params: Promise.resolve({ id: "o1" }),
-    });
-    expect(res.status).toBe(401);
+    expect((await PATCH(jsonRequest(url, { name: "Renamed" }, "PATCH"), params)).status).toBe(401);
   });
 
-  it("404s when the offering doesn't belong to the caller's tenant", async () => {
-    serverQueue = { offerings: [{ data: null, error: null }] };
-    mockGetUser = async () => ({ data: { user: mockUser } });
-    const res = await PATCH(patchRequest({ name: "Renamed" }), {
-      params: Promise.resolve({ id: "o1" }),
-    });
-    expect(res.status).toBe(404);
+  it("QA-1 SEC-07: 403s a member (RLS would silently drop the write) and never updates", async () => {
+    fake.signInAs(MEMBER);
+    const res = await PATCH(jsonRequest(url, { price_cents: 7501 }, "PATCH"), params);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "owner_or_admin_required" });
+    expect(fake.callsTo("offerings", "update")).toHaveLength(0);
+  });
+
+  it("404s when no row was written (not the caller's tenant / filtered by RLS)", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("offerings:update", { data: [], error: null });
+    expect((await PATCH(jsonRequest(url, { name: "Renamed" }, "PATCH"), params)).status).toBe(404);
+  });
+
+  it("422s an invalid body", async () => {
+    fake.signInAs(OWNER);
+    expect((await PATCH(jsonRequest(url, { price_cents: -5 }, "PATCH"), params)).status).toBe(422);
   });
 
   it("updates an offering scoped to the caller's tenant", async () => {
-    serverQueue = {
-      offerings: [{ data: { id: "o1" }, error: null }, { error: null }],
-    };
-    mockGetUser = async () => ({ data: { user: mockUser } });
-    const res = await PATCH(patchRequest({ name: "Renamed" }), {
-      params: Promise.resolve({ id: "o1" }),
-    });
+    fake.signInAs(OWNER);
+    fake.queue("offerings:update", { data: [{ id: "o1" }], error: null });
+    const res = await PATCH(jsonRequest(url, { name: "Renamed" }, "PATCH"), params);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
+    const update = fake.callsTo("offerings", "update")[0];
+    expect(update?.filters).toContainEqual(["eq", "tenant_id", "t1"]);
+    expect(update?.filters).toContainEqual(["eq", "id", "o1"]);
+  });
+
+  it("accepts null to clear a price and duration", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("offerings:update", { data: [{ id: "o1" }], error: null });
+    const res = await PATCH(
+      jsonRequest(url, { price_cents: null, duration_minutes: null }, "PATCH"),
+      params,
+    );
+    expect(res.status).toBe(200);
+    expect(fake.callsTo("offerings", "update")[0]?.payload).toEqual({
+      price_cents: null,
+      duration_minutes: null,
+    });
   });
 });
 
 describe("DELETE /api/tenant/offerings/[id]", () => {
+  it("QA-1 SEC-07: 403s a member and never deactivates", async () => {
+    fake.signInAs(MEMBER);
+    expect((await DELETE(del(), params)).status).toBe(403);
+    expect(fake.callsTo("offerings", "update")).toHaveLength(0);
+  });
+
+  it("404s when nothing was deactivated", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("offerings:update", { data: [], error: null });
+    expect((await DELETE(del(), params)).status).toBe(404);
+  });
+
   it("soft-deletes (deactivates) rather than hard-deleting", async () => {
-    serverQueue = {
-      offerings: [{ data: { id: "o1" }, error: null }, { error: null }],
-    };
-    mockGetUser = async () => ({ data: { user: mockUser } });
-    const res = await DELETE(new Request("http://localhost", { method: "DELETE" }), {
-      params: Promise.resolve({ id: "o1" }),
-    });
+    fake.signInAs(OWNER);
+    fake.queue("offerings:update", { data: [{ id: "o1" }], error: null });
+    const res = await DELETE(del(), params);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
+    expect(fake.callsTo("offerings", "update")[0]?.payload).toEqual({ active: false });
+    expect(fake.callsTo("offerings", "delete")).toHaveLength(0);
   });
 });

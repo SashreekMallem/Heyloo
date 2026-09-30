@@ -28,7 +28,10 @@ describe("GET /api/tenant/agent/publish-status", () => {
       error: null,
     });
     fake.queue("tenants:select", {
-      data: { language_config: { primary: "es", changed_at: "2026-09-29T05:00:00Z" } },
+      data: {
+        language_config: { primary: "es", changed_at: "2026-09-29T05:00:00Z" },
+        timezone: "America/Chicago",
+      },
       error: null,
     });
     const res = await GET();
@@ -37,6 +40,7 @@ describe("GET /api/tenant/agent/publish-status", () => {
       publishedAt: "2026-09-29T00:00:00Z",
       pending: true,
       reasons: ["language_changed"],
+      timezone: "America/Chicago",
     });
     expect(fake.callsTo("agent_configs")[0]?.filters).toContainEqual(["eq", "tenant_id", "t1"]);
     expect(fake.callsTo("tenants")[0]?.filters).toContainEqual(["eq", "id", "t1"]);
@@ -59,6 +63,7 @@ describe("GET /api/tenant/agent/publish-status", () => {
       publishedAt: "2026-09-29T00:00:00Z",
       pending: true,
       reasons: ["compiler_outdated"],
+      timezone: null,
     });
   });
 
@@ -86,6 +91,7 @@ describe("GET /api/tenant/agent/publish-status", () => {
       publishedAt: "2026-09-29T00:00:00Z",
       pending: false,
       reasons: [],
+      timezone: null,
     });
   });
 

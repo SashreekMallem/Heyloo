@@ -19,7 +19,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
 import type { TenantPlanResponse } from "@/app/api/platform-settings/tenant-plan/route";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
-import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
+import { useCanWriteSettings, useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
 interface Invoice {
   id: string;
@@ -65,6 +65,7 @@ export default function BillingPage() {
   const tenantId = useCurrentTenantId();
   const [portalIssue, setPortalIssue] = useState<string | null>(null);
   const [openingPortal, setOpeningPortal] = useState(false);
+  const canManageBilling = useCanWriteSettings();
 
   const usageQuery = useQuery({
     queryKey: ["tenant", tenantId, "usage_daily", "billing"],
@@ -187,16 +188,24 @@ export default function BillingPage() {
                   </span>
                 </div>
               </div>
-              <Button variant="outline" onClick={openPortal} disabled={openingPortal}>
-                Manage payment method
-              </Button>
-              {portalIssue && (
-                <p role="alert" className="text-sm text-destructive">
-                  {portalIssue}{" "}
-                  <a href={SUPPORT_MAILTO} className="underline underline-offset-2">
-                    Email support
-                  </a>{" "}
-                  and we&apos;ll update your payment method for you.
+              {canManageBilling ? (
+                <>
+                  <Button variant="outline" onClick={openPortal} disabled={openingPortal}>
+                    Manage payment method
+                  </Button>
+                  {portalIssue && (
+                    <p role="alert" className="text-sm text-destructive">
+                      {portalIssue}{" "}
+                      <a href={SUPPORT_MAILTO} className="underline underline-offset-2">
+                        Email support
+                      </a>{" "}
+                      and we&apos;ll update your payment method for you.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground" data-testid="billing-owner-only">
+                  Ask your account owner to manage the payment method.
                 </p>
               )}
             </CardContent>

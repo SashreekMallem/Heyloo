@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { claimsFromSupabaseClient } from "@/lib/auth/claims";
+import { parseBody, requireTenantWriter } from "@/lib/settings/route-auth";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 import { offeringWriteSchema } from "./schema";
 
@@ -40,36 +41,16 @@ export async function GET() {
   return NextResponse.json({ offerings: data ?? [] });
 }
 
+/** QA-1 SEC-07: owner/admin only — a member's insert used to fail RLS as a bare 500 `insert_failed`. */
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerComponentClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-  // AUTH-1 fix (docs/BUILD_NOTES.md, SIGNUP-1 root cause #3): claims live
-  // only in the JWT itself, never in the User/session object's
-  // app_metadata; claimsFromUser(user) always evaluated to {} for a real
-  // tenant/admin/partner here.
-  const claims = await claimsFromSupabaseClient(supabase);
-  if (!claims.tenant_id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  const auth = await requireTenantWriter();
+  if (!auth.ok) return auth.response;
+  const body = await parseBody(request, offeringWriteSchema);
+  if (!body.ok) return body.response;
 
-  let json: unknown;
-  try {
-    json = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid_json" }, { status: 400 });
-  }
-  const parsed = offeringWriteSchema.safeParse(json);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "invalid_request", issues: parsed.error.issues },
-      { status: 422 },
-    );
-  }
-
-  const { data, error } = await supabase
+  const { data, error } = await auth.supabase
     .from("offerings")
-    .insert({ ...parsed.data, tenant_id: claims.tenant_id })
+    .insert({ ...body.data, tenant_id: auth.tenantId })
     .select("id")
     .single();
   if (error) return NextResponse.json({ error: "insert_failed" }, { status: 500 });

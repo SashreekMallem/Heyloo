@@ -324,10 +324,10 @@ export type VerticalDetailsRequest = z.output<typeof verticalDetailsRequestSchem
 // Reminders & reviews — tenants columns
 // ---------------------------------------------------------------------------
 
-export function isHttpUrl(value: string): boolean {
+export function isHttpsUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    return (url.protocol === "https:" || url.protocol === "http:") && url.hostname.includes(".");
+    return url.protocol === "https:" && url.hostname.includes(".");
   } catch {
     return false;
   }
@@ -337,7 +337,7 @@ const REVIEW_URL_REQUIRED = "Add your review link to turn on review requests.";
 
 /**
  * `POST /api/tenant/settings/reminders-review` — SETTINGS-1: a blank review
- * link now clears it (it used to fail `z.url()`), only http(s) links are
+ * link now clears it (it used to fail `z.url()`), only https links are
  * accepted, and review requests can't be switched on without a link
  * (`job-review-request` silently sent nothing in that state).
  */
@@ -352,7 +352,7 @@ export const reminderReviewRequestSchema = z
       .nullish()
       .transform((value, ctx) => {
         if (!value) return null;
-        if (!isHttpUrl(value)) {
+        if (!isHttpsUrl(value)) {
           ctx.addIssue({ code: "custom", message: "Enter a full link starting with https://" });
           return z.NEVER;
         }
@@ -374,7 +374,7 @@ export const reminderReviewFormSchema = z
       .string()
       .trim()
       .max(2000)
-      .refine((v) => v.length === 0 || isHttpUrl(v), "Enter a full link starting with https://"),
+      .refine((v) => v.length === 0 || isHttpsUrl(v), "Enter a full link starting with https://"),
     avg_transaction_value_cents: z.number().int().nonnegative(),
   })
   .superRefine((value, ctx) => {

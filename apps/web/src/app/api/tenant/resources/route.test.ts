@@ -123,6 +123,15 @@ describe("POST /api/tenant/resources", () => {
     expect(res.status).toBe(401);
   });
 
+  it("QA-1 SEC-07: 403s a member instead of a bare 500 from RLS", async () => {
+    serverQueue = {};
+    mockGetUser = async () => ({
+      data: { user: { id: "u2", app_metadata: { tenant_id: "t1", role: "member" } } },
+    });
+    const res = await POST(postRequest({ type: "room", name: "Room 1" }));
+    expect(res.status).toBe(403);
+  });
+
   it("422s on an invalid type", async () => {
     serverQueue = {};
     mockGetUser = async () => ({ data: { user: mockUser } });

@@ -61,6 +61,16 @@ describe("POST /api/tenant/offerings/bulk", () => {
     expect(res.status).toBe(401);
   });
 
+  it("QA-1 SEC-07: 403s a member instead of a bare 500 from RLS", async () => {
+    serverQueue = {};
+    mockGetUser = async () => ({
+      data: { user: { id: "u2", app_metadata: { tenant_id: "t1", role: "member" } } },
+    });
+    const res = await POST(postRequest({ offerings: [{ name: "Margherita" }] }));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "owner_or_admin_required" });
+  });
+
   it("422s on an empty batch", async () => {
     serverQueue = {};
     mockGetUser = async () => ({ data: { user: mockUser } });

@@ -226,3 +226,42 @@ describe("BillingPage Manage payment method (QA-1 F-12)", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("temporarily unavailable");
   });
 });
+
+describe("BillingPage owner-only actions (QA-1 AUTH-15)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    usageDailyRows = [];
+  });
+
+  function renderAs(canWrite: boolean) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ included_minutes: 100 })),
+    );
+    return render(
+      <TenantIdProvider tenantId="t1" canWrite={canWrite}>
+        <QueryClientProvider client={new QueryClient()}>
+          <BillingPage />
+        </QueryClientProvider>
+      </TenantIdProvider>,
+    );
+  }
+
+  it("shows 'Manage payment method' to an owner or admin", async () => {
+    renderAs(true);
+    expect(
+      await screen.findByRole("button", { name: "Manage payment method" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("billing-owner-only")).not.toBeInTheDocument();
+  });
+
+  it("replaces it with an explanation for a member, while usage stays visible read-only", async () => {
+    renderAs(false);
+    expect(await screen.findByTestId("billing-owner-only")).toHaveTextContent(
+      "Ask your account owner to manage the payment method.",
+    );
+    expect(screen.queryByRole("button", { name: "Manage payment method" })).not.toBeInTheDocument();
+    expect(screen.getByText("Usage this period")).toBeInTheDocument();
+  });
+});

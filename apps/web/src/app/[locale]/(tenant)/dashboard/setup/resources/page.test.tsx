@@ -84,4 +84,24 @@ describe("Setup → Resources (SETTINGS-1 review)", () => {
       expect(toast.error).toHaveBeenCalledWith("Only an owner or admin can change these settings."),
     );
   });
+
+  it("QA-1 F-11: renders a card per resource (Edit/Remove visible) for phone widths", async () => {
+    renderWithTenant(<ResourcesSetupPage />);
+    const cards = await screen.findByTestId("resource-cards");
+    expect(cards.className).toContain("md:hidden");
+    const card = within(cards).getAllByRole("listitem")[0] as HTMLElement;
+    expect(within(card).getByText(/1 hour · buffer 15 min/)).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Edit Bay 1" })).toBeInTheDocument();
+    await userEvent.click(within(card).getByRole("button", { name: "Remove Bay 1" }));
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+  });
+
+  it("QA-1 F-5: a member sees the list read-only (no Add/Edit/Remove) with an explanation", async () => {
+    renderWithTenant(<ResourcesSetupPage />, { canWrite: false });
+    expect(await screen.findByTestId("read-only-note")).toBeInTheDocument();
+    expect((await screen.findAllByText("Bay 1")).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /Add resource/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Edit/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Remove/ })).not.toBeInTheDocument();
+  });
 });

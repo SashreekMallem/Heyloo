@@ -12,7 +12,12 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 import { toast } from "sonner";
 import { AgentPublishStatus } from "./agent-publish-status";
 
-type Status = { publishedAt: string | null; pending: boolean; reasons: string[] };
+type Status = {
+  publishedAt: string | null;
+  pending: boolean;
+  reasons: string[];
+  timezone?: string | null;
+};
 
 /** Routes `GET /api/tenant/agent/publish-status` (SETTINGS-1) and `POST /api/tenant/agent/publish`. */
 function stubFetch(
@@ -63,6 +68,17 @@ describe("AgentPublishStatus (PUBLISH-1, SETTINGS-1)", () => {
     renderStatus();
     expect(await screen.findByText(/Last published/)).toBeInTheDocument();
     expect(screen.queryByText("Changes pending")).not.toBeInTheDocument();
+  });
+
+  it("shows the publish time in the business time zone (QA-1 F-18)", async () => {
+    stubFetch({
+      publishedAt: "2026-09-30T01:42:40Z",
+      pending: false,
+      reasons: [],
+      timezone: "America/New_York",
+    });
+    renderStatus();
+    expect(await screen.findByText("Last published Sep 29, 2026, 9:42 PM EDT")).toBeInTheDocument();
   });
 
   it("explains a pending language change", async () => {
