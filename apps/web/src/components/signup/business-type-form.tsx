@@ -156,7 +156,9 @@ export function BusinessTypeForm({
               </FormItem>
             )}
           />
-          <div className="grid gap-6 sm:grid-cols-2">
+          {/* items-start: the phone column (help text + error) is taller, and a
+              stretched website column pushed its input away from its label. */}
+          <div className="grid items-start gap-6 sm:grid-cols-2">
             <FormField
               control={form.control}
               name="business_phone"

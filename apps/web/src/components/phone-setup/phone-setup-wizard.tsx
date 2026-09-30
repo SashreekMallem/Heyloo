@@ -212,7 +212,12 @@ export function PhoneSetupWizard({
     if (runId !== runIdRef.current) return;
     let res: TestResponse | null = null;
     try {
-      res = await postForwardingTest({ tenant_id: tenantId, action: "status" });
+      // forwarding-verify records the carrier on the verified number from the status call.
+      res = await postForwardingTest({
+        tenant_id: tenantId,
+        action: "status",
+        carrier_hint: carrier,
+      });
     } catch {
       // A dropped poll is not a result: keep asking until the deadline.
     }

@@ -217,7 +217,7 @@ describe("PhoneSetupWizard — verify step (start + poll)", () => {
     expect(start?.body).toEqual({ tenant_id: "t1", action: "start", carrier_hint: "att" });
     const polls = api.calls.filter((c) => c.body["action"] === "status");
     expect(polls).toHaveLength(2);
-    expect(polls[0]?.body).toEqual({ tenant_id: "t1", action: "status" });
+    expect(polls[0]?.body).toEqual({ tenant_id: "t1", action: "status", carrier_hint: "att" });
     await waitFor(() => expect(push).toHaveBeenCalledWith("/dashboard"), { timeout: 3000 });
   });
 
