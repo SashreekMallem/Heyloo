@@ -208,9 +208,9 @@ export async function resolveClearedAlerts(sql: SqlClient, current: Alert[]): Pr
     update public.alerts a
     set status = 'resolved'
     where a.status = 'open'
-      and a.rule in (select jsonb_array_elements_text(${JSON.stringify(MANAGED_RULES)}::jsonb))
+      and a.rule in (select jsonb_array_elements_text(${[...MANAGED_RULES]}::jsonb))
       and not exists (
-        select 1 from jsonb_array_elements_text(${JSON.stringify(active)}::jsonb) k
+        select 1 from jsonb_array_elements_text(${active}::jsonb) k
         where k = coalesce(a.tenant_id::text, '') || '|' || a.rule || '|' || coalesce(a.payload->>'dedupe_key', '')
       )
   `;

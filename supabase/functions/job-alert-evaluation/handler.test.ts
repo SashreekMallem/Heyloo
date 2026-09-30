@@ -162,8 +162,9 @@ describe("resolveClearedAlerts (QA-1 BE-15)", () => {
     const text = calls[0]?.text ?? "";
     expect(text).toContain("set status = 'resolved'");
     expect(text).toContain("a.status = 'open'");
-    expect(calls[0]?.values).toContain(JSON.stringify(["t1|negative_margin|last_month"]));
-    expect(String(calls[0]?.values[0])).toContain("job_failures");
+    // raw arrays for the ::jsonb parameters (a pre-stringified value would be stored as a JSON string scalar)
+    expect(calls[0]?.values).toContainEqual(["t1|negative_margin|last_month"]);
+    expect(calls[0]?.values[0]).toContain("job_failures");
     // never touches rules other jobs own (agent_regression_*)
     expect(String(calls[0]?.values[0])).not.toContain("agent_regression");
   });
