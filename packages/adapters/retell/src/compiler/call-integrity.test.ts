@@ -204,7 +204,7 @@ describe("compile-time tool guidance", () => {
     expect(g.description).toContain("recorded:true");
   });
 
-  it("update_booking: the model no longer supplies the end time", () => {
+  it("update_booking: new_end stays schema-required but is documented as ignored (the booking keeps its length)", () => {
     const g = withToolGuidance(
       "update_booking",
       "d",
@@ -214,7 +214,8 @@ describe("compile-time tool guidance", () => {
         "new_end",
       ]),
     );
-    expect(g.parameters.required).toEqual(["booking_id", "new_start"]);
+    expect(g.parameters.required).toEqual(["booking_id", "new_start", "new_end"]);
+    expect(JSON.stringify(g.parameters)).toContain("original length");
     expect(g.description).toContain("check_availability");
   });
 

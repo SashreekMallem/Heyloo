@@ -101,9 +101,10 @@ export function withToolGuidance<P extends object>(
         "time back to the caller before calling this. The booking keeps its original length.";
       params = patchProperty(params, ["new_start"], { description: OFFSET_HINT });
       params = patchProperty(params, ["new_end"], {
-        description: "Optional: omit it. The booking keeps its original length.",
+        description:
+          "New start plus the booking's original length. The server always keeps the " +
+          "booking's original length, whatever this says.",
       });
-      params = withoutRequired(params, ["new_end"]);
       break;
     case "join_waitlist":
       params = patchProperty(params, ["preferred_window_start"], { description: OFFSET_HINT });

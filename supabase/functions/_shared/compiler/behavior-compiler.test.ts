@@ -145,7 +145,7 @@ describe("compile-time tool guidance (F1, F4, F8, F-AUTO-RESCHED-1)", () => {
         ),
       ).toContain("intake_status");
       if (byName.has("update_booking")) {
-        expect(params("update_booking").required ?? [], vertical).not.toContain("new_end");
+        expect(JSON.stringify(params("update_booking")), vertical).toContain("original length");
       }
       if (byName.has("send_sms_confirmation")) {
         expect(params("send_sms_confirmation").properties?.["template_key"]?.["enum"]).toEqual([
