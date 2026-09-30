@@ -27,10 +27,12 @@
  * at test time, so this is a genuine cross-compiler run, not a stub.
  */
 
+import { readFileSync } from "node:fs";
 import type { AgentTemplate } from "@heyloo/canonical-types";
 import type { ConversationFlowCreateParams } from "retell-sdk/resources/conversation-flow";
 import type { LlmCreateParams } from "retell-sdk/resources/llm";
 import { describe, expect, it } from "vitest";
+import { CALL_INTEGRITY_INSTRUCTIONS } from "./call-integrity.js";
 import { compileConversationFlow as compileNodeConversationFlow } from "./conversation-flow.js";
 import { compileMultiPrompt as compileNodeMultiPrompt } from "./multi-prompt.js";
 import {
@@ -501,4 +503,111 @@ describe("Deno <-> Node parity: SETTINGS-2 owner-info block and compiler version
       expect(node, `node ${target}`).toContain(NODE_OWNER_INFO_INSTRUCTIONS);
     }
   });
+});
+
+describe("Deno <-> Node parity: BEHAVIOR-voice-agent call-integrity rules, tool guidance and flow structure", () => {
+  interface LooseNode {
+    id: string;
+    tool_ids?: string[];
+    global_node_setting?: { condition: string };
+    edges?: Array<{ destination_node_id: string; transition_condition?: { prompt?: string } }>;
+  }
+  interface LooseTool {
+    name: string;
+    description: string;
+    parameters: unknown;
+  }
+  interface LooseBody {
+    tools?: LooseTool[];
+    general_tools?: LooseTool[];
+    states?: Array<{
+      name: string;
+      tools?: LooseTool[];
+      edges?: Array<{ destination_state_name: string; description: string }>;
+    }>;
+    nodes?: LooseNode[];
+    global_prompt?: string;
+    general_prompt?: string;
+  }
+
+  const toolMap = (
+    body: LooseBody,
+  ): Record<string, { description: string; parameters: unknown }> => {
+    const all = [
+      ...(body.tools ?? []),
+      ...(body.general_tools ?? []),
+      ...(body.states ?? []).flatMap((s) => s.tools ?? []),
+    ].filter((t) => t.description !== undefined && t.parameters !== undefined);
+    return Object.fromEntries(
+      all.map((t) => [t.name, { description: t.description, parameters: t.parameters }]),
+    );
+  };
+  const flowShape = (body: LooseBody) =>
+    Object.fromEntries(
+      (body.nodes ?? []).map((n) => [
+        n.id,
+        {
+          tool_ids: [...(n.tool_ids ?? [])].sort(),
+          global: n.global_node_setting?.condition ?? null,
+          conditions: (n.edges ?? [])
+            .map((e) => `${e.destination_node_id}|${e.transition_condition?.prompt ?? ""}`)
+            .sort(),
+        },
+      ]),
+    );
+
+  const artifactPath = new URL("../../../../templates/dist/templates.build.json", import.meta.url);
+  const registry = (
+    JSON.parse(readFileSync(artifactPath, "utf8")) as {
+      templates: { key: string; template: AgentTemplate }[];
+    }
+  ).templates;
+
+  it("the call-integrity block is byte-identical", async () => {
+    const deno = (await loadDenoCompiler()) as DenoCompilerModule & {
+      CALL_INTEGRITY_INSTRUCTIONS: string;
+    };
+    expect(CALL_INTEGRITY_INSTRUCTIONS).toBe(deno.CALL_INTEGRITY_INSTRUCTIONS);
+  });
+
+  for (const target of ["conversation_flow", "multi_prompt", "single_prompt"] as const) {
+    it(`every real template compiled as ${target}: same tool descriptions/schemas and, for a flow, same tool_ids, global conditions and edge conditions`, async () => {
+      const deno = await loadDenoCompiler();
+      for (const { key, template } of registry) {
+        const t = { ...template, compile_target: target } as AgentTemplate;
+        const denoBody = deno.compileTemplate(t, TOOL_WEBHOOK_URL).flow
+          .body as unknown as LooseBody;
+        const nodeBody = (target === "conversation_flow"
+          ? compileNodeConversationFlow(t, TOOL_WEBHOOK_URL)
+          : target === "multi_prompt"
+            ? compileNodeMultiPrompt(t, TOOL_WEBHOOK_URL)
+            : compileNodeSinglePrompt(t, TOOL_WEBHOOK_URL)) as unknown as LooseBody;
+        expect(toolMap(nodeBody), `${key} tools as ${target}`).toEqual(toolMap(denoBody));
+        if (target === "conversation_flow") {
+          const d = flowShape(denoBody);
+          const n = flowShape(nodeBody);
+          for (const id of Object.keys(n)) {
+            if (!(id in d)) continue;
+            // The transfer router differs by node type only (documented above), and
+            // this package never gives the START node tools (its header comment),
+            // where the Deno compiler does: tool_ids are compared for the rest.
+            if (id !== t.states[0]?.id) {
+              expect(n[id]?.tool_ids, `${key}/${id} tool_ids`).toEqual(d[id]?.tool_ids);
+            }
+            expect(n[id]?.global, `${key}/${id} global`).toEqual(d[id]?.global);
+            expect(n[id]?.conditions, `${key}/${id} edges`).toEqual(d[id]?.conditions);
+          }
+        } else if (target === "multi_prompt") {
+          const edges = (b: LooseBody) =>
+            Object.fromEntries(
+              (b.states ?? []).map((s) => [
+                s.name,
+                (s.edges ?? []).map((e) => `${e.destination_state_name}|${e.description}`).sort(),
+              ]),
+            );
+          expect(edges(nodeBody), `${key} multi_prompt edges`).toEqual(edges(denoBody));
+        }
+      }
+    });
+  }
 });

@@ -19,7 +19,7 @@
  */
 
 import type { AgentTemplate } from "@heyloo/canonical-types";
-import { withCustomAnswersParameter } from "./custom-answers.js";
+import { customToolFields } from "./call-integrity.js";
 import {
   buildOpeningLine,
   COMPILER_DEFAULT_DYNAMIC_VARIABLES,
@@ -60,15 +60,10 @@ export function compileSinglePrompt(
     const functionTool: RetellFunctionTool = {
       type: "custom",
       name: tool.name,
-      description: tool.description,
       url: toolWebhookUrl,
       // `properties` is REQUIRED per retell-typescript-sdk's `CustomTool.
       // Parameters` — default an omitted one to `{}` (RETELL-VERIFY).
-      parameters: withCustomAnswersParameter(tool.name, {
-        type: "object",
-        properties: tool.parameters.properties ?? {},
-        ...(tool.parameters.required !== undefined ? { required: tool.parameters.required } : {}),
-      }),
+      ...customToolFields(tool),
     };
     return functionTool;
   });

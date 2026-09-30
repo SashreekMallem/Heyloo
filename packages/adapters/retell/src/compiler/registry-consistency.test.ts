@@ -339,7 +339,17 @@ describe("tool-bearing states lock to a Retell SubagentNode / TransferCallNode (
         expect(node, `state '${state.id}' has no compiled node`).toBeDefined();
         expect(node?.type).toBe("subagent");
         if (node?.type === "subagent") {
-          expect([...(node.tool_ids ?? [])].sort()).toEqual([...state.allowed_tools].sort());
+          // VCC-1: a node holding a booking/order write tool is also granted
+          // take_message (see call-integrity.ts), when the template declares it.
+          const writes = state.allowed_tools.some((t) =>
+            ["create_booking", "update_booking", "cancel_booking", "create_order"].includes(t),
+          );
+          const declaresTakeMessage = template.tools.some((t) => t.name === "take_message");
+          const expected =
+            writes && declaresTakeMessage && !state.allowed_tools.includes("take_message")
+              ? [...state.allowed_tools, "take_message"]
+              : [...state.allowed_tools];
+          expect([...(node.tool_ids ?? [])].sort()).toEqual(expected.sort());
         }
       }
     });

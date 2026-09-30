@@ -14,8 +14,17 @@
  * transfer destinations, booking/take-a-message rules, professional limits).
  */
 
+import { CALL_INTEGRITY_INSTRUCTIONS } from "./call-integrity.js";
+
+/**
+ * Version history (mirrors the Deno constant's own list): 3 - BEHAVIOR-voice-agent:
+ * the call-integrity rules block (`call-integrity.ts`), compile-time tool guidance
+ * (time offsets, take_message partial intake, SMS template keys), take_message on every
+ * booking-write node, message-state and fallback exit conditions, a leave-a-message
+ * global node, and descriptive edge conditions.
+ */
 /** Compiler-output version stamped on `agent_configs.compiled_with_version`; bump with the Deno constant. */
-export const AGENT_COMPILER_VERSION = 2;
+export const AGENT_COMPILER_VERSION = 3;
 
 export const OWNER_INFO_INSTRUCTIONS =
   "Business settings for this call. Booking status right now: {{booking_mode_text}} " +
@@ -52,7 +61,8 @@ export const OWNER_INFO_INSTRUCTIONS =
   "custom_answers, one {question_id, answer} for each question you asked, using the id shown in " +
   "brackets, and never invent an answer. Read those answers back with the other details before " +
   "you confirm. If a tool reply says a required question is still needed, ask it and call the " +
-  "tool again.\n" +
+  "tool again.\n\n" +
+  CALL_INTEGRITY_INSTRUCTIONS +
   "[[BEGIN OWNER INFO]]\n" +
   "Owner guidance (blank means none): {{special_instructions}}\n" +
   "Cancellation policy: {{cancellation_policy_text}}\n" +

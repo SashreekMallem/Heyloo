@@ -26,7 +26,7 @@
  */
 
 import type { AgentTemplate } from "@heyloo/canonical-types";
-import { withCustomAnswersParameter } from "./custom-answers.js";
+import { customToolFields, edgeConditionText } from "./call-integrity.js";
 import {
   buildOpeningLine,
   COMPILER_DEFAULT_DYNAMIC_VARIABLES,
@@ -96,15 +96,10 @@ export function compileMultiPrompt(
     const functionTool: RetellFunctionTool = {
       type: "custom",
       name: tool.name,
-      description: tool.description,
       url: toolWebhookUrl,
       // `properties` is REQUIRED per retell-typescript-sdk's `CustomTool.
       // Parameters` — default an omitted one to `{}` (RETELL-VERIFY).
-      parameters: withCustomAnswersParameter(tool.name, {
-        type: "object",
-        properties: tool.parameters.properties ?? {},
-        ...(tool.parameters.required !== undefined ? { required: tool.parameters.required } : {}),
-      }),
+      ...customToolFields(tool),
     };
     return functionTool;
   });
@@ -150,7 +145,7 @@ export function compileMultiPrompt(
     if (fromState.edges.some((e) => e.destination_state_name === transition.to)) continue;
     fromState.edges.push({
       destination_state_name: transition.to,
-      description: transition.on.intent ?? transition.on.predicate ?? "",
+      description: edgeConditionText(transition.on.intent ?? transition.on.predicate ?? ""),
     });
   }
 

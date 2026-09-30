@@ -112,7 +112,17 @@
  */
 
 import type { AgentState, AgentTemplate, Transition } from "@heyloo/canonical-types";
-import { withCustomAnswersParameter } from "./custom-answers.js";
+import {
+  customToolFields,
+  edgeConditionText,
+  FALLBACK_DONE_CONDITION,
+  isMessageState,
+  LEAVE_MESSAGE_GLOBAL_CONDITION,
+  MESSAGE_STATE_EXIT_CONDITION,
+  TAKE_MESSAGE_FALLBACK_STATE_ID,
+  WRAP_UP_NOT_WHILE_MESSAGE,
+  WRITE_TOOL_NAMES_FOR_MESSAGE,
+} from "./call-integrity.js";
 import {
   buildOpeningLine,
   COMPILER_DEFAULT_DYNAMIC_VARIABLES,
@@ -197,7 +207,10 @@ function isTransferOnlyState(state: AgentState): boolean {
 function toolResultTransitionCondition(transition: Transition): RetellTransitionCondition {
   const toolResult = transition.on.tool_result;
   if (!toolResult) {
-    return { type: "prompt", prompt: transition.on.intent ?? transition.on.predicate ?? "" };
+    return {
+      type: "prompt",
+      prompt: edgeConditionText(transition.on.intent ?? transition.on.predicate ?? ""),
+    };
   }
   const equation: RetellEquation = {
     left: toolResult.variable,
@@ -297,11 +310,7 @@ function buildTransferOnlyNodes(
           destination_node_id: `${state.id}__end`,
           transition_condition: {
             type: "prompt",
-            prompt:
-              "you have already clearly told the caller you can't connect them to anyone right " +
-              "now (restating any emergency referral) and offered to take a message at least " +
-              "once, or told them their message is already with the team — end here even if " +
-              "the caller keeps repeating the same request",
+            prompt: FALLBACK_DONE_CONDITION,
           },
         },
       ]
@@ -339,9 +348,22 @@ function buildNode(
   state: AgentState,
   isStart: boolean,
   knownToolNames: Set<string>,
+  canTakeMessage: boolean,
 ): RetellConversationFlowNode {
   const requestedTools = state.allowed_tools ?? [];
   const toolIds = requestedTools.filter((name) => knownToolNames.has(name));
+  // VCC-1: a node that can write or change a booking or order can always also
+  // take a message. In Manual Mode (or when a slot just filled, or a write is
+  // refused) the agent must hand the request to the team, and without this the
+  // only node holding create_booking had no way to record it, so the request
+  // was told "taken" and lost.
+  if (
+    canTakeMessage &&
+    !toolIds.includes(TAKE_MESSAGE_TOOL_NAME) &&
+    toolIds.some((name) => WRITE_TOOL_NAMES_FOR_MESSAGE.has(name))
+  ) {
+    toolIds.push(TAKE_MESSAGE_TOOL_NAME);
+  }
 
   if (!isStart && toolIds.length > 0) {
     const subagentNode: RetellSubagentNode = {
@@ -400,20 +422,18 @@ export function compileConversationFlow(
     .map((tool) => ({
       type: "custom",
       name: tool.name,
-      description: tool.description,
       url: toolWebhookUrl,
       // `properties` is REQUIRED per retell-typescript-sdk's `CustomTool.
       // Parameters` even though the canonical `JsonSchemaObject` allows
       // omitting it for template-authoring convenience — default to `{}`.
-      parameters: withCustomAnswersParameter(tool.name, {
-        type: "object",
-        properties: tool.parameters.properties ?? {},
-        ...(tool.parameters.required !== undefined ? { required: tool.parameters.required } : {}),
-      }),
+      // The description/parameters also carry the compile-time tool guidance
+      // (`call-integrity.ts`).
+      ...customToolFields(tool),
       ...(singleLockedToolNames.has(tool.name)
         ? { speak_during_execution: true, speak_after_execution: true }
         : {}),
     }));
+  const declaresTakeMessage = tools.some((t) => t.name === TAKE_MESSAGE_TOOL_NAME);
   const knownToolNames = new Set(tools.map((t) => t.name));
   knownToolNames.add(TAKE_MESSAGE_TOOL_NAME); // always grantable to the no-transfer-number fallback if declared
 
@@ -434,7 +454,7 @@ export function compileConversationFlow(
       endEdgeOwner.set(state.id, built.endEdgeOwner);
       continue;
     }
-    const node = buildNode(state, isStart, knownToolNames);
+    const node = buildNode(state, isStart, knownToolNames, declaresTakeMessage);
     nodesById.set(state.id, node);
     endEdgeOwner.set(state.id, node);
   }
@@ -448,6 +468,7 @@ export function compileConversationFlow(
   }
 
   applyGlobalIntents(nodesById, template);
+  applyLeaveMessageGlobal(nodesById, template);
 
   const startStateId = startState?.id ?? "";
   const startNode = startState ? nodesById.get(startState.id) : undefined;
@@ -489,7 +510,12 @@ export function compileConversationFlow(
       destination_node_id: endNodeId,
       transition_condition: {
         type: "prompt",
-        prompt: "this state's business is fully done and the caller has nothing further to discuss",
+        // F-DENTAL-MSG-1: a take-a-message state may only be left once
+        // take_message has succeeded or the caller declined; the generic
+        // "business is done" exit let the model leave with nothing recorded.
+        prompt: isMessageState(state)
+          ? MESSAGE_STATE_EXIT_CONDITION
+          : "this state's business is fully done and the caller has nothing further to discuss",
       },
     });
   }
@@ -565,7 +591,8 @@ export function compileConversationFlow(
         "in progress, so it's a natural moment to check whether they need anything else; OR the " +
         "caller says goodbye, thanks you, or otherwise indicates they're done with the call even " +
         "though nothing was actually resolved yet (for example they declined to book or ask " +
-        "anything after the greeting).",
+        "anything after the greeting)." +
+        WRAP_UP_NOT_WHILE_MESSAGE,
     },
   };
   const wrapUpEndNode: RetellEndNode = {
@@ -588,6 +615,27 @@ export function compileConversationFlow(
     ? `${template.system_prompt}\n\n${OWNER_INFO_INSTRUCTIONS}`
     : OWNER_INFO_INSTRUCTIONS;
   return flow;
+}
+
+/**
+ * F3: only legal and real_estate wire a give-up global intent to
+ * `take_message_fallback`, so in every other vertical a caller who asked to
+ * leave a message from a collect-* step (or anywhere but the greeting) had no
+ * path to the only node that can record it. When the template wires nothing to
+ * that state globally, it becomes reachable from anywhere on an explicit
+ * leave-a-message request.
+ */
+function applyLeaveMessageGlobal(
+  nodesById: Map<string, RetellConversationFlowNode>,
+  template: AgentTemplate,
+): void {
+  const node = nodesById.get(TAKE_MESSAGE_FALLBACK_STATE_ID);
+  if (!node || node.type === "end" || node.type === "transfer_call") return;
+  if (node.global_node_setting) return;
+  if (template.global_intents.some((g) => g.target_state === TAKE_MESSAGE_FALLBACK_STATE_ID)) {
+    return;
+  }
+  node.global_node_setting = { condition: LEAVE_MESSAGE_GLOBAL_CONDITION };
 }
 
 function applyGlobalIntents(
