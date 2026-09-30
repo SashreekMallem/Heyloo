@@ -10,7 +10,7 @@ import { getSql, isDbConnectionWarm, markDbConnectionUsed } from "../_shared/den
 import { optionalEnv, requireRetellWebhookKey } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { buildMessagingRegistryFromEnv } from "../_shared/providers/messaging/registry.ts";
-import { fallbackEnvelope, jsonResponse } from "../_shared/responses.ts";
+import { jsonResponse, unavailableEnvelope } from "../_shared/responses.ts";
 import { verifyRetellSignature } from "../_shared/retell-signature.ts";
 import { withTimeout } from "../_shared/timeout.ts";
 import {
@@ -125,7 +125,7 @@ Deno.serve(async (req: Request) => {
     if (breaker.isOpen(name)) {
       logger.warn("voice_tools_circuit_open", { tool: name, call_id });
     }
-    return jsonResponse(fallbackEnvelope());
+    return jsonResponse(unavailableEnvelope(name));
   }
 
   const sql = getSql({ statementTimeoutMs: STATEMENT_TIMEOUT_MS, profile: "hot_path" });
@@ -176,7 +176,7 @@ Deno.serve(async (req: Request) => {
     success = false;
     errorType = err instanceof Error ? err.message : String(err);
     logger.error("voice_tools_dispatch_error", { tool: name, call_id, error: errorType });
-    responseBody = fallbackEnvelope();
+    responseBody = unavailableEnvelope(name);
   }
 
   const tDone = performance.now();

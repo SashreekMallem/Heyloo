@@ -651,3 +651,51 @@ describe("dispatchTool — create_booking time arguments (HOTPATH-REVIEW)", () =
     expect(BOOKING_PENDING_MESSAGE).toContain("do not tell the caller it is booked");
   });
 });
+
+describe("F1: dispatchTool reads offset-less times in the tenant timezone", () => {
+  it("check_availability binds 09:00 Chicago as 14:00Z, not 09:00Z", async () => {
+    const bound: unknown[][] = [];
+    const base = makeDeps({ id: "cl1", tenant_id: "t1", caller_number: "+15551234567" });
+    const inner = base.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("select timezone from public.tenants")) {
+        return Promise.resolve([{ timezone: "America/Chicago" }]);
+      }
+      if (text.includes("from public.availability_slots")) bound.push(values);
+      return inner(strings, ...values);
+    }) as SqlClient;
+    await dispatchTool({ ...base, sql }, "call_0123456789abcdef01234567", "check_availability", {
+      date_range: { start: "2026-09-30T09:00:00", end: "2026-09-30T10:00:00" },
+    });
+    expect(bound[0]).toContain("2026-09-30T14:00:00.000Z");
+    expect(bound[0]).toContain("2026-09-30T15:00:00.000Z");
+  });
+});
+
+describe("F1: join_waitlist also reads naive times as the tenant's wall clock", () => {
+  it("binds the window in the tenant timezone", async () => {
+    const bound: unknown[][] = [];
+    const base = makeDeps({ id: "cl1", tenant_id: "t1", caller_number: "+15551234567" });
+    const inner = base.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("select timezone from public.tenants")) {
+        return Promise.resolve([{ timezone: "America/Denver" }]);
+      }
+      if (text.includes("insert into public.customers")) return Promise.resolve([{ id: "c1" }]);
+      if (text.includes("insert into public.waitlist_entries")) {
+        bound.push(values);
+        return Promise.resolve([{ id: "w1" }]);
+      }
+      return inner(strings, ...values);
+    }) as SqlClient;
+    await dispatchTool({ ...base, sql }, "call_0123456789abcdef01234567", "join_waitlist", {
+      customer: { name: "Jane Doe", phone: "+15551234567" },
+      preferred_window_start: "2026-10-01T12:00:00",
+      preferred_window_end: "2026-10-01T17:00:00",
+    });
+    expect(bound[0]).toContain("2026-10-01T18:00:00.000Z");
+    expect(bound[0]).toContain("2026-10-01T23:00:00.000Z");
+  });
+});

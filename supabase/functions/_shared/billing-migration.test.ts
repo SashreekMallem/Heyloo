@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 // skips test, not-yet-existing and long-canceled tenants. This guards the
 // properties that matter so a later CREATE OR REPLACE cannot silently drop them.
 const sql = readFileSync(
-  new URL("../../migrations/20260930250000_billing_behavior_fixes.sql", import.meta.url),
+  new URL("../../migrations/20260930260000_billing_behavior_fixes.sql", import.meta.url),
   "utf8",
 );
 

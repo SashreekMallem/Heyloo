@@ -3,6 +3,7 @@ import { alertCustomAnswers } from "../../_shared/custom-questions.ts";
 import { normalizeE164 } from "../../_shared/phone.ts";
 import type { TakeMessageArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { SqlClient } from "../../_shared/types.ts";
+import { isPartialIntake } from "../../_shared/vertical-intake.ts";
 import type { CallContext } from "../context.ts";
 import { type OwnerAlertDeps, raiseOwnerAlert } from "../owner-alert-runner.ts";
 
@@ -10,6 +11,8 @@ type Args = z.infer<typeof TakeMessageArgsSchema>;
 
 export interface TakeMessageResult {
   recorded: true;
+  /** F5: set when the intake was stored incomplete (`structured_payload.intake_status: "partial"`); the message is recorded either way. */
+  partial?: true;
 }
 
 /**
@@ -93,5 +96,5 @@ export async function takeMessage(
     relatedCallId: ctx.callLogId,
   });
 
-  return { recorded: true };
+  return isPartialIntake(args) ? { recorded: true, partial: true } : { recorded: true };
 }

@@ -3,6 +3,7 @@ import { normalizeE164, samePhone } from "../../_shared/phone.ts";
 import type { LookupCustomerArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { Logger, SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
+import { formatLocalHuman, toTenantLocalIso } from "./local-time.ts";
 
 type Args = z.infer<typeof LookupCustomerArgsSchema>;
 
@@ -15,8 +16,23 @@ interface CustomerRow {
 
 interface RecentBookingRow {
   id: string;
-  start_at: string;
+  start_at: string | Date;
   status: string;
+  /** `offerings.name` of the booked service, when the booking carries one. */
+  service?: string | null;
+  /** `tenants.timezone`, the same on every row (one scalar subselect). */
+  tz?: string | null;
+}
+
+/** What the model reads for one upcoming booking: the time already in the business's own timezone (VCC-2 / F2). */
+export interface UpcomingBooking {
+  id: string;
+  /** ISO 8601 in the business's timezone WITH its UTC offset, e.g. `2026-10-02T09:00:00-06:00`. */
+  start_at: string;
+  /** The same instant as spoken, e.g. `Fri, Oct 2, 9:00 AM`. Say this, never a UTC time. */
+  start_local: string;
+  status: string;
+  service?: string;
 }
 
 interface CustomerAddressRow {
@@ -62,7 +78,8 @@ export type LookupCustomerResult =
       found: true;
       name: string | null;
       segment: string;
-      recent_bookings: { id: string; start_at: string; status: string }[];
+      /** Upcoming (not yet ended), not cancelled, soonest first. */
+      recent_bookings: UpcomingBooking[];
       vehicles?: unknown;
       pets?: unknown;
       addresses?: CustomerAddressRow[];
@@ -167,13 +184,31 @@ export async function lookupCustomer(
         };
   }
 
+  // F2 / VCC-2: only bookings that can still be changed (not cancelled, not
+  // over), soonest first, with the time in the business's own timezone and the
+  // service name. The raw UTC `start_at` used to reach the model, which then
+  // spoke "3:00 PM" for a 9:00 AM booking and, with several bookings on one
+  // day, picked the wrong id to cancel.
   const bookingRows = await sql<RecentBookingRow>`
-    select id, start_at, status
-    from public.bookings
-    where tenant_id = ${ctx.tenantId} and customer_id = ${customer.id}
-    order by start_at desc
+    select b.id, b.start_at, b.status, o.name as service,
+      (select timezone from public.tenants where id = ${ctx.tenantId}) as tz
+    from public.bookings b
+    left join public.offerings o on o.id = b.offering_id and o.tenant_id = b.tenant_id
+    where b.tenant_id = ${ctx.tenantId} and b.customer_id = ${customer.id}
+      and b.status in ('scheduled', 'confirmed') and b.end_at > now()
+    order by b.start_at asc
     limit 5
   `;
+  const upcoming: UpcomingBooking[] = bookingRows.map((row) => {
+    const local = toTenantLocalIso(row.start_at, row.tz);
+    return {
+      id: row.id,
+      start_at: typeof local === "string" ? local : String(local),
+      start_local: formatLocalHuman(row.start_at, row.tz),
+      status: row.status,
+      ...(row.service ? { service: row.service } : {}),
+    };
+  });
 
   // GAP_REGISTER.md §1.8 — delivery addresses live in `customer_addresses`
   // (the structured mechanism `customers.metadata`'s own column comment
@@ -200,7 +235,7 @@ export async function lookupCustomer(
     found: true,
     name: customer.name,
     segment: customer.segment,
-    recent_bookings: bookingRows,
+    recent_bookings: upcoming,
     ...(vehicles !== undefined ? { vehicles } : {}),
     ...(pets !== undefined ? { pets } : {}),
     ...(addressRows.length > 0 ? { addresses: addressRows } : {}),

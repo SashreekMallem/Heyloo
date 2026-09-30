@@ -76,6 +76,13 @@ export const INVALID_DATE_RANGE_MESSAGE =
  * 3) filters to resources whose `capacity` can seat the party — previously
  * accepted by the schema but never applied.
  *
+ * F13: the room-type filter is case-insensitive (the model passes the rate-table
+ * name, "Standard queen room", where the resource says "standard queen room"), and it
+ * is ignored when the tenant has configured NO room types at all: the portal never
+ * required `resources.room_type` to match the rate table, and with the exact match
+ * every motel that skipped it read as sold out. A tenant that HAS tiers still gets
+ * an exact (case-insensitive) match, so a tier that does not exist stays unavailable.
+ *
  * HOTPATH: both queries apply the same "not already started" cutoff, which
  * is timezone-independent because it compares `timestamptz` instants with
  * `now()`: a slot is offerable when it starts at least
@@ -145,7 +152,14 @@ export async function checkAvailability(
         select id from public.resources
         where tenant_id = ${ctx.tenantId} and active
           and (${resourceType}::text is null or type = ${resourceType})
-          and (${roomType}::text is null or room_type = ${roomType})
+          and (
+            ${roomType}::text is null
+            or lower(room_type) = lower(${roomType})
+            or not exists (
+              select 1 from public.resources rt
+              where rt.tenant_id = ${ctx.tenantId} and rt.active and rt.room_type is not null
+            )
+          )
           and (${partySize}::int is null or capacity >= ${partySize})
       )
     order by slot_start asc
@@ -179,7 +193,14 @@ export async function checkAvailability(
           select id from public.resources
           where tenant_id = ${ctx.tenantId} and active
             and (${resourceType}::text is null or type = ${resourceType})
-            and (${roomType}::text is null or room_type = ${roomType})
+            and (
+            ${roomType}::text is null
+            or lower(room_type) = lower(${roomType})
+            or not exists (
+              select 1 from public.resources rt
+              where rt.tenant_id = ${ctx.tenantId} and rt.active and rt.room_type is not null
+            )
+          )
             and (${partySize}::int is null or capacity >= ${partySize})
         )
       order by slot_start asc

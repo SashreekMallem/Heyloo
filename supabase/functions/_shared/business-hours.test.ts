@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computeGreetingHoursContext,
   computeUpcomingWeekdayDates,
+  formatBusinessHoursText,
   isOpenAt,
 } from "./business-hours.ts";
 
@@ -127,5 +128,54 @@ describe("isOpenAt (SETTINGS-2 call routing)", () => {
 
   it("treats a business with no hours configured at all as always open", () => {
     expect(isOpenAt(new Date("2026-01-11T18:00:00.000Z"), TZ, {})).toBe(true);
+  });
+});
+
+describe("formatBusinessHoursText (F-HOURS-1, F6, VCC-3)", () => {
+  const CHICAGO = "America/Chicago";
+  const DENTAL = {
+    mon: [{ open: "08:00", close: "17:00" }],
+    tue: [{ open: "08:00", close: "17:00" }],
+    wed: [{ open: "08:00", close: "17:00" }],
+    thu: [{ open: "08:00", close: "17:00" }],
+    fri: [{ open: "08:00", close: "14:00" }],
+    sat: [],
+    sun: [],
+  };
+  // Wednesday 2026-09-30, mid-morning local.
+  const NOW = new Date("2026-09-30T15:00:00.000Z");
+
+  it("renders the weekly schedule with consecutive identical days grouped", () => {
+    expect(formatBusinessHoursText(NOW, CHICAGO, DENTAL)).toBe(
+      "Mon-Thu 8 AM-5 PM, Fri 8 AM-2 PM, Sat-Sun closed.",
+    );
+  });
+
+  it("lists upcoming exceptions in the tenant timezone and drops past ones", () => {
+    const text = formatBusinessHoursText(NOW, CHICAGO, DENTAL, [
+      { date: "2026-11-26", closed: true, label: "Thanksgiving" } as never,
+      { date: "2026-12-24", hours: [{ open: "09:00", close: "12:00" }] },
+      { date: "2026-01-01", closed: true },
+    ]);
+    expect(text).toBe(
+      "Mon-Thu 8 AM-5 PM, Fri 8 AM-2 PM, Sat-Sun closed. Exceptions: closed 2026-11-26 (Thanksgiving); 2026-12-24 9 AM-12 PM.",
+    );
+  });
+
+  it("handles split days and open-24-hours days", () => {
+    expect(
+      formatBusinessHoursText(NOW, CHICAGO, {
+        mon: [
+          { open: "09:00", close: "12:00" },
+          { open: "13:00", close: "17:00" },
+        ],
+        sun: [{ open: "00:00", close: "23:59" }],
+      }),
+    ).toBe("Mon 9 AM-12 PM and 1 PM-5 PM, Tue-Sat closed, Sun open 24 hours.");
+  });
+
+  it("says nothing when the tenant entered no hours at all (never guessed)", () => {
+    expect(formatBusinessHoursText(NOW, CHICAGO, {})).toBe("");
+    expect(formatBusinessHoursText(NOW, CHICAGO, { mon: [], tue: [] })).toBe("");
   });
 });

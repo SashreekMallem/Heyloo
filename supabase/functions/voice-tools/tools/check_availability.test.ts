@@ -317,3 +317,24 @@ describe("checkAvailability — HOTPATH-REVIEW: time arguments are parsed before
     expect(result.none_available).toBe(true);
   });
 });
+
+describe("F13: room type matching (case-insensitive, and ignored when the tenant configured no tiers)", () => {
+  it("compares room_type case-insensitively and falls back to untyped when no resource has a room type", async () => {
+    const texts: string[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      texts.push(strings.join(" "));
+      return Promise.resolve([]);
+    }) as SqlClient;
+    await checkAvailability(sql, ctx, {
+      room_type: "Standard queen room",
+      date_range: { start: "2026-10-02T00:00:00Z", end: "2026-10-04T00:00:00Z" },
+    });
+    expect(texts.length).toBeGreaterThan(0);
+    for (const text of texts) {
+      expect(text).toContain("lower(room_type) = lower(");
+      expect(text).toContain("rt.room_type is not null");
+      expect(text).toContain("rt.tenant_id =");
+      expect(text).not.toMatch(/room_type = \$\{roomType\}\)/);
+    }
+  });
+});

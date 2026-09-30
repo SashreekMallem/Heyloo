@@ -1,7 +1,7 @@
 import type { z } from "zod";
 import type { ListOfferingsArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { SqlClient } from "../../_shared/types.ts";
-import type { CallContext } from "../context.ts";
+import { type CallContext, isPlaceholderCallId } from "../context.ts";
 
 type Args = z.infer<typeof ListOfferingsArgsSchema>;
 
@@ -13,7 +13,23 @@ interface OfferingRow {
   price_cents: number | null;
 }
 
+/**
+ * F-SPEECH-1: the dental triage prompt says "call list_offerings ONCE", and a live run
+ * called it five times (each time speaking a filler, which the caller heard as a stall).
+ * After the first answer for a (call, category) the same question is answered with a
+ * short "already listed" instead of repeating the catalog. Per isolate and best effort;
+ * bounded so a long-lived isolate cannot grow it without limit.
+ */
+const LISTED_IN_CALL = new Set<string>();
+const MAX_TRACKED_LISTINGS = 500;
+
+export const ALREADY_LISTED_MESSAGE =
+  "You already have this call's offerings from your earlier list_offerings result. Choose from it; do not call list_offerings again.";
+
 export interface ListOfferingsResult {
+  /** Set instead of repeating the list when this call already received it. */
+  already_listed?: true;
+  message?: string;
   offerings: {
     offering_id: string;
     name: string;
@@ -21,7 +37,7 @@ export interface ListOfferingsResult {
     duration_minutes: number | null;
     price_cents: number | null;
   }[];
-  none_on_file: boolean;
+  none_on_file?: boolean;
 }
 
 /**
@@ -46,6 +62,14 @@ export async function listOfferings(
 ): Promise<ListOfferingsResult> {
   const category = args.category ?? null;
 
+  // Only for a real call id: a batch-test simulator sends the same literal id for every
+  // scenario (`isPlaceholderCallId`), and a repeat there is a different conversation.
+  const dedupe = !isPlaceholderCallId(ctx.retellCallId);
+  const listingKey = `${ctx.tenantId}\u0000${ctx.retellCallId}\u0000${(category ?? "").toLowerCase()}`;
+  if (dedupe && LISTED_IN_CALL.has(listingKey)) {
+    return { already_listed: true, message: ALREADY_LISTED_MESSAGE, offerings: [] };
+  }
+
   const rows = await sql<OfferingRow>`
     select id, name, category, duration_minutes, price_cents
     from public.offerings
@@ -54,6 +78,14 @@ export async function listOfferings(
     order by category nulls last, name
     limit 50
   `;
+
+  if (dedupe) {
+    LISTED_IN_CALL.add(listingKey);
+    if (LISTED_IN_CALL.size > MAX_TRACKED_LISTINGS) {
+      const oldest = LISTED_IN_CALL.values().next().value;
+      if (oldest !== undefined) LISTED_IN_CALL.delete(oldest);
+    }
+  }
 
   return {
     offerings: rows.map((r) => ({

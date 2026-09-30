@@ -232,6 +232,11 @@ interface PreflightRow {
   exact_resource_id: string | null;
   first_available_resource_id: string | null;
   offering_ok: boolean;
+  /** F-OFFERING-1: the price of the offering the model named (`offering_price_cents`). */
+  offering_price_cents?: number | null;
+  /** F-OFFERING-1: when the model sent no offering_id, the ONE active offering whose name equals the visit reason it gave (null when none or ambiguous). */
+  offering_guess_id?: string | null;
+  offering_guess_price_cents?: number | null;
   /** VOICE-ALERTS-1: the offering's name, for the owner's new-booking alert
    * (same statement, no extra round trip). */
   offering_name?: string | null;
@@ -254,6 +259,31 @@ interface PreflightRow {
   deposit_overrides: Record<string, unknown> | null;
 }
 
+/**
+ * F-OFFERING-1: every voice booking had `offering_id` null: the model rarely sends it (it
+ * is an optional string) even after list_offerings. The visit reason it gathered is
+ * usually the offering's own name ("Wellness exam"), so up to two such strings are tried
+ * as an exact, case-insensitive name match against this tenant's active offerings; only
+ * a unique match is used. Never a fuzzy match, never a guess between two.
+ */
+function visitReasonCandidates(
+  payload: Record<string, unknown> | undefined,
+): [string | null, string | null] {
+  const out: string[] = [];
+  for (const key of [
+    "service",
+    "visit_reason",
+    "reason_for_visit",
+    "reason",
+    "service_requested",
+  ]) {
+    const v = payload?.[key];
+    if (typeof v === "string" && v.trim() && v.trim().length <= 80) out.push(v.trim());
+    if (out.length === 2) break;
+  }
+  return [out[0] ?? null, out[1] ?? null];
+}
+
 async function preflight(
   sql: SqlClient,
   ctx: CallContext,
@@ -264,6 +294,7 @@ async function preflight(
 ): Promise<PreflightRow> {
   const lookupFirstAvailable = !args.resource_name;
   const isMotel = ctx.vertical === "motel";
+  const [guess1, guess2] = visitReasonCandidates(args.structured_payload);
   const rows = await sql<PreflightRow>`
     /* create_booking:preflight */
     with replay as (
@@ -302,6 +333,20 @@ async function preflight(
         select 1 from public.offerings
         where id = ${offeringId}::uuid and tenant_id = ${ctx.tenantId} and active
       ) end as offering_ok,
+      (select price_cents from public.offerings
+        where id = ${offeringId}::uuid and tenant_id = ${ctx.tenantId}) as offering_price_cents,
+      (select case when count(*) = 1 then (array_agg(o.id))[1] end
+        from public.offerings o
+        where ${offeringId}::uuid is null and ${guess1}::text is not null
+          and o.tenant_id = ${ctx.tenantId} and o.active
+          and lower(o.name) in (lower(${guess1}::text), lower(coalesce(${guess2}::text, '')))
+      ) as offering_guess_id,
+      (select case when count(*) = 1 then (array_agg(o.price_cents))[1] end
+        from public.offerings o
+        where ${offeringId}::uuid is null and ${guess1}::text is not null
+          and o.tenant_id = ${ctx.tenantId} and o.active
+          and lower(o.name) in (lower(${guess1}::text), lower(coalesce(${guess2}::text, '')))
+      ) as offering_guess_price_cents,
       case
         when ${args.end}::timestamptz - ${args.start}::timestamptz >= interval '23 hours'
           then ${args.start}::timestamptz < (
@@ -493,6 +538,9 @@ export async function createBooking(
   if (offeringId && !pre.offering_ok) {
     return { confirmed: false, reason: "offering_not_found" };
   }
+  // F-OFFERING-1: the offering the booking is written against, and its price.
+  const effectiveOfferingId = offeringId ?? pre.offering_guess_id ?? null;
+  const offeringPriceCents = offeringId ? pre.offering_price_cents : pre.offering_guess_price_cents;
 
   // EDGE_AUDIT B1 / OPS-5 (see PreflightRow): every referenced id is
   // verified to belong to the caller's OWN tenant before it's ever written;
@@ -583,13 +631,21 @@ export async function createBooking(
   // transcript re-listen. A malformed/non-integer value is simply dropped
   // (never blocks the booking — hot-path graceful-fallback discipline).
   const rawQuotedRate = structuredPayload["quoted_rate_cents"];
-  const quotedRateCents =
+  const motelQuotedRate =
     ctx.vertical === "motel" &&
     typeof rawQuotedRate === "number" &&
     Number.isInteger(rawQuotedRate) &&
     rawQuotedRate >= 0
       ? rawQuotedRate
       : null;
+  // F-OFFERING-1: otherwise the offering's own price, when it has one (never model-invented).
+  const quotedRateCents =
+    motelQuotedRate ??
+    (typeof offeringPriceCents === "number" &&
+    Number.isInteger(offeringPriceCents) &&
+    offeringPriceCents >= 0
+      ? offeringPriceCents
+      : null);
 
   // HOTPATH: the dispatcher's deadline already passed and it has answered
   // the caller — never start the write after that point.
@@ -621,7 +677,7 @@ export async function createBooking(
           status, party_size, source_call_id, idempotency_key, structured_payload,
           quoted_rate_cents, hold_expires_at, is_test
         ) values (
-          ${ctx.tenantId}, ${resolvedResourceId}, ${offeringId}, (select id from c),
+          ${ctx.tenantId}, ${resolvedResourceId}, ${effectiveOfferingId}, (select id from c),
           ${args.start}, ${args.end}, ${bookingStatus}, ${args.party_size ?? null}, ${ctx.callLogId},
           ${idempotencyKey}, ${structuredPayload}::jsonb,
           ${quotedRateCents}, ${holdExpiresAt}, ${ctx.isTestCall}

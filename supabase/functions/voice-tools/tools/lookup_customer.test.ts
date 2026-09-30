@@ -285,3 +285,95 @@ describe("lookupCustomer — no live caller number (OPS-5, batch-test G6 flakine
     expect(queriedTenant).toBe("tenant_1");
   });
 });
+
+describe("F2 / VCC-2: upcoming bookings are returned in the business's own time", () => {
+  function sqlWith(bookings: unknown[]): { sql: SqlClient; bookingQueries: string[] } {
+    const bookingQueries: string[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      const text = strings.join(" ");
+      if (text.includes("from public.customers")) {
+        return Promise.resolve([
+          { id: "cust_1", name: "Devon Park", segment: "returning", metadata: {} },
+        ]);
+      }
+      if (text.includes("from public.bookings")) {
+        bookingQueries.push(text);
+        return Promise.resolve(bookings);
+      }
+      return Promise.resolve([]);
+    }) as SqlClient;
+    return { sql, bookingQueries };
+  }
+
+  it("renders a 9:00 AM Denver booking as 9:00 AM (start_local) with the -06:00 offset, never 15:00Z", async () => {
+    const { sql } = sqlWith([
+      {
+        id: "b1",
+        start_at: new Date("2026-10-02T15:00:00.000Z"),
+        status: "confirmed",
+        service: "Oil change",
+        tz: "America/Denver",
+      },
+    ]);
+    const result = await lookupCustomer(sql, ctx, {}, logger);
+    expect(result).toMatchObject({
+      found: true,
+      recent_bookings: [
+        {
+          id: "b1",
+          start_at: "2026-10-02T09:00:00-06:00",
+          start_local: "Fri, Oct 2, 9:00 AM",
+          status: "confirmed",
+          service: "Oil change",
+        },
+      ],
+    });
+    expect(JSON.stringify(result)).not.toContain("15:00:00.000Z");
+  });
+
+  it("orders several same-day bookings soonest first and labels each by service so the right one can be picked", async () => {
+    const { sql } = sqlWith([
+      {
+        id: "b1",
+        start_at: "2026-09-30T12:00:00.000Z",
+        status: "confirmed",
+        service: "Oil change",
+        tz: "America/New_York",
+      },
+      {
+        id: "b2",
+        start_at: "2026-09-30T19:00:00.000Z",
+        status: "confirmed",
+        service: "Brake check",
+        tz: "America/New_York",
+      },
+    ]);
+    const result = (await lookupCustomer(sql, ctx, {}, logger)) as {
+      recent_bookings: { id: string; start_local: string; service?: string }[];
+    };
+    expect(result.recent_bookings.map((b) => [b.id, b.start_local, b.service])).toEqual([
+      ["b1", "Wed, Sep 30, 8:00 AM", "Oil change"],
+      ["b2", "Wed, Sep 30, 3:00 PM", "Brake check"],
+    ]);
+  });
+
+  it("asks only for bookings that can still be changed: not cancelled, not over, soonest first", async () => {
+    const { sql, bookingQueries } = sqlWith([]);
+    await lookupCustomer(sql, ctx, {}, logger);
+    expect(bookingQueries).toHaveLength(1);
+    expect(bookingQueries[0]).toContain("b.status in ('scheduled', 'confirmed')");
+    expect(bookingQueries[0]).toContain("b.end_at > now()");
+    expect(bookingQueries[0]).toContain("order by b.start_at asc");
+    expect(bookingQueries[0]).toContain("tenant_id");
+  });
+
+  it("falls back to the UTC ISO string when the tenant timezone is unknown (never throws)", async () => {
+    const { sql } = sqlWith([
+      { id: "b1", start_at: new Date("2026-10-02T15:00:00.000Z"), status: "confirmed", tz: null },
+    ]);
+    const result = (await lookupCustomer(sql, ctx, {}, logger)) as {
+      recent_bookings: { start_at: string }[];
+    };
+    expect(result.recent_bookings[0]?.start_at).toBe("2026-10-02T15:00:00.000Z");
+  });
+});

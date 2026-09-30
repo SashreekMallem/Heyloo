@@ -358,6 +358,8 @@ export async function handleCallAnalyzed(
   // drops any other field or rejects the webhook.
   const customData = analysis?.custom_analysis_data ?? {};
   const parsed = parseCustomAnalysisData(customData);
+  // A connected (or attempted) hand-off to a human: the call may then really be a transfer.
+  const transferred = (call.disconnection_reason ?? "").startsWith("transfer_");
 
   const rows = await sql<{
     id: string;
@@ -365,24 +367,60 @@ export async function handleCallAnalyzed(
     urgency_flag: boolean;
     is_test_call?: boolean;
     caller_number?: string | null;
+    message_text?: string | null;
+    has_write?: boolean;
+    classification?: string | null;
   }>`
     update public.call_logs
     set call_summary = coalesce(${analysis?.call_summary ?? null}, call_summary),
         sentiment = coalesce(${analysis?.user_sentiment ? (sentimentMap[analysis.user_sentiment] ?? null) : null}, sentiment),
         call_successful = coalesce(${analysis?.call_successful ?? null}, call_successful),
-        classification = coalesce(${parsed.classification}, classification),
+        classification = case
+          when ${parsed.classification}::text is null then classification
+          -- F-CLASS-1: a call that recorded a message and made no booking/order, did not end in
+          -- a connected transfer and reported no emergency is a message, whatever the
+          -- post-call model called it (it said transfer_request / question_faq / new_booking).
+          when ${parsed.classification}::text in ('new_booking', 'question_faq', 'transfer_request', 'status_check')
+               and message_text is not null
+               and not ${transferred}::boolean
+               and not ${parsed.emergencyDetected}::boolean
+               and not exists (select 1 from public.bookings wb where wb.source_call_id = call_logs.id)
+               and not exists (select 1 from public.orders wo where wo.source_call_id = call_logs.id)
+            then 'after_hours_message'
+          -- F11: new_booking means a booking or order was made. A waitlist join or a lead
+          -- with nothing written inflated the booking metrics.
+          when ${parsed.classification}::text = 'new_booking'
+               and not exists (select 1 from public.bookings wb where wb.source_call_id = call_logs.id)
+               and not exists (select 1 from public.orders wo where wo.source_call_id = call_logs.id)
+            then 'question_faq'
+          else ${parsed.classification}::text
+        end,
         outcome = coalesce(${parsed.outcome}, outcome),
         follow_up_needed = follow_up_needed or ${parsed.followUpNeeded},
         extracted_entities = coalesce(${customData}::jsonb, extracted_entities),
         transcript = coalesce(${call.transcript_object ?? null}::jsonb, transcript)
     where retell_call_id = ${call.call_id}
-    returning id, tenant_id, urgency_flag, is_test_call, caller_number
+    returning id, tenant_id, urgency_flag, is_test_call, caller_number, message_text, classification,
+      (exists (select 1 from public.bookings wb where wb.source_call_id = call_logs.id)
+        or exists (select 1 from public.orders wo where wo.source_call_id = call_logs.id)) as has_write
   `;
 
   const row = rows[0];
   if (!row) {
     logger.warn("voice_events_call_analyzed_no_matching_call", { call_id: call.call_id });
     return;
+  }
+
+  // F3(d): the agent (or the post-call summary) says a message or callback was taken but
+  // take_message never stored one: the caller's request would be lost. Flag it for follow-up
+  // and put what the analysis knows in front of the owner instead. Never fails the webhook.
+  try {
+    await flagUnrecordedMessage(sql, call, row, parsed, logger);
+  } catch (err) {
+    logger.warn("voice_events_unrecorded_message_flag_failed", {
+      call_id: call.call_id,
+      error: String(err),
+    });
   }
 
   // COCKPIT-1: call_analyzed re-carries the final `call_cost`; upserting it
@@ -447,6 +485,69 @@ export async function handleCallAnalyzed(
       emergency_retroactive: emergencyRetroactive,
     });
   }
+}
+
+/**
+ * F3(d): phrases in the post-call outcome/summary that say a message was taken or a callback
+ * was arranged ("took a message", "message passed to the office", "requested a callback").
+ * Deliberately about the message/callback itself, not any mention of "call": an FAQ call that
+ * ends "caller will call back later" does not need the owner paged (a bare "call back" is the caller's own verb, so only the noun "callback" or a staff member calling back counts).
+ */
+const MESSAGE_CLAIM_PATTERN =
+  /\b(?:took|take|taken|left|leave|recorded|passed|relayed|forwarded|noted)\b.{0,40}\bmessage\b|\bmessage\b.{0,40}\b(?:taken|recorded|passed|relayed|forwarded|left|for the (?:office|team|owner|manager|staff|firm|clinic|shop))\b|\bcallbacks?\b|\b(?:someone|staff|team|office|owner|manager|attorney|doctor|agent)\b.{0,40}\bcall(?:ed|s)?\b.{0,15}\bback\b/i;
+
+const NON_CUSTOMER_CLASSES: ReadonlySet<string> = new Set([
+  "solicitor",
+  "wrong_number",
+  "spam_robocall",
+]);
+
+/** True when the analysis text claims a message/callback was taken. Exported for tests. */
+export function claimsMessageTaken(...texts: (string | null | undefined)[]): boolean {
+  return texts.some((t) => typeof t === "string" && MESSAGE_CLAIM_PATTERN.test(t));
+}
+
+async function flagUnrecordedMessage(
+  sql: SqlClient,
+  call: RetellCallObject,
+  row: {
+    id: string;
+    tenant_id: string;
+    is_test_call?: boolean;
+    caller_number?: string | null;
+    message_text?: string | null;
+    has_write?: boolean;
+    classification?: string | null;
+  },
+  parsed: { outcome: string | null },
+  logger: Logger,
+): Promise<void> {
+  if (row.message_text || row.has_write) return;
+  if (row.classification && NON_CUSTOMER_CLASSES.has(row.classification)) return;
+  const summary = call.call_analysis?.call_summary ?? null;
+  if (!claimsMessageTaken(parsed.outcome, summary)) return;
+
+  logger.error("voice_events_message_claimed_not_recorded", {
+    call_id: call.call_id,
+    tenant_id: row.tenant_id,
+    classification: row.classification ?? null,
+  });
+  await sql`
+    update public.call_logs set follow_up_needed = true
+    where id = ${row.id} and tenant_id = ${row.tenant_id}
+  `;
+  if (row.is_test_call) return;
+  const callerPhone = row.caller_number ?? normalizeE164(call.from_number ?? null);
+  await enqueueOwnerAlert(sql, {
+    tenantId: row.tenant_id,
+    kind: "message_taken",
+    payload: {
+      ...(callerPhone ? { caller_phone: callerPhone } : {}),
+      message_text:
+        `Call summary (no message was saved during the call): ${summary ?? parsed.outcome ?? ""}`.trim(),
+    },
+    relatedCallId: row.id,
+  });
 }
 
 /** Retell `disconnection_reason` for a transfer that was attempted but

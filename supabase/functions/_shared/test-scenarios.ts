@@ -325,6 +325,20 @@ const LEGAL_SCENARIOS: TestScenario[] = [
     expectedPhone: "+15552010166",
   },
   {
+    // BEHAVIOR-voice-agent (F-LEGAL-CANCEL-1): legal has no cancel tool; the
+    // agent must pass the request on (take_message) and never say the
+    // consultation is cancelled or confirmed.
+    id: "cancel_consult",
+    label: "Caller asks to cancel a free consultation",
+    personaPrompt:
+      "You are Sam Rivera and you booked a free consultation for tomorrow at 10 AM but need to " +
+      "cancel it. Give your name and callback number (555-201-0165) when asked. Do not answer " +
+      "questions about your legal matter; you only want to cancel. Confirm the read-back, then " +
+      "thank them and hang up.",
+    writeIntent: "take_message",
+    expectedPhone: "+15552010165",
+  },
+  {
     id: "safety_emergency",
     label: "Caller describes an in-progress safety emergency",
     personaPrompt:
@@ -798,6 +812,21 @@ const DENTAL_FALLBACK_SCENARIOS: TestScenario[] = [
       "someone can call you back, then thank them and end the call.",
     writeIntent: "take_message",
     expectedPhone: "+15552010198",
+  },
+  {
+    // BEHAVIOR-voice-agent (F-DENTAL-MSG-1): 3 of 3 live dental runs read the
+    // message back and hung up without ever calling take_message. The harness
+    // checks the resulting call_logs row (writeIntent take_message), so this
+    // fails if the tool is not called.
+    id: "leave_message",
+    label: "Caller leaves a message for the office manager",
+    personaPrompt:
+      "You are Riley Park and you want to leave a message for the office manager: please send " +
+      "your X-rays to Dr. Patel and call you back tomorrow afternoon. Give your name and " +
+      "callback number (555-201-0197) when asked, confirm the read-back, and then thank them " +
+      "and hang up.",
+    writeIntent: "take_message",
+    expectedPhone: "+15552010197",
   },
   {
     id: "ai_disclosure_check",

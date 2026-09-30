@@ -89,7 +89,7 @@ const W = {
 } as const;
 
 /** Positions of the preflight statement's bound values (0-based). */
-const P = { exactResourceId: 2, lookupFirstAvailable: 5, isMotel: 24 } as const;
+const P = { exactResourceId: 2, lookupFirstAvailable: 5, isMotel: 36 } as const;
 
 type Reply = { rows?: unknown[]; throws?: unknown };
 
@@ -1016,5 +1016,57 @@ describe("findCommittedBooking (HOTPATH timeout recovery read)", () => {
   it("returns null when nothing committed under the key", async () => {
     const { sql } = makeSql([{ match: "create_booking:verify", reply: { rows: [] } }]);
     expect(await findCommittedBooking(sql, ctx, "k")).toBeNull();
+  });
+});
+
+describe("createBooking — F-OFFERING-1: the offering and its price reach the row", () => {
+  const GUESSED = "33333333-3333-3333-3333-333333333333";
+
+  it("resolves the offering server-side from the visit reason when the model sent no offering_id, and quotes its price", async () => {
+    const { sql, textsMatching } = makeSql(
+      bookingRoutes({
+        preflight: { offering_guess_id: GUESSED, offering_guess_price_cents: 6500 } as never,
+      }),
+    );
+    const result = await createBooking(sql, ctx, {
+      ...args,
+      structured_payload: { visit_reason: "Wellness exam" },
+    });
+    expect(result).toMatchObject({ confirmed: true });
+    const pre = textsMatching(PREFLIGHT)[0];
+    expect(pre?.values).toContain("Wellness exam");
+    const write = textsMatching(WRITE)[0]?.values ?? [];
+    expect(write[W.offeringId]).toBe(GUESSED);
+    expect(write[W.quotedRate]).toBe(6500);
+  });
+
+  it("uses the model's own offering_id and that offering's price when it sent one", async () => {
+    const { sql, textsMatching } = makeSql(
+      bookingRoutes({ preflight: { offering_price_cents: 4200 } as never }),
+    );
+    await createBooking(sql, ctx, { ...args, offering_id: OFFERING_ID });
+    const write = textsMatching(WRITE)[0]?.values ?? [];
+    expect(write[W.offeringId]).toBe(OFFERING_ID);
+    expect(write[W.quotedRate]).toBe(4200);
+  });
+
+  it("writes no offering and no rate when nothing matched (never a guess between two)", async () => {
+    const { sql, textsMatching } = makeSql(bookingRoutes({}));
+    await createBooking(sql, ctx, {
+      ...args,
+      structured_payload: { visit_reason: "Something odd" },
+    });
+    const write = textsMatching(WRITE)[0]?.values ?? [];
+    expect(write[W.offeringId]).toBeNull();
+    expect(write[W.quotedRate]).toBeNull();
+  });
+
+  it("an exact-name match is the only kind: the guess statement compares lower(name) for this tenant's active offerings", async () => {
+    const { sql, textsMatching } = makeSql(bookingRoutes({}));
+    await createBooking(sql, ctx, args);
+    const text = textsMatching(PREFLIGHT)[0]?.text ?? "";
+    expect(text).toContain("case when count(*) = 1 then (array_agg(o.id))[1] end");
+    expect(text).toContain("lower(o.name) in (");
+    expect(text).toContain("o.tenant_id =");
   });
 });

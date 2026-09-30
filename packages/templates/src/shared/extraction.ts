@@ -31,7 +31,15 @@ export const CALL_OUTCOME_EXTRACTION_FIELDS: readonly ExtractionField[] = [
       "full taxonomy regardless of which state the call ends in or started in — the " +
       "authoritative post-call classification, which may differ from how the call began if " +
       "the caller's need shifted mid-call (e.g. a routine booking call that turns out to " +
-      "reveal an emergency).",
+      "reveal an emergency). Definitions: new_booking = ONLY if a booking or order was " +
+      "actually made on this call; reschedule/cancel = an existing booking was changed or " +
+      "cancelled, or the caller asked to; question_faq = an information question only; " +
+      "status_check = asked about an existing appointment or order; sales_lead = a " +
+      "prospective customer wanting a quote, valuation or showing, nothing booked; " +
+      "solicitor = a salesperson or vendor; wrong_number; spam_robocall; emergency = an " +
+      "emergency was described; after_hours_message = the caller left a message for staff " +
+      "at any hour and nothing was booked; transfer_request = the caller was connected to " +
+      "a human, or insisted on one.",
   },
   {
     field: "outcome",

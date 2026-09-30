@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import type { SqlClient } from "../_shared/types.ts";
 import {
+  NO_FEE_INFO_TEXT,
   renderMenuFromOfferings,
   resolveAutoTokens,
   resolveCancellationPolicyText,
@@ -18,8 +19,18 @@ const logger = createLogger();
 describe("resolveCancellationPolicyText", () => {
   it("uses the configured text", () => {
     expect(resolveCancellationPolicyText({ cancellation_policy: { text: "24h notice" } })).toBe(
-      "24h notice",
+      `24h notice; ${NO_FEE_INFO_TEXT}`,
     );
+  });
+
+  it("F10: never leaves silence about fees for the model to fill with 'no cancellation fee'", () => {
+    const unset = resolveCancellationPolicyText({});
+    expect(unset).toContain("do not say there is or is not one");
+    expect(unset).toContain("offer to take a message");
+    // An explicit zero fee IS the owner saying there is none.
+    expect(
+      resolveCancellationPolicyText({ cancellation_policy: { text: "x", fee_cents: 0 } }),
+    ).toBe("x; there is no late-cancellation fee");
   });
 
   it("falls back to a safe default when unconfigured (never a blank/missing token)", () => {
@@ -36,13 +47,13 @@ describe("resolveCancellationPolicyText", () => {
     );
     expect(
       resolveCancellationPolicyText({ cancellation_policy: { text: "x", window_hours: 1 } }),
-    ).toBe("x; cancellations need at least 1 hour notice");
-    // Zero window / zero fee are "not set", not "0 hours notice".
+    ).toBe(`x; cancellations need at least 1 hour notice; ${NO_FEE_INFO_TEXT}`);
+    // A zero window is "not set", not "0 hours notice".
     expect(
       resolveCancellationPolicyText({
         cancellation_policy: { text: "x", window_hours: 0, fee_cents: 0 },
       }),
-    ).toBe("x");
+    ).toBe("x; there is no late-cancellation fee");
     // The structured rules still reach callers when the owner left the text blank.
     expect(
       resolveCancellationPolicyText({ cancellation_policy: { text: "", window_hours: 48 } }),
@@ -57,7 +68,7 @@ describe("resolveCancellationPolicyText", () => {
     });
     expect(out).not.toContain("{{");
     expect(out.toLowerCase()).not.toContain("ignore all previous instructions");
-    expect(out.length).toBeLessThanOrEqual(520);
+    expect(out.length).toBeLessThanOrEqual(520 + NO_FEE_INFO_TEXT.length + 2);
   });
 });
 
