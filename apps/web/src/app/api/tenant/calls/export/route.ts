@@ -69,6 +69,8 @@ export async function GET(request: Request) {
       .from("call_logs")
       .select("started_at, caller_number, classification, duration_seconds, outcome")
       .eq("tenant_id", tenantId)
+      // Real calls only: Test Agent / batch-test runs are not the owner's call history (QA-1 F-17).
+      .eq("is_test_call", false)
       // Voice-only export: exclude the text-agent's shadow rows (channel
       // 'sms'/'web_chat', started_at always null) — same NULLS FIRST hazard
       // as calls-list-client.tsx / overview-client.tsx.

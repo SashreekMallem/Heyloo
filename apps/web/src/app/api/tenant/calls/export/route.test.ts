@@ -108,6 +108,17 @@ describe("GET /api/tenant/calls/export", () => {
     expect(inMock).toHaveBeenCalledWith("channel", ["phone", "web_voice"]);
   });
 
+  it("excludes test calls from the export (QA-1 F-17)", async () => {
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    callLogsResult = { data: [], error: null };
+    from.mockClear();
+
+    await GET(exportRequest("t1"));
+    // biome-ignore lint/style/noNonNullAssertion: asserted by the export having queried call_logs.
+    const c = lastChain!;
+    expect(c["eq"]).toHaveBeenCalledWith("is_test_call", false);
+  });
+
   it("applies the page's classification and date-range filters to the export (QA-1 F-17)", async () => {
     mockGetUser = async () => ({ data: { user: mockUser } });
     callLogsResult = { data: [], error: null };
