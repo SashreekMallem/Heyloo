@@ -4,6 +4,7 @@ import { AppShell, AppSidebarNav, TopBar } from "@heyloo/ui";
 import { CommandPalette, type CommandPaletteCommand } from "@heyloo/ui/command";
 import { Gauge, Radar, ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
+import { UserMenu } from "@/components/shell/user-menu";
 import { Link, usePathname, useRouter } from "@/i18n/navigation";
 import { AdminIconRail } from "./admin-icon-rail";
 import { currentSectionLabel, SECTIONS } from "./admin-nav-sections";
@@ -81,6 +82,7 @@ export function AdminShellClient({ children }: { children: ReactNode }) {
               }
             >
               <CommandPalette commands={commands} />
+              <UserMenu roleLabel="Platform admin" />
             </TopBar>
           }
         >
