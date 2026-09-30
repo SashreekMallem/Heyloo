@@ -200,7 +200,9 @@ export function renderTemplate(
     case "dunning_payment_failed":
       return {
         subject: "Payment failed",
-        body: "We couldn't process your latest payment. Please update your billing details.",
+        body:
+          "We couldn't process your latest payment. Please update your billing details" +
+          (str("billing_url") ? `: ${str("billing_url")}` : "."),
       };
     case "reminder":
       return { body: `Reminder: you have an appointment ${str("start_local", "coming up")}.` };

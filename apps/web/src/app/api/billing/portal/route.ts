@@ -8,9 +8,9 @@ export const runtime = "nodejs";
 /**
  * "Manage payment method" → Stripe Billing Portal redirect (FRONTEND_SPEC.md
  * §6.9). Proxies to an edge function rather than importing the `stripe`
- * SDK here (CLAUDE.md Rule 2). VERIFY (docs/VERIFY.md): assumes an
- * `api-billing-portal` edge function — confirm the exact name once the
- * billing wave lands it.
+ * SDK here (CLAUDE.md Rule 2). The `api-billing-portal` edge function
+ * (BILL-9) verifies the JWT tenant and an owner/admin membership and creates
+ * the Stripe Billing Portal session.
  */
 export async function POST() {
   const supabase = await createSupabaseServerComponentClient();

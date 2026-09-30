@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TenantIdProvider } from "@/lib/tenant/tenant-context";
 
@@ -13,6 +13,9 @@ function chain(result: unknown) {
     Promise.resolve(result).then(resolve, reject);
   return obj;
 }
+
+const toastError = vi.hoisted(() => vi.fn());
+vi.mock("sonner", () => ({ toast: { error: toastError } }));
 
 let invoicesChain: Record<string, ReturnType<typeof vi.fn>> | null = null;
 let usageDailyRows: { billable_minutes: number | null; text_messages_out?: number | null }[] = [];
@@ -162,5 +165,29 @@ describe("BillingPage text conversations usage tile", () => {
     renderPage();
     await screen.findByText("No invoices yet");
     expect(invoicesChain?.["neq"]).toHaveBeenCalledWith("status", "void");
+  });
+
+  it("BILL-8: does not claim usage alerts are on while nothing sends them", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ included_minutes: 100 })),
+    );
+    renderPage();
+    expect(await screen.findAllByText(/Not sending yet/)).toHaveLength(2);
+    expect(screen.queryByText(/On \(platform default\)/)).not.toBeInTheDocument();
+  });
+
+  it("BILL-9: tells the owner why the payment portal did not open", async () => {
+    const fetchMock = vi.fn(async (url: string) =>
+      url.includes("/api/billing/portal")
+        ? Response.json({ error: "no_billing_account" }, { status: 409 })
+        : Response.json({ included_minutes: 100 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Manage payment method" }));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(expect.stringContaining("billing account")),
+    );
   });
 });
