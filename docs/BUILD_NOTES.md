@@ -9373,3 +9373,13 @@ Branch `wave/QA-2-backend`. Scope: `supabase/functions/**` (except `admin/**`) a
 4. `INTAKE_ENCRYPTION_KEY` may stay hex for the edge function (accepted); still rotate both AES keys to base64 as noted under QA-1-backend so the web Airtable callback and the edge side agree.
 
 **Not fixed here.** The transactional half of COCKPIT-F02/BE-09 (run the tenant PATCH UPDATE and the audit insert in one `sql.begin`) and BE-10/COCKPIT-F15 stay in `supabase/functions/admin/**` (excluded lane); the audit writer can no longer fail on the three known input causes, but a mutation is still committed before its audit row. Dashboard fallback to polling when Realtime is silent is `apps/web`. `deno check` could not be run (no `deno` binary here).
+
+## HARNESS-1 — scripted scenarios for `api-admin-self-call`
+
+Branch `wave/HARNESS-1`. `api-admin-self-call` `action: "run"` now accepts an optional `scenario: {caller_prompt (<= 4000 chars), max_duration_s (60..240, default 180), language ("en"|"es")}` so a tester can script any caller conversation against the real receiving agent over the real PSTN path. FROM/TO stay hardcoded (`+16105383920` -> `+12602354330`); unknown scenario fields are rejected; no scenario means the unchanged oil-change caller.
+
+**Docs-first decision (docs.retellai.com, fetched 2026-09-29).** Retell's simulation API (`create-test-case-definition` + `create-batch-test`, already wrapped by `api-admin-run-agent-tests`) does exercise the real agent and, unmocked, its real custom functions, but it is a text-only simulation: transfers and SMS are always faked, no telephony, no `voice-inbound` / `voice-events` webhooks, so no `call_logs` duration, usage metering or overage behavior. Threshold and overage behavior needs a real call, hence the self-call route.
+
+**Retell constraints that shaped the design.** `agent_override.agent` accepts `language` and `max_call_duration_ms` (min 60 000) but NOT `general_prompt`, so the scenario prompt rides as the `{{scenario_prompt}}` dynamic variable of a second cached caller agent ("Heyloo Self-Call Scenario Caller", `platform_settings.self_call_scenario_caller_agent`) whose wrapper prompt is fixed. Unlike the default caller, the wrapper does not tell the caller to deny being an AI. The caller leg's `call_cost.combined_cost` is now returned as `caller_leg.combined_cost_cents`; the callee leg is billed separately and is not in it.
+
+Gap: `pnpm turbo run test` in `supabase/functions` shows 4 test files failing to import `@heyloo/canonical-types` / `@heyloo/templates` when those workspace packages are not built (pre-existing, unrelated).

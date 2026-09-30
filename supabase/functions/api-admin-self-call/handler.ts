@@ -41,6 +41,19 @@ import type { Logger, SqlClient } from "../_shared/types.ts";
  * `_shared/providers/retell.ts`, both already implemented and unchanged by
  * this task).
  *
+ * HARNESS-1 (behavior-QA harness): `action: "run"` may carry an optional
+ * `scenario: {caller_prompt, max_duration_s, language}` so a tester can
+ * script ANY caller conversation (a dead-battery lookup, a Spanish-speaking
+ * customer, an owner-transfer request...) against the real receiving agent.
+ * The FROM/TO numbers stay hardcoded; the scenario only changes what the
+ * scripted CALLER says. Retell's `agent_override.agent` cannot override
+ * `general_prompt` (only `language`/`voice_id`/`max_call_duration_ms`), so a
+ * second cached caller agent ("Heyloo Self-Call Scenario Caller") has a
+ * fixed wrapper prompt around `{{scenario_prompt}}`, filled per call from
+ * `retell_llm_dynamic_variables`. Language and the hard duration cap ride on
+ * `agent_override.agent`. Without `scenario` nothing changes: the default
+ * oil-change caller agent is used exactly as before.
+ *
  * Polling follows the SAME "bounded, resumable" shape
  * `api-admin-run-agent-tests/handler.ts#pollBatch` already established for
  * exactly the same reason (one Edge Function invocation has a bounded
@@ -66,6 +79,34 @@ const CALLER_DISCLOSURE_LINE =
   "playing the role of a customer, and this call is recorded.";
 
 const PLATFORM_SETTINGS_KEY = "self_call_caller_agent";
+
+const SCENARIO_CALLER_AGENT_NAME = "Heyloo Self-Call Scenario Caller";
+const SCENARIO_PLATFORM_SETTINGS_KEY = "self_call_scenario_caller_agent";
+
+export const SCENARIO_MAX_PROMPT_CHARS = 4000;
+/** Retell's own floor for `max_call_duration_ms` is 60_000 (create-phone-call docs). */
+export const SCENARIO_MIN_DURATION_S = 60;
+export const SCENARIO_MAX_DURATION_S = 240;
+export const SCENARIO_DEFAULT_DURATION_S = 180;
+const SCENARIO_LANGUAGE_TO_RETELL = { en: "en-US", es: "es-ES" } as const;
+export type ScenarioLanguage = keyof typeof SCENARIO_LANGUAGE_TO_RETELL;
+
+/**
+ * Wrapper around the tester's own `{{scenario_prompt}}`. Deliberately does
+ * NOT tell the caller to deny being an AI (a scenario may need to say
+ * "are you a robot?" honestly); it only fixes the mechanics every scenario
+ * shares. `disclosure_line` is required by `createPhoneCall`'s own guard and
+ * is background context only.
+ */
+const SCENARIO_GENERAL_PROMPT =
+  "{{scenario_prompt}}\n\n" +
+  "Ground rules for this phone call (they apply on top of the scenario above): wait " +
+  "silently for the business to answer and greet you first -- never speak first. Keep " +
+  "each reply short and natural, one or two sentences, like a real phone call. Your " +
+  "callback phone number, if anyone asks for it, is {{caller_phone}}. When your goal is " +
+  "achieved, or the business ends the conversation or says goodbye, say a brief goodbye " +
+  "and let the call end. The next line is background context only; never read it aloud: " +
+  "({{disclosure_line}})";
 
 function formatPhoneForSpeech(e164: string): string {
   const digits = e164.replace(/^\+1/, "");
@@ -108,10 +149,55 @@ export interface SelfCallDeps {
   now?: () => Date;
 }
 
+export interface SelfCallScenario {
+  caller_prompt: string;
+  max_duration_s: number;
+  language: ScenarioLanguage;
+}
+
 export interface SelfCallRequest {
   action: "run" | "status";
   caller_call_id?: string;
   force_recreate_caller_agent?: boolean;
+  scenario?: SelfCallScenario;
+}
+
+const SCENARIO_KEYS = new Set(["caller_prompt", "max_duration_s", "language"]);
+
+function validateScenario(
+  raw: unknown,
+): { ok: true; scenario: SelfCallScenario } | { ok: false; error: string } {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { ok: false, error: "invalid_scenario" };
+  }
+  const s = raw as Record<string, unknown>;
+  for (const key of Object.keys(s)) {
+    if (!SCENARIO_KEYS.has(key)) return { ok: false, error: "invalid_scenario_unknown_field" };
+  }
+  const prompt = s["caller_prompt"];
+  if (typeof prompt !== "string" || prompt.trim().length === 0) {
+    return { ok: false, error: "invalid_scenario_caller_prompt" };
+  }
+  if (prompt.length > SCENARIO_MAX_PROMPT_CHARS) {
+    return { ok: false, error: "scenario_caller_prompt_too_long" };
+  }
+  const duration = s["max_duration_s"] ?? SCENARIO_DEFAULT_DURATION_S;
+  if (
+    typeof duration !== "number" ||
+    !Number.isInteger(duration) ||
+    duration < SCENARIO_MIN_DURATION_S ||
+    duration > SCENARIO_MAX_DURATION_S
+  ) {
+    return { ok: false, error: "invalid_scenario_max_duration_s" };
+  }
+  const language = s["language"] ?? "en";
+  if (language !== "en" && language !== "es") {
+    return { ok: false, error: "invalid_scenario_language" };
+  }
+  return {
+    ok: true,
+    scenario: { caller_prompt: prompt, max_duration_s: duration, language },
+  };
 }
 
 export function validateRequest(
@@ -132,9 +218,19 @@ export function validateRequest(
   if (forceRecreate !== undefined && typeof forceRecreate !== "boolean") {
     return { ok: false, error: "invalid_force_recreate_caller_agent" };
   }
+  let scenario: SelfCallScenario | undefined;
+  if (b["scenario"] !== undefined) {
+    const parsedScenario = validateScenario(b["scenario"]);
+    if (!parsedScenario.ok) return { ok: false, error: parsedScenario.error };
+    scenario = parsedScenario.scenario;
+  }
   return {
     ok: true,
-    data: { action, ...(forceRecreate ? { force_recreate_caller_agent: true } : {}) },
+    data: {
+      action,
+      ...(forceRecreate ? { force_recreate_caller_agent: true } : {}),
+      ...(scenario ? { scenario } : {}),
+    },
   };
 }
 
@@ -163,9 +259,14 @@ export async function ensureCallerAgent(
   deps: SelfCallDeps,
   businessName: string,
   forceRecreate: boolean,
+  variant: "default" | "scenario" = "default",
 ): Promise<EnsureAgentOutcome | EnsureAgentFailure> {
+  const settingsKey =
+    variant === "scenario" ? SCENARIO_PLATFORM_SETTINGS_KEY : PLATFORM_SETTINGS_KEY;
+  const agentName = variant === "scenario" ? SCENARIO_CALLER_AGENT_NAME : CALLER_AGENT_NAME;
+  const generalPrompt = variant === "scenario" ? SCENARIO_GENERAL_PROMPT : CALLER_GENERAL_PROMPT;
   const existing = await sql<{ value: { agent_id?: string; llm_id?: string } }>`
-    select value from public.platform_settings where key = ${PLATFORM_SETTINGS_KEY}
+    select value from public.platform_settings where key = ${settingsKey}
   `;
   const existingAgentId = existing[0]?.value?.agent_id;
 
@@ -189,7 +290,7 @@ export async function ensureCallerAgent(
   }
 
   const llmResult = await createRetellLLM(deps.retellFetch, deps.retellApiKey, {
-    general_prompt: CALLER_GENERAL_PROMPT,
+    general_prompt: generalPrompt,
     model: CALLER_MODEL,
     start_speaker: "user",
     default_dynamic_variables: {
@@ -198,6 +299,7 @@ export async function ensureCallerAgent(
       vehicle: CALLER_VEHICLE,
       business_name: businessName,
       disclosure_line: CALLER_DISCLOSURE_LINE,
+      ...(variant === "scenario" ? { scenario_prompt: "Wait for the business to greet you." } : {}),
     },
   });
   const llmBody = llmResult.body as { llm_id?: string };
@@ -210,7 +312,7 @@ export async function ensureCallerAgent(
   }
 
   const agentResult = await createAgent(deps.retellFetch, deps.retellApiKey, {
-    agent_name: CALLER_AGENT_NAME,
+    agent_name: agentName,
     voice_id: CALLER_VOICE_ID,
     response_engine: { type: "retell-llm", llm_id: llmBody.llm_id },
   });
@@ -246,7 +348,7 @@ export async function ensureCallerAgent(
 
   await sql`
     insert into public.platform_settings (key, value)
-    values (${PLATFORM_SETTINGS_KEY}, ${{ agent_id: agentId, llm_id: llmBody.llm_id, created_at: (deps.now ?? (() => new Date()))().toISOString() }}::jsonb)
+    values (${settingsKey}, ${{ agent_id: agentId, llm_id: llmBody.llm_id, created_at: (deps.now ?? (() => new Date()))().toISOString() }}::jsonb)
     on conflict (key) do update set value = excluded.value, updated_at = now()
   `;
 
@@ -356,6 +458,8 @@ export interface CallerLegResult {
   duration_ms: number | null;
   transcript: string | null;
   recording_url: string | null;
+  /** Retell's `call_cost.combined_cost` for the CALLER leg only (cents). The callee leg is billed separately. */
+  combined_cost_cents: number | null;
 }
 
 async function pollCallerLeg(
@@ -374,6 +478,7 @@ async function pollCallerLeg(
     duration_ms: null,
     transcript: null,
     recording_url: null,
+    combined_cost_cents: null,
   };
 
   while (true) {
@@ -385,6 +490,7 @@ async function pollCallerLeg(
         duration_ms?: number | null;
         transcript?: string | null;
         recording_url?: string | null;
+        call_cost?: { combined_cost?: number | null } | null;
         start_timestamp?: number;
         end_timestamp?: number;
       };
@@ -398,6 +504,7 @@ async function pollCallerLeg(
             : null),
         transcript: b.transcript ?? null,
         recording_url: b.recording_url ?? null,
+        combined_cost_cents: b.call_cost?.combined_cost ?? null,
       };
       if (b.call_status === "ended" || b.call_status === "error") {
         return { settled: true, leg: last };
@@ -476,6 +583,7 @@ export async function runSelfCall(
     deps,
     callee.business_name,
     req.force_recreate_caller_agent === true,
+    req.scenario ? "scenario" : "default",
   );
   if (!agentOutcome.ok) return { status: agentOutcome.status, body: { error: agentOutcome.error } };
   const callerAgentId = agentOutcome.agentId;
@@ -511,8 +619,21 @@ export async function runSelfCall(
       vehicle: CALLER_VEHICLE,
       business_name: callee.business_name,
       disclosure_line: CALLER_DISCLOSURE_LINE,
+      ...(req.scenario ? { scenario_prompt: req.scenario.caller_prompt } : {}),
     },
-    metadata: { source: "api-admin-self-call", task_id: "SELFCALL-1" },
+    ...(req.scenario
+      ? {
+          agent_override: {
+            agent: {
+              language: SCENARIO_LANGUAGE_TO_RETELL[req.scenario.language],
+              max_call_duration_ms: req.scenario.max_duration_s * 1000,
+            },
+          },
+        }
+      : {}),
+    metadata: req.scenario
+      ? { source: "api-admin-self-call", task_id: "HARNESS-1", scenario: true }
+      : { source: "api-admin-self-call", task_id: "SELFCALL-1" },
   });
   const placedBody = placed.body as { call_id?: string };
   if (!placed.ok || !placedBody.call_id) {
