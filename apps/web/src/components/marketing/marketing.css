@@ -184,6 +184,19 @@
   --font-display: var(--display);
   --font-sans: var(--display);
   --font-mono: var(--mono);
+
+  /* Re-bind the primary utilities INSIDE the shell (QA-1 F-18). The theme's
+   * `--color-primary: var(--primary)` (packages/ui/src/theme/globals.css)
+   * is substituted once, on :root, and then inherited as the app's orange —
+   * so the `--primary: var(--ink)` remap above never reached `bg-primary`,
+   * and signup/demo/intake buttons stayed orange next to the near-black
+   * header CTA. Declaring the binding again here makes it resolve against
+   * this scope's `--primary`. Only the primary trio is re-bound on purpose:
+   * the other remapped tokens would recolour whole pages (see the comment
+   * above), which needs its own visual pass. */
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
 }
 
 /* Focus rings on the new chrome (header, footer, the home page). */
