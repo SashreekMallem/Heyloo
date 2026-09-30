@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { mergeOverrides } from "./route-auth";
 import {
   bookingRulesRequestSchema,
+  businessPhoneRequestSchema,
+  businessProfileRequestSchema,
   businessProfileSchema,
   faqRequestSchema,
   instructionsFormSchema,
@@ -27,6 +29,46 @@ describe("businessProfileSchema", () => {
     ).toBe(false);
     expect(
       businessProfileSchema.safeParse({ name: "Riverside", timezone: "Mars/Base" }).success,
+    ).toBe(false);
+  });
+});
+
+describe("businessProfileRequestSchema / businessPhoneRequestSchema", () => {
+  it("normalizes phone + website, keeps missing keys undefined, and clears blanks", () => {
+    expect(
+      businessProfileRequestSchema.parse({
+        name: "Acme",
+        timezone: "America/Chicago",
+        business_phone: "(262) 755-1967",
+        website_url: "acme.com",
+      }),
+    ).toEqual({
+      name: "Acme",
+      timezone: "America/Chicago",
+      business_phone: "+12627551967",
+      website_url: "https://acme.com",
+    });
+    const older = businessProfileRequestSchema.parse({ name: "Acme", timezone: "America/Chicago" });
+    expect(older.business_phone).toBeUndefined();
+    expect(older.website_url).toBeUndefined();
+    const cleared = businessProfileRequestSchema.parse({
+      name: "Acme",
+      timezone: "America/Chicago",
+      business_phone: "",
+      website_url: " ",
+    });
+    expect(cleared.business_phone).toBeNull();
+    expect(cleared.website_url).toBeNull();
+  });
+
+  it("the phone-setup save requires a US/Canada number", () => {
+    expect(businessPhoneRequestSchema.parse({ business_phone: "262-755-1967" })).toEqual({
+      business_phone: "+12627551967",
+    });
+    expect(businessPhoneRequestSchema.safeParse({ business_phone: "" }).success).toBe(false);
+    expect(businessPhoneRequestSchema.safeParse({}).success).toBe(false);
+    expect(
+      businessPhoneRequestSchema.safeParse({ business_phone: "+44 20 7946 0958" }).success,
     ).toBe(false);
   });
 });

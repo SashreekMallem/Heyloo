@@ -51,9 +51,59 @@ describe("BusinessTabPage (SETTINGS-1)", () => {
     expect(routes.calls[0]?.body).toEqual({
       name: "Riverside Auto Repair",
       timezone: "America/New_York",
+      business_phone: "",
+      website_url: "",
     });
     // QA-1 F-18: the server-rendered header name must refresh after a rename.
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the stored business phone formatted and saves an edited phone + website", async () => {
+    fake.reset();
+    fake.queue("tenants:select", {
+      data: {
+        name: "Riverside Auto",
+        timezone: "America/New_York",
+        retention_days: 30,
+        business_phone: "+12627551967",
+        website_url: "https://riverside.example",
+      },
+      error: null,
+    });
+    const routes = stubRoutes({
+      "/api/tenant/settings/business": () => ({ body: { ok: true, timezone_changed: false } }),
+    });
+    vi.stubGlobal("fetch", routes.fetchMock);
+    renderWithTenant(<BusinessTabPage />);
+    const phone = await screen.findByLabelText("Business phone number");
+    expect(phone).toHaveValue("(262) 755-1967");
+    expect(screen.getByLabelText("Website (optional)")).toHaveValue("https://riverside.example");
+    await userEvent.clear(phone);
+    await userEvent.click(phone);
+    await userEvent.paste("414-555-0100");
+    const website = screen.getByLabelText("Website (optional)");
+    await userEvent.clear(website);
+    await userEvent.click(website);
+    await userEvent.paste("riverside.com");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(routes.calls).toHaveLength(1));
+    // Normalized on blur for display; the route normalizes again server-side.
+    expect(routes.calls[0]?.body).toMatchObject({
+      business_phone: "(414) 555-0100",
+      website_url: "https://riverside.com",
+    });
+  });
+
+  it("rejects an invalid business phone inline", async () => {
+    const routes = stubRoutes({});
+    vi.stubGlobal("fetch", routes.fetchMock);
+    renderWithTenant(<BusinessTabPage />);
+    const phone = await screen.findByLabelText("Business phone number");
+    await userEvent.click(phone);
+    await userEvent.paste("555-0100");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText(/US or Canadian business number/)).toBeInTheDocument();
+    expect(routes.calls).toHaveLength(0);
   });
 
   it("rejects a one-letter name inline", async () => {
@@ -86,6 +136,8 @@ describe("BusinessTabPage (SETTINGS-1)", () => {
     expect(routes.calls[0]?.body).toEqual({
       name: "SIGNUP-1 Test Auto",
       timezone: "America/Boise",
+      business_phone: "",
+      website_url: "",
     });
   });
 

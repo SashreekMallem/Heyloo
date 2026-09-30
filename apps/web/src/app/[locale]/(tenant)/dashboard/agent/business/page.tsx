@@ -28,8 +28,10 @@ import { useMemo, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 import { Link } from "@/i18n/navigation";
+import { normalizeBusinessPhone, normalizeWebsiteUrl } from "@/lib/settings/business-contact";
 import { applyIssues, saveErrorMessage, sendJson } from "@/lib/settings/client";
-import { type BusinessProfileInput, businessProfileSchema } from "@/lib/settings/schemas";
+import { formatPhoneDisplay } from "@/lib/settings/format";
+import { type BusinessProfileFormValues, businessProfileFormSchema } from "@/lib/settings/schemas";
 import { allTimezones, COMMON_TIMEZONES, currentTimeIn } from "@/lib/settings/timezone";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
@@ -38,6 +40,8 @@ interface BusinessRow {
   name: string;
   timezone: string;
   retention_days: number;
+  business_phone: string | null;
+  website_url: string | null;
 }
 
 /**
@@ -47,6 +51,10 @@ interface BusinessRow {
  * checkout with no way for the owner to see or fix them. Saves through
  * `POST /api/tenant/settings/business`, which re-builds bookable times
  * when the zone changes.
+ *
+ * LAUNCH-forwarding: also the business phone (the line that forwards to the
+ * Heyloo number; the agent's default transfer destination — the route moves
+ * the transfer number along while it is still the default) and website.
  */
 export default function BusinessTabPage() {
   const tenantId = useCurrentTenantId();
@@ -55,7 +63,7 @@ export default function BusinessTabPage() {
     queryFn: async (): Promise<BusinessRow | null> => {
       const { data } = await supabaseBrowserClient
         .from("tenants")
-        .select("name, timezone, retention_days")
+        .select("name, timezone, retention_days, business_phone, website_url")
         .eq("id", tenantId as string)
         .maybeSingle();
       return data ?? null;
@@ -70,9 +78,14 @@ export default function BusinessTabPage() {
 function BusinessForm({ tenantId, row }: { tenantId: string; row: BusinessRow }) {
   const queryClient = useQueryClient();
   const router = useRouter();
-  const form = useForm<BusinessProfileInput>({
-    resolver: zodResolver(businessProfileSchema),
-    defaultValues: { name: row.name, timezone: row.timezone },
+  const form = useForm<BusinessProfileFormValues>({
+    resolver: zodResolver(businessProfileFormSchema),
+    defaultValues: {
+      name: row.name,
+      timezone: row.timezone,
+      business_phone: row.business_phone ? formatPhoneDisplay(row.business_phone) : "",
+      website_url: row.website_url ?? "",
+    },
   });
   const isCommon = COMMON_TIMEZONES.some((z) => z.value === row.timezone);
   // The ~400-zone list renders only on request (a native <select> handles
@@ -87,7 +100,7 @@ function BusinessForm({ tenantId, row }: { tenantId: string; row: BusinessRow })
   const timezone = useWatch({ control: form.control, name: "timezone" });
   const localTime = currentTimeIn(timezone);
 
-  async function onSubmit(values: BusinessProfileInput) {
+  async function onSubmit(values: BusinessProfileFormValues) {
     const result = await sendJson<{
       timezone_changed: boolean;
       availability: { resources: number; failed: number } | null;
@@ -138,6 +151,61 @@ function BusinessForm({ tenantId, row }: { tenantId: string; row: BusinessRow })
                   </FormItem>
                 )}
               />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="business_phone"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Business phone number</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="tel"
+                          inputMode="tel"
+                          autoComplete="tel"
+                          placeholder="(262) 755-1967"
+                          {...field}
+                          onBlur={() => {
+                            field.onBlur();
+                            const e164 = normalizeBusinessPhone(field.value);
+                            if (e164) field.onChange(formatPhoneDisplay(e164));
+                          }}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        The number your customers call today. It forwards to your AI, and your AI
+                        transfers callers here unless you set a different transfer number.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="website_url"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Website (optional)</FormLabel>
+                      <FormControl>
+                        <Input
+                          inputMode="url"
+                          autoComplete="url"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                          placeholder="https://yourbusiness.com"
+                          {...field}
+                          onBlur={() => {
+                            field.onBlur();
+                            const url = normalizeWebsiteUrl(field.value);
+                            if (url) field.onChange(url);
+                          }}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
               <FormField
                 control={form.control}
                 name="timezone"

@@ -57,6 +57,88 @@ describe("POST /api/tenant/settings/business", () => {
     expect(await res.json()).toMatchObject({ ok: true, timezone_changed: true });
   });
 
+  it("normalizes and saves the business phone + website, and moves a default transfer number along", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:select", {
+      data: { timezone: "America/Chicago", business_phone: "+12627551967" },
+      error: null,
+    });
+    fake.queue("phone_numbers:select", { data: [{ e164: "+15551230000" }], error: null });
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    fake.queue("agent_configs:update", { data: [], error: null }, { data: [{ id: "ac1" }] });
+    const res = await POST(
+      jsonRequest(url, {
+        name: "Acme",
+        timezone: "America/Chicago",
+        business_phone: "(414) 555-0100",
+        website_url: "acme.com",
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(fake.callsTo("tenants", "update")[0]?.payload).toEqual({
+      name: "Acme",
+      timezone: "America/Chicago",
+      business_phone: "+14145550100",
+      website_url: "https://acme.com",
+    });
+    const [fillNull, follow] = fake.callsTo("agent_configs", "update");
+    expect(fillNull?.filters).toContainEqual(["is", "transfer_number", null]);
+    expect(follow?.filters).toContainEqual(["eq", "transfer_number", "+12627551967"]);
+    expect(follow?.filters).toContainEqual(["eq", "tenant_id", "t1"]);
+    expect(await res.json()).toMatchObject({ ok: true, transfer_number_updated: true });
+  });
+
+  it("blank phone / website clear them (null) without touching the transfer number", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:select", {
+      data: { timezone: "America/Chicago", business_phone: "+12627551967" },
+      error: null,
+    });
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    const res = await POST(
+      jsonRequest(url, {
+        name: "Acme",
+        timezone: "America/Chicago",
+        business_phone: "",
+        website_url: "",
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(fake.callsTo("tenants", "update")[0]?.payload).toMatchObject({
+      business_phone: null,
+      website_url: null,
+    });
+    expect(fake.callsTo("agent_configs")).toHaveLength(0);
+  });
+
+  it("422s on an invalid business phone or website, without writing", async () => {
+    fake.signInAs(OWNER);
+    for (const extra of [{ business_phone: "555-0100" }, { website_url: "ftp://acme.com" }]) {
+      const res = await POST(
+        jsonRequest(url, { name: "Acme", timezone: "America/Chicago", ...extra }),
+      );
+      expect(res.status).toBe(422);
+    }
+    expect(fake.callsTo("tenants", "update")).toHaveLength(0);
+  });
+
+  it("422s when the business phone is the tenant's own Heyloo number", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:select", { data: { timezone: "America/Chicago" }, error: null });
+    fake.queue("phone_numbers:select", { data: [{ e164: "+14145550199" }], error: null });
+    const res = await POST(
+      jsonRequest(url, {
+        name: "Acme",
+        timezone: "America/Chicago",
+        business_phone: "(414) 555-0199",
+      }),
+    );
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { issues: Array<{ path: string[] }> };
+    expect(body.issues[0]?.path).toEqual(["business_phone"]);
+    expect(fake.callsTo("tenants", "update")).toHaveLength(0);
+  });
+
   it("does not regenerate when only the name changed", async () => {
     fake.signInAs(OWNER);
     fake.queue("tenants:select", { data: { timezone: "America/Chicago" }, error: null });
