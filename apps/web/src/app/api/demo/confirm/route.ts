@@ -1,16 +1,22 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import {
+  demoConfirmGlobalLimiter,
+  demoConfirmIpLimiter,
+  forbiddenOriginResponse,
+  rateLimitedResponse,
+} from "@/lib/demo/guard";
 import { callEdgeFunction } from "@/lib/edge-functions";
 
 export const runtime = "nodejs";
 
 const confirmSchema = z.object({
-  demo_session_id: z.string().min(1),
+  demo_session_id: z.uuid(),
   edits: z
     .object({
-      business_name: z.string().optional(),
-      hours_detected: z.string().optional(),
-      services_detected: z.array(z.string()).optional(),
+      business_name: z.string().max(200).optional(),
+      hours_detected: z.string().max(500).optional(),
+      services_detected: z.array(z.string().max(200)).max(50).optional(),
     })
     .optional(),
 });
@@ -30,6 +36,9 @@ interface ConfirmDemoResponse {
  * create-vs-confirm by request shape (`confirmed: true` present).
  */
 export async function POST(request: Request) {
+  const forbidden = forbiddenOriginResponse(request);
+  if (forbidden) return forbidden;
+
   let json: unknown;
   try {
     json = await request.json();
@@ -44,6 +53,9 @@ export async function POST(request: Request) {
       { status: 422 },
     );
   }
+
+  const limited = rateLimitedResponse(request, demoConfirmIpLimiter, demoConfirmGlobalLimiter);
+  if (limited) return limited;
 
   const { status, body } = await callEdgeFunction<ConfirmDemoResponse>("api-demo-agent", {
     method: "POST",

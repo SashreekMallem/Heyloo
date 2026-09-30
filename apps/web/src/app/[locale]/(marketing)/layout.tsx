@@ -6,9 +6,14 @@ import { setRequestLocale } from "next-intl/server";
 import type { ReactNode } from "react";
 import { MarketingFooter } from "@/components/marketing/marketing-footer";
 import { MarketingHeader } from "@/components/marketing/marketing-header";
+import { siteUrl } from "@/lib/marketing/site-url";
 
 export const metadata: Metadata = {
+  // Absolute base for every relative canonical / Open Graph URL below this
+  // layout; without it Next falls back to localhost:3000 in the og:image tag.
+  metadataBase: new URL(siteUrl()),
   icons: { icon: "/favicon.svg" },
+  alternates: { types: { "application/rss+xml": "/rss.xml" } },
 };
 
 /**

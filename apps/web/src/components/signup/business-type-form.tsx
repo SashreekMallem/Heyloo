@@ -19,6 +19,7 @@ import {
   WizardStepper,
 } from "@heyloo/ui";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { VERTICAL_CONTENT } from "@/content/marketing/verticals";
 import { useRouter } from "@/i18n/navigation";
@@ -26,24 +27,40 @@ import { SIGNUP_STEPS } from "@/lib/marketing/signup-steps";
 
 export function BusinessTypeForm({
   initialVertical,
+  initialBusinessName,
   demoId,
 }: {
   initialVertical?: Vertical;
+  /** From the signed draft cookie, so Back from a later step shows what they already entered. */
+  initialBusinessName?: string;
   demoId?: string;
 }) {
   const router = useRouter();
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const form = useForm<SignupBusinessType>({
     resolver: zodResolver(signupBusinessTypeSchema),
-    defaultValues: { business_type: initialVertical ?? "generic", business_name: "" },
+    defaultValues: {
+      business_type: initialVertical ?? "generic",
+      business_name: initialBusinessName ?? "",
+    },
   });
 
   async function onSubmit(values: SignupBusinessType) {
-    const res = await fetch("/api/signup/draft", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...values, demo_id: demoId }),
-    });
-    if (res.ok) router.push("/signup/plan");
+    setSubmitError(null);
+    try {
+      const res = await fetch("/api/signup/draft", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...values, demo_id: demoId }),
+      });
+      if (res.ok) {
+        router.push("/signup/plan");
+        return;
+      }
+    } catch {
+      // fall through to the visible error below
+    }
+    setSubmitError("We couldn't save your details. Please try again in a moment.");
   }
 
   return (
@@ -65,11 +82,15 @@ export function BusinessTypeForm({
             render={({ field }) => (
               <FormItem>
                 <FormLabel>What kind of business do you run?</FormLabel>
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                <fieldset
+                  aria-label="Business type"
+                  className="m-0 grid min-w-0 grid-cols-2 gap-3 border-0 p-0 sm:grid-cols-3"
+                >
                   {VERTICAL_CONTENT.map((v) => (
                     <button
                       key={v.vertical}
                       type="button"
+                      aria-pressed={field.value === v.vertical}
                       onClick={() => field.onChange(v.vertical)}
                       className={cn(
                         "flex min-h-24 flex-col items-center justify-center gap-2 rounded-xl border p-4 text-center text-small transition-colors duration-(--duration-fast) ease-(--ease-out)",
@@ -88,7 +109,7 @@ export function BusinessTypeForm({
                       {v.slug === "generic" ? "Something else" : v.displayName}
                     </button>
                   ))}
-                </div>
+                </fieldset>
                 <FormMessage />
               </FormItem>
             )}
@@ -106,6 +127,11 @@ export function BusinessTypeForm({
               </FormItem>
             )}
           />
+          {submitError && (
+            <p className="text-sm text-destructive" role="alert">
+              {submitError}
+            </p>
+          )}
           <Button type="submit" size="lg" className="w-full">
             Continue
           </Button>

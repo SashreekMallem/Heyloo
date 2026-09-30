@@ -26,10 +26,10 @@ export const VERTICAL_CONTENT: VerticalContent[] = [
     vertical: "auto",
     displayName: "Auto Repair Shops",
     heroStat:
-      "Independent shops miss ~38% of incoming calls — about $135k/yr in lost repair orders.",
+      "On a busy bay day a shop can miss more than a third of its calls, and each one is a repair order for the next shop.",
     painStats: [
-      "~38% of calls go unanswered during a busy bay day",
-      "220–250k independent shops in the US alone",
+      "Roughly a third of calls can go unanswered during a busy bay day",
+      "Hundreds of thousands of independent shops compete for the same callers",
       "A missed call is rarely a callback — it's a booking at the next shop",
     ],
     intakeSummary: [
@@ -44,11 +44,11 @@ export const VERTICAL_CONTENT: VerticalContent[] = [
     slug: "veterinary",
     vertical: "vet",
     displayName: "Veterinary Clinics",
-    heroStat: "Missed new-patient calls cost the average clinic $100k–$182k a year.",
+    heroStat: "Missed new-patient calls can cost a clinic six figures a year.",
     painStats: [
-      "24–28% of calls go unanswered",
-      "$8.2k average lifetime value per missed new-patient call",
-      "30,000+ practices in the US",
+      "Roughly a quarter of calls can go unanswered at a busy clinic",
+      "A new patient is worth thousands of dollars over their lifetime",
+      "Tens of thousands of practices compete for the same pet owners",
     ],
     intakeSummary: [
       "Species and reason for visit",
@@ -63,11 +63,11 @@ export const VERTICAL_CONTENT: VerticalContent[] = [
     vertical: "legal",
     displayName: "Legal Intake",
     heroStat:
-      "A missed intake call can cost $3,200–$6,500 — and personal-injury cases run far higher.",
+      "A missed intake call can cost a firm thousands of dollars in fees, and personal-injury cases run far higher.",
     painStats: [
-      "28–50% of inbound calls go unanswered at small and mid-size firms",
-      "~418,000 US law firms competing for the same callers",
-      "The highest dollar-per-missed-call of any vertical we've measured",
+      "Small and mid-size firms can miss a large share of inbound calls",
+      "Hundreds of thousands of US law firms compete for the same callers",
+      "Case values make every missed intake call unusually expensive",
     ],
     intakeSummary: [
       "Matter type and a plain-language case summary",
@@ -82,10 +82,10 @@ export const VERTICAL_CONTENT: VerticalContent[] = [
     vertical: "dental",
     displayName: "Dental Practices",
     heroStat:
-      "Dental practices lose $75k–$180k a year to unanswered calls — patient LTV runs $5k–$8k.",
+      "Unanswered calls can cost a dental practice tens of thousands of dollars a year, and a patient is worth thousands over their lifetime.",
     painStats: [
-      "30–38% of calls go unanswered",
-      "178,000+ practices in the US",
+      "Roughly a third of calls can go unanswered on a busy day",
+      "More than 100,000 practices compete for the same patients",
       "A crowded field of point solutions that don't touch your actual schedule",
     ],
     intakeSummary: [
@@ -101,11 +101,11 @@ export const VERTICAL_CONTENT: VerticalContent[] = [
     vertical: "real_estate",
     displayName: "Real Estate Teams",
     heroStat:
-      "The median inquiry response time is 917 minutes — and 48% of inquiries go unanswered.",
+      "Most inquiries wait hours for a reply, and many never get one, by which time the buyer has called someone else.",
     painStats: [
-      "917-minute median response time to a new lead",
-      "48% of inquiries never get a reply at all",
-      "$7,500 average value of a lead that goes cold",
+      "Response to a new lead is often measured in hours, not minutes",
+      "A large share of inquiries never get a reply at all",
+      "A lead that goes cold is a commission that goes to a competitor",
     ],
     intakeSummary: [
       "Property of interest and buyer/seller/renter intent",
@@ -179,3 +179,12 @@ export function getVerticalContent(slug: string): VerticalContent | undefined {
 export function verticalSlugFromVertical(vertical: Vertical): string {
   return VERTICAL_CONTENT.find((v) => v.vertical === vertical)?.slug ?? "generic";
 }
+
+/**
+ * Shown under every vertical page's pain points. The figures above are
+ * deliberately qualitative: exact numbers in earlier copy came from research
+ * notes compiled partly from search snippets and had no citation (QA F-17), so
+ * they are not printed until each one has a source (docs/VERTICAL_RESEARCH.md).
+ */
+export const STATS_DISCLAIMER =
+  "General industry estimates for illustration, not measurements of your business or a guarantee of results.";

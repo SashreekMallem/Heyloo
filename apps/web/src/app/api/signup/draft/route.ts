@@ -1,9 +1,13 @@
 import { signupBusinessTypeSchema } from "@heyloo/canonical-types";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { encodeSignupDraft, SIGNUP_DRAFT_COOKIE } from "@/lib/signup/draft-cookie";
 
 export const runtime = "nodejs";
+
+/** Step 1's answers plus the optional demo session the visitor came from (always a UUID: it is stored in a signed cookie, so it must be bounded). */
+const draftRequestSchema = signupBusinessTypeSchema.extend({ demo_id: z.uuid().optional() });
 
 /**
  * Clears the signup draft once the tenant is active (called by the
@@ -26,7 +30,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
 
-  const parsed = signupBusinessTypeSchema.safeParse(json);
+  const parsed = draftRequestSchema.safeParse(json);
   if (!parsed.success) {
     return NextResponse.json(
       { error: "invalid_request", issues: parsed.error.issues },
@@ -34,14 +38,14 @@ export async function POST(request: Request) {
     );
   }
 
-  const demoId = (json as { demo_id?: unknown }).demo_id;
+  const demoId = parsed.data.demo_id;
   const cookieStore = await cookies();
   cookieStore.set(
     SIGNUP_DRAFT_COOKIE.name,
     encodeSignupDraft({
       business_type: parsed.data.business_type,
       business_name: parsed.data.business_name,
-      ...(typeof demoId === "string" ? { demo_id: demoId } : {}),
+      ...(demoId ? { demo_id: demoId } : {}),
     }),
     {
       httpOnly: true,

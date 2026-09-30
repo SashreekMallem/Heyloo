@@ -6,7 +6,12 @@ import { setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { listBlogPosts } from "@/lib/content/blog";
 
-export const metadata: Metadata = { title: "Blog — Heyloo" };
+export const metadata: Metadata = {
+  title: "Blog — Heyloo",
+  description:
+    "Notes on answering every call: how an AI receptionist handles missed calls, bookings and disclosure for small businesses.",
+  alternates: { canonical: "/blog" },
+};
 
 export default async function BlogIndexPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
