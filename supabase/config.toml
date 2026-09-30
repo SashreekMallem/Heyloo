@@ -222,6 +222,10 @@ verify_jwt = true
 verify_jwt = true
 [functions.api-checkout]
 verify_jwt = true
+# QA-1 SEC-08: Stripe Customer Portal redirect for the billing page; JWT
+# verified by Supabase, then the function requires an owner/admin membership.
+[functions.api-billing-portal]
+verify_jwt = true
 [functions.api-a2p-register]
 verify_jwt = true
 [functions.api-outreach-fetch-leads]
