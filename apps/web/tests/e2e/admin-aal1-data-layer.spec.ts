@@ -27,7 +27,10 @@ function claimsOf(jwt: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<string, unknown>;
 }
 
-const headers = () => ({ apikey: PUBLISHABLE_KEY as string, authorization: `Bearer ${TOKEN}` });
+const headers = () => ({
+  apikey: PUBLISHABLE_KEY as string,
+  authorization: `Bearer ${TOKEN}`,
+});
 
 test("the probe token really is a password-only session without the admin claim", () => {
   const claims = claimsOf(TOKEN as string);
@@ -39,6 +42,16 @@ test("the probe token really is a password-only session without the admin claim"
 
 for (const table of ["tenants", "customers", "call_logs", "messages_outbound"]) {
   test(`PostgREST returns no ${table} rows to an AAL1 admin`, async ({ request }) => {
+    // An admin who is also a tenant member legitimately reads that ONE tenant's
+    // own rows via the tenant_id claim, which would read as a false failure.
+    const appMetadata = (claimsOf(TOKEN as string)["app_metadata"] ?? {}) as Record<
+      string,
+      unknown
+    >;
+    test.skip(
+      typeof appMetadata["tenant_id"] === "string",
+      "probe token has a tenant_id claim (admin is also a tenant member): use an admin with no membership",
+    );
     const res = await request.get(`${SUPABASE_URL}/rest/v1/${table}?select=id&limit=1`, {
       headers: headers(),
     });
