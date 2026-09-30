@@ -32,6 +32,11 @@ export default function ReferPage() {
     queryKey: ["tenant", tenantId, "referral_links"],
     queryFn: async (): Promise<ReferralFunnel> => {
       const res = await fetch("/api/tenant/refer/ensure-link", { method: "POST" });
+      // SEC-11: the route is owner/admin-only; a `member` gets a 403 that must
+      // read as an error, not as an endless "Generating your link…".
+      if (res.status === 403) {
+        throw new Error("Only your account's owner or an admin can use Refer & earn.");
+      }
       // MAP-20: an error response is not always JSON — parsing it threw the
       // raw "Unexpected end of JSON input" into the error state.
       if (!res.ok) throw new Error("We couldn't load your referral link. Try again.");

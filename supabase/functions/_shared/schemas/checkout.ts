@@ -24,6 +24,11 @@ export const CheckoutRequestSchema = z.object({
    * whenever the vertical's price card has one configured), white-glove is
    * a selectable service tier, not a universal charge. */
   white_glove: z.boolean().optional().default(false),
+  /** Partner referral code from the browser's `heyloo_ref` cookie (PT-01).
+   * Only a claim — `api-checkout/referral.ts` resolves it against
+   * `referral_links` and silently ignores anything unknown or malformed, so
+   * this is deliberately lenient (a bad code must never fail a signup). */
+  referral_code: z.string().max(64).optional(),
 });
 
 export type CheckoutRequest = z.infer<typeof CheckoutRequestSchema>;

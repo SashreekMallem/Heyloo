@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { normalizeReferralCode, REFERRAL_COOKIE } from "@/app/api/partner/_lib/referral-cookie";
 import { callEdgeFunction } from "@/lib/edge-functions";
 import { SIGNUP_DRAFT_COOKIE } from "@/lib/signup/draft-cookie";
 import { resolveSignupDraft } from "@/lib/signup/resolve-draft";
@@ -77,11 +78,16 @@ export async function POST(request: Request) {
       ? (json as { timezone: string }).timezone
       : undefined;
   const whiteGlove = (json as { white_glove?: unknown }).white_glove === true;
+  // PT-01: partner attribution comes only from the server-set httpOnly cookie
+  // (never from the request body a client controls); re-validated here, and
+  // resolved against `referral_links` inside `api-checkout`.
+  const referralCode =
+    normalizeReferralCode(cookieStore.get(REFERRAL_COOKIE.name)?.value) ?? undefined;
 
   const { status, body: result } = await callEdgeFunction<ApiCheckoutResponse>("api-checkout", {
     method: "POST",
     accessToken: session.access_token,
-    body: buildApiCheckoutRequest(draft, user.email, timezone, whiteGlove),
+    body: buildApiCheckoutRequest(draft, user.email, timezone, whiteGlove, referralCode),
   });
 
   if (status !== 200 || !result.checkout_url) {

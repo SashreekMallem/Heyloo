@@ -29,18 +29,26 @@ import type { SignupDraft } from "@/lib/signup/draft-cookie";
  * when absent, so it matches the schema's own `.optional().default(false)`
  * and doesn't change the body shape for the (still far more common) case
  * where a tenant doesn't opt in.
+ *
+ * `referralCode` (PT-01) is the already-normalized partner code from the
+ * `heyloo_ref` cookie (`api/partner/_lib/referral-cookie.ts`), mirroring
+ * `CheckoutRequestSchema.referral_code`. It is only a claim: `api-checkout`
+ * resolves it against `referral_links` and ignores an unknown code, so it is
+ * omitted when absent and never grants anything by itself.
  */
 export function buildApiCheckoutRequest(
   draft: Pick<SignupDraft, "business_type" | "business_name">,
   email: string,
   timezone?: string,
   whiteGlove?: boolean,
+  referralCode?: string,
 ): {
   vertical: string;
   business_name: string;
   email: string;
   timezone?: string;
   white_glove?: boolean;
+  referral_code?: string;
 } {
   return {
     vertical: draft.business_type,
@@ -48,5 +56,6 @@ export function buildApiCheckoutRequest(
     email,
     ...(timezone ? { timezone } : {}),
     ...(whiteGlove ? { white_glove: true } : {}),
+    ...(referralCode ? { referral_code: referralCode } : {}),
   };
 }

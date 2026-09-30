@@ -1,18 +1,27 @@
 "use client";
 
 import { FTCDisclosureGate } from "@heyloo/ui";
+import { toast } from "sonner";
 import { useRouter } from "@/i18n/navigation";
 
 export function DisclosureGateClient({ policyVersion }: { policyVersion: string }) {
   const router = useRouter();
 
   async function acknowledge(version: string) {
-    const res = await fetch("/api/partner/disclosure", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ policy_version: version, acknowledged: true }),
-    });
-    if (res.ok) router.push("/portal");
+    try {
+      const res = await fetch("/api/partner/disclosure", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ policy_version: version, acknowledged: true }),
+      });
+      if (res.ok) {
+        router.push("/portal");
+        return;
+      }
+    } catch {
+      // Network failure: fall through to the same visible error as a non-2xx.
+    }
+    toast.error("Could not save, please try again");
   }
 
   return (

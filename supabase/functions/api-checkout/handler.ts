@@ -2,6 +2,7 @@ import type { OneTimeCheckoutLineItem, StripeFetch } from "../_shared/providers/
 import { createSubscriptionCheckoutSession } from "../_shared/providers/stripe.ts";
 import { CheckoutRequestSchema } from "../_shared/schemas/checkout.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
+import { attributeReferral } from "./referral.ts";
 
 /**
  * `/api-checkout` (API_AND_FLOWS.md A.3 "Checkout Session (subscription
@@ -81,7 +82,7 @@ export async function handleCheckout(
 ): Promise<CheckoutResult> {
   const parsed = CheckoutRequestSchema.safeParse(rawBody);
   if (!parsed.success) return { ok: false, status: 422, error: "invalid_request" };
-  const { vertical, business_name, email, timezone, white_glove } = parsed.data;
+  const { vertical, business_name, email, timezone, white_glove, referral_code } = parsed.data;
 
   const priceCardRows = await sql<{ value: PriceCardRow }>`
     select value from public.platform_settings where key = ${`price_card_${vertical}`}
@@ -127,6 +128,10 @@ export async function handleCheckout(
       on conflict (tenant_id, user_id) do nothing
     `;
   }
+
+  // PT-01: record who referred this tenant (no-op without a valid, known code;
+  // never throws, so it cannot fail the checkout).
+  await attributeReferral(sql, { tenantId, userId, referralCode: referral_code }, deps.logger);
 
   const oneTimeLineItems: OneTimeCheckoutLineItem[] = [];
   if (fees?.setup_fee_enabled && (fees.setup_fee_cents ?? 0) > 0) {

@@ -1,6 +1,11 @@
 import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 import createIntlMiddleware from "next-intl/middleware";
+import {
+  normalizeReferralCode,
+  REFERRAL_COOKIE,
+  REFERRAL_QUERY_PARAM,
+} from "./app/api/partner/_lib/referral-cookie";
 import { routing } from "./i18n/routing";
 import { sessionAssuranceFromSupabaseClient } from "./lib/auth/claims";
 import { NO_ACCESS_PATH, roleHome } from "./lib/auth/role-home";
@@ -40,6 +45,24 @@ export async function middleware(request: NextRequest) {
   // (partner) layout tells "am I already on /portal/disclosure" apart from
   // every other portal page, to avoid a redirect loop (FRONTEND_SPEC §8.4).
   response.headers.set("x-pathname", request.nextUrl.pathname);
+
+  // PT-01 referral attribution: a partner's link is `/signup?ref=CODE`. Keep
+  // the (format-validated) code in a first-party httpOnly cookie so it survives
+  // the multi-step signup + the Stripe round trip; checkout resolves it
+  // server-side. Last click wins. API routes are skipped (`?ref=` there is not
+  // a partner click).
+  if (!isApiRoute) {
+    const refCode = normalizeReferralCode(request.nextUrl.searchParams.get(REFERRAL_QUERY_PARAM));
+    if (refCode) {
+      response.cookies.set(REFERRAL_COOKIE.name, refCode, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: REFERRAL_COOKIE.maxAge,
+        path: "/",
+      });
+    }
+  }
 
   const supabase = createServerClient(env.supabaseUrl, env.supabasePublishableKey, {
     cookies: {

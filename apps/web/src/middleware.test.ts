@@ -292,3 +292,41 @@ describe("middleware — guard #1 redirect matrix (FRONTEND_SPEC.md §0.1)", () 
     expect(res.headers.get("location")).toBeNull();
   });
 });
+
+describe("middleware — referral attribution cookie (PT-01)", () => {
+  it("sets a 90-day httpOnly heyloo_ref cookie when /signup carries ?ref=", async () => {
+    mockUser = null;
+    mockClaimsAppMetadata = {};
+    const res = await middleware(req("/signup?ref=abcd2345"));
+    const cookie = res.cookies.get("heyloo_ref");
+    expect(cookie?.value).toBe("ABCD2345");
+    const header = res.headers.get("set-cookie") ?? "";
+    expect(header).toMatch(/heyloo_ref=ABCD2345/);
+    expect(header).toMatch(/HttpOnly/i);
+    expect(header).toMatch(/SameSite=lax/i);
+    expect(header).toMatch(/Max-Age=7776000/);
+  });
+
+  it("ignores a malformed ?ref= value", async () => {
+    mockUser = null;
+    mockClaimsAppMetadata = {};
+    for (const bad of ["x", "has%20space", "a".repeat(40), "%3Cscript%3E"]) {
+      const res = await middleware(req(`/signup?ref=${bad}`));
+      expect(res.cookies.get("heyloo_ref")).toBeUndefined();
+    }
+  });
+
+  it("sets nothing when there is no ?ref=", async () => {
+    mockUser = null;
+    mockClaimsAppMetadata = {};
+    const res = await middleware(req("/signup"));
+    expect(res.cookies.get("heyloo_ref")).toBeUndefined();
+  });
+
+  it("never sets it from an /api route", async () => {
+    mockUser = null;
+    mockClaimsAppMetadata = {};
+    const res = await middleware(req("/api/anything?ref=ABCD2345"));
+    expect(res.cookies.get("heyloo_ref")).toBeUndefined();
+  });
+});

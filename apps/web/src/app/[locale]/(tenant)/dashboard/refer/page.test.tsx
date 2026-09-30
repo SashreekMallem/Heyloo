@@ -106,4 +106,14 @@ describe("ReferPage", () => {
     renderPage();
     expect(await screen.findByText(/couldn't load your referral link/i)).toBeInTheDocument();
   });
+
+  it("SEC-11: shows an owner/admin-only message, not an endless spinner, on a 403", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ error: "owner_or_admin_required" }, { status: 403 })),
+    );
+    renderPage();
+    expect(await screen.findByText(/only your account's owner or an admin/i)).toBeInTheDocument();
+    expect(screen.queryByText("Your referral link")).not.toBeInTheDocument();
+  });
 });

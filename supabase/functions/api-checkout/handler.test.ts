@@ -227,4 +227,83 @@ describe("handleCheckout", () => {
       expect(lineItemCount(body)).toBe(2);
     });
   });
+
+  describe("referral attribution (PT-01)", () => {
+    const LINK_ROW = [
+      { link_id: "link-1", referral_partner_id: "partner-1", partner_user_id: "partner-user" },
+    ];
+
+    it("attributes a new tenant to the referring partner when a known referral_code is sent", async () => {
+      const { sql, calls } = makeSql({
+        "platform_settings:price_card_auto": [{ value: PRICE_CARD }],
+        "from public.tenants t": [],
+        "insert into public.tenants": [{ id: "tenant-1" }],
+        "from public.referral_links": LINK_ROW,
+        "insert into public.referrals": [{ id: "ref-1" }],
+      });
+
+      const result = await handleCheckout(
+        sql,
+        "user-1",
+        { ...VALID_BODY, referral_code: "abcd2345" },
+        makeDeps(),
+      );
+      expect(result.ok).toBe(true);
+
+      const lookup = calls.find((c) => c.text.includes("from public.referral_links"));
+      expect(lookup?.values).toEqual(["ABCD2345"]);
+      const write = calls.find((c) => c.text.includes("insert into public.referrals"));
+      expect(write?.values).toEqual(expect.arrayContaining(["partner-1", "link-1", "tenant-1"]));
+    });
+
+    it("runs no referral SQL at all when no referral_code is sent", async () => {
+      const { sql, calls } = makeSql({
+        "platform_settings:price_card_auto": [{ value: PRICE_CARD }],
+        "from public.tenants t": [],
+        "insert into public.tenants": [{ id: "tenant-1" }],
+      });
+      await handleCheckout(sql, "user-1", VALID_BODY, makeDeps());
+      expect(calls.some((c) => c.text.includes("referral"))).toBe(false);
+    });
+
+    it("still creates the checkout session when attribution fails", async () => {
+      const failingSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = strings.join(" ");
+        if (text.includes("referral")) return Promise.reject(new Error("db down"));
+        if (text.includes("from public.platform_settings where key")) {
+          return Promise.resolve(values[0] === "price_card_auto" ? [{ value: PRICE_CARD }] : []);
+        }
+        if (text.includes("insert into public.tenants"))
+          return Promise.resolve([{ id: "tenant-1" }]);
+        return Promise.resolve([]);
+      }) as SqlClient;
+
+      const result = await handleCheckout(
+        failingSql,
+        "user-1",
+        { ...VALID_BODY, referral_code: "ABCD2345" },
+        makeDeps(),
+      );
+      expect(result).toEqual({
+        ok: true,
+        tenant_id: "tenant-1",
+        checkout_url: "https://checkout.stripe.com/cs_1",
+      });
+    });
+
+    it("tolerates a malformed referral_code (never a 422 for a bad code)", async () => {
+      const { sql } = makeSql({
+        "platform_settings:price_card_auto": [{ value: PRICE_CARD }],
+        "from public.tenants t": [],
+        "insert into public.tenants": [{ id: "tenant-1" }],
+      });
+      const result = await handleCheckout(
+        sql,
+        "user-1",
+        { ...VALID_BODY, referral_code: "not a code!" },
+        makeDeps(),
+      );
+      expect(result.ok).toBe(true);
+    });
+  });
 });

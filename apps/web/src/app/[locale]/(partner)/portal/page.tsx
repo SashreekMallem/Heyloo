@@ -3,9 +3,17 @@ import { MetricCard } from "@heyloo/ui/custom/metric-card";
 import { PageHeader } from "@heyloo/ui/layout/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@heyloo/ui/primitives/card";
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import { ensurePartnerReferralLink } from "@/app/api/partner/_lib/ensure-referral-link";
 import { CopyLinkButton } from "@/components/partner/copy-link-button";
+import {
+  buildReferralLink,
+  type CommissionAmountRow,
+  requestOrigin,
+  summarizeEarnings,
+} from "@/components/partner/referral-link";
 import { requirePartnerSession } from "@/lib/auth/require-partner-session";
+import { env } from "@/lib/env";
 
 export const metadata: Metadata = { title: "Partner dashboard — Heyloo" };
 
@@ -18,6 +26,9 @@ export default async function PartnerDashboardPage() {
   // plain read here could show "Generating…" forever. Resolve it eagerly
   // so the real link is present by first paint.
   const code = await ensurePartnerReferralLink(partner.id);
+  const link = code
+    ? buildReferralLink(requestOrigin(await headers(), env.appBaseUrl), code)
+    : null;
 
   const { data: referrals } = await supabase
     .from("referrals")
@@ -27,6 +38,20 @@ export default async function PartnerDashboardPage() {
   const rows = referrals ?? [];
   const qualified = rows.filter((r) => r.status === "qualified" || r.status === "paid").length;
   const paid = rows.filter((r) => r.status === "paid").length;
+
+  // `commission_events` postdates @heyloo/supabase-client's hand-maintained
+  // Database type — same untyped-`from` workaround as /portal/customers
+  // (docs/audit/FIX_REQUESTS.md). Read through the partner's own RLS-bound
+  // session (`fn_jwt_referral_partner_id()` scopes `select`).
+  // biome-ignore lint/suspicious/noExplicitAny: see comment above.
+  const fromUntyped = supabase.from.bind(supabase) as (table: string) => any;
+  const { data: commissionRows } =
+    rows.length > 0
+      ? await fromUntyped("commission_events")
+          .select("amount_cents, status")
+          .eq("referral_partner_id", partner.id)
+      : { data: [] };
+  const earnings = summarizeEarnings((commissionRows ?? []) as CommissionAmountRow[]);
 
   return (
     <div className="space-y-6">
@@ -43,11 +68,17 @@ export default async function PartnerDashboardPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <MetricCard label="Referrals" value={rows.length} format="number" />
-          <MetricCard label="Qualified" value={qualified} format="number" />
-          <MetricCard label="Paid" value={paid} format="number" />
-        </div>
+        <>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <MetricCard label="Referrals" value={rows.length} format="number" />
+            <MetricCard label="Qualified" value={qualified} format="number" />
+            <MetricCard label="Paid" value={paid} format="number" />
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <MetricCard label="Earned (paid out)" value={earnings.paidCents} format="currency" />
+            <MetricCard label="Pending payout" value={earnings.pendingCents} format="currency" />
+          </div>
+        </>
       )}
 
       <Card>
@@ -56,15 +87,16 @@ export default async function PartnerDashboardPage() {
         </CardHeader>
         <CardContent className="flex items-center gap-2">
           <code className="flex-1 truncate rounded-md border border-border bg-muted/50 px-3 py-2 font-mono text-small">
-            {code ? `/signup?ref=${code}` : "Link unavailable — try refreshing the page."}
+            {link ?? "Link unavailable — try refreshing the page."}
           </code>
-          {code && <CopyLinkButton code={code} />}
+          {link && <CopyLinkButton link={link} />}
         </CardContent>
       </Card>
 
+      {/* No "Clicks" stage: link clicks are not tracked, so it could only ever
+          show a hard-coded 0 (PT-06). Add it back when click tracking exists. */}
       <FunnelChart
         stages={[
-          { label: "Clicks", count: 0 },
           { label: "Signups", count: rows.length },
           { label: "Qualified", count: qualified },
           { label: "Paid", count: paid },

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { REFERRAL_COOKIE } from "@/app/api/partner/_lib/referral-cookie";
 import { encodeSignupDraft, SIGNUP_DRAFT_COOKIE } from "@/lib/signup/draft-cookie";
 
 Object.assign(process.env, { SIGNUP_DRAFT_SECRET: "test-signup-draft-secret" });
@@ -18,12 +19,16 @@ vi.mock("@/lib/supabase/server", () => ({
 }));
 
 let cookieValue: string | undefined;
+let refCookieValue: string | undefined;
 const cookieDelete = vi.fn();
 
 vi.mock("next/headers", () => ({
   cookies: async () => ({
-    get: (name: string) =>
-      name === SIGNUP_DRAFT_COOKIE.name && cookieValue ? { value: cookieValue } : undefined,
+    get: (name: string) => {
+      if (name === SIGNUP_DRAFT_COOKIE.name && cookieValue) return { value: cookieValue };
+      if (name === REFERRAL_COOKIE.name && refCookieValue) return { value: refCookieValue };
+      return undefined;
+    },
     delete: cookieDelete,
   }),
 }));
@@ -110,6 +115,45 @@ describe("POST /api/checkout/session", () => {
         },
       }),
     );
+  });
+
+  it("PT-01: forwards the referral cookie's code to api-checkout, ignoring a body-supplied one", async () => {
+    mockUser = { email: "owner@example.com" };
+    mockSession = { access_token: "at1" };
+    cookieValue = encodeSignupDraft({ business_type: "auto", business_name: "Joe's Garage" });
+    refCookieValue = "abcd2345";
+    edgeResult = { status: 200, body: { checkout_url: "https://checkout.stripe.com/s3" } };
+    callEdgeFunction.mockClear();
+
+    await POST(postRequest({ referral_code: "ATTACKER1" }));
+
+    expect(callEdgeFunction).toHaveBeenCalledWith(
+      "api-checkout",
+      expect.objectContaining({
+        body: {
+          vertical: "auto",
+          business_name: "Joe's Garage",
+          email: "owner@example.com",
+          referral_code: "ABCD2345",
+        },
+      }),
+    );
+    refCookieValue = undefined;
+  });
+
+  it("PT-01: drops a malformed referral cookie", async () => {
+    mockUser = { email: "owner@example.com" };
+    mockSession = { access_token: "at1" };
+    cookieValue = encodeSignupDraft({ business_type: "auto", business_name: "Joe's Garage" });
+    refCookieValue = "no good!";
+    edgeResult = { status: 200, body: { checkout_url: "https://checkout.stripe.com/s4" } };
+    callEdgeFunction.mockClear();
+
+    await POST(postRequest());
+
+    const call = callEdgeFunction.mock.calls[0] as unknown as [string, { body: object }];
+    expect("referral_code" in call[1].body).toBe(false);
+    refCookieValue = undefined;
   });
 
   it("passes through the edge function's error and status on failure", async () => {
