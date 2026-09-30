@@ -71,6 +71,52 @@ describe("sendOneValueEmail", () => {
   });
 });
 
+describe("QA-1 BE-17: quiet weeks and test tenants", () => {
+  it("skips a tenant with zero calls and zero bookings this week, writing nothing", async () => {
+    const { sql, calls } = makeSql(() => []);
+    const outcome = await sendOneValueEmail(
+      sql,
+      row({ calls_answered: 0, bookings_captured: 0 }),
+    );
+    expect(outcome).toBe("skipped_no_activity");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("still sends when there were calls but no bookings", async () => {
+    const { sql } = makeSql((call) => (call === 1 ? [{ id: "msg1" }] : []));
+    expect(await sendOneValueEmail(sql, row({ calls_answered: 4, bookings_captured: 0 }))).toBe(
+      "sent",
+    );
+  });
+
+  it("counts skipped quiet weeks separately in the run result", async () => {
+    let call = 0;
+    const sql = ((_strings: TemplateStringsArray, ..._values: unknown[]) => {
+      call += 1;
+      if (call === 1) {
+        return Promise.resolve([row({ calls_answered: 0, bookings_captured: 0 })]);
+      }
+      return Promise.resolve([]);
+    }) as SqlClient;
+    expect(await runValueEmails(sql)).toEqual({
+      sent: 0,
+      skipped_no_owner_email: 0,
+      skipped_no_activity: 1,
+      total: 1,
+    });
+  });
+
+  it("excludes tenants.is_test in the candidate query", async () => {
+    const texts: string[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      texts.push(strings.join(" "));
+      return Promise.resolve([]);
+    }) as SqlClient;
+    await findValueEmailCandidates(sql);
+    expect(texts[0]).toContain("not t.is_test");
+  });
+});
+
 describe("findValueEmailCandidates / runValueEmails", () => {
   it("passes through whatever rows the query returns", async () => {
     const { sql } = makeSql(() => [row()]);
@@ -92,6 +138,11 @@ describe("findValueEmailCandidates / runValueEmails", () => {
     }) as SqlClient;
 
     const result = await runValueEmails(sql);
-    expect(result).toEqual({ sent: 1, skipped_no_owner_email: 1, total: 2 });
+    expect(result).toEqual({
+      sent: 1,
+      skipped_no_owner_email: 1,
+      skipped_no_activity: 0,
+      total: 2,
+    });
   });
 });

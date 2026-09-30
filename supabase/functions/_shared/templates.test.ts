@@ -114,6 +114,30 @@ describe("renderTemplate", () => {
     expect(result.body).toContain("expires");
   });
 
+  it("QA-1 BE-17: weekly_value_summary renders the ~$X saved figure when the payload carries one", () => {
+    const result = renderTemplate("weekly_value_summary", {
+      calls_answered: "12",
+      bookings_captured: "3",
+      value_saved_cents: 45000,
+      value_saved_display: "$450",
+    });
+    expect(result.body).toBe("This week: 12 calls answered, 3 bookings captured (~$450 saved).");
+  });
+
+  it("QA-1 BE-17: weekly_value_summary omits the dollar figure when it is zero or absent", () => {
+    expect(
+      renderTemplate("weekly_value_summary", {
+        calls_answered: "2",
+        bookings_captured: "0",
+        value_saved_cents: 0,
+        value_saved_display: "$0",
+      }).body,
+    ).toBe("This week: 2 calls answered, 0 bookings captured.");
+    expect(
+      renderTemplate("weekly_value_summary", { calls_answered: "2", bookings_captured: "1" }).body,
+    ).toBe("This week: 2 calls answered, 1 bookings captured.");
+  });
+
   it("returns an empty body for an unknown template key rather than throwing", () => {
     expect(() => renderTemplate("not_a_real_template", {})).not.toThrow();
     expect(renderTemplate("not_a_real_template", {}).body).toBe("");
