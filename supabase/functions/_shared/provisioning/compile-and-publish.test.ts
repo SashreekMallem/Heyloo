@@ -226,6 +226,71 @@ describe("compileAndCreateAgent — static opening line + default dynamic variab
   });
 });
 
+describe("compileAndCreateAgent — transfer number defaults to the business phone", () => {
+  const baseFixtures: Record<string, unknown[]> = {
+    "as tools_ok\n    from public.agent_templates": [],
+    "select at.* from public.agent_templates": [HEALTHY_TEMPLATE_ROW],
+    "as language_primary": [{ language_primary: "en" }],
+  };
+
+  function recordingSql(fail?: (text: string) => unknown) {
+    const statements: { text: string; values: unknown[] }[] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      statements.push({ text, values });
+      const failure = fail?.(text);
+      if (failure) return Promise.reject(failure);
+      for (const [key, rows] of Object.entries(baseFixtures)) {
+        if (text.includes(key)) return Promise.resolve(rows);
+      }
+      return Promise.resolve([]);
+    }) as SqlClient;
+    return { sql, statements };
+  }
+
+  it("after creating the agent_configs row, fills a NULL transfer_number from tenants.business_phone for this tenant only", async () => {
+    const { sql, statements } = recordingSql();
+    const outcome = await compileAndCreateAgent(sql, "tenant_bp", "auto", deps([]));
+    expect(outcome.ok).toBe(true);
+    const insertAt = statements.findIndex((s) =>
+      s.text.includes("insert into public.agent_configs"),
+    );
+    const fillAt = statements.findIndex((s) =>
+      s.text.includes("set transfer_number = t.business_phone"),
+    );
+    expect(insertAt).toBeGreaterThanOrEqual(0);
+    expect(fillAt).toBeGreaterThan(insertAt);
+    const fill = statements[fillAt] as { text: string; values: unknown[] };
+    // Never overwrites a transfer number the owner chose, and skips tenants without a business phone.
+    expect(fill.text).toContain("ac.transfer_number is null");
+    expect(fill.text).toContain("t.business_phone is not null");
+    expect(fill.values).toEqual(["tenant_bp"]);
+  });
+
+  it("also runs after the stamp-less fallback insert (42703)", async () => {
+    const { sql, statements } = recordingSql((text) =>
+      text.includes("insert into public.agent_configs") && text.includes("compiled_with_version")
+        ? Object.assign(new Error("no column"), { code: "42703" })
+        : undefined,
+    );
+    const outcome = await compileAndCreateAgent(sql, "tenant_bp", "auto", deps([]));
+    expect(outcome.ok).toBe(true);
+    expect(statements.some((s) => s.text.includes("set transfer_number = t.business_phone"))).toBe(
+      true,
+    );
+  });
+
+  it("never fails provisioning when the default can't be written (e.g. business_phone column not deployed yet)", async () => {
+    const { sql } = recordingSql((text) =>
+      text.includes("set transfer_number = t.business_phone")
+        ? Object.assign(new Error("column t.business_phone does not exist"), { code: "42703" })
+        : undefined,
+    );
+    const outcome = await compileAndCreateAgent(sql, "tenant_bp", "auto", deps([]));
+    expect(outcome).toMatchObject({ ok: true, agentId: "agent_1" });
+  });
+});
+
 describe("compileAndCreateAgent — SETTINGS-2 compiler-version stamp", () => {
   it("writes AGENT_COMPILER_VERSION to agent_configs.compiled_with_version on insert AND on the conflict-update path", async () => {
     const upserts: { text: string; values: unknown[] }[] = [];

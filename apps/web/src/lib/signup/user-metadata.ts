@@ -32,6 +32,8 @@ export function buildSignupUserMetadata(input: {
     [SIGNUP_DRAFT_METADATA_KEY]: {
       business_type: input.draft.business_type,
       business_name: input.draft.business_name,
+      ...(input.draft.business_phone ? { business_phone: input.draft.business_phone } : {}),
+      ...(input.draft.website_url ? { website_url: input.draft.website_url } : {}),
     },
     [SIGNUP_PLAN_METADATA_KEY]: {
       annual: input.plan.annual,

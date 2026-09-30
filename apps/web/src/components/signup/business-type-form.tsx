@@ -1,15 +1,12 @@
 "use client";
 
-import {
-  type SignupBusinessType,
-  signupBusinessTypeSchema,
-  type Vertical,
-} from "@heyloo/canonical-types";
+import { signupBusinessTypeSchema, type Vertical } from "@heyloo/canonical-types";
 import {
   Button,
   cn,
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -21,37 +18,69 @@ import {
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
+import type { z } from "zod";
 import { VERTICAL_CONTENT } from "@/content/marketing/verticals";
 import { useRouter } from "@/i18n/navigation";
 import { SIGNUP_STEPS } from "@/lib/marketing/signup-steps";
+import {
+  normalizeBusinessPhone,
+  normalizeWebsiteUrl,
+  zBusinessPhoneFormField,
+  zWebsiteFormField,
+} from "@/lib/settings/business-contact";
+import { formatPhoneDisplay } from "@/lib/settings/format";
+
+/**
+ * Step 1's form: the canonical schema with the business phone and website
+ * as plain friendly-input strings (blank allowed). They are normalized on
+ * submit, and again by `/api/signup/draft` (the real boundary).
+ */
+const businessInfoFormSchema = signupBusinessTypeSchema.extend({
+  business_phone: zBusinessPhoneFormField,
+  website_url: zWebsiteFormField,
+});
+type BusinessInfoFormValues = z.infer<typeof businessInfoFormSchema>;
 
 export function BusinessTypeForm({
   initialVertical,
   initialBusinessName,
+  initialBusinessPhone,
+  initialWebsiteUrl,
   demoId,
 }: {
   initialVertical?: Vertical;
   /** From the signed draft cookie, so Back from a later step shows what they already entered. */
   initialBusinessName?: string;
+  /** E.164 from the draft cookie; shown as "(262) 755-1967". */
+  initialBusinessPhone?: string;
+  initialWebsiteUrl?: string;
   demoId?: string;
 }) {
   const router = useRouter();
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const form = useForm<SignupBusinessType>({
-    resolver: zodResolver(signupBusinessTypeSchema),
+  const form = useForm<BusinessInfoFormValues>({
+    resolver: zodResolver(businessInfoFormSchema),
     defaultValues: {
       business_type: initialVertical ?? "generic",
       business_name: initialBusinessName ?? "",
+      business_phone: initialBusinessPhone ? formatPhoneDisplay(initialBusinessPhone) : "",
+      website_url: initialWebsiteUrl ?? "",
     },
   });
 
-  async function onSubmit(values: SignupBusinessType) {
+  async function onSubmit(values: BusinessInfoFormValues) {
     setSubmitError(null);
     try {
       const res = await fetch("/api/signup/draft", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...values, demo_id: demoId }),
+        body: JSON.stringify({
+          business_type: values.business_type,
+          business_name: values.business_name,
+          business_phone: normalizeBusinessPhone(values.business_phone) ?? undefined,
+          website_url: normalizeWebsiteUrl(values.website_url) ?? undefined,
+          demo_id: demoId,
+        }),
       });
       if (res.ok) {
         router.push("/signup/plan");
@@ -127,6 +156,64 @@ export function BusinessTypeForm({
               </FormItem>
             )}
           />
+          <div className="grid gap-6 sm:grid-cols-2">
+            <FormField
+              control={form.control}
+              name="business_phone"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Business phone number</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="tel"
+                      inputMode="tel"
+                      autoComplete="tel"
+                      placeholder="(262) 755-1967"
+                      {...field}
+                      onBlur={() => {
+                        field.onBlur();
+                        // Show the number the way we read it back: "(262) 755-1967".
+                        const e164 = normalizeBusinessPhone(field.value);
+                        if (e164) field.onChange(formatPhoneDisplay(e164));
+                      }}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    The number your customers call today. We&apos;ll forward it to your AI
+                    receptionist.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="website_url"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Website (optional)</FormLabel>
+                  <FormControl>
+                    {/* type="text", not "url": the browser's own URL check would
+                        refuse "yourbusiness.com", which we accept. */}
+                    <Input
+                      inputMode="url"
+                      autoComplete="url"
+                      autoCapitalize="none"
+                      spellCheck={false}
+                      placeholder="https://yourbusiness.com"
+                      {...field}
+                      onBlur={() => {
+                        field.onBlur();
+                        const url = normalizeWebsiteUrl(field.value);
+                        if (url) field.onChange(url);
+                      }}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
           {submitError && (
             <p className="text-sm text-destructive" role="alert">
               {submitError}

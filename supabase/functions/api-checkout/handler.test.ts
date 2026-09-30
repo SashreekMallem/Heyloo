@@ -135,6 +135,67 @@ describe("handleCheckout", () => {
     expect(update?.text).toContain("stripe_subscription_id is null");
   });
 
+  describe("business phone + website (signup step 1)", () => {
+    const WITH_CONTACT = {
+      ...VALID_BODY,
+      business_phone: "+12627551967",
+      website_url: "https://joesauto.com",
+    };
+
+    it("writes them onto a NEW tenant row", async () => {
+      const { sql, calls } = makeSql({
+        "platform_settings:price_card_auto": [{ value: PRICE_CARD }],
+        "from public.tenants t": [],
+        "insert into public.tenants": [{ id: "tenant-1" }],
+      });
+      const result = await handleCheckout(sql, "user-1", WITH_CONTACT, makeDeps());
+      expect(result.ok).toBe(true);
+      const insert = calls.find((c) => c.text.includes("insert into public.tenants"));
+      expect(insert?.text).toContain("business_phone, website_url");
+      expect(insert?.values).toEqual(
+        expect.arrayContaining(["+12627551967", "https://joesauto.com"]),
+      );
+    });
+
+    it("inserts NULLs when an older draft carries neither", async () => {
+      const { sql, calls } = makeSql({
+        "platform_settings:price_card_auto": [{ value: PRICE_CARD }],
+        "from public.tenants t": [],
+        "insert into public.tenants": [{ id: "tenant-1" }],
+      });
+      await handleCheckout(sql, "user-1", VALID_BODY, makeDeps());
+      const insert = calls.find((c) => c.text.includes("insert into public.tenants"));
+      expect(insert?.values.slice(-2)).toEqual([null, null]);
+    });
+
+    it("updates them on a reused trialing tenant, keeping stored values when absent (coalesce)", async () => {
+      const { sql, calls } = makeSql({
+        "platform_settings:price_card_auto": [{ value: PRICE_CARD }],
+        "from public.tenants t": [{ id: "existing-tenant" }],
+      });
+      await handleCheckout(sql, "user-1", WITH_CONTACT, makeDeps());
+      const update = calls.find((c) => c.text.includes("update public.tenants"));
+      expect(update?.text).toContain("business_phone = coalesce(");
+      expect(update?.text).toContain("website_url = coalesce(");
+      expect(update?.values).toEqual(
+        expect.arrayContaining(["+12627551967", "https://joesauto.com"]),
+      );
+    });
+
+    it.each([
+      { business_phone: "(262) 755-1967" },
+      { business_phone: "2627551967" },
+      { website_url: "joesauto.com" },
+      { website_url: "javascript:alert(1)" },
+      { website_url: "https://joes auto.com" },
+    ])("422s server-side on a malformed value %o (never trusts the client)", async (extra) => {
+      const { sql, calls } = makeSql({});
+      const result = await handleCheckout(sql, "user-1", { ...VALID_BODY, ...extra }, makeDeps());
+      expect(result).toEqual({ ok: false, status: 422, error: "invalid_request" });
+      expect(calls).toHaveLength(0);
+    });
+  });
+
   it("surfaces a checkout_session_create_failed error when Stripe rejects the session", async () => {
     const { sql } = makeSql({
       "platform_settings:price_card_auto": [{ value: PRICE_CARD }],

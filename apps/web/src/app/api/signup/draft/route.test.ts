@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SIGNUP_DRAFT_COOKIE } from "@/lib/signup/draft-cookie";
+import { decodeSignupDraft, SIGNUP_DRAFT_COOKIE } from "@/lib/signup/draft-cookie";
 
 Object.assign(process.env, { SIGNUP_DRAFT_SECRET: "test-signup-draft-secret" });
 
@@ -39,6 +39,64 @@ describe("/api/signup/draft", () => {
     cookieSet.mockClear();
     expect((await post("d".repeat(20_000))).status).toBe(422);
     expect((await post("not-a-uuid")).status).toBe(422);
+    expect(cookieSet).not.toHaveBeenCalled();
+  });
+
+  it("normalizes a friendly business phone and bare website before signing them into the draft", async () => {
+    cookieSet.mockClear();
+    const res = await POST(
+      new Request("http://localhost/api/signup/draft", {
+        method: "POST",
+        body: JSON.stringify({
+          business_type: "auto",
+          business_name: "Joe's Garage",
+          business_phone: "(262) 755-1967",
+          website_url: "joesgarage.com",
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const [, value] = cookieSet.mock.calls[0] as [string, string];
+    expect(decodeSignupDraft(value)).toEqual({
+      business_type: "auto",
+      business_name: "Joe's Garage",
+      business_phone: "+12627551967",
+      website_url: "https://joesgarage.com",
+    });
+  });
+
+  it("leaves blank business phone / website out of the draft (both optional)", async () => {
+    cookieSet.mockClear();
+    const res = await POST(
+      new Request("http://localhost/api/signup/draft", {
+        method: "POST",
+        body: JSON.stringify({
+          business_type: "vet",
+          business_name: "Paws",
+          business_phone: "",
+          website_url: "  ",
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const [, value] = cookieSet.mock.calls[0] as [string, string];
+    expect(decodeSignupDraft(value)).toEqual({ business_type: "vet", business_name: "Paws" });
+  });
+
+  it.each([
+    { business_phone: "755-1967" },
+    { business_phone: "+44 20 7946 0958" },
+    { website_url: "ftp://joesgarage.com" },
+    { website_url: "joes garage.com" },
+  ])("422s (no cookie) on an invalid business contact field %o", async (extra) => {
+    cookieSet.mockClear();
+    const res = await POST(
+      new Request("http://localhost/api/signup/draft", {
+        method: "POST",
+        body: JSON.stringify({ business_type: "auto", business_name: "Joe's Garage", ...extra }),
+      }),
+    );
+    expect(res.status).toBe(422);
     expect(cookieSet).not.toHaveBeenCalled();
   });
 

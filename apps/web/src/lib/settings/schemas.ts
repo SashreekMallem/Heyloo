@@ -1,6 +1,14 @@
 import { faqItemSchema, verticalDetailsSchema } from "@heyloo/canonical-types";
 import { z } from "zod";
 import {
+  BUSINESS_PHONE_ERROR_MESSAGE,
+  normalizeBusinessPhone,
+  zBusinessPhoneFormField,
+  zOptionalBusinessPhone,
+  zOptionalWebsite,
+  zWebsiteFormField,
+} from "./business-contact";
+import {
   CUSTOM_QUESTION_APPLIES_TO,
   CUSTOM_QUESTION_HINT_MAX_CHARS,
   CUSTOM_QUESTION_ID_PATTERN,
@@ -36,7 +44,8 @@ function zOptionalText(max: number) {
 }
 
 // ---------------------------------------------------------------------------
-// Business profile — tenants.name / tenants.timezone
+// Business profile — tenants.name / tenants.timezone (+ business_phone /
+// website_url, owner-editable since 20260930280000)
 // ---------------------------------------------------------------------------
 
 export const businessProfileSchema = z.object({
@@ -48,6 +57,39 @@ export const businessProfileSchema = z.object({
   timezone: z.string().refine(isValidTimezone, "Pick a time zone from the list."),
 });
 export type BusinessProfileInput = z.infer<typeof businessProfileSchema>;
+
+/** Agent → Business form: friendly phone / website strings, blank allowed. */
+export const businessProfileFormSchema = businessProfileSchema.extend({
+  business_phone: zBusinessPhoneFormField,
+  website_url: zWebsiteFormField,
+});
+export type BusinessProfileFormValues = z.infer<typeof businessProfileFormSchema>;
+
+/**
+ * `POST /api/tenant/settings/business`: blank phone / website -> `null`
+ * (clears), a missing key -> `undefined` (leave alone, so an older client
+ * that only sends name + zone never wipes them), else E.164 / https URL.
+ */
+export const businessProfileRequestSchema = businessProfileSchema.extend({
+  business_phone: zOptionalBusinessPhone,
+  website_url: zOptionalWebsite,
+});
+export type BusinessProfileRequest = z.output<typeof businessProfileRequestSchema>;
+
+/** `POST /api/tenant/settings/business-phone` (phone setup screen): the number is required there. */
+export const businessPhoneRequestSchema = z.object({
+  business_phone: z
+    .string()
+    .max(40)
+    .transform((value, ctx) => {
+      const e164 = normalizeBusinessPhone(value);
+      if (!e164) {
+        ctx.addIssue({ code: "custom", message: BUSINESS_PHONE_ERROR_MESSAGE });
+        return z.NEVER;
+      }
+      return e164;
+    }),
+});
 
 // ---------------------------------------------------------------------------
 // AI instructions + call routing — agent_configs columns + overrides

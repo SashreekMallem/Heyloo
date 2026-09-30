@@ -1,9 +1,26 @@
+import { CARRIERS } from "@heyloo/canonical-types";
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { claimsFromSupabaseClient } from "@/lib/auth/claims";
 import { callEdgeFunction } from "@/lib/edge-functions";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
+
+/**
+ * The forwarding test is two calls (LAUNCH-forwarding): `start` places a
+ * call from the platform's test line to the tenant's business phone, and
+ * `status` is polled until that call is found forwarded to the Heyloo
+ * number (or not). `carrier_hint` is advisory and only meaningful on start;
+ * an unknown value is dropped rather than failing the test.
+ */
+const forwardingTestRequestSchema = z.object({
+  action: z.enum(["start", "status"]),
+  carrier_hint: z.enum(CARRIERS).optional().catch(undefined),
+});
+
+/** A start places a real outbound call; bound the wait so the browser never hangs on it. */
+const EDGE_TIMEOUT_MS = 20_000;
 
 /**
  * Phone setup "test it" (FRONTEND_SPEC.md §6.7) — proxies to the
@@ -12,7 +29,9 @@ export const runtime = "nodejs";
  * own JWT claims, never trusted bare from the body (defense in depth
  * alongside `forwarding-verify` itself already enforcing the identical
  * check server-side — same fix pattern as the checkout seam's tenant_id
- * trust gap, FRONTEND_AUDIT).
+ * trust gap, FRONTEND_AUDIT). Only the contract's fields are forwarded, and
+ * the edge function's status + body come back unchanged (the wizard maps
+ * its `error` / `state` / `reason` codes to copy).
  */
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerComponentClient();
@@ -37,16 +56,32 @@ export async function POST(request: Request) {
   } catch {
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
-  const body = json as { tenant_id?: string; carrier_hint?: string };
-  if (!body.tenant_id || body.tenant_id !== claims.tenant_id) {
+  const tenantId = (json as { tenant_id?: unknown } | null)?.tenant_id;
+  if (!tenantId || tenantId !== claims.tenant_id) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
+  const parsed = forwardingTestRequestSchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: "invalid_request", issues: parsed.error.issues },
+      { status: 422 },
+    );
+  }
+  const { action, carrier_hint: carrierHint } = parsed.data;
 
-  const { status, body: result } = await callEdgeFunction("forwarding-verify", {
-    method: "POST",
-    accessToken: session.access_token,
-    body,
-  });
-
-  return NextResponse.json(result, { status });
+  try {
+    const { status, body: result } = await callEdgeFunction("forwarding-verify", {
+      method: "POST",
+      accessToken: session.access_token,
+      body: {
+        tenant_id: claims.tenant_id,
+        action,
+        ...(action === "start" && carrierHint ? { carrier_hint: carrierHint } : {}),
+      },
+      timeoutMs: EDGE_TIMEOUT_MS,
+    });
+    return NextResponse.json(result, { status });
+  } catch {
+    return NextResponse.json({ error: "forwarding_verify_unreachable" }, { status: 502 });
+  }
 }

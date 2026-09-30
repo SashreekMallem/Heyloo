@@ -9457,3 +9457,23 @@ state what the product actually does, and these are open product decisions:
   Exports/deletions are on request via email.
 - Offboarding only soft-deletes the tenant; hard deletion is on request.
 - HIPAA: no BAA exists, so the terms bar PHI without one — relevant to the dental vertical.
+
+## LAUNCH-forwarding phase 1 — business phone at signup, settings, phone setup (2026-09-30)
+
+`tenants.business_phone` / `website_url` (migration 20260930280000) are asked at
+signup step 1 (both optional), carried draft cookie → `signup_draft` metadata →
+checkout → `api-checkout` (insert, and `coalesce` on the reused-trialing-tenant
+update so an older draft never wipes a stored value), editable on Agent → Business
+and inline on the phone setup carrier step. Decisions taken:
+- The business phone is limited to +1 (US/Canada) in the web app (`lib/settings/business-contact.ts`,
+  reusing `normalizePhone`): the forwarding test only reaches NANP numbers. `api-checkout` re-checks E.164 only.
+- It may not be the tenant's own Heyloo number (422 on save): it would forward to itself and, as the
+  default transfer destination, loop a transfer back to the AI.
+- New agents: `compileAndCreateAgent` fills a NULL `agent_configs.transfer_number` from the business
+  phone with one filtered UPDATE after either insert path (not inside the inserts, so the stamp-less
+  42703 fallback keeps working on a database without the new column). Best-effort: logged, never fails provisioning.
+- Later saves (`POST /api/tenant/settings/business`, new `POST /api/tenant/settings/business-phone`)
+  move the transfer number only when it is NULL or equals the previous business phone. Clearing the
+  business phone leaves the transfer number alone.
+- `/api/phone/forwarding-test` now requires `action` ("start" | "status") and forwards only
+  `{ tenant_id, action, carrier_hint? }`; the wizard polls status every 3 s and gives up at 120 s client-side.

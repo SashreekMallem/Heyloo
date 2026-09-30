@@ -6,11 +6,13 @@ const redirect = vi.fn((to: string) => {
 vi.mock("next/navigation", () => ({ redirect: (to: string) => redirect(to) }));
 
 let phoneRow: { e164: string; forwarding_verified_at: string | null } | null = null;
+let tenantRow: { business_phone: string | null } | null = null;
 const supabase = {
-  from: () => {
+  from: (table: string) => {
     const chain: Record<string, unknown> = {};
     for (const m of ["select", "eq", "is"]) chain[m] = () => chain;
-    chain["maybeSingle"] = () => Promise.resolve({ data: phoneRow });
+    chain["maybeSingle"] = () =>
+      Promise.resolve({ data: table === "tenants" ? tenantRow : phoneRow });
     return chain;
   },
 };
@@ -24,10 +26,12 @@ vi.mock("@/components/phone-setup/phone-setup-wizard", () => ({ PhoneSetupWizard
 
 const { default: SignupForwardingPage } = await import("./page");
 
-function findWizardProps(node: unknown): { forwardingNumber?: string } | null {
+type WizardProps = { forwardingNumber?: string; businessPhone?: string | null };
+
+function findWizardProps(node: unknown): WizardProps | null {
   if (!node || typeof node !== "object") return null;
   const el = node as { props?: Record<string, unknown> };
-  if (el.props && "forwardingNumber" in el.props) return el.props as { forwardingNumber?: string };
+  if (el.props && "forwardingNumber" in el.props) return el.props as WizardProps;
   const children = el.props?.["children"];
   for (const child of Array.isArray(children) ? children : [children]) {
     const found = findWizardProps(child);
@@ -59,5 +63,14 @@ describe("/signup/forwarding gate (SIGNUP-BILL-FIX C)", () => {
     const el = await SignupForwardingPage();
     expect(redirect).not.toHaveBeenCalled();
     expect(findWizardProps(el)?.forwardingNumber).toBe("+15551230000");
+  });
+
+  it("passes the tenant's business phone to the wizard (null when not set)", async () => {
+    readiness = { published: true, number: "+15551230000", ready: true };
+    phoneRow = { e164: "+15551230000", forwarding_verified_at: null };
+    tenantRow = { business_phone: "+12627551967" };
+    expect(findWizardProps(await SignupForwardingPage())?.businessPhone).toBe("+12627551967");
+    tenantRow = null;
+    expect(findWizardProps(await SignupForwardingPage())?.businessPhone).toBeNull();
   });
 });

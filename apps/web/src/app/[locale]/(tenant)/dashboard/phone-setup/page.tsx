@@ -14,6 +14,13 @@ export default async function PhoneSetupPage() {
     .eq("tenant_id", tenant.id)
     .is("released_at", null)
     .maybeSingle();
+  // Not in the shared session guard: a failed read only means the carrier
+  // step asks for the business phone again.
+  const { data: contact } = await supabase
+    .from("tenants")
+    .select("business_phone")
+    .eq("id", tenant.id)
+    .maybeSingle();
 
   return (
     <div className="space-y-6">
@@ -25,6 +32,7 @@ export default async function PhoneSetupPage() {
         tenantId={tenant.id}
         forwardingNumber={phoneNumber?.e164 ?? ""}
         forwardingVerifiedAt={phoneNumber?.forwarding_verified_at}
+        businessPhone={contact?.business_phone ?? null}
         onboarding={false}
       />
     </div>

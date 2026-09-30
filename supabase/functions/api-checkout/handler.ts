@@ -82,7 +82,16 @@ export async function handleCheckout(
 ): Promise<CheckoutResult> {
   const parsed = CheckoutRequestSchema.safeParse(rawBody);
   if (!parsed.success) return { ok: false, status: 422, error: "invalid_request" };
-  const { vertical, business_name, email, timezone, white_glove, referral_code } = parsed.data;
+  const {
+    vertical,
+    business_name,
+    business_phone,
+    website_url,
+    email,
+    timezone,
+    white_glove,
+    referral_code,
+  } = parsed.data;
 
   const priceCardRows = await sql<{ value: PriceCardRow }>`
     select value from public.platform_settings where key = ${`price_card_${vertical}`}
@@ -119,18 +128,26 @@ export async function handleCheckout(
 
   let tenantId = existing[0]?.id;
   if (tenantId) {
-    // Possibly a corrected business name / time zone / vertical.
+    // Possibly a corrected business name / time zone / vertical / business
+    // phone / website. Like the time zone, an absent phone or website keeps
+    // what the tenant already has (an older draft without them must not wipe
+    // a value saved on a previous attempt).
     await sql`
       update public.tenants
       set name = ${business_name}, vertical = ${vertical},
-          timezone = coalesce(${timezone ?? null}, timezone)
+          timezone = coalesce(${timezone ?? null}, timezone),
+          business_phone = coalesce(${business_phone ?? null}, business_phone),
+          website_url = coalesce(${website_url ?? null}, website_url)
       where id = ${tenantId} and status = 'trialing' and stripe_subscription_id is null
     `;
   } else {
     const slug = `${slugify(business_name)}-${deps.randomSuffix()}`;
     const inserted = await sql<{ id: string }>`
-      insert into public.tenants (name, slug, vertical, timezone, status)
-      values (${business_name}, ${slug}, ${vertical}, ${timezone ?? "America/New_York"}, 'trialing')
+      insert into public.tenants (name, slug, vertical, timezone, status, business_phone, website_url)
+      values (
+        ${business_name}, ${slug}, ${vertical}, ${timezone ?? "America/New_York"}, 'trialing',
+        ${business_phone ?? null}, ${website_url ?? null}
+      )
       returning id
     `;
     const row = inserted[0];

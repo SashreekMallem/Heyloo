@@ -117,6 +117,34 @@ describe("POST /api/checkout/session", () => {
     );
   });
 
+  it("forwards the draft's business phone and website, never a body-supplied one", async () => {
+    mockUser = { email: "owner@example.com" };
+    mockSession = { access_token: "at1" };
+    cookieValue = encodeSignupDraft({
+      business_type: "auto",
+      business_name: "Joe's Garage",
+      business_phone: "+12627551967",
+      website_url: "https://joesgarage.com",
+    });
+    edgeResult = { status: 200, body: { checkout_url: "https://checkout.stripe.com/s5" } };
+    callEdgeFunction.mockClear();
+
+    await POST(postRequest({ business_phone: "+19995550000", website_url: "https://evil.test" }));
+
+    expect(callEdgeFunction).toHaveBeenCalledWith(
+      "api-checkout",
+      expect.objectContaining({
+        body: {
+          vertical: "auto",
+          business_name: "Joe's Garage",
+          business_phone: "+12627551967",
+          website_url: "https://joesgarage.com",
+          email: "owner@example.com",
+        },
+      }),
+    );
+  });
+
   it("PT-01: forwards the referral cookie's code to api-checkout, ignoring a body-supplied one", async () => {
     mockUser = { email: "owner@example.com" };
     mockSession = { access_token: "at1" };

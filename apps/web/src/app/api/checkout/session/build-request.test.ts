@@ -88,6 +88,34 @@ describe("buildApiCheckoutRequest", () => {
     expect("white_glove" in bodyWithFalse).toBe(false);
   });
 
+  it("passes the business phone and website through when the draft has them", () => {
+    const body = buildApiCheckoutRequest(
+      {
+        business_type: "auto",
+        business_name: "Joe's Garage",
+        business_phone: "+12627551967",
+        website_url: "https://joesgarage.com",
+      },
+      "joe@example.com",
+    );
+    expect(body).toEqual({
+      vertical: "auto",
+      business_name: "Joe's Garage",
+      business_phone: "+12627551967",
+      website_url: "https://joesgarage.com",
+      email: "joe@example.com",
+    });
+  });
+
+  it("omits business_phone / website_url for a draft without them (older drafts, left blank)", () => {
+    const body = buildApiCheckoutRequest(
+      { business_type: "auto", business_name: "Joe's Garage" },
+      "joe@example.com",
+    );
+    expect("business_phone" in body).toBe(false);
+    expect("website_url" in body).toBe(false);
+  });
+
   it("PT-01: includes referral_code only when a partner code is supplied", () => {
     const draft = { business_type: "auto", business_name: "Joe's Garage" };
     const withCode = buildApiCheckoutRequest(

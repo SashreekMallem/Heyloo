@@ -26,7 +26,8 @@ interface ApiCheckoutResponse {
  * Route Handler that used to also create a `tenants` row has been removed
  * — E2E_FLOWS_AUDIT B1).
  *
- * Every identity-bearing field (vertical, business_name, email) is derived
+ * Every identity-bearing field (vertical, business_name, business_phone,
+ * website_url, email) is derived
  * from the signed, server-verified signup draft cookie and the caller's own
  * authenticated session — never trusted from the client-supplied request
  * body (FRONTEND_AUDIT "checkout tenant_id trust gap": there is no

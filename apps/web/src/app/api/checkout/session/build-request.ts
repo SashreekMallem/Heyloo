@@ -35,9 +35,15 @@ import type { SignupDraft } from "@/lib/signup/draft-cookie";
  * `CheckoutRequestSchema.referral_code`. It is only a claim: `api-checkout`
  * resolves it against `referral_links` and ignores an unknown code, so it is
  * omitted when absent and never grants anything by itself.
+ *
+ * `business_phone` (E.164) / `website_url` (http(s)) mirror the optional
+ * `CheckoutRequestSchema` fields written to `tenants.business_phone` /
+ * `tenants.website_url`. Omitted when the draft has none (left blank at
+ * step 1, or a draft saved before step 1 asked), so the body is unchanged
+ * for those customers.
  */
 export function buildApiCheckoutRequest(
-  draft: Pick<SignupDraft, "business_type" | "business_name">,
+  draft: Pick<SignupDraft, "business_type" | "business_name" | "business_phone" | "website_url">,
   email: string,
   timezone?: string,
   whiteGlove?: boolean,
@@ -45,6 +51,8 @@ export function buildApiCheckoutRequest(
 ): {
   vertical: string;
   business_name: string;
+  business_phone?: string;
+  website_url?: string;
   email: string;
   timezone?: string;
   white_glove?: boolean;
@@ -53,6 +61,8 @@ export function buildApiCheckoutRequest(
   return {
     vertical: draft.business_type,
     business_name: draft.business_name,
+    ...(draft.business_phone ? { business_phone: draft.business_phone } : {}),
+    ...(draft.website_url ? { website_url: draft.website_url } : {}),
     email,
     ...(timezone ? { timezone } : {}),
     ...(whiteGlove ? { white_glove: true } : {}),

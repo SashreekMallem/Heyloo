@@ -13,6 +13,10 @@ const MAX_AGE_SECONDS = 60 * 60 * 24;
 export interface SignupDraft {
   business_type: string;
   business_name: string;
+  /** E.164 (normalized by `/api/signup/draft`); absent when left blank or on a draft saved before step 1 asked for it. */
+  business_phone?: string;
+  /** http(s) URL (normalized by `/api/signup/draft`); absent when left blank. */
+  website_url?: string;
   demo_id?: string;
 }
 

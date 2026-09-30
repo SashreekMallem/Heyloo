@@ -72,6 +72,11 @@ export type TenantRow = {
     modes?: ("voice" | "chat")[];
   };
   widget_public_key: Nullable<string>;
+  // 20260930280000_business_phone_and_forwarding_test.sql — owner-editable.
+  // business_phone: E.164, the line customers call today (forwards to the
+  // Heyloo number); website_url: http(s), optional.
+  business_phone: Nullable<string>;
+  website_url: Nullable<string>;
   created_at: string;
   updated_at: string;
 };
@@ -99,6 +104,9 @@ export type PhoneNumberRow = {
   forwarding_mode: "conditional" | "full";
   forwarding_verified_at: Nullable<string>;
   forwarding_carrier: Nullable<string>;
+  // 20260930280000 — written only by the forwarding-verify edge function.
+  forwarding_test_started_at: Nullable<string>;
+  forwarding_test_call_id: Nullable<string>;
   spam_label_status: "unknown" | "clean" | "flagged" | "remediating";
   cnam_registered: boolean;
   is_primary: boolean;
