@@ -136,6 +136,8 @@ select pg_temp.sec2_check(
     "hours_exceptions": [],
     "language_config": {"primary": "en", "bilingual": false},
     "owner_test_phone": "+15555550100",
+    "business_phone": "+15555550101",
+    "website_url": "https://example.com",
     "manual_mode": false,
     "manual_mode_enabled_at": null,
     "voice_reminders_enabled": true,
