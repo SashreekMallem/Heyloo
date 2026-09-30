@@ -22,7 +22,12 @@ describe("computeInvoiceAmounts (pure, no Stripe call — QA-BILL deliverable 2)
       overage_cents_per_minute: 35,
       billable_minutes: 412,
     });
-    expect(result).toEqual({ overageMinutes: 112, overageCents: 3920, totalCents: 33820 });
+    expect(result).toEqual({
+      overageMinutes: 112,
+      overageCents: 3920,
+      textOverageCents: 0,
+      totalCents: 33820,
+    });
   });
 
   it("never goes negative when usage is under the included allowance (no overage)", () => {
@@ -32,7 +37,12 @@ describe("computeInvoiceAmounts (pure, no Stripe call — QA-BILL deliverable 2)
       overage_cents_per_minute: 35,
       billable_minutes: 120,
     });
-    expect(result).toEqual({ overageMinutes: 0, overageCents: 0, totalCents: 29900 });
+    expect(result).toEqual({
+      overageMinutes: 0,
+      overageCents: 0,
+      textOverageCents: 0,
+      totalCents: 29900,
+    });
   });
 
   it("rounds fractional overage cents to the nearest integer cent (money in integer cents, CLAUDE.md Rule 2)", () => {
@@ -72,7 +82,7 @@ describe("findTenantsForBilling", () => {
     }) as SqlClient;
     await findTenantsForBilling(sql, "2026-09-01", "2026-10-01");
     const text = calls[0]?.text ?? "";
-    expect(text).toContain("bi.stripe_invoice_id is null");
+    expect(text).toContain("li.stripe_invoice_id is null");
     expect(text).toContain("as stripe_invoiced");
     expect(text).toContain("si.stripe_invoice_id is not null");
     // overlap test, never counting a zero-length one-off invoice period
@@ -111,7 +121,7 @@ describe("billOneTenant", () => {
     expect(meterReported).toBe(true);
     expect(inserted).toBe(true);
     // overage = 600 - 500 = 100 minutes * 20 cents = 2000; total = 9900 + 2000 = 11900
-    const insertValues = calls.at(-1);
+    const insertValues = calls.find((c) => c.length > 5 && c.includes(11900));
     expect(insertValues).toContain(2000);
     expect(insertValues).toContain(11900);
   });
@@ -148,8 +158,8 @@ describe("billOneTenant", () => {
     // Draft invoice still written with the correct computed amounts — never
     // silently dropped, and never marked paid, just because Stripe isn't
     // configured (CLAUDE.md Rule 2: "never mark anything paid, never crash").
-    const insertCall = calls.at(-1);
-    expect(insertCall?.text).toContain("'draft'");
+    const insertCall = calls.find((c) => c.text.includes("insert into public.billing_invoices"));
+    expect(insertCall?.values).toContain("draft");
     expect(insertCall?.values).toContain(2000);
     expect(insertCall?.values).toContain(11900);
   });
@@ -171,9 +181,9 @@ describe("billOneTenant", () => {
       logger,
     });
     expect(meterReported).toBe(true); // overage still reaches Stripe
-    const insert = calls.at(-1);
-    expect(insert?.text).toContain("'void'");
-    expect(insert?.text).not.toContain("'draft'");
+    const insert = calls.find((c) => c.text.includes("insert into public.billing_invoices"));
+    expect(insert?.values).toContain("void");
+    expect(insert?.values).not.toContain("draft");
   });
 
   it("returns false when the invoice already exists (idempotent no-op on conflict)", async () => {

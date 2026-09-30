@@ -18,6 +18,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
 import type { TenantPlanResponse } from "@/app/api/platform-settings/tenant-plan/route";
+import { localMonthStart } from "@/lib/billing-period";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCanWriteSettings, useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
@@ -70,19 +71,20 @@ export default function BillingPage() {
   const usageQuery = useQuery({
     queryKey: ["tenant", tenantId, "usage_daily", "billing"],
     queryFn: async () => {
-      const monthStart = new Date();
-      monthStart.setDate(1);
-      const [{ data }, { data: tenantRow }, planRes] = await Promise.all([
+      // Usage is bucketed by the TENANT's own local date and billed per tenant-local
+      // calendar month (job-billing-cycle), so "this period" starts on the 1st in
+      // the tenant's time zone, not the browser's (BILL-12).
+      const { data: tenantRow } = await supabaseBrowserClient
+        .from("tenants")
+        .select("usage_hard_cap_minutes, timezone")
+        .eq("id", tenantId as string)
+        .maybeSingle();
+      const [{ data }, planRes] = await Promise.all([
         supabaseBrowserClient
           .from("usage_daily")
           .select("billable_minutes, text_messages_out")
           .eq("tenant_id", tenantId as string)
-          .gte("date", monthStart.toISOString().slice(0, 10)),
-        supabaseBrowserClient
-          .from("tenants")
-          .select("usage_hard_cap_minutes")
-          .eq("id", tenantId as string)
-          .maybeSingle(),
+          .gte("date", localMonthStart(tenantRow?.timezone)),
         fetch("/api/platform-settings/tenant-plan"),
       ]);
       const used = (data ?? []).reduce((sum, r) => sum + (Number(r.billable_minutes ?? 0) || 0), 0);
@@ -174,20 +176,20 @@ export default function BillingPage() {
                   <span>
                     Alert at {Math.round(usage.alertThresholds.warn_pct * 100)}% of included minutes
                   </span>
-                  <span className="text-muted-foreground">On (platform default)</span>
+                  <span className="text-muted-foreground">Not sending yet — coming soon</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span>
                     Alert at {Math.round(usage.alertThresholds.critical_pct * 100)}% of included
                     minutes
                   </span>
-                  <span className="text-muted-foreground">On (platform default)</span>
+                  <span className="text-muted-foreground">Not sending yet — coming soon</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span>Hard cap</span>
                   <span className="text-muted-foreground">
                     {usage.hardCapMinutes
-                      ? `${usage.hardCapMinutes} min/mo (set by Heyloo support)`
+                      ? `${usage.hardCapMinutes} min/mo noted by Heyloo support — not enforced automatically yet`
                       : "Not set — contact support to enable"}
                   </span>
                 </div>

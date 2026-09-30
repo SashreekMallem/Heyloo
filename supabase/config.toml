@@ -227,6 +227,8 @@ verify_jwt = true
 verify_jwt = true
 [functions.api-checkout]
 verify_jwt = true
+[functions.api-billing-portal]
+verify_jwt = true
 [functions.api-a2p-register]
 verify_jwt = true
 [functions.api-outreach-fetch-leads]

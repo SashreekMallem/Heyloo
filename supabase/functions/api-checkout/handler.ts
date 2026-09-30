@@ -100,7 +100,13 @@ export async function handleCheckout(
 
   // Idempotent re-submit: reuse an existing not-yet-paid trialing tenant
   // for this owner rather than creating a second one (e.g. the tenant hit
-  // "back" on Stripe Checkout and retried signup).
+  // "back" on Stripe Checkout and retried signup). BILL-6: the reused tenant
+  // takes the vertical picked NOW (provisioning reads `tenants.vertical` after
+  // payment, and the Checkout Session bills that vertical's price card), so a
+  // dental Checkout can never end up on an auto-template tenant. It is reused
+  // rather than duplicated because the access-token hook always lands the owner
+  // on their EARLIEST membership: a second tenant would leave the paying owner
+  // signed into the abandoned first one.
   const existing = await sql<{ id: string }>`
     select t.id from public.tenants t
     join public.memberships m on m.tenant_id = t.id
@@ -112,7 +118,15 @@ export async function handleCheckout(
   `;
 
   let tenantId = existing[0]?.id;
-  if (!tenantId) {
+  if (tenantId) {
+    // Possibly a corrected business name / time zone / vertical.
+    await sql`
+      update public.tenants
+      set name = ${business_name}, vertical = ${vertical},
+          timezone = coalesce(${timezone ?? null}, timezone)
+      where id = ${tenantId} and status = 'trialing' and stripe_subscription_id is null
+    `;
+  } else {
     const slug = `${slugify(business_name)}-${deps.randomSuffix()}`;
     const inserted = await sql<{ id: string }>`
       insert into public.tenants (name, slug, vertical, timezone, status)

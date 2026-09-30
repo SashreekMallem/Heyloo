@@ -111,6 +111,30 @@ describe("handleCheckout", () => {
     expect(calls.some((c) => c.text.includes("insert into public.memberships"))).toBe(false);
   });
 
+  it("BILL-6: an abandoned trialing tenant is reused for a different pick and takes the new vertical", async () => {
+    // The owner's earliest membership decides which tenant they land in after paying
+    // (custom_access_token_hook), so a second tenant would strand a paying dental
+    // owner on the abandoned auto one: the tenant is reused and re-verticalled.
+    const { sql, calls } = makeSql({
+      "platform_settings:price_card_dental": [{ value: PRICE_CARD }],
+      "from public.tenants t": [{ id: "auto-tenant" }],
+    });
+
+    const dental = await handleCheckout(
+      sql,
+      "user-1",
+      { ...VALID_BODY, vertical: "dental" },
+      makeDeps(),
+    );
+    expect(dental).toMatchObject({ ok: true, tenant_id: "auto-tenant" });
+    expect(calls.some((c) => c.text.includes("insert into public.tenants"))).toBe(false);
+    const update = calls.find((c) => c.text.includes("update public.tenants"));
+    expect(update?.text).toContain("vertical =");
+    expect(update?.values).toContain("dental");
+    // ...and only while it is still unpaid.
+    expect(update?.text).toContain("stripe_subscription_id is null");
+  });
+
   it("surfaces a checkout_session_create_failed error when Stripe rejects the session", async () => {
     const { sql } = makeSql({
       "platform_settings:price_card_auto": [{ value: PRICE_CARD }],

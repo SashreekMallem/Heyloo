@@ -44,6 +44,56 @@ describe("processStripeEvent", () => {
     expect(update?.values).toContain("cus_1");
   });
 
+  it("BILL-6: re-syncs the paid vertical from the session metadata, only before the first subscription", async () => {
+    const { sql, calls } = makeSql();
+    await processStripeEvent(
+      sql,
+      {
+        id: "evt_v",
+        type: "checkout.session.completed",
+        data: {
+          object: {
+            id: "cs_v",
+            customer: "cus_1",
+            subscription: "sub_1",
+            metadata: { tenant_id: "t1", vertical: "dental" },
+          },
+        },
+      },
+      logger,
+    );
+    const updates = calls.filter((c) => c.text.includes("update public.tenants"));
+    // The vertical re-sync runs FIRST (it is guarded on no subscription yet, which the
+    // activation update then sets).
+    expect(updates[0]?.text).toContain("set vertical =");
+    expect(updates[0]?.text).toContain("stripe_subscription_id is null");
+    expect(updates[0]?.values).toEqual(["dental", "t1"]);
+    expect(updates[1]?.text).toContain("set status = 'active'");
+  });
+
+  it("BILL-6: an unknown metadata vertical never reaches the tenants CHECK constraint", async () => {
+    const { sql, calls } = makeSql();
+    await processStripeEvent(
+      sql,
+      {
+        id: "evt_v2",
+        type: "checkout.session.completed",
+        data: {
+          object: {
+            id: "cs_v2",
+            customer: "cus_1",
+            subscription: "sub_1",
+            metadata: { tenant_id: "t1", vertical: "spaceship" },
+          },
+        },
+      },
+      logger,
+    );
+    const updates = calls.filter((c) => c.text.includes("update public.tenants"));
+    expect(updates).toHaveLength(1); // only the activation update
+    expect(updates.some((u) => u.values.includes("spaceship"))).toBe(false);
+  });
+
   it("marks a payment_link paid and confirms the order on a phone-payment checkout", async () => {
     const { sql, calls } = makeSql();
     const event: StripeEvent = {
@@ -66,6 +116,46 @@ describe("processStripeEvent", () => {
     await processStripeEvent(sql, event, logger);
     const update = calls.find((c) => c.text.includes("update public.tenants"));
     expect(update?.values).toContain("past_due");
+  });
+
+  it.each([
+    ["unpaid", "past_due"],
+    ["incomplete_expired", "canceled"],
+    ["canceled", "canceled"],
+  ])("BILL-10: maps subscription status %s to tenants.status %s", async (stripeStatus, mapped) => {
+    const { sql, calls } = makeSql();
+    const event: StripeEvent = {
+      id: `evt_${stripeStatus}`,
+      type: "customer.subscription.updated",
+      data: { object: { customer: "cus_1", status: stripeStatus } },
+    };
+    await processStripeEvent(sql, event, logger);
+    const update = calls.find((c) => c.text.includes("update public.tenants"));
+    expect(update?.values).toContain(mapped);
+    expect(update?.text).toContain("canceled_at");
+  });
+
+  it("BILL-10: leaves the tenant alone for an incomplete first payment", async () => {
+    const { sql, calls } = makeSql();
+    const event: StripeEvent = {
+      id: "evt_inc",
+      type: "customer.subscription.updated",
+      data: { object: { customer: "cus_1", status: "incomplete" } },
+    };
+    await processStripeEvent(sql, event, logger);
+    expect(calls.some((c) => c.text.includes("update public.tenants"))).toBe(false);
+  });
+
+  it("BILL-10: subscription.deleted stamps canceled_at so the final period is still billed", async () => {
+    const { sql, calls } = makeSql();
+    const event: StripeEvent = {
+      id: "evt_del",
+      type: "customer.subscription.deleted",
+      data: { object: { customer: "cus_1" } },
+    };
+    await processStripeEvent(sql, event, logger);
+    const update = calls.find((c) => c.text.includes("update public.tenants"));
+    expect(update?.text).toContain("canceled_at = coalesce(canceled_at, now())");
   });
 
   it("marks the billing_invoice paid on invoice.paid", async () => {
@@ -118,6 +208,32 @@ describe("processStripeEvent", () => {
         c.text.includes("dunning_payment_failed"),
     );
     expect(insertMessage?.values).toContain("t1");
+  });
+
+  it("BILL-9: puts the billing page link into the dunning email payload when configured", async () => {
+    const calls: { text: string; values: unknown[] }[] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join(" "), values });
+      if (strings.join(" ").includes("select id from public.tenants")) {
+        return Promise.resolve([{ id: "t1" }]);
+      }
+      return Promise.resolve([]);
+    }) as SqlClient;
+    const event: StripeEvent = {
+      id: "evt_4d",
+      type: "invoice.payment_failed",
+      data: { object: { id: "in_3", customer: "cus_1" } },
+    };
+    await processStripeEvent(sql, event, logger, {
+      invokeProvisioning: async () => ({ ok: true }),
+      billingPageUrl: "https://heyloo.app/en/dashboard/billing",
+    });
+    const insertMessage = calls.find((c) =>
+      c.text.includes("insert into public.messages_outbound"),
+    );
+    expect(insertMessage?.values).toContainEqual({
+      billing_url: "https://heyloo.app/en/dashboard/billing",
+    });
   });
 
   it("does nothing (no throw) for an unhandled event type", async () => {

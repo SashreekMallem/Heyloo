@@ -86,8 +86,10 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ received: true });
   }
 
+  const billingPageUrl = optionalEnv("BILLING_PORTAL_RETURN_URL");
   const deps = {
     invokeProvisioning,
+    ...(billingPageUrl ? { billingPageUrl } : {}),
     ...(fetchBalanceTransaction ? { fetchBalanceTransaction } : {}),
   };
   runInBackground(

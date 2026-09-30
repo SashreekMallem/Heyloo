@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { renderTemplate } from "./templates.ts";
 
 describe("renderTemplate", () => {
+  it("BILL-9: the dunning email links to the billing page when given one", () => {
+    expect(
+      renderTemplate("dunning_payment_failed", { billing_url: "https://heyloo.app/billing" }).body,
+    ).toContain("https://heyloo.app/billing");
+    expect(renderTemplate("dunning_payment_failed", {}).body).toContain("update your billing");
+  });
+
   it("renders order_confirmation with a formatted dollar amount", () => {
     const result = renderTemplate("order_confirmation", { total_cents: 2160 });
     expect(result.body).toContain("$21.60");

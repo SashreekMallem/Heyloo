@@ -15,6 +15,9 @@ function chain(result: unknown) {
   return obj;
 }
 
+const toastError = vi.hoisted(() => vi.fn());
+vi.mock("sonner", () => ({ toast: { error: toastError } }));
+
 let invoicesChain: Record<string, ReturnType<typeof vi.fn>> | null = null;
 let usageDailyRows: { billable_minutes: number | null; text_messages_out?: number | null }[] = [];
 
@@ -163,6 +166,16 @@ describe("BillingPage text conversations usage tile", () => {
     renderPage();
     await screen.findByText("No invoices yet");
     expect(invoicesChain?.["neq"]).toHaveBeenCalledWith("status", "void");
+  });
+
+  it("BILL-8: does not claim usage alerts are on while nothing sends them", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ included_minutes: 100 })),
+    );
+    renderPage();
+    expect(await screen.findAllByText(/Not sending yet/)).toHaveLength(2);
+    expect(screen.queryByText(/On \(platform default\)/)).not.toBeInTheDocument();
   });
 
   it("does not list a not-yet-finalized `draft` invoice (QA-1 F-25)", async () => {

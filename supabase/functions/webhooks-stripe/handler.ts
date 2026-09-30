@@ -1,3 +1,4 @@
+import { CheckoutRequestSchema } from "../_shared/schemas/checkout.ts";
 import type { StripeEvent } from "../_shared/schemas/stripe-event.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import {
@@ -30,6 +31,9 @@ export interface StripeEventDeps extends ChargeDeps {
   invokeProvisioning: (
     tenantId: string,
   ) => Promise<{ ok: boolean; status?: number; error?: string }>;
+  /** BILL-9: the tenant billing page (its "Manage payment method" opens the
+   * Stripe Billing Portal); put in the dunning email so the owner can fix the card. */
+  billingPageUrl?: string;
 }
 
 const defaultStripeEventDeps: StripeEventDeps = {
@@ -58,6 +62,18 @@ export async function processStripeEvent(
 
       if (metadata["tenant_id"]) {
         const tenantId = metadata["tenant_id"];
+        // BILL-6: the vertical the customer PAID for is the one on the session
+        // (api-checkout stamps it in metadata); provisioning builds the agent from
+        // `tenants.vertical`, so re-sync it first, in case a second Checkout tab changed
+        // the tenant's vertical after this session was opened. Only before the first
+        // subscription (never re-verticals a live tenant) and only for a known vertical.
+        const paidVertical = CheckoutRequestSchema.shape.vertical.safeParse(metadata["vertical"]);
+        if (paidVertical.success) {
+          await sql`
+            update public.tenants set vertical = ${paidVertical.data}
+            where id = ${tenantId} and stripe_subscription_id is null
+          `;
+        }
         await sql`
           update public.tenants
           set status = 'active', stripe_customer_id = coalesce(${customerId}, stripe_customer_id),
@@ -127,17 +143,29 @@ export async function processStripeEvent(
       const status = typeof obj["status"] === "string" ? obj["status"] : null;
       const customerId = typeof obj["customer"] === "string" ? obj["customer"] : null;
       if (!customerId || !status) return;
+      // BILL-10: every Stripe subscription status that changes what the tenant
+      // may do is mapped (`unpaid` = dunning exhausted, `incomplete_expired` =
+      // the first payment never succeeded, `canceled` = ended); `trialing` and
+      // `incomplete` (first payment pending) leave the tenant as it is.
       const mapped =
-        status === "past_due"
+        status === "past_due" || status === "unpaid"
           ? "past_due"
           : status === "paused"
             ? "paused"
             : status === "active"
               ? "active"
-              : null;
+              : status === "canceled" || status === "incomplete_expired"
+                ? "canceled"
+                : null;
       if (!mapped) return;
       await sql`
-        update public.tenants set status = ${mapped} where stripe_customer_id = ${customerId}
+        update public.tenants
+        set status = ${mapped},
+            canceled_at = case
+              when ${mapped} = 'canceled' then coalesce(canceled_at, now())
+              else null
+            end
+        where stripe_customer_id = ${customerId}
       `;
       return;
     }
@@ -145,7 +173,10 @@ export async function processStripeEvent(
     case "customer.subscription.deleted": {
       const customerId = typeof obj["customer"] === "string" ? obj["customer"] : null;
       if (!customerId) return;
-      await sql`update public.tenants set status = 'canceled' where stripe_customer_id = ${customerId}`;
+      await sql`
+        update public.tenants set status = 'canceled', canceled_at = coalesce(canceled_at, now())
+        where stripe_customer_id = ${customerId}
+      `;
       // Offboarding wind-down (number port-out SLA, data export, G7) is
       // handled by a dedicated job, not inline here — this only flips the
       // status flag that job polls on.
@@ -223,9 +254,10 @@ export async function processStripeEvent(
         tenantId = tenantRows[0]?.id ?? null;
       }
       if (tenantId) {
+        const dunningPayload = deps.billingPageUrl ? { billing_url: deps.billingPageUrl } : {};
         await sql`
           insert into public.messages_outbound (tenant_id, channel, recipient, template_key, payload)
-          select ${tenantId}, 'email', email, 'dunning_payment_failed', '{}'::jsonb
+          select ${tenantId}, 'email', email, 'dunning_payment_failed', ${dunningPayload}::jsonb
           from auth.users u
           join public.memberships m on m.user_id = u.id
           where m.tenant_id = ${tenantId} and m.role = 'owner'
