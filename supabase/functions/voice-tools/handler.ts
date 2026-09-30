@@ -6,7 +6,14 @@ import {
 } from "../_shared/custom-questions.ts";
 import type { GeocodeFetch } from "../_shared/providers/geocode.ts";
 import type { StripeFetch } from "../_shared/providers/stripe.ts";
-import { fallbackEnvelope, missingFieldsEnvelope, toolEnvelope } from "../_shared/responses.ts";
+import {
+  fallbackEnvelope,
+  missingFieldsEnvelope,
+  toolEnvelope,
+  unavailableEnvelope,
+  WRITE_TOOL_NAMES,
+  writeFailureEnvelope,
+} from "../_shared/responses.ts";
 import {
   CancelBookingArgsSchema,
   CheckAvailabilityArgsSchema,
@@ -25,7 +32,12 @@ import {
 import type { SmsRegistry } from "../_shared/sms-availability.ts";
 import { isSmsAvailable } from "../_shared/sms-availability.ts";
 import type { Logger, SqlClient, ToolResultEnvelope } from "../_shared/types.ts";
-import { getMissingRequiredFields } from "../_shared/vertical-intake.ts";
+import {
+  getIntakeGaps,
+  getMissingRequiredFields,
+  isPartialIntake,
+  PARTIAL_INTAKE_STATUS,
+} from "../_shared/vertical-intake.ts";
 import type { CallContext } from "./context.ts";
 import { resolveCallContext } from "./context.ts";
 import {
@@ -218,6 +230,48 @@ export function isKnownTool(name: string): boolean {
 }
 
 /**
+ * F5 / F-LEGAL-XFER-1: how many times this call's `take_message` has already
+ * been bounced with `missing_required_fields`. A message is never worth
+ * losing over a missing intake detail: after ONE bounce the next attempt is
+ * stored as a partial intake (the row lists what was missing) instead of being
+ * bounced again, so a caller who cannot or will not answer, or is about to be
+ * transferred, is never stonewalled and nothing is dropped. Per isolate and
+ * best effort (the agent is also told to send `intake_status: "partial"`
+ * itself); bounded so a long-lived isolate cannot grow it without limit.
+ */
+const MESSAGE_BOUNCES_PER_CALL = new Map<string, number>();
+const MAX_TRACKED_CALLS = 500;
+
+function recordMessageBounce(callKey: string): number {
+  const next = (MESSAGE_BOUNCES_PER_CALL.get(callKey) ?? 0) + 1;
+  MESSAGE_BOUNCES_PER_CALL.set(callKey, next);
+  if (MESSAGE_BOUNCES_PER_CALL.size > MAX_TRACKED_CALLS) {
+    const oldest = MESSAGE_BOUNCES_PER_CALL.keys().next().value;
+    if (oldest !== undefined) MESSAGE_BOUNCES_PER_CALL.delete(oldest);
+  }
+  return next;
+}
+
+/** `structured_payload` marked as a partial intake, listing what was still missing. */
+function withPartialMarker<T extends Record<string, unknown>>(
+  args: T,
+  gaps: readonly { path: string }[],
+): T {
+  const payload =
+    args["structured_payload"] && typeof args["structured_payload"] === "object"
+      ? (args["structured_payload"] as Record<string, unknown>)
+      : {};
+  return {
+    ...args,
+    structured_payload: {
+      ...payload,
+      intake_status: PARTIAL_INTAKE_STATUS,
+      ...(gaps.length > 0 ? { missing_fields: gaps.map((g) => g.path) } : {}),
+    },
+  };
+}
+
+/**
  * CALL-8 (docs/BUILD_PLAN.md): shared pre-write gate for every tool
  * `_shared/vertical-intake.ts` declares requirements for
  * (create_booking/create_order/take_message). Two things, in order, both
@@ -261,7 +315,8 @@ async function applyIntakeGate<T extends Record<string, unknown>>(
   } else if (!args["caller_phone"] && ctx.callerNumber) {
     next = { ...args, caller_phone: ctx.callerNumber };
   }
-  const missing = getMissingRequiredFields(ctx.vertical, tool, next);
+  const builtinMissing = getMissingRequiredFields(ctx.vertical, tool, next);
+  const customMissing: typeof builtinMissing = [];
 
   // INTAKE-Q-1: the owner's custom questions (bookings and messages only).
   // Built-in misses are reported first, in the same envelope, then the owner's
@@ -270,7 +325,33 @@ async function applyIntakeGate<T extends Record<string, unknown>>(
     const questions = await loadCustomQuestions(deps, ctx, call);
     const custom = applyCustomAnswers(tool, questions, next);
     next = custom.args as T;
-    missing.push(...custom.missing);
+    customMissing.push(...custom.missing);
+  }
+  const missing = [...builtinMissing, ...customMissing];
+
+  if (tool === "take_message") {
+    // A message is never lost over a missing intake detail. An explicit
+    // partial intake is stored as it is. An incomplete one is bounced once so
+    // the model can ask, then stored as partial on the next attempt. The
+    // owner's required custom questions are the exception to the second half:
+    // the caller can always answer them ("declined" is a valid answer), so
+    // they keep bouncing.
+    if (isPartialIntake(next)) {
+      const gaps = getIntakeGaps(ctx.vertical, tool, next);
+      return { ok: true, args: withPartialMarker(next, gaps) };
+    }
+    if (missing.length > 0) {
+      if (customMissing.length === 0 && recordMessageBounce(ctx.retellCallId) > 1) {
+        deps.logger.warn("voice_tools_take_message_accepted_partial", {
+          tenant_id: ctx.tenantId,
+          vertical: ctx.vertical,
+          missing: missing.map((m) => m.path),
+        });
+        return { ok: true, args: withPartialMarker(next, missing) };
+      }
+      return { ok: false, envelope: missingFieldsEnvelope(missing, { partialEscape: true }) };
+    }
+    return { ok: true, args: next };
   }
   if (missing.length > 0) {
     return { ok: false, envelope: missingFieldsEnvelope(missing) };
@@ -352,7 +433,10 @@ export async function dispatchTool(
     deps.telemetry.outcome = ctx ? "ok" : "context_unresolved";
   }
   if (!ctx) {
-    return fallbackEnvelope();
+    // F4: a write tool never answers with the generic "someone will confirm"
+    // fallback, which reads like success: it says the write did not happen.
+    deps.logger.warn("voice_tools_fallback_returned", { tool: name, reason: "context_unresolved" });
+    return unavailableEnvelope(name);
   }
   if (deps.telemetry) deps.telemetry.tenantId = ctx.tenantId;
 
@@ -410,6 +494,30 @@ async function runTool(
           error: String(err),
         }),
     );
+  // F4: an argument shape the schema rejects. A write tool answers with what to
+  // fix and an explicit "NOT saved" (never the generic fallback, which reads
+  // like success); any other tool keeps the generic fallback. Always logged.
+  const invalidArgs = (error: {
+    issues: readonly { path: PropertyKey[] }[];
+  }): ToolResultEnvelope => {
+    const fields = [...new Set(error.issues.map((i) => i.path.map(String).join(".") || "(args)"))];
+    logger.warn("voice_tools_fallback_returned", {
+      tool: name,
+      reason: "invalid_args",
+      tenant_id: ctx.tenantId,
+      fields,
+    });
+    if (name === "take_message" && fields.includes("message_text")) {
+      return missingFieldsEnvelope([
+        { path: "message_text", askFor: "a short description of what the message is about" },
+      ]);
+    }
+    if (!WRITE_TOOL_NAMES.has(name)) return fallbackEnvelope();
+    return writeFailureEnvelope(
+      name,
+      `NOT saved: these arguments were missing or invalid: ${fields.join(", ")}. Fix them (ask the caller if you do not have the value) and call ${name} again. Do not tell the caller it was recorded until it returns success.`,
+    );
+  };
   switch (name) {
     case "check_availability": {
       const parsed = CheckAvailabilityArgsSchema.safeParse(rawArgs);
@@ -419,7 +527,7 @@ async function runTool(
     }
     case "create_booking": {
       const parsed = CreateBookingArgsSchema.safeParse(rawArgs);
-      if (!parsed.success) return fallbackEnvelope();
+      if (!parsed.success) return invalidArgs(parsed.error);
       // VOICE-ALERTS-1: answered before the intake gate so a caller is not
       // walked through required fields for a booking that cannot be made.
       // (`createBooking` refuses too, for callers that skip this dispatcher.)
@@ -501,7 +609,7 @@ async function runTool(
     }
     case "take_message": {
       const parsed = TakeMessageArgsSchema.safeParse(rawArgs);
-      if (!parsed.success) return fallbackEnvelope();
+      if (!parsed.success) return invalidArgs(parsed.error);
       const gated = await applyIntakeGate(
         deps,
         ctx,
@@ -511,7 +619,29 @@ async function runTool(
         "caller_phone",
       );
       if (!gated.ok) return gated.envelope;
-      return toolEnvelope(await takeMessage(sql, ctx, gated.args, { logger, defer: deps.defer }));
+      // F4: one retry on a database error (the live failure was connection
+      // exhaustion, which is transient). If that fails too the agent is told
+      // the message was NOT saved, never that it was.
+      try {
+        return toolEnvelope(await takeMessage(sql, ctx, gated.args, { logger, defer: deps.defer }));
+      } catch (firstError) {
+        logger.warn("voice_tools_take_message_retry", {
+          tenant_id: ctx.tenantId,
+          error: String(firstError),
+        });
+        try {
+          return toolEnvelope(
+            await takeMessage(sql, ctx, gated.args, { logger, defer: deps.defer }),
+          );
+        } catch (secondError) {
+          logger.error("voice_tools_take_message_failed", {
+            tenant_id: ctx.tenantId,
+            call_id: callId,
+            error: String(secondError),
+          });
+          return writeFailureEnvelope("take_message");
+        }
+      }
     }
     case "send_sms_confirmation": {
       const parsed = SendSmsConfirmationArgsSchema.safeParse(rawArgs);
@@ -520,7 +650,7 @@ async function runTool(
     }
     case "create_order": {
       const parsed = CreateOrderArgsSchema.safeParse(rawArgs);
-      if (!parsed.success) return fallbackEnvelope();
+      if (!parsed.success) return invalidArgs(parsed.error);
       if (ctx.manualMode) {
         return toolEnvelope({
           confirmed: false,

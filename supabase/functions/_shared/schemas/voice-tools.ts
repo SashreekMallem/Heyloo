@@ -188,12 +188,37 @@ export const LookupCustomerArgsSchema = z.object({
  * from `ctx.callerNumber` in `voice-tools/handler.ts` before the
  * `_shared/vertical-intake.ts` required-field check runs.
  */
+/**
+ * F4: the model sends `""` for a field it does not have (live: `caller_phone:
+ * ""`, `caller_name: ""`). That used to fail the Zod parse and answer the
+ * generic fallback, which reads like success, so the message was silently
+ * dropped. A blank or too-short value now counts as absent: the phone then
+ * defaults from the caller id (`voice-tools/handler.ts#applyIntakeGate`) and
+ * whatever is still missing is answered with `missing_required_fields`.
+ */
+const blankAsAbsent = (min: number) =>
+  z.preprocess((v) => {
+    if (typeof v !== "string") return v;
+    const trimmed = v.trim();
+    return trimmed.length < min ? undefined : trimmed;
+  }, z.string().optional());
+
 export const TakeMessageArgsSchema = z.object({
-  caller_name: z.string().optional(),
-  caller_phone: z.string().min(3).optional(),
-  message_text: z.string().min(1),
+  caller_name: blankAsAbsent(1),
+  caller_phone: blankAsAbsent(3),
+  message_text: z.string().trim().min(1),
   callback_window: z.string().optional(),
-  structured_payload: z.record(z.string(), z.unknown()).optional(),
+  // F5 / F-LEGAL-XFER-1 / F-LEGAL-CANCEL-1: a deliberately incomplete intake
+  // sets `structured_payload.intake_status = "partial"` (see
+  // `_shared/vertical-intake.ts#isPartialIntake`). Carried inside
+  // structured_payload, not as a new top-level key, so this schema stays in
+  // shape parity with the canonical `zTakeMessageRequest`. A non-object value
+  // (the model sometimes sends a string) is dropped rather than failing the
+  // whole message.
+  structured_payload: z.preprocess(
+    (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : undefined),
+    z.record(z.string(), z.unknown()).optional(),
+  ),
 });
 
 export const SendSmsConfirmationArgsSchema = z.object({

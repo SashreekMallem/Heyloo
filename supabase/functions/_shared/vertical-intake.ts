@@ -191,15 +191,29 @@ function isPresent(value: unknown): boolean {
   return true;
 }
 
+/** The `structured_payload.intake_status` value that marks a deliberately incomplete intake. */
+export const PARTIAL_INTAKE_STATUS = "partial";
+
 /**
- * Returns every required field this vertical/tool call is missing — `[]`
- * when nothing is missing (the common case, zero-cost beyond the field
- * walk: no DB round trip, safe for the hot path). Silently returns `[]` for
- * a tool this vertical has no requirements list for (e.g. `create_order` on
- * a non-restaurant vertical) rather than throwing — callers only ever pass
- * a (vertical, tool) pair a real template actually grants.
+ * F5 / F-LEGAL-XFER-1 / F-LEGAL-CANCEL-1: true when a `take_message` call says
+ * its intake is deliberately incomplete: the caller cannot or will not answer
+ * a vertical question, is being transferred right now, or is only asking to
+ * change an appointment. Such a message is still worth storing, so the
+ * vertical-specific requirements are skipped (only `message_text`, which the
+ * schema already enforces, is required) and the row is marked partial.
  */
-export function getMissingRequiredFields(
+export function isPartialIntake(args: Record<string, unknown>): boolean {
+  const status = getPath(args, "structured_payload.intake_status");
+  return typeof status === "string" && status.trim().toLowerCase() === PARTIAL_INTAKE_STATUS;
+}
+
+/**
+ * Every field this vertical/tool's FULL requirement list is missing, whether
+ * or not the call is marked partial: what a partial row records as
+ * `structured_payload.missing_fields` so staff can see what to ask on the
+ * callback.
+ */
+export function getIntakeGaps(
   vertical: string,
   tool: WriteTool,
   args: Record<string, unknown>,
@@ -208,4 +222,22 @@ export function getMissingRequiredFields(
   const fields = spec?.[tool];
   if (!fields) return [];
   return fields.filter((f) => !isPresent(getPath(args, f.path)));
+}
+
+/**
+ * Returns every required field this vertical/tool call is missing: `[]`
+ * when nothing is missing (the common case, zero-cost beyond the field
+ * walk: no DB round trip, safe for the hot path). Silently returns `[]` for
+ * a tool this vertical has no requirements list for (e.g. `create_order` on
+ * a non-restaurant vertical) rather than throwing: callers only ever pass
+ * a (vertical, tool) pair a real template actually grants. A `take_message`
+ * marked partial (`isPartialIntake`) requires nothing further.
+ */
+export function getMissingRequiredFields(
+  vertical: string,
+  tool: WriteTool,
+  args: Record<string, unknown>,
+): RequiredIntakeField[] {
+  if (tool === "take_message" && isPartialIntake(args)) return [];
+  return getIntakeGaps(vertical, tool, args);
 }
