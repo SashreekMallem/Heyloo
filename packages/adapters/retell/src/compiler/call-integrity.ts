@@ -117,7 +117,8 @@ export function withToolGuidance<P extends object>(
       break;
     case "take_message":
       text +=
-        " Call it only after reading the details back and getting a yes. Its result " +
+        " Call it after reading the details back and getting a yes (when the caller is leaving " +
+        "or you are about to transfer them, call it at once with what you have). Its result " +
         "recorded:true is the only proof the message is saved: never tell the caller a message " +
         'was taken, recorded or passed along before it returns. Set structured_payload.intake_status to "partial" when ' +
         "the caller cannot or will not give every detail, when they only want to cancel or " +
