@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { claimsFromSupabaseClient, impersonatedByFromSupabaseClient } from "@/lib/auth/claims";
+import {
+  aalFromSupabaseClient,
+  claimsFromSupabaseClient,
+  impersonatedByFromSupabaseClient,
+} from "@/lib/auth/claims";
 import { env } from "@/lib/env";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 
@@ -10,7 +14,8 @@ export const runtime = "nodejs";
  * (BACKEND_SPEC.md §7.7 — "one function with internal path routing").
  * Forwards the caller's own access token (that edge function is
  * `verify_jwt: true` and checks `platform_admin` + AAL2 itself server-side
- * — this proxy re-checks role here too, defense in depth matching
+ * for every route (COCKPIT-F01) — this proxy re-checks role and AAL2 here
+ * too, defense in depth matching
  * FRONTEND_SPEC.md §0.1's two-guard model). The single deployed function
  * slug is `admin` (supabase/config.toml's `[functions.admin]`, directory
  * `supabase/functions/admin/`) — the internal route names
@@ -85,6 +90,13 @@ async function handle(request: Request, path: string[]) {
     (await impersonatedByFromSupabaseClient(supabase)) !== null;
   if (!claims.platform_admin && !isSelfServiceImpersonation) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  // COCKPIT-F01: every admin call needs an MFA-completed (AAL2) session, not
+  // only the pages. The one caller that passes the check above without the
+  // platform_admin claim is the self-service impersonation route, served on
+  // the impersonated tenant owner's token, which has no admin MFA level.
+  if (claims.platform_admin && (await aalFromSupabaseClient(supabase)) !== "aal2") {
+    return NextResponse.json({ error: "aal2_required" }, { status: 403 });
   }
 
   const target = `${env.supabaseFunctionsUrl}/admin/${path.map(encodeURIComponent).join("/")}${new URL(request.url).search}`;

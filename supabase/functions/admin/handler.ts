@@ -2118,6 +2118,15 @@ export async function routeAdminRequest(
   if (!isPlatformAdmin(ctx.claims) && !isSelfServiceImpersonation) {
     return { status: 403, body: { error: "not_a_platform_admin" } };
   }
+  // COCKPIT-F01: a password-only (AAL1) session must not reach ANY admin
+  // route. The page guard (`requireAdminSession`) is not enough on its own:
+  // the API is directly callable. The only caller that gets past the
+  // platform_admin check WITHOUT the claim is the self-service impersonation
+  // route, served on the impersonated tenant owner's token (no admin MFA
+  // level of its own), so the check keys on the claim rather than the path.
+  if (isPlatformAdmin(ctx.claims) && !isAal2(ctx.claims)) {
+    return { status: 403, body: { error: "aal2_required" } };
+  }
 
   const parts = segments(ctx.path);
   const [first] = parts;

@@ -33,7 +33,7 @@ function baseCtx(overrides: Partial<AdminRequestContext> = {}): AdminRequestCont
   return {
     method: "GET",
     path: "/admin-tenants",
-    claims: { app_metadata: { platform_admin: true } },
+    claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
     body: undefined,
     adminUserId: "admin_1",
     ...overrides,
@@ -71,6 +71,58 @@ describe("routeAdminRequest — auth gate", () => {
     const { sql } = makeSql();
     const result = await routeAdminRequest(sql, baseCtx({ claims: null }), logger);
     expect(result.status).toBe(403);
+  });
+
+  // COCKPIT-F01: a password-only (AAL1) platform admin must get 403 on every
+  // route family, for reads and writes, and must never reach the database.
+  describe("AAL2 is required on every route family (COCKPIT-F01)", () => {
+    const aal1 = { app_metadata: { platform_admin: true }, aal: "aal1" as const };
+    const noAal = { app_metadata: { platform_admin: true } };
+    const routes: [string, string][] = [
+      ["GET", "/admin-tenants"],
+      ["PATCH", `/admin-tenants/${T1}`],
+      ["GET", "/admin-cockpit/waterfall"],
+      ["GET", "/admin-platform-settings"],
+      ["PATCH", "/admin-platform-settings"],
+      ["GET", "/admin-alerts"],
+      ["PATCH", `/admin-alerts/${ALERT1}/ack`],
+      ["DELETE", `/admin-alerts/rules/${R1}`],
+      ["GET", "/admin-config-lab"],
+      ["GET", "/admin-referrals"],
+      ["GET", "/admin-cac"],
+      ["GET", "/admin-templates"],
+      ["POST", "/admin-templates/auto/publish"],
+      ["GET", "/admin-outreach/campaigns"],
+      ["POST", "/admin-outreach/campaigns"],
+      ["GET", "/admin-support-requests"],
+      ["GET", "/admin-agent-regression"],
+      ["GET", "/admin-flags"],
+      ["POST", `/admin-tenants/${T1}/impersonate`],
+    ];
+
+    for (const [method, path] of routes) {
+      for (const [label, claims] of [
+        ["aal1", aal1],
+        ["missing aal", noAal],
+      ] as const) {
+        it(`${method} ${path} -> 403 aal2_required (${label})`, async () => {
+          const { sql, calls } = makeSql();
+          const result = await routeAdminRequest(
+            sql,
+            baseCtx({ method, path, claims, body: {} }),
+            logger,
+          );
+          expect(result).toEqual({ status: 403, body: { error: "aal2_required" } });
+          expect(calls).toHaveLength(0);
+        });
+      }
+    }
+
+    it("still lets an AAL2 admin through", async () => {
+      const { sql } = makeSql();
+      const result = await routeAdminRequest(sql, baseCtx({ path: "/admin-tenants" }), logger);
+      expect(result.status).not.toBe(403);
+    });
   });
 });
 

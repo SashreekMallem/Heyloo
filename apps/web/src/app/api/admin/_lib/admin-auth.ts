@@ -2,7 +2,7 @@ import "server-only";
 
 import type { SupabaseServiceRoleClient } from "@heyloo/supabase-client";
 import { NextResponse } from "next/server";
-import { claimsFromSupabaseClient } from "@/lib/auth/claims";
+import { aalFromSupabaseClient, claimsFromSupabaseClient } from "@/lib/auth/claims";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-role";
 
@@ -26,7 +26,7 @@ export function fromUntypedTable(supabase: SupabaseServiceRoleClient, table: str
  * `supabase/functions/admin` (that edge function does not implement every
  * route this cluster needs yet — see `docs/audit/FIX_REQUESTS.md`).
  * Mirrors `api/admin/[...path]/route.ts`'s own check exactly (session +
- * `platform_admin` app_metadata claim) so every `/api/admin/*` path shares
+ * `platform_admin` app_metadata claim + the AAL2 `aal` claim) so every `/api/admin/*` path shares
  * one security bar regardless of which handler serves it.
  */
 export async function requireAdminApiSession(): Promise<
@@ -49,6 +49,11 @@ export async function requireAdminApiSession(): Promise<
   const claims = await claimsFromSupabaseClient(supabase);
   if (!claims.platform_admin) {
     return { ok: false, response: NextResponse.json({ error: "forbidden" }, { status: 403 }) };
+  }
+  // COCKPIT-F01: the page guard's MFA step-up is not enough, these handlers
+  // are directly callable. A password-only (AAL1) session gets 403.
+  if ((await aalFromSupabaseClient(supabase)) !== "aal2") {
+    return { ok: false, response: NextResponse.json({ error: "aal2_required" }, { status: 403 }) };
   }
   return { ok: true, adminUserId: session.user.id };
 }

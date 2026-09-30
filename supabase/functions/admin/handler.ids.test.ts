@@ -10,7 +10,7 @@ function ctx(overrides: Partial<AdminRequestContext>): AdminRequestContext {
   return {
     method: "GET",
     path: "/admin-tenants",
-    claims: { app_metadata: { platform_admin: true } },
+    claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
     body: {},
     adminUserId: "admin_1",
     ...overrides,

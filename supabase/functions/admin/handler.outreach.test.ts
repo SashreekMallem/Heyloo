@@ -14,7 +14,7 @@ function ctx(overrides: Partial<AdminRequestContext>): AdminRequestContext {
   return {
     method: "GET",
     path: "/admin-outreach/campaigns",
-    claims: { app_metadata: { platform_admin: true } },
+    claims: { app_metadata: { platform_admin: true }, aal: "aal2" },
     body: undefined,
     adminUserId: "admin_1",
     ...overrides,
