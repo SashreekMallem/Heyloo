@@ -349,6 +349,16 @@ jobs:
       - name: Run platform-admin AAL2 SQL test
         if: steps.migrations.outputs.count != '0'
         run: psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/platform_admin_aal2.sql
+      # QA-1 backend: realtime partition window, booking audit-column guard,
+      # storage policy hygiene (BE-03, SEC-13, SEC-14).
+      - name: Run QA-1 backend hardening SQL test
+        if: steps.migrations.outputs.count != '0'
+        run: psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/qa1_backend_hardening.sql
+      # QA-1 cockpit: one open alert per rule + tenant, campaign send cap,
+      # support_requests.created_by default, referral qualification rule.
+      - name: Run QA-1 cockpit fixes SQL test
+        if: steps.migrations.outputs.count != '0'
+        run: psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/qa1_cockpit_fixes.sql
       - name: Run owner privilege-escalation probe
         if: steps.migrations.outputs.count != '0'
         run: node --experimental-strip-types scripts/ci/owner-privilege-escalation-probe.ts
