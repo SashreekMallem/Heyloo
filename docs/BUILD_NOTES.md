@@ -9314,3 +9314,11 @@ Branch `wave/QA-1-shared-ui` (from `claude/voice-ai-agent-architecture-dcw0n8`).
 - MAP-05: switch/checkbox real sizes and `/agent/hours` controls were not re-measured in a browser (no browser in this environment); the hit-area classes are unit-tested, the pixels are not.
 - Playwright specs added (`tests/e2e/shared-ui-public.spec.ts`, `shared-ui-shell.spec.ts`) were NOT run here (no browser/Supabase); the authenticated one self-skips without `supabase start`.
 - The 3 pre-existing `widget.js`/`widget-voice.js` route tests need `packages/widget/dist` (`turbo build`) and fail on a bare checkout; unrelated to this branch.
+
+## QA-2-portal-core (2026-09-30, session_012xvcAnjqsMbPqitErDJQbR) — portal-core, round 2
+
+Branch `wave/QA-2-portal-core`. No migrations, nothing deployed, no live writes.
+
+**F-12 (Manage payment method cannot open the Stripe portal) — code-side hardening only; the root cause is a deploy gap.** `supabase/functions/api-billing-portal` already exists in the repo (QA-1) and is wired in `supabase/config.toml`; the live project simply has not had it deployed (function list has no `api-billing-portal`), so the Supabase gateway answers a bare `404 NOT_FOUND` that the web route used to relay verbatim. `apps/web/src/app/api/billing/portal/route.ts` now: returns only `{ url }` on success; passes `not_tenant_owner` / `no_billing_account` through with their 4xx; maps everything else (gateway 404, Stripe/config failures, 200 without a url, network error or the new 10s timeout) to a stable `503 portal_unavailable` and logs it server-side. Test: `route.test.ts` (4 of 6 cases fail on the old route). The Billing page already turns `portal_unavailable` into the inline message plus email-support link.
+
+**Deploy list (needed to actually clear F-12):** edge function `api-billing-portal` (`verify_jwt` on); function secret `STRIPE_SECRET_KEY` (optional `APP_BASE_URL`); a default Customer Portal configuration saved once in the Stripe Dashboard in the mode in use. Documented in `docs/DEPLOY.md` §1.5 step 8 and `docs/VERIFY.md`. Not doable from this environment (no deploys / no Stripe access).

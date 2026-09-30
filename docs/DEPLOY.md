@@ -181,6 +181,16 @@ weeks and should not be the last thing blocking launch.
    (`docs/VERIFY.md`'s T4 entry flags `2025-08-27.basil` as a placeholder,
    not independently confirmed live) against Stripe's current API version
    in the dashboard before go-live.
+8. **Billing portal** ("Manage payment method" on `/dashboard/billing`):
+   deploy the `api-billing-portal` edge function
+   (`supabase functions deploy api-billing-portal`; `verify_jwt = true` is
+   in `supabase/config.toml`), make sure `STRIPE_SECRET_KEY` (and
+   optionally `APP_BASE_URL`) are set as function secrets, and save the
+   account's default Customer Portal configuration once in the Stripe
+   Dashboard (Settings > Billing > Customer portal) in the mode in use.
+   Until the function is deployed the button shows the "temporarily
+   unavailable" message with an email-support link (the web route maps the
+   gateway's 404 to `503 portal_unavailable`).
 
 ### 1.6 PayPal (referral payouts)
 
