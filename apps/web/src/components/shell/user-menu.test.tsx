@@ -22,7 +22,7 @@ vi.mock("@/lib/supabase/browser", () => ({
         data: { claims: { app_metadata: claims.app_metadata } },
         error: null,
       }),
-      signOut: () => signOut(),
+      signOut: (options?: unknown) => signOut(options),
     },
   },
 }));
@@ -64,6 +64,8 @@ describe("UserMenu (QA-1 AUTH-02 / MAP-04)", () => {
     await user.click(await screen.findByRole("menuitem", { name: "Log out" }));
     await waitFor(() => expect(push).toHaveBeenCalledWith("/login"));
     expect(signOut).toHaveBeenCalledTimes(1);
+    // This browser only, never every device the person is signed in on.
+    expect(signOut).toHaveBeenCalledWith({ scope: "local" });
     expect(clearImpersonation).toHaveBeenCalled();
     expect(refresh).toHaveBeenCalled();
   });

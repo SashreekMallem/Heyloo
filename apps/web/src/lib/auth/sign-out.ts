@@ -11,7 +11,11 @@ export async function performSignOut(): Promise<boolean> {
     import("@/lib/supabase/browser"),
     import("@/lib/impersonation/state"),
   ]);
-  const { error } = await supabaseBrowserClient.auth.signOut();
+  // `scope: "local"`: supabase-js's default is "global", which revokes the
+  // session on every device the person is signed in on. "Log out" means this
+  // browser (checked against the installed @supabase/auth-js `SignOut` type:
+  // global = all sessions, local = only this session).
+  const { error } = await supabaseBrowserClient.auth.signOut({ scope: "local" });
   if (error) return false;
   clearImpersonation();
   return true;
