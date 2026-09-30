@@ -9314,3 +9314,18 @@ Branch `wave/QA-1-shared-ui` (from `claude/voice-ai-agent-architecture-dcw0n8`).
 - MAP-05: switch/checkbox real sizes and `/agent/hours` controls were not re-measured in a browser (no browser in this environment); the hit-area classes are unit-tested, the pixels are not.
 - Playwright specs added (`tests/e2e/shared-ui-public.spec.ts`, `shared-ui-shell.spec.ts`) were NOT run here (no browser/Supabase); the authenticated one self-skips without `supabase start`.
 - The 3 pre-existing `widget.js`/`widget-voice.js` route tests need `packages/widget/dist` (`turbo build`) and fail on a bare checkout; unrelated to this branch.
+
+## QA-2-marketing-funnel (2026-09-30, session_012xvcAnjqsMbPqitErDJQbR)
+
+Branch `wave/QA-2-marketing-funnel` (from `claude/voice-ai-agent-architecture-dcw0n8`). Round 2 for the marketing funnel had one finding, F-01. No code, migration or edge function changed; nothing deployed or written live.
+
+**Not fixable in code (F-01, blocker, still open).** New customers cannot create an account because the LIVE Supabase Auth project config is unchanged since round 0 (Management API `GET /v1/projects/<ref>/config/auth`, read-only): `smtp_host` null (built-in sender, team addresses only), `rate_limit_email_sent` 2 per hour, `mailer_autoconfirm` false, `password_min_length` 6, HIBP off. Every confirmation email past the second in an hour returns `over_email_send_rate_limit` (429). This is project configuration, not repo code, and it must not be papered over by auto-confirming accounts (that would skip email ownership verification before checkout).
+
+What the repo already does, re-checked this round: `mapSignUpError` (`apps/web/src/lib/signup/auth-errors.ts`) matches on the GoTrue `code` and maps `over_email_send_rate_limit` / `over_request_rate_limit` (and any bare 429) to a `rate_limited` message on both signUp and resend, covered in `account-step-client.test.tsx`; the weak-password copy already says at least 8 characters, so it stays correct once `password_min_length` is raised. The whole email path (`auth-send-email` hook, Microsoft Graph provider, `scripts/enable-auth-email-hook.ts`) is built and unit-tested (EMAIL-MSGRAPH); it is simply not enabled on the live project.
+
+**Owner steps to close F-01 (in this order; a real signup end to end is the acceptance test):**
+1. Deploy `auth-send-email` and set its secrets (`SEND_EMAIL_HOOK_SECRET`, the Graph or SMTP secrets), then run `scripts/enable-auth-email-hook.ts` (`docs/SETUP_EMAIL_MICROSOFT.md`). Alternative: custom SMTP in Dashboard > Authentication > SMTP (`docs/SETUP_EMAIL.md` part 4; Auth is not an Edge Function, so port 587 is fine there).
+2. Raise `rate_limit_email_sent` (Authentication > Rate Limits; custom SMTP starts at 30/hour).
+3. Set `site_url` to the production origin and add `<origin>/auth/confirm` to the redirect allow-list.
+4. Set `password_min_length` to 8 or more and turn on leaked-password protection (HIBP; Supabase Pro plan feature).
+5. Sign up with a real, deliverable address on the production site and confirm the link lands on `/signup/resume` and reaches Stripe Checkout.
