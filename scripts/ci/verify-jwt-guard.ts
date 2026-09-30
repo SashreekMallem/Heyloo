@@ -113,10 +113,30 @@ function handDecodesJwt(entrypointSource: string): boolean {
   );
 }
 
+/** A table header that appears twice is invalid TOML: the Supabase CLI then
+ * refuses to deploy ANY function ("failed to read config: CliConfigParseError"),
+ * and two branches that each add the same `[functions.<slug>]` merge cleanly
+ * into exactly that state. */
+function duplicateTableHeaders(toml: string): string[] {
+  const seen = new Set<string>();
+  const dupes = new Set<string>();
+  for (const line of toml.split("\n")) {
+    const header = /^\s*(\[\[?[^\]]+\]\]?)\s*(#.*)?$/.exec(line)?.[1];
+    if (!header || header.startsWith("[[")) continue;
+    if (seen.has(header)) dupes.add(header);
+    seen.add(header);
+  }
+  return [...dupes];
+}
+
 function main(): void {
-  const configMap = parseVerifyJwtConfig(readFileSync(CONFIG_TOML, "utf-8"));
+  const configToml = readFileSync(CONFIG_TOML, "utf-8");
+  const configMap = parseVerifyJwtConfig(configToml);
   const slugs = listFunctionSlugs();
-  const failures: string[] = [];
+  const failures: string[] = duplicateTableHeaders(configToml).map(
+    (header) =>
+      `supabase/config.toml declares ${header} more than once — invalid TOML, every \`supabase functions deploy\` fails to read the config`,
+  );
 
   for (const slug of slugs) {
     const entry = configMap.get(slug);
