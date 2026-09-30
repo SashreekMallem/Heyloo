@@ -116,9 +116,9 @@ describe("upsertAlert (QA-1 BE-15)", () => {
     const stored = calls[0]?.values.find(
       (v) => typeof v === "object" && v !== null && "dedupe_key" in v,
     ) as Record<string, unknown> | undefined;
-    expect(stored?.dedupe_key).toBe("last_month");
-    expect(typeof stored?.last_seen_at).toBe("string");
-    expect(stored?.tenant_name).toBe("Acme");
+    expect(stored?.["dedupe_key"]).toBe("last_month");
+    expect(typeof stored?.["last_seen_at"]).toBe("string");
+    expect(stored?.["tenant_name"]).toBe("Acme");
   });
 
   it("keys tool_failure_spike per tool so two failing tools stay two alerts", () => {
