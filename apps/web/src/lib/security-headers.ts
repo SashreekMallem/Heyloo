@@ -19,7 +19,9 @@
  * The widget is a `<script src="/widget.js">` embedded on tenants' own
  * sites and calls `/api/widget/*` cross-origin (fetch, not an iframe), so
  * nothing in this app is ever framed: `frame-ancestors 'none'` and
- * `X-Frame-Options: DENY` apply to every route with no widget exception.
+ * `X-Frame-Options: DENY` apply to every page route. The two widget script
+ * routes are left out of that rule only because a script response has no
+ * framing semantics either way (AUTH-13).
  */
 export interface SecurityHeader {
   key: string;
@@ -46,7 +48,8 @@ const CSP_REPORT_ONLY = [
   "object-src 'none'",
 ].join("; ");
 
-export const SECURITY_HEADERS: SecurityHeader[] = [
+/** Sent on every route, including the embeddable widget bundles. */
+const BASELINE_HEADERS: SecurityHeader[] = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   // microphone=(self): the live browser demo and the dashboard's Test agent
@@ -56,9 +59,17 @@ export const SECURITY_HEADERS: SecurityHeader[] = [
     value:
       "microphone=(self), camera=(), geolocation=(), payment=(self), usb=(), interest-cohort=()",
   },
-  { key: "X-Frame-Options", value: "DENY" },
   // Vercel also adds HSTS at the edge; this covers any other host (AUTH-13).
   { key: "Strict-Transport-Security", value: "max-age=31536000" },
+];
+
+/**
+ * Page-level policy: anti-framing plus the report-only CSP. Not sent on the
+ * two embeddable widget bundles, which are `<script src>` responses with no
+ * framing semantics (AUTH-13: they carry no anti-framing rule).
+ */
+const PAGE_HEADERS: SecurityHeader[] = [
+  { key: "X-Frame-Options", value: "DENY" },
   // The one directive that is safe to ENFORCE without a nonce pipeline: it is
   // what actually stops framing in browsers that prefer CSP over X-Frame-Options
   // (AUTH-13). The rest of the policy stays report-only below.
@@ -66,7 +77,16 @@ export const SECURITY_HEADERS: SecurityHeader[] = [
   { key: "Content-Security-Policy-Report-Only", value: CSP_REPORT_ONLY },
 ];
 
-/** The `headers()` result for `next.config.ts`: one rule, every route. */
+/** Every header this app sets on a page route. */
+export const SECURITY_HEADERS: SecurityHeader[] = [...BASELINE_HEADERS, ...PAGE_HEADERS];
+
+/** Embeddable widget bundles (`src/app/widget.js/route.ts`), excluded from the page rule. */
+const EMBEDDABLE = "widget\\.js|widget-voice\\.js";
+
+/** The `headers()` result for `next.config.ts`: a baseline for every route, page policy for all but the widget bundles. */
 export function securityHeaderRules(): { source: string; headers: SecurityHeader[] }[] {
-  return [{ source: "/:path*", headers: SECURITY_HEADERS }];
+  return [
+    { source: "/:path*", headers: BASELINE_HEADERS },
+    { source: `/((?!${EMBEDDABLE}).*)`, headers: PAGE_HEADERS },
+  ];
 }
