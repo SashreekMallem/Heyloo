@@ -5,7 +5,8 @@ import { requireTenantMember } from "@/lib/settings/route-auth";
 
 export const runtime = "nodejs";
 
-export type PublishStatusResponse = PublishStatus;
+/** `timezone` is the business zone, so the page can show "last published" in it (QA-1 F-18). */
+export type PublishStatusResponse = PublishStatus & { timezone?: string | null };
 
 /**
  * `GET /api/tenant/agent/publish-status` (SETTINGS-1): drives
@@ -19,19 +20,26 @@ export async function GET() {
 
   const [configRead, tenantRes] = await Promise.all([
     readAgentConfigForPublish(auth.supabase, auth.tenantId),
-    auth.supabase.from("tenants").select("language_config").eq("id", auth.tenantId).maybeSingle(),
+    auth.supabase
+      .from("tenants")
+      .select("language_config, timezone")
+      .eq("id", auth.tenantId)
+      .maybeSingle(),
   ]);
   if (!configRead.ok || tenantRes.error) {
     return NextResponse.json({ error: "read_failed" }, { status: 500 });
   }
   const config = configRead.row;
 
-  const status: PublishStatusResponse = computePublishStatus({
-    publishedAt: config?.published_at ?? null,
-    compiledConfig: config?.compiled_config ?? null,
-    transferNumber: config?.transfer_number ?? null,
-    languageConfig: tenantRes.data?.language_config ?? null,
-    compiledWithVersion: config?.compiled_with_version,
-  });
+  const status: PublishStatusResponse = {
+    ...computePublishStatus({
+      publishedAt: config?.published_at ?? null,
+      compiledConfig: config?.compiled_config ?? null,
+      transferNumber: config?.transfer_number ?? null,
+      languageConfig: tenantRes.data?.language_config ?? null,
+      compiledWithVersion: config?.compiled_with_version,
+    }),
+    timezone: tenantRes.data?.timezone ?? null,
+  };
   return NextResponse.json(status);
 }

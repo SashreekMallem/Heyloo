@@ -61,3 +61,26 @@ export function currentTimeIn(timezone: string, now: Date = new Date()): string 
     weekday: "short",
   }).format(now);
 }
+
+/** "Eastern (New York)" for a common zone; other zones keep the IANA id with underscores softened. */
+export function timezoneLabel(timezone: string): string {
+  const common = COMMON_TIMEZONES.find((z) => z.value === timezone);
+  if (common) return common.label;
+  return timezone.replace(/_/g, " ");
+}
+
+/** "Sep 29, 2026, 4:42 PM EDT" in the business's own zone (browser zone for an unknown one). */
+export function formatInTimezone(iso: string, timezone: string | null | undefined): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const zone = timezone && isValidTimezone(timezone) ? timezone : undefined;
+  return new Intl.DateTimeFormat("en-US", {
+    ...(zone ? { timeZone: zone } : {}),
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(date);
+}

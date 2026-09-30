@@ -54,11 +54,18 @@ function stub() {
 }
 
 describe("HoursTabPage (SETTINGS-1)", () => {
+  it("shows a friendly time zone label, not the raw IANA id (QA-1 F-18)", async () => {
+    stub();
+    renderWithTenant(<HoursTabPage />);
+    expect(await screen.findByText("Eastern (New York)")).toBeInTheDocument();
+    expect(screen.queryByText("America/New_York")).not.toBeInTheDocument();
+  });
+
   it("saves the canonical shape — the legacy closed Sunday becomes []", async () => {
     const routes = stub();
     renderWithTenant(<HoursTabPage />);
     expect(await screen.findByRole("checkbox", { name: "Sunday closed" })).toBeChecked();
-    expect(screen.getByText(/America\/New_York/)).toBeInTheDocument();
+    expect(screen.getByText(/Eastern \(New York\)/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Save hours" }));
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith("Saved — your bookable times are updated now."),

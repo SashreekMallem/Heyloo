@@ -28,7 +28,7 @@ import {
   scheduleFromStored,
 } from "@/lib/settings/hours";
 import { ReadOnlyNote } from "@/lib/settings/read-only-note";
-import { currentTimeIn } from "@/lib/settings/timezone";
+import { currentTimeIn, timezoneLabel } from "@/lib/settings/timezone";
 import { supabaseBrowserClient } from "@/lib/supabase/browser";
 import { useCanWriteSettings, useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
@@ -123,7 +123,7 @@ function HoursCard({ tenantId, row }: { tenantId: string; row: HoursRow }) {
         <CardTitle>Business hours</CardTitle>
         <CardDescription>
           Your AI only offers appointment times inside these hours and tells callers when
-          you&apos;re open. Times are in <strong>{row.timezone}</strong>
+          you&apos;re open. Times are in <strong>{timezoneLabel(row.timezone)}</strong>
           {localTime ? ` (${localTime} there now)` : ""} —{" "}
           <Link href="/dashboard/agent/business" className="underline">
             change time zone

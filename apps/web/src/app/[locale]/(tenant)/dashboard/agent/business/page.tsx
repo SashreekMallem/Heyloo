@@ -23,6 +23,7 @@ import {
 } from "@heyloo/ui";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
@@ -68,6 +69,7 @@ export default function BusinessTabPage() {
 
 function BusinessForm({ tenantId, row }: { tenantId: string; row: BusinessRow }) {
   const queryClient = useQueryClient();
+  const router = useRouter();
   const form = useForm<BusinessProfileInput>({
     resolver: zodResolver(businessProfileSchema),
     defaultValues: { name: row.name, timezone: row.timezone },
@@ -104,6 +106,8 @@ function BusinessForm({ tenantId, row }: { tenantId: string; row: BusinessRow })
           : "Saved — your bookable times were rebuilt in the new time zone.",
     );
     void queryClient.invalidateQueries({ queryKey: ["tenant", tenantId, "tenants"] });
+    // The header business name comes from the server layout; re-render it.
+    router.refresh();
   }
 
   return (
