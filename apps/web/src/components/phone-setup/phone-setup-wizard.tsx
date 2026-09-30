@@ -82,6 +82,15 @@ interface TestResponse {
   body: Record<string, unknown>;
 }
 
+/**
+ * Wall-clock for the poll deadline. Only ever called from the Start click and
+ * the poll timer, never during render; kept outside the component so the
+ * React Compiler's purity rule doesn't mistake the handlers for render code.
+ */
+function nowMs(): number {
+  return Date.now();
+}
+
 async function postForwardingTest(payload: Record<string, unknown>): Promise<TestResponse> {
   const res = await fetch("/api/phone/forwarding-test", {
     method: "POST",
@@ -192,7 +201,7 @@ export function PhoneSetupWizard({
     const calling = res.body["calling"];
     setCallingNumber(typeof calling === "string" ? calling : savedPhone);
     setTestState("calling");
-    schedulePoll(runId, Date.now() + pollTimeoutMs);
+    schedulePoll(runId, nowMs() + pollTimeoutMs);
   }
 
   function schedulePoll(runId: number, deadline: number) {
@@ -223,7 +232,7 @@ export function PhoneSetupWizard({
       fail(NO_TEST_RUNNING_MESSAGE);
       return;
     }
-    if (Date.now() >= deadline) {
+    if (nowMs() >= deadline) {
       fail(FAILURE_MESSAGES.not_forwarded);
       return;
     }
