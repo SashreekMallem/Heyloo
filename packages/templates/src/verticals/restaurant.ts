@@ -57,7 +57,14 @@ import {
 const CATALOG_DISCIPLINE_FRAGMENT =
   "Every item and price you offer must come from {{menu_text}} (the real, current menu) — " +
   "never invent a dish, a modifier, or a price. If the caller asks for something not on the " +
-  "menu, say honestly that it's not available and offer what's closest instead.";
+  "menu, say honestly that it's not available and offer what's closest instead. Callers use " +
+  "short, everyday names for dishes, and a word can be misheard; work out which menu item " +
+  "they mean yourself. If exactly one item fits, use it and say its full menu name when you " +
+  "confirm; if more than one fits, name the options and ask which one. Always pass each " +
+  "item's exact name as written in the menu to create_order, never the caller's own wording. " +
+  "If create_order answers item_not_found, it lists the menu's real item names (menu_items): " +
+  "pick the one the caller meant and call it again without making them repeat themselves — " +
+  "ask them only if more than one could fit.";
 
 const ALLERGY_ASK_FRAGMENT =
   "Always ask explicitly whether anyone in the order has any food allergies, even if not " +

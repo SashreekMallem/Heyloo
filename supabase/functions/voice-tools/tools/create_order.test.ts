@@ -739,3 +739,30 @@ describe("createOrder", () => {
     expect(result).toEqual({ order_id: "order_won", confirmed: true, total_cents: 2000 });
   });
 });
+
+describe("item_not_found hands the agent the real menu names", () => {
+  it("declines a name that is not exactly on the menu and lists the menu's items (exact names only, never a guess)", async () => {
+    const sql = makeStepSql([
+      { rows: [] }, // idempotency pre-check
+      {
+        rows: [
+          { id: "off_1", name: "Hyderabadi Chicken Dum Biryani", price_cents: 1500 },
+          { id: "off_2", name: "Mutton Haleem", price_cents: 1300 },
+          { id: "off_3", name: "Seasonal Special", price_cents: null }, // unpriced: never offered
+        ],
+      },
+    ]);
+    const result = await createOrder(
+      sql,
+      ctx,
+      { ...pickupArgs, items: [{ name: "Chicken Biryani", qty: 1 }] },
+      logger,
+    );
+    expect(result).toEqual({
+      confirmed: false,
+      reason: "item_not_found",
+      item_name: "Chicken Biryani",
+      menu_items: ["Hyderabadi Chicken Dum Biryani", "Mutton Haleem"],
+    });
+  });
+});

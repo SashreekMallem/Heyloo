@@ -311,8 +311,8 @@ export function createOrderTool(): CanonicalTool {
     name: "create_order",
     description:
       "Create an order from items on the real menu/catalog only — never invent an item or " +
-      "price. Delivery orders require a full delivery_address and are checked against the " +
-      "delivery radius.",
+      "price. Each item's name must be its exact name as written in the menu. Delivery orders " +
+      "require a full delivery_address and are checked against the delivery radius.",
     parameters: {
       type: "object",
       properties: {
@@ -322,7 +322,11 @@ export function createOrderTool(): CanonicalTool {
             type: "object",
             properties: {
               offering_id: { type: "string" },
-              name: { type: "string" },
+              name: {
+                type: "string",
+                description:
+                  "The item's exact name as written in the menu — never the caller's own wording.",
+              },
               qty: { type: "integer", minimum: 1 },
               modifiers: { type: "array", items: { type: "string" } },
             },

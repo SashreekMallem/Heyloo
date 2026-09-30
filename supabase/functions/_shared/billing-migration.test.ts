@@ -71,16 +71,18 @@ describe("billing behavior migration", () => {
 // The rollup functions have been re-created by three migrations; a merge once
 // let an older body (test calls counted, usage_events join fan-out) replace
 // QA-1's fix. Whatever migration defines them LAST must keep every property.
+// Read once at module load: re-reading every migration per assertion took
+// seconds under a loaded full-suite run and tripped vitest's 5 s timeout.
+const MIGRATIONS_DIR = new URL("../../migrations/", import.meta.url);
+const MIGRATIONS = readdirSync(MIGRATIONS_DIR)
+  .filter((f) => f.endsWith(".sql"))
+  .sort()
+  .map((f) => ({ file: f, text: readFileSync(new URL(f, MIGRATIONS_DIR), "utf8") }));
+
 function latestDefinition(fn: string): string {
-  const dir = new URL("../../migrations/", import.meta.url);
   const marker = `create or replace function public.${fn}(`;
-  const file = readdirSync(dir)
-    .filter((f) => f.endsWith(".sql"))
-    .sort()
-    .filter((f) => readFileSync(new URL(f, dir), "utf8").includes(marker))
-    .at(-1);
-  if (!file) throw new Error(`no migration defines ${fn}`);
-  const text = readFileSync(new URL(file, dir), "utf8");
+  const text = MIGRATIONS.filter((m) => m.text.includes(marker)).at(-1)?.text;
+  if (!text) throw new Error(`no migration defines ${fn}`);
   const start = text.indexOf(marker);
   return text.slice(start, text.indexOf("\n$$;", start));
 }

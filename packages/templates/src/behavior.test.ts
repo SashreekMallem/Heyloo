@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { MULTI_ENTITY_FRAGMENT } from "./shared/fragments.js";
+import { createOrderTool } from "./shared/tools.js";
 import { manageBookingState, takeMessageFallbackState } from "./shared/utility-states.js";
 import { AUTO_REPAIR_TEMPLATE } from "./verticals/auto-repair.js";
 import { LEGAL_TEMPLATE } from "./verticals/legal.js";
+import { RESTAURANT_TEMPLATE } from "./verticals/restaurant.js";
 import { VETERINARY_TEMPLATE } from "./verticals/veterinary.js";
 
 /**
@@ -101,5 +103,31 @@ describe("legal", () => {
       'intake_status to "partial"',
     );
     expect(LEGAL_TEMPLATE.system_prompt).toContain('"Not yet asked" belongs only in message_text');
+  });
+});
+
+describe("restaurant orders use the menu's exact item names (live QA 2026-09-30)", () => {
+  it("the agent maps a caller's wording to a menu item itself and orders by the exact menu name", () => {
+    const prompt = RESTAURANT_TEMPLATE.system_prompt;
+    expect(prompt).toMatch(/work out which menu item\s+they mean yourself/);
+    expect(prompt).toMatch(
+      /exact name as written in the menu to create_order, never the caller's own wording/,
+    );
+    expect(prompt).toMatch(/if more than one fits, name the options and ask which one/);
+    expect(prompt).toMatch(/item_not_found, it lists the menu's real item names \(menu_items\)/);
+  });
+
+  it("the create_order tool asks for the exact menu name", () => {
+    const tool = createOrderTool();
+    expect(tool.description).toMatch(/exact name as written in the menu/);
+    const items = (
+      tool.parameters.properties as Record<
+        string,
+        { items?: { properties?: Record<string, { description?: string }> } }
+      >
+    )["items"];
+    expect(items?.items?.properties?.["name"]?.description).toMatch(
+      /exact name as written in the menu/,
+    );
   });
 });

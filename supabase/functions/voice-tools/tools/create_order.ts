@@ -31,11 +31,16 @@ export type CreateOrderResult =
         | "invalid_phone"
         | "manual_mode";
       item_name?: string;
+      /** item_not_found: the menu's real item names, so the agent can pick the one the caller meant. */
+      menu_items?: string[];
       pickup_offered?: boolean;
       message?: string;
     };
 
 const UNIQUE_VIOLATION = "23505";
+
+/** Menu names returned with item_not_found; a restaurant catalog is tens of items, this only bounds a huge one. */
+const MENU_ITEMS_IN_ERROR_MAX = 80;
 
 function isPgError(err: unknown, code: string): boolean {
   return typeof err === "object" && err !== null && (err as { code?: string }).code === code;
@@ -165,7 +170,21 @@ export async function createOrder(
       (item.offering_id ? offeringsById.get(item.offering_id) : undefined) ??
       offeringsByLowerName.get(item.name.toLowerCase());
     if (!offering || offering.price_cents === null) {
-      return { confirmed: false, reason: "item_not_found", item_name: item.name };
+      // Still exact names only (never an off-menu item or a guessed dish): the
+      // model maps what the caller said to a menu item itself, and gets the
+      // real names back so it can correct a caller's wording without stalling
+      // (live QA 2026-09-30: "Chicken Biryani" vs the menu's full name looped
+      // until the 3-minute cap).
+      const menuItems = offeringRows
+        .filter((o) => o.price_cents !== null)
+        .map((o) => o.name)
+        .slice(0, MENU_ITEMS_IN_ERROR_MAX);
+      return {
+        confirmed: false,
+        reason: "item_not_found",
+        item_name: item.name,
+        ...(menuItems.length > 0 ? { menu_items: menuItems } : {}),
+      };
     }
     if (offering.id !== item.offering_id) {
       logger.warn("create_order_offering_id_resolved_by_name_fallback", {
