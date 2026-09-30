@@ -34,6 +34,8 @@ export default function ConfigLabPage() {
   const [volume, setVolume] = useState(1000);
   const [result, setResult] = useState<SimulationResult | null>(null);
   const [running, setRunning] = useState(false);
+  // COCKPIT-F23: per-field messages instead of one generic toast.
+  const [errors, setErrors] = useState<Partial<Record<"name" | "assumed_volume", string>>>({});
 
   async function runSimulation() {
     const parsed = configLabScenarioSchema.safeParse({
@@ -44,9 +46,18 @@ export default function ConfigLabPage() {
       assumed_volume: volume,
     });
     if (!parsed.success) {
-      toast.error("Check the scenario inputs.");
+      const next: Partial<Record<"name" | "assumed_volume", string>> = {};
+      for (const issue of parsed.error.issues) {
+        const field = issue.path[0];
+        if ((field === "name" || field === "assumed_volume") && !next[field]) {
+          next[field] = issue.message;
+        }
+      }
+      setErrors(next);
+      if (Object.keys(next).length === 0) toast.error("Check the scenario inputs.");
       return;
     }
+    setErrors({});
     setRunning(true);
     const res = await fetch("/api/admin/admin-config-lab/simulate", {
       method: "POST",
@@ -74,11 +85,20 @@ export default function ConfigLabPage() {
           <CardTitle className="text-base">Scenario</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2">
-          <Input
-            placeholder="Scenario name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
+          <div className="space-y-1">
+            <Input
+              placeholder="Scenario name"
+              aria-label="Scenario name"
+              aria-invalid={errors.name ? true : undefined}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+            {errors.name && (
+              <p role="alert" className="text-small text-destructive">
+                {errors.name}
+              </p>
+            )}
+          </div>
           <Select value={vertical} onValueChange={setVertical}>
             <SelectTrigger aria-label="Vertical">
               <SelectValue placeholder="Vertical" />
@@ -111,12 +131,21 @@ export default function ConfigLabPage() {
               <SelectItem value="premium">Voice: Premium</SelectItem>
             </SelectContent>
           </Select>
-          <Input
-            type="number"
-            placeholder="Assumed monthly call volume"
-            value={volume}
-            onChange={(e) => setVolume(Number(e.target.value))}
-          />
+          <div className="space-y-1">
+            <Input
+              type="number"
+              placeholder="Assumed monthly call volume"
+              aria-label="Assumed monthly call volume"
+              aria-invalid={errors.assumed_volume ? true : undefined}
+              value={volume}
+              onChange={(e) => setVolume(Number(e.target.value))}
+            />
+            {errors.assumed_volume && (
+              <p role="alert" className="text-small text-destructive">
+                {errors.assumed_volume}
+              </p>
+            )}
+          </div>
           <Button onClick={runSimulation} disabled={running}>
             Run simulation
           </Button>
