@@ -17,6 +17,7 @@ import { Copy } from "lucide-react";
 import { toast } from "sonner";
 import { isReferralAttributionLive } from "@/lib/referrals/attribution";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
+import { UserFacingError } from "@/lib/user-facing-error";
 
 interface ReferralFunnel {
   code: string | null;
@@ -35,13 +36,13 @@ export default function ReferPage() {
       // SEC-11: the route is owner/admin-only; a `member` gets a 403 that must
       // read as an error, not as an endless "Generating your link…".
       if (res.status === 403) {
-        throw new Error("Only your account's owner or an admin can use Refer & earn.");
+        throw new UserFacingError("Only your account's owner or an admin can use Refer & earn.");
       }
       // MAP-20: an error response is not always JSON — parsing it threw the
       // raw "Unexpected end of JSON input" into the error state.
-      if (!res.ok) throw new Error("We couldn't load your referral link. Try again.");
+      if (!res.ok) throw new UserFacingError("We couldn't load your referral link. Try again.");
       const body = (await res.json().catch(() => {
-        throw new Error("We couldn't load your referral link. Try again.");
+        throw new UserFacingError("We couldn't load your referral link. Try again.");
       })) as {
         code?: string;
         funnel?: { signups: number; qualified: number; paid: number };

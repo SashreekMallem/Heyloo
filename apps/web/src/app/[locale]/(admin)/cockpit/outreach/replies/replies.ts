@@ -1,4 +1,4 @@
-import type { ReplyData } from "@heyloo/ui";
+import type { ReplyData } from "@heyloo/ui/custom/reply-feed-item";
 
 /**
  * Split out of `page.tsx` (a Next.js page file may only export a fixed

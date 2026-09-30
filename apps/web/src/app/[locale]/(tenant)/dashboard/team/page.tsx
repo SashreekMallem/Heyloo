@@ -20,6 +20,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import type { TeamListResponse } from "@/app/api/tenant/team/route";
 import { useCurrentTenantId, useIsTenantOwner } from "@/lib/tenant/tenant-context";
+import { UserFacingError } from "@/lib/user-facing-error";
 
 /**
  * Team management (docs/audit/FIX_REQUESTS.md — "team-invite UI/backend
@@ -39,7 +40,7 @@ export default function TeamPage() {
     queryKey: ["tenant", tenantId, "team"],
     queryFn: async (): Promise<TeamListResponse> => {
       const res = await fetch("/api/tenant/team");
-      if (!res.ok) throw new Error("We couldn't load your team. Try again.");
+      if (!res.ok) throw new UserFacingError("We couldn't load your team. Try again.");
       return (await res.json()) as TeamListResponse;
     },
     enabled: !!tenantId,

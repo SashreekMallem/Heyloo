@@ -1,4 +1,4 @@
-import { Button } from "@heyloo/ui";
+import { Button } from "@heyloo/ui/primitives/button";
 import { redirect } from "next/navigation";
 import { AuthShell } from "@/components/marketing/auth-shell";
 import { Link } from "@/i18n/navigation";

@@ -35,6 +35,20 @@ describe("DataState", () => {
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
 
+  it("shows the message of an error marked userFacing, since it was written for the owner", () => {
+    const error = Object.assign(new Error("We couldn't load your team. Try again."), {
+      userFacing: true,
+    });
+    render(
+      <DataState
+        query={{ isPending: false, isError: true, error, data: undefined }}
+        empty={{ title: "No data" }}
+        render={() => <p>content</p>}
+      />,
+    );
+    expect(screen.getByText("We couldn't load your team. Try again.")).toBeInTheDocument();
+  });
+
   it("renders EmptyState for an empty array, distinct from error", () => {
     render(
       <DataState

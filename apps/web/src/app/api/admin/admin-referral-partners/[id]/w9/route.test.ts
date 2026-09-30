@@ -26,7 +26,7 @@ function makeFrom(queue: Record<string, unknown[]>) {
   });
 }
 
-const adminUser = { id: "admin1", app_metadata: { platform_admin: true } };
+const adminUser = { id: "admin1", app_metadata: { platform_admin: true }, aal: "aal2" };
 let mockSession: { user: unknown } | null = { user: adminUser };
 let serviceQueue: Record<string, unknown[]> = {};
 
@@ -35,8 +35,11 @@ vi.mock("@/lib/supabase/server", () => ({
     auth: {
       getSession: async () => ({ data: { session: mockSession } }),
       getClaims: async () => {
-        const s = mockSession?.user as { app_metadata?: unknown } | undefined;
-        return { data: { claims: { app_metadata: s?.app_metadata ?? {} } }, error: null };
+        const s = mockSession?.user as { app_metadata?: unknown; aal?: string } | undefined;
+        return {
+          data: { claims: { app_metadata: s?.app_metadata ?? {}, aal: s?.aal } },
+          error: null,
+        };
       },
     },
   }),

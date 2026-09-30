@@ -196,15 +196,17 @@ describe("TenantShellClient — role for settings pages (QA-1 F-5 / AUTH-15)", (
   function renderWith(props: { canWrite?: boolean; isOwner?: boolean }) {
     useImpersonationBanner.mockReturnValue(null);
     return render(
-      <TenantShellClient
-        tenantId="t1"
-        tenantName="Acme"
-        manualMode={false}
-        manualModeSince={null}
-        {...props}
-      >
-        <RoleProbe />
-      </TenantShellClient>,
+      <QueryClientProvider client={new QueryClient()}>
+        <TenantShellClient
+          tenantId="t1"
+          tenantName="Acme"
+          manualMode={false}
+          manualModeSince={null}
+          {...props}
+        >
+          <RoleProbe />
+        </TenantShellClient>
+      </QueryClientProvider>,
     );
   }
 

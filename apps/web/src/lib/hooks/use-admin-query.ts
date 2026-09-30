@@ -9,6 +9,8 @@ import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
  */
 export class AdminQueryError extends Error {
   readonly status: number;
+  /** `DataState` shows this message (see `UserFacingError`). */
+  readonly userFacing = true;
 
   constructor(status: number) {
     super(adminQueryErrorMessage(status));

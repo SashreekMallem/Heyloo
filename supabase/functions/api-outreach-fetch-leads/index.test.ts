@@ -37,8 +37,14 @@ describe("api-outreach-fetch-leads entrypoint without provider keys", () => {
     expect((await call({ app_metadata: {} })).status).toBe(403);
   });
 
-  it("answers 503 not_configured for an admin, naming the missing keys", async () => {
-    const res = await call({ app_metadata: { platform_admin: true } });
+  it("403s aal2_required for an admin below aal2, before the provider keys are considered", async () => {
+    const res = await call({ aal: "aal1", app_metadata: { platform_admin: true } });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "aal2_required" });
+  });
+
+  it("answers 503 not_configured for an aal2 admin, naming the missing keys", async () => {
+    const res = await call({ aal: "aal2", app_metadata: { platform_admin: true } });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({
       error: "not_configured",

@@ -28,6 +28,20 @@ export interface DataStateProps<TData> {
   className?: string;
 }
 
+/**
+ * An error whose `message` was written for the person looking at the page may
+ * opt in to being shown by carrying `userFacing: true` (duck-typed, so a
+ * caller in another package needs no import from here). Every other error's
+ * raw text ("Unexpected end of JSON input", a PostgREST message ...) stays
+ * hidden behind ErrorState's default copy (QA-1 F-23).
+ */
+function userFacingMessage(error: unknown): string | undefined {
+  if (error instanceof Error && (error as { userFacing?: unknown }).userFacing === true) {
+    return error.message;
+  }
+  return undefined;
+}
+
 function defaultLoadingSkeleton() {
   return (
     <div className="space-y-2">
@@ -63,8 +77,10 @@ export function DataState<TData>({
         eventId={errorEventId}
         onRetry={query.refetch}
         // Never surface the raw error text ("Unexpected end of JSON input",
-        // "failed to load team", a PostgREST message ...) to an owner: ErrorState's
-        // default copy is the friendly one (QA-1 F-23).
+        // "failed to load team", a PostgREST message ...) to an owner:
+        // ErrorState's default copy is the friendly one (QA-1 F-23), unless the
+        // error is marked `userFacing` (MAP-20, COCKPIT-F17, SEC-11).
+        message={userFacingMessage(query.error)}
       />
     );
   }
