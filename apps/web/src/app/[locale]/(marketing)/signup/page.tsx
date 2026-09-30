@@ -39,6 +39,8 @@ export default async function SignupStep1Page({
             (draftVertical.success ? draftVertical.data : undefined)
           }
           {...(draft?.business_name ? { initialBusinessName: draft.business_name } : {})}
+          {...(draft?.business_phone ? { initialBusinessPhone: draft.business_phone } : {})}
+          {...(draft?.website_url ? { initialWebsiteUrl: draft.website_url } : {})}
           demoId={demo_id && UUID.test(demo_id) ? demo_id : undefined}
         />
       </Container>

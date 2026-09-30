@@ -15,6 +15,21 @@ export const CheckoutRequestSchema = z.object({
     "generic",
   ]),
   business_name: z.string().min(1).max(200),
+  /** The number the business's customers call today (signup step 1,
+   * optional). Already normalized by the web app, but re-checked here as
+   * E.164 — `tenants_business_phone_e164_format_chk` would reject anything
+   * else, and a bad value must be a 422, not a 500. */
+  business_phone: z
+    .string()
+    .regex(/^\+[1-9]\d{1,14}$/)
+    .optional(),
+  /** The business's website (signup step 1, optional): http(s) with no
+   * whitespace, matching `tenants_website_url_format_chk`. */
+  website_url: z
+    .string()
+    .max(2048)
+    .regex(/^https?:\/\/[^\s]+$/i)
+    .optional(),
   email: z.string().email(),
   timezone: z.string().min(1).optional(),
   /** Opt-in white-glove onboarding add-on (GAP_REGISTER Cluster G item 5)

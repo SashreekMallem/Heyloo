@@ -23,6 +23,32 @@ describe("signup user metadata", () => {
     expect(planFromUserMetadata(meta)).toEqual({ annual: true, white_glove: false });
   });
 
+  it("round-trips the business phone and website, and omits them when not given", () => {
+    const contact = { business_phone: "+12627551967", website_url: "https://joes.com" };
+    const withContact = buildSignupUserMetadata({
+      ownerName: "Joe",
+      draft: { ...draft, ...contact },
+      plan: { annual: false, white_glove: false },
+    });
+    expect(withContact["signup_draft"]).toEqual({ ...draft, ...contact });
+    expect(draftFromUserMetadata(withContact)).toEqual({ ...draft, ...contact });
+    const without = buildSignupUserMetadata({
+      ownerName: "Joe",
+      draft,
+      plan: { annual: false, white_glove: false },
+    });
+    expect(without["signup_draft"]).toEqual(draft);
+  });
+
+  it("rejects a tampered business phone or website (user_metadata is user-editable)", () => {
+    expect(
+      draftFromUserMetadata({ signup_draft: { ...draft, business_phone: "262-755-1967" } }),
+    ).toBeNull();
+    expect(
+      draftFromUserMetadata({ signup_draft: { ...draft, website_url: "javascript:alert(1)" } }),
+    ).toBeNull();
+  });
+
   it("rejects a tampered or malformed draft, and defaults the plan to no add-ons", () => {
     expect(
       draftFromUserMetadata({ signup_draft: { business_type: "casino", business_name: "x" } }),
@@ -57,6 +83,18 @@ describe("resolveSignupDraft", () => {
     });
     expect(resolveSignupDraft("forged.payload", { user_metadata: meta })?.business_name).toBe(
       "Paws",
+    );
+  });
+
+  it("carries the business phone and website from the copy on the user", () => {
+    const saved = {
+      business_type: "vet",
+      business_name: "Paws",
+      business_phone: "+12627551967",
+      website_url: "https://paws.vet",
+    };
+    expect(resolveSignupDraft(undefined, { user_metadata: { signup_draft: saved } })).toEqual(
+      saved,
     );
   });
 
