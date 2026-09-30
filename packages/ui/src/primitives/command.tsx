@@ -4,7 +4,7 @@ import { Command as CommandPrimitive } from "cmdk";
 import { Search } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 import { cn } from "../lib/utils.js";
-import { Dialog, DialogContent } from "./dialog.js";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./dialog.js";
 
 export function Command({ className, ...props }: ComponentProps<typeof CommandPrimitive>) {
   return (
@@ -30,6 +30,11 @@ export function CommandDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="overflow-hidden p-0 shadow-lg" showClose={false}>
+        {/* Accessible name for the dialog (axe aria-dialog-name; QA-1 MAP-11). */}
+        <DialogTitle className="sr-only">Command palette</DialogTitle>
+        <DialogDescription className="sr-only">
+          Search for a page or action to jump to.
+        </DialogDescription>
         <Command className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground">
           {children}
         </Command>

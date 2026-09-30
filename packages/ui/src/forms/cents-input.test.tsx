@@ -135,6 +135,24 @@ describe("CentsInput", () => {
     fireEvent.click(screen.getByRole("button", { name: "reset" }));
     expect(box).toHaveValue("25.00");
   });
+
+  it("does not rewrite an emptied field to 0.00 while typing when the parent maps empty to 0", () => {
+    function Harness() {
+      const [v, setV] = useState<number>(500);
+      return <CentsInput value={v} onChange={(cents) => setV(cents ?? 0)} />;
+    }
+    render(<Harness />);
+    const box = screen.getByRole("textbox");
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: "" } });
+    expect(box).toHaveValue("");
+    fireEvent.change(box, { target: { value: "5" } });
+    expect(box).toHaveValue("5");
+    fireEvent.change(box, { target: { value: "" } });
+    fireEvent.blur(box);
+    // Blur re-syncs to what the form actually holds.
+    expect(box).toHaveValue("0.00");
+  });
 });
 
 describe("CurrencyInput (CentsInput alias, DESIGN-4)", () => {

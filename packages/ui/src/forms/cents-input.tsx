@@ -64,13 +64,18 @@ export function CentsInput({
 }: CentsInputProps) {
   const [text, setText] = useState(formatCents(value));
   const lastReported = useRef<number | undefined>(value);
+  const focused = useRef(false);
   const errorId = useId();
 
   // A form reset / async load changes `value` from outside; adopt it unless
-  // it is just the echo of what this control last reported.
+  // it is just the echo of what this control last reported. While the person
+  // is typing here the text is the source of truth: a parent that maps an
+  // emptied field to 0 (`cents ?? 0`) must not rewrite it to "0.00" mid-edit
+  // (blur re-syncs instead).
   useEffect(() => {
     if (Object.is(value, lastReported.current)) return;
     lastReported.current = value;
+    if (focused.current) return;
     setText(formatCents(value));
   }, [value]);
 
@@ -91,8 +96,15 @@ export function CentsInput({
     else report(Number.NaN);
   }
 
+  function handleFocus() {
+    focused.current = true;
+  }
+
   function handleBlur() {
+    focused.current = false;
     if (parsed.kind === "ok") setText(formatCents(parsed.cents));
+    // Emptied field whose parent holds a value anyway (e.g. `cents ?? 0`): show it.
+    else if (parsed.kind === "empty" && value !== undefined) setText(formatCents(value));
     onBlur?.();
   }
 
@@ -113,6 +125,7 @@ export function CentsInput({
           aria-invalid={invalid || undefined}
           aria-describedby={invalid ? errorId : undefined}
           onChange={handleChange}
+          onFocus={handleFocus}
           onBlur={handleBlur}
         />
       </div>

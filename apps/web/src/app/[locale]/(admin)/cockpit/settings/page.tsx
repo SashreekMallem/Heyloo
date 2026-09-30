@@ -261,6 +261,15 @@ function FeesTab({
   const [wgDescription, setWgDescription] = useState(initial.white_glove_description);
 
   async function save() {
+    // CentsInput reports NaN for text that isn't an amount; `?? 0` below would
+    // let that through as JSON `null`, so stop here and let the inline error speak.
+    if (
+      (setupCents !== undefined && !Number.isFinite(setupCents)) ||
+      (wgCents !== undefined && !Number.isFinite(wgCents))
+    ) {
+      toast.error("Fix the highlighted amounts first.");
+      return;
+    }
     const res = await fetch("/api/admin/admin-platform-settings/fees", {
       method: "POST",
       headers: { "content-type": "application/json" },
