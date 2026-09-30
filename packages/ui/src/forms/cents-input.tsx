@@ -27,7 +27,10 @@ export interface CentsInputProps {
   ref?: Ref<HTMLInputElement> | undefined;
 }
 
-export type ParsedCurrency = { kind: "empty" } | { kind: "invalid" } | { kind: "ok"; cents: number };
+export type ParsedCurrency =
+  | { kind: "empty" }
+  | { kind: "invalid" }
+  | { kind: "ok"; cents: number };
 
 // Optional whole part (plain digits, or comma-grouped thousands), optional
 // fraction of at most 2 digits. At least one digit is checked separately.
