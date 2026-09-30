@@ -9477,3 +9477,15 @@ and inline on the phone setup carrier step. Decisions taken:
   business phone leaves the transfer number alone.
 - `/api/phone/forwarding-test` now requires `action` ("start" | "status") and forwards only
   `{ tenant_id, action, carrier_hint? }`; the wizard polls status every 3 s and gives up at 120 s client-side.
+
+## LAUNCH-forwarding — test line deleted in Retell (2026-09-30)
+
++16105383920 (signup-1-auto's number, the forwarding-test default and
+api-admin-self-call's hardcoded CALLER) was deleted in the Retell dashboard, so
+create-phone-call answered a bare 404 "Not Found" (undocumented; Retell's own
+"asset not found" is 422). The forwarding test now defaults to +12602354330 and
+FORWARDING_TEST_FROM_NUMBER is set explicitly. api-admin-self-call still dials
+FROM +16105383920 and is broken until it is given another caller number
+(it must not call from its own callee, +12602354330). The three numbers deleted
+in Retell (+16105383920, +12627551967, +14175452434) are marked released in
+phone_numbers so job-offboarding never tries to delete them again.

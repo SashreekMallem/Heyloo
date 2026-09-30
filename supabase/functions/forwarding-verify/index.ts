@@ -10,10 +10,12 @@ import { type ForwardingVerifyDeps, forwardingTestStatus, startForwardingTest } 
 const logger = createLogger({ fn: "forwarding-verify" });
 
 const RETELL_API_KEY = requireEnv("RETELL_API_KEY");
-// The platform's own Retell number test calls come from. Defaults to the
-// line api-admin-self-call already dials from; override per environment.
+// The platform's own Retell number test calls come from; override per
+// environment. The default is test-riverside-auto's number: the earlier
+// default (+16105383920, signup-1-auto's) was deleted in Retell, and every
+// test then failed with Retell's bare 404 "Not Found".
 const TEST_FROM_NUMBER =
-  normalizeE164(Deno.env.get("FORWARDING_TEST_FROM_NUMBER") ?? "") ?? "+16105383920";
+  normalizeE164(Deno.env.get("FORWARDING_TEST_FROM_NUMBER") ?? "") ?? "+12602354330";
 
 interface JwtClaims {
   app_metadata?: { tenant_id?: string; role?: string };
