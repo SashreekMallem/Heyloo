@@ -196,6 +196,11 @@ verify_jwt = false
 verify_jwt = false
 [functions.job-keep-warm]
 verify_jwt = false
+# job-realtime-keepalive (QA-2 BE-03): joins a Realtime channel every 30 min so
+# Realtime keeps the realtime.messages daily partitions alive; same
+# x-cron-secret auth boundary as every other job-* function.
+[functions.job-realtime-keepalive]
+verify_jwt = false
 [functions.webhooks-paypal]
 verify_jwt = false
 [functions.job-outreach-personalize]
