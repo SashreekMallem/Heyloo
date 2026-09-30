@@ -33,6 +33,68 @@ export function normalizeClientIp(raw: string | null | undefined): string | null
   return null;
 }
 
+/**
+ * `admin_actions.target_type` CHECK values. Keep in sync with the table's
+ * constraint (20260907130100_tenancy.sql, widened by
+ * 20260930210600_qa2_backend_realtime_and_audit_types.sql; a test compares
+ * this list with those files). A type outside the list is stored as "other"
+ * with the original kept in `after._target_type`, so an unforeseen call site
+ * can never fail the audit insert (23514) after its mutation has already run.
+ */
+export const ADMIN_ACTION_TARGET_TYPES: readonly string[] = [
+  "tenant",
+  "call",
+  "booking",
+  "order",
+  "referral",
+  "agent_template",
+  "support_request",
+  "payout",
+  "campaign",
+  "flag",
+  "lead",
+  "suppression_list",
+  "other",
+];
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * QA-2 COCKPIT-F02: the other reasons an admin audit insert can fail after the
+ * mutation succeeded. `target_id` is a uuid column, but the pricing edit
+ * passes a vertical slug ("dental") and platform-settings edits pass none;
+ * `target_type` had a CHECK that did not list "lead" / "suppression_list".
+ * A non-uuid target is bound as NULL and preserved as `after._target_ref`.
+ */
+export function normalizeAuditTarget(params: {
+  targetType: string;
+  targetId?: string | undefined;
+  after?: unknown;
+}): { targetType: string; targetId: string | null; after: unknown } {
+  const extra: Record<string, string> = {};
+  let targetType = params.targetType;
+  if (!ADMIN_ACTION_TARGET_TYPES.includes(targetType)) {
+    extra["_target_type"] = targetType;
+    targetType = "other";
+  }
+  let targetId: string | null = null;
+  if (params.targetId !== undefined && params.targetId !== null) {
+    if (UUID_RE.test(params.targetId)) targetId = params.targetId;
+    else extra["_target_ref"] = params.targetId;
+  }
+  let after = params.after;
+  if (Object.keys(extra).length > 0) {
+    if (after === undefined || after === null) after = extra;
+    else if (isPlainObject(after)) after = { ...after, ...extra };
+    else after = { value: after, ...extra };
+  }
+  return { targetType, targetId, after };
+}
+
 /** Append-only `admin_actions` audit log writer (BACKEND_SPEC §1.1/§7.7,
  * G15) — every mutating admin endpoint writes one row with before/after
  * snapshots. */
@@ -49,12 +111,13 @@ export async function writeAdminAction(
     userAgent?: string;
   },
 ): Promise<void> {
+  const target = normalizeAuditTarget(params);
   await sql`
     insert into public.admin_actions (admin_user_id, action, target_type, target_id, before, after, ip_address, user_agent)
     values (
-      ${params.adminUserId}, ${params.action}, ${params.targetType}, ${params.targetId ?? null},
+      ${params.adminUserId}, ${params.action}, ${target.targetType}, ${target.targetId},
       ${params.before !== undefined ? params.before : null}::jsonb,
-      ${params.after !== undefined ? params.after : null}::jsonb,
+      ${target.after !== undefined ? target.after : null}::jsonb,
       ${normalizeClientIp(params.ipAddress)}::inet, ${params.userAgent ?? null}
     )
   `;
