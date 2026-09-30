@@ -171,6 +171,14 @@ describe("/login — notices (AUTH-04, AUTH-10)", () => {
     );
   });
 
+  it("links to sign-up for new visitors (MAP-09)", () => {
+    render(<LoginPage />);
+    expect(screen.getByRole("link", { name: "New here? Start free" })).toHaveAttribute(
+      "href",
+      "/signup",
+    );
+  });
+
   it("confirms a finished password reset", () => {
     search = "reset=success";
     render(<LoginPage />);

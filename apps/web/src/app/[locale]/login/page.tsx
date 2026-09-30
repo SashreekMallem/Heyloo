@@ -93,12 +93,20 @@ function LoginForm() {
       title="Log in"
       description="Welcome back — pick up right where you left off."
       footer={
-        <Link
-          href="/reset-password"
-          className="inline-flex min-h-11 items-center underline decoration-border underline-offset-4 transition-colors hover:text-foreground hover:decoration-foreground"
-        >
-          Forgot your password?
-        </Link>
+        <div className="flex flex-col items-center">
+          <Link
+            href="/reset-password"
+            className="inline-flex min-h-11 items-center underline decoration-border underline-offset-4 transition-colors hover:text-foreground hover:decoration-foreground"
+          >
+            Forgot your password?
+          </Link>
+          <Link
+            href="/signup"
+            className="inline-flex min-h-11 items-center underline decoration-border underline-offset-4 transition-colors hover:text-foreground hover:decoration-foreground"
+          >
+            New here? Start free
+          </Link>
+        </div>
       }
     >
       {linkFailed && (

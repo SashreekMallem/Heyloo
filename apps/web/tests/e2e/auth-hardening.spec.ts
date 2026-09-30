@@ -53,6 +53,7 @@ test.describe("login page", () => {
       page.getByRole("alert").filter({ hasText: "invalid or has expired" }),
     ).toBeVisible();
     await expect(page.getByRole("link", { name: "Forgot your password?" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "New here? Start free" })).toBeVisible();
   });
 
   test("a rate-limited login says so, announces it, and sends one request for three clicks (AUTH-06, MAP-09)", async ({
