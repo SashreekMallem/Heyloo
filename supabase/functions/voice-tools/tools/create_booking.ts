@@ -325,6 +325,7 @@ async function preflight(
       case when (select id from ex) is null then exists (
         select 1 from public.availability_slots s
         join public.resources r on r.id = s.resource_id and r.active
+          and r.tenant_id = s.tenant_id
         where s.tenant_id = ${ctx.tenantId}
           and s.slot_range @> ${args.start}::timestamptz
           and (s.is_available or s.source = 'generated')

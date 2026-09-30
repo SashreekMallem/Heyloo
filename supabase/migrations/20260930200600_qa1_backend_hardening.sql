@@ -177,10 +177,16 @@ $$;
 -- ---------------------------------------------------------------------
 
 revoke all on all tables in schema public from anon;
-alter default privileges in schema public revoke select on tables from anon;
+-- Future tables created by this role must not start with any anon privilege
+-- either (Supabase's default privileges grant ALL, not only SELECT).
+alter default privileges in schema public revoke all on tables from anon;
 
 -- Block /graphql/v1 for the browser roles (the app never uses it). Guarded:
--- the schema exists only where pg_graphql is installed.
+-- the schema exists only where pg_graphql is installed. NOTE: on the hosted
+-- project graphql.resolve is owned by supabase_admin and the migration role
+-- holds no grant option on it, so this REVOKE is then a no-op (a WARNING, not
+-- an error); the table revoke above is what actually empties the anonymous
+-- introspection result (pg_graphql lists only relations the role can select).
 do $$
 declare
   r record;

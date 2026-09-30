@@ -130,6 +130,10 @@ begin
     for r in
       select p.oid::regprocedure as fn
       from pg_proc p where p.pronamespace = 'graphql'::regnamespace and p.proname = 'resolve'
+        -- Only where the migration role can actually revoke it: on the hosted
+        -- stack it is owned by supabase_admin (see the migration's note).
+        and (p.proowner = (select oid from pg_roles where rolname = current_user)
+             or (select rolsuper from pg_roles where rolname = current_user))
     loop
       if has_function_privilege('anon', r.fn, 'execute')
          or has_function_privilege('authenticated', r.fn, 'execute') then
