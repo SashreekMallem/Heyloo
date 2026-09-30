@@ -9314,3 +9314,12 @@ Branch `wave/QA-1-shared-ui` (from `claude/voice-ai-agent-architecture-dcw0n8`).
 - MAP-05: switch/checkbox real sizes and `/agent/hours` controls were not re-measured in a browser (no browser in this environment); the hit-area classes are unit-tested, the pixels are not.
 - Playwright specs added (`tests/e2e/shared-ui-public.spec.ts`, `shared-ui-shell.spec.ts`) were NOT run here (no browser/Supabase); the authenticated one self-skips without `supabase start`.
 - The 3 pre-existing `widget.js`/`widget-voice.js` route tests need `packages/widget/dist` (`turbo build`) and fail on a bare checkout; unrelated to this branch.
+
+## QA-2-partner (2026-09-30, session_012xvcAnjqsMbPqitErDJQbR) — partner area, round 2
+
+Branch `wave/QA-2-partner`. No migrations, nothing deployed, no live DB writes.
+
+**PT-01 (referral attribution) — no code defect; it is a deploy gap.** Re-verified end to end in the repo: `middleware.ts` sets the httpOnly Lax 90-day `heyloo_ref` cookie on every non-API path (`/signup`, `/`, `/pricing`, locale-prefixed) and drops malformed/empty codes; `POST /api/checkout/session` reads the cookie (never the body) and forwards `referral_code`; `supabase/functions/api-checkout/{referral,handler}.ts` resolve it against `referral_links` and write `tenants.referrer_partner_id` + a pending `referrals` row in one statement (unknown code, self-referral and re-attribution are ignored; never throws). All covered by existing tests (`middleware.test.ts`, `route.test.ts`, `build-request.test.ts`, `referral.test.ts`, `handler.test.ts`, `tests/e2e/referral-attribution.spec.ts`). The live `api-checkout` (v19) predates commit `1cf9c26`, so it ignores `referral_code` (the request schema is non-strict, so the extra field does not break checkout) and `referrals` stays 0.
+
+- **Action required (ops, not done here):** `npx supabase functions deploy api-checkout --project-ref qulcubtwqsqgqpfgvorn --use-api --yes`, then verify with a signup from `/signup?ref=<real code>` and `select * from referrals`. Deno checks could not run (no `deno` binary); the handler is covered by vitest.
+- Added only regression coverage for the exact paths the QA visited (`/?ref=`, `/pricing?ref=`, empty `?ref=`): a middleware unit test and three Playwright cases in `referral-attribution.spec.ts` (not run here, no browser). These pass on the old code too, because there was nothing to fix in the web app.
