@@ -417,14 +417,19 @@ export default function BookingsPage() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: "reschedule", new_slot_id: slotId }),
     });
-    if (res.status === 409) {
+    const body = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      sms_queued?: boolean;
+      error?: string;
+    };
+    // 409 is also "the booking is no longer live" (invalid_status) — not a taken slot.
+    if (res.status === 409 && body.error !== "invalid_status") {
       toast.error("That slot was just taken — pick another.");
       void queryClient.invalidateQueries({
         queryKey: tenantQueryKey(tenantId, "reschedule_slots", detailQuery.data?.resourceId ?? ""),
       });
       return;
     }
-    const body = (await res.json()) as { ok?: boolean; sms_queued?: boolean; error?: string };
     if (!res.ok || !body.ok) {
       toast.error("Something went wrong — please try again.");
       return;

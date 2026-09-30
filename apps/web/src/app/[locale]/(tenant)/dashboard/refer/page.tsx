@@ -32,6 +32,7 @@ export default function ReferPage() {
     queryKey: ["tenant", tenantId, "referral_links"],
     queryFn: async (): Promise<ReferralFunnel> => {
       const res = await fetch("/api/tenant/refer/ensure-link", { method: "POST" });
+      if (!res.ok) throw new Error(`referral_link_failed:${res.status}`);
       const body = (await res.json()) as {
         code?: string;
         funnel?: { signups: number; qualified: number; paid: number };
