@@ -29,7 +29,7 @@ export function TranscriptViewer({ turns, activeTs, onSeek, className }: Transcr
   }, [turns, query]);
 
   return (
-    <div className={cn("flex flex-col gap-3", className)}>
+    <div className={cn("flex min-w-0 flex-col gap-3", className)}>
       <div className="relative">
         <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
@@ -55,7 +55,7 @@ export function TranscriptViewer({ turns, activeTs, onSeek, className }: Transcr
               type="button"
               onClick={() => onSeek?.(turn.ts)}
               className={cn(
-                "flex w-full flex-col items-start gap-1 rounded-md p-2 text-left transition-colors",
+                "flex w-full min-w-0 flex-col items-start gap-1 rounded-md p-2 text-left transition-colors",
                 isActive ? "bg-secondary" : "hover:bg-muted/60",
               )}
             >
@@ -73,7 +73,9 @@ export function TranscriptViewer({ turns, activeTs, onSeek, className }: Transcr
               >
                 {turn.speaker} · {formatSeconds(turn.ts)}
               </span>
-              <span className="text-sm">{turn.text}</span>
+              {/* `overflow-wrap:anywhere` (unlike break-word) also lowers the min-content width, so a
+                  long unbroken token wraps instead of widening the column (QA-1 F-19). */}
+              <span className="max-w-full text-sm [overflow-wrap:anywhere]">{turn.text}</span>
             </button>
           );
         })}

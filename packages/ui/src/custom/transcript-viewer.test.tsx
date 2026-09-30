@@ -39,3 +39,14 @@ describe("TranscriptViewer timestamps (QA-1 F-3 / MAP-02)", () => {
     expect(screen.getByText(/agent · 0:00/)).toBeInTheDocument();
   });
 });
+
+describe("TranscriptViewer long unbroken text (QA-1 F-19)", () => {
+  it("lets a long unbroken token wrap instead of widening the column", () => {
+    const long = "x".repeat(200);
+    const turns = [{ speaker: "Caller", text: long, ts: 1 }];
+    render(<TranscriptViewer turns={turns} />);
+    const text = screen.getByText(long);
+    expect(text.className).toContain("[overflow-wrap:anywhere]");
+    expect(text.closest("button")?.className).toContain("min-w-0");
+  });
+});

@@ -321,11 +321,11 @@ export function CallDetailClient({ call }: { call: CallDetailData }) {
       </Card>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2">
+        <div className="min-w-0 lg:col-span-2">
           <h2 className="mb-2 text-sm font-medium text-muted-foreground">Transcript</h2>
           <TranscriptViewer turns={call.transcript} activeTs={activeTs} onSeek={setActiveTs} />
         </div>
-        <div>
+        <div className="min-w-0">
           <h2 className="mb-2 text-sm font-medium text-muted-foreground">Conversation states</h2>
           <StateTraceViewer
             trace={call.stateTrace}
