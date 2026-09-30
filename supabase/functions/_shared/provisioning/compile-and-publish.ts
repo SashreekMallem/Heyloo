@@ -372,12 +372,49 @@ export async function compileAndCreateAgent(
         template_version = excluded.template_version, published_at = null
     `;
   }
+  // After EITHER insert above (so the stamp-less fallback gets it too).
+  await defaultTransferNumberToBusinessPhone(sql, tenantId, deps.logger);
   return {
     ok: true,
     agentId,
     templateId: compiled.templateId,
     templateVersion: compiled.templateVersion,
   };
+}
+
+/**
+ * LAUNCH-forwarding: a new agent's transfer destination defaults to the
+ * tenant's business phone (`tenants.business_phone`, asked at signup step 1)
+ * — "let me get you a person" should ring the line the business already
+ * answers. Fills only a NULL `transfer_number` (never replaces one the owner
+ * chose), and is read live per call as `{{transfer_number}}`, so no
+ * republish is needed. Later business-phone edits keep it in step through
+ * the web app's save path (`apps/web/src/lib/settings/business-phone.ts`).
+ *
+ * Best-effort: the Retell agent already exists by now, so a failure here
+ * (including 42703 from a database that predates the business_phone
+ * column) is logged and never fails provisioning — the owner can still set
+ * a transfer number in settings.
+ */
+async function defaultTransferNumberToBusinessPhone(
+  sql: SqlClient,
+  tenantId: string,
+  logger: Logger,
+): Promise<void> {
+  try {
+    await sql`
+      update public.agent_configs ac
+      set transfer_number = t.business_phone
+      from public.tenants t
+      where ac.tenant_id = ${tenantId} and t.id = ac.tenant_id
+        and ac.transfer_number is null and t.business_phone is not null
+    `;
+  } catch (error) {
+    logger.warn("compile_and_publish_default_transfer_number_failed", {
+      tenant_id: tenantId,
+      code: (error as { code?: string } | null)?.code ?? null,
+    });
+  }
 }
 
 export type PublishAgentOutcome = { ok: true } | { ok: false; status: number; error: string };
