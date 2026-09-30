@@ -323,6 +323,24 @@ describe("middleware — referral attribution cookie (PT-01)", () => {
     expect(res.cookies.get("heyloo_ref")).toBeUndefined();
   });
 
+  it("captures ?ref= on any landing path, not just /signup (/, /pricing, locale-prefixed)", async () => {
+    mockUser = null;
+    mockClaimsAppMetadata = {};
+    for (const path of ["/?ref=abc123", "/pricing?ref=abc123", "/en/pricing?ref=abc123"]) {
+      const res = await middleware(req(path));
+      expect(res.cookies.get("heyloo_ref")?.value, path).toBe("ABC123");
+    }
+  });
+
+  it("ignores an empty ?ref= and keeps an earlier cookie untouched", async () => {
+    mockUser = null;
+    mockClaimsAppMetadata = {};
+    for (const path of ["/?ref=", "/pricing?ref="]) {
+      const res = await middleware(req(path));
+      expect(res.cookies.get("heyloo_ref"), path).toBeUndefined();
+    }
+  });
+
   it("never sets it from an /api route", async () => {
     mockUser = null;
     mockClaimsAppMetadata = {};

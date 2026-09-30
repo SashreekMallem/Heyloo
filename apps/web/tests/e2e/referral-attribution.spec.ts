@@ -42,3 +42,17 @@ test("the cookie survives navigation through the signup steps", async ({ page })
   const cookie = (await page.context().cookies()).find((c) => c.name === REF_COOKIE);
   expect(cookie?.value).toBe("ABCD2345");
 });
+
+for (const path of ["/?ref=abc123", "/pricing?ref=abc123"]) {
+  test(`a partner link on ${path.split("?")[0]} sets the cookie`, async ({ page }) => {
+    await page.goto(path);
+    const cookie = (await page.context().cookies()).find((c) => c.name === REF_COOKIE);
+    expect(cookie?.value).toBe("ABC123");
+  });
+}
+
+test("an empty ?ref= sets no cookie", async ({ page }) => {
+  await page.goto("/?ref=");
+  const cookie = (await page.context().cookies()).find((c) => c.name === REF_COOKIE);
+  expect(cookie).toBeUndefined();
+});
