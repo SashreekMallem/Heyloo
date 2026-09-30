@@ -124,7 +124,6 @@ describe("TenantShellClient — notification bell (QA-1 F-04)", () => {
     await user.click(screen.getByRole("button", { name: /notifications/i }));
     expect(markNotificationsSeen).not.toHaveBeenCalled();
   });
-
 });
 
 function stubPhoneViewport() {
