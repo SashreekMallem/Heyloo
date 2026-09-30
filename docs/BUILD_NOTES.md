@@ -9444,3 +9444,16 @@ two `supabase db lint` shadowed-loop-variable warnings. Fixed additively in
 `20260930270000_usage_rollup_merge_fix.sql` (QA-1 body + BILL-7/12 rounding and
 3-day window, re-bucket of the last ~2 months); `billing-migration.test.ts` now
 asserts the properties on whichever migration defines the functions last.
+
+## LAUNCH-legal — legal pages rewritten with entity placeholders (2026-09-30)
+
+Terms / Privacy / DPA rewritten for launch; company name, address, governing law and contact
+emails come from `apps/web/content/legal/entity.json` (bracketed placeholders until the owner
+fills them). While checking every claim against the code, three gaps surfaced — the docs now
+state what the product actually does, and these are open product decisions:
+- Transcripts are never auto-deleted (`job-retention-sweep` purges Storage recordings only); the
+  old docs promised 30-day transcript deletion.
+- There is no self-serve data export in the dashboard; the old privacy policy claimed one.
+  Exports/deletions are on request via email.
+- Offboarding only soft-deletes the tenant; hard deletion is on request.
+- HIPAA: no BAA exists, so the terms bar PHI without one — relevant to the dental vertical.

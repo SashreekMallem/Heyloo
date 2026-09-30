@@ -1,0 +1,10 @@
+{
+  "legal_name": "[LEGAL BUSINESS NAME]",
+  "entity_type": "[ENTITY TYPE, e.g. a Delaware limited liability company]",
+  "address": "[STREET ADDRESS, CITY, STATE ZIP, COUNTRY]",
+  "governing_state": "[STATE]",
+  "venue": "[COUNTY AND STATE for courts, e.g. Travis County, Texas]",
+  "privacy_email": "[PRIVACY EMAIL]",
+  "support_email": "[SUPPORT EMAIL]",
+  "effective_date": "[EFFECTIVE DATE]"
+}
