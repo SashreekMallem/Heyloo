@@ -167,6 +167,73 @@ describe("handleWidgetVoiceToken", () => {
     });
   });
 
+  describe("origin binding (QA-1 BE-16)", () => {
+    const enabledSql = () =>
+      makeSql([
+        {
+          widget_enabled: true,
+          widget_public_key: "pk",
+          retell_agent_id: "agent_1",
+          disclosure_line: null,
+        },
+      ]);
+    const okRetell = async () =>
+      new Response(JSON.stringify({ access_token: "tok", call_id: "call" }), { status: 201 });
+
+    it("refuses a token presented from a different origin than the one it was minted for, before touching Retell", async () => {
+      const token = await makeToken({
+        tenant_id: "t1",
+        widget_public_key: "pk",
+        origin: "https://x.example",
+      });
+      let retellCalls = 0;
+      const result = await handleWidgetVoiceToken(enabledSql(), token, {
+        retellFetch: async () => {
+          retellCalls += 1;
+          return okRetell();
+        },
+        retellApiKey: "k",
+        widgetTokenSecret: SECRET,
+        logger,
+        requestOrigin: "https://evil.example",
+      });
+      expect(result).toEqual({ status: 403, body: { error: "origin_mismatch" } });
+      expect(retellCalls).toBe(0);
+    });
+
+    it("accepts the token from its own origin", async () => {
+      const token = await makeToken({
+        tenant_id: "t1",
+        widget_public_key: "pk",
+        origin: "https://x.example",
+      });
+      const result = await handleWidgetVoiceToken(enabledSql(), token, {
+        retellFetch: okRetell,
+        retellApiKey: "k",
+        widgetTokenSecret: SECRET,
+        logger,
+        requestOrigin: "https://x.example",
+      });
+      expect(result.status).toBe(200);
+    });
+
+    it("does not refuse a non-browser caller that sends no Origin", async () => {
+      const token = await makeToken({
+        tenant_id: "t1",
+        widget_public_key: "pk",
+        origin: "https://x.example",
+      });
+      const result = await handleWidgetVoiceToken(enabledSql(), token, {
+        retellFetch: okRetell,
+        retellApiKey: "k",
+        widgetTokenSecret: SECRET,
+        logger,
+        requestOrigin: null,
+      });
+      expect(result.status).toBe(200);
+    });
+  });
+
   it("502s when Retell refuses/errors the web call", async () => {
     const token = await makeToken({
       tenant_id: "t1",

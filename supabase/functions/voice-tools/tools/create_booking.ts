@@ -512,7 +512,8 @@ export async function createBooking(
   // check_availability, so a closed Sunday, 3 AM or a date 8 months out was
   // confirmed (an exact resource_id never consulted availability_slots). The
   // GIST exclusion constraint stays the race backstop below.
-  const inHours = resolvedResourceId === pre.exact_resource_id ? pre.exact_in_hours : pre.any_in_hours;
+  const inHours =
+    resolvedResourceId === pre.exact_resource_id ? pre.exact_in_hours : pre.any_in_hours;
   if (inHours === false) {
     return { confirmed: false, reason: "outside_hours", message: OUTSIDE_HOURS_MESSAGE };
   }

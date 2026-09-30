@@ -116,9 +116,7 @@ export async function sendOneValueEmail(
   return "sent";
 }
 
-export async function runValueEmails(
-  sql: SqlClient,
-): Promise<{
+export async function runValueEmails(sql: SqlClient): Promise<{
   sent: number;
   skipped_no_owner_email: number;
   skipped_no_activity: number;

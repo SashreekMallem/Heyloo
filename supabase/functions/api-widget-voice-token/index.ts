@@ -54,8 +54,16 @@ Deno.serve(async (req: Request) => {
       retellApiKey: RETELL_API_KEY,
       widgetTokenSecret: WIDGET_TOKEN_SECRET,
       logger,
+      requestOrigin: origin,
     },
   );
 
-  return jsonResponse(result.body, { status: result.status, headers: corsHeaders(origin) });
+  // QA-1 BE-16: a refused origin gets no CORS grant, so the calling page can
+  // not even read the refusal (the preflight cannot know the token yet and
+  // still echoes the origin; the token check above is the real gate).
+  const refusedOrigin = result.status === 403 && result.body.error === "origin_mismatch";
+  return jsonResponse(result.body, {
+    status: result.status,
+    headers: refusedOrigin ? { vary: "Origin" } : corsHeaders(origin),
+  });
 });

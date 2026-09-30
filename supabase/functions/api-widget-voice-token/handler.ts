@@ -24,6 +24,14 @@ export interface WidgetVoiceTokenDeps {
   widgetTokenSecret: string;
   logger: Logger;
   now?: () => Date;
+  /**
+   * QA-1 BE-16: the request's `Origin` header. The token records the origin
+   * the mint route checked against `widget_settings.allowed_origins`; a
+   * browser that presents it from a different page is refused, so a token
+   * lifted from an embedding site cannot be replayed from another one. Absent
+   * (non-browser client) is not refused: the token itself is the credential.
+   */
+  requestOrigin?: string | null;
 }
 
 export type WidgetVoiceTokenResult =
@@ -32,7 +40,11 @@ export type WidgetVoiceTokenResult =
   | {
       status: 403;
       body: {
-        error: "bad_signature_widget_token" | "malformed_widget_token" | "widget_voice_disabled";
+        error:
+          | "bad_signature_widget_token"
+          | "malformed_widget_token"
+          | "widget_voice_disabled"
+          | "origin_mismatch";
       };
     }
   | { status: 404; body: { error: "agent_not_published" } }
@@ -56,6 +68,15 @@ export async function handleWidgetVoiceToken(
             : "malformed_widget_token",
       },
     };
+  }
+
+  const boundOrigin = verified.payload.origin;
+  if (deps.requestOrigin && boundOrigin && deps.requestOrigin !== boundOrigin) {
+    deps.logger.warn("widget_voice_token_origin_mismatch", {
+      tenant_id: verified.payload.tenant_id,
+      request_origin: deps.requestOrigin,
+    });
+    return { status: 403, body: { error: "origin_mismatch" } };
   }
 
   const tenantRows = await sql<{

@@ -152,22 +152,25 @@ describe("reminder coverage across the day (QA-1 BE-12)", () => {
     [21, 30],
     [22, 0],
     [23, 0],
-  ])("sends exactly one reminder for a %i:%i local appointment, outside quiet hours", async (hh, mm) => {
-    const { sentAt } = await simulate(localToUtc(hh, mm));
-    expect(sentAt).not.toBeNull();
-    const sent = new Date(sentAt as string);
-    // Never in tenant-local quiet hours (21:00-09:00) and never after the start.
-    const localHour = Number(
-      new Intl.DateTimeFormat("en-US", {
-        timeZone: "America/New_York",
-        hour: "numeric",
-        hour12: false,
-      }).format(sent),
-    );
-    expect(localHour).toBeGreaterThanOrEqual(9);
-    expect(localHour).toBeLessThan(21);
-    expect(sent.getTime()).toBeLessThan(new Date(localToUtc(hh, mm)).getTime());
-  });
+  ])(
+    "sends exactly one reminder for a %i:%i local appointment, outside quiet hours",
+    async (hh, mm) => {
+      const { sentAt } = await simulate(localToUtc(hh, mm));
+      expect(sentAt).not.toBeNull();
+      const sent = new Date(sentAt as string);
+      // Never in tenant-local quiet hours (21:00-09:00) and never after the start.
+      const localHour = Number(
+        new Intl.DateTimeFormat("en-US", {
+          timeZone: "America/New_York",
+          hour: "numeric",
+          hour12: false,
+        }).format(sent),
+      );
+      expect(localHour).toBeGreaterThanOrEqual(9);
+      expect(localHour).toBeLessThan(21);
+      expect(sent.getTime()).toBeLessThan(new Date(localToUtc(hh, mm)).getTime());
+    },
+  );
 
   it("only selects bookings made at least 23 hours ahead, so a same-day booking is not newly reminded", async () => {
     const { sql, calls } = makeSql([]);

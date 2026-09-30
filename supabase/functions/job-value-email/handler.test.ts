@@ -74,10 +74,7 @@ describe("sendOneValueEmail", () => {
 describe("QA-1 BE-17: quiet weeks and test tenants", () => {
   it("skips a tenant with zero calls and zero bookings this week, writing nothing", async () => {
     const { sql, calls } = makeSql(() => []);
-    const outcome = await sendOneValueEmail(
-      sql,
-      row({ calls_answered: 0, bookings_captured: 0 }),
-    );
+    const outcome = await sendOneValueEmail(sql, row({ calls_answered: 0, bookings_captured: 0 }));
     expect(outcome).toBe("skipped_no_activity");
     expect(calls).toHaveLength(0);
   });

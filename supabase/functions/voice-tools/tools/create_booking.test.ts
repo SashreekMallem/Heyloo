@@ -7,8 +7,8 @@ import {
   createBookingIdempotencyKey,
   findCommittedBooking,
   INVALID_TIME_MESSAGE,
-  START_IN_PAST_MESSAGE,
   OUTSIDE_HOURS_MESSAGE,
+  START_IN_PAST_MESSAGE,
   TOO_SOON_MESSAGE,
 } from "./create_booking.ts";
 

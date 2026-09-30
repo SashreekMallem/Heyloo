@@ -143,7 +143,12 @@ export async function evaluateJobHealth(sql: SqlClient): Promise<Alert[]> {
       rule: "job_failures",
       severity: "warning",
       tenant_id: null,
-      payload: { source: "pg_net", window_minutes: JOB_HEALTH_WINDOW_MINUTES, failed, by_status: byStatus },
+      payload: {
+        source: "pg_net",
+        window_minutes: JOB_HEALTH_WINDOW_MINUTES,
+        failed,
+        by_status: byStatus,
+      },
     },
   ];
 }
