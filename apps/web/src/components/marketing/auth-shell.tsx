@@ -38,7 +38,14 @@ export function AuthShell({ title, description, children, footer }: AuthShellPro
         {children}
       </div>
 
-      {footer && <div className="mt-6 text-center text-small text-muted-foreground">{footer}</div>}
+      {/* Footer links (e.g. "Forgot your password?") are bare inline text that
+          measured 144x16; the vertical padding makes each a >= 44px tap target
+          without moving the text much (QA-1 MAP-05). */}
+      {footer && (
+        <div className="mt-2 text-center text-small text-muted-foreground [&_a]:inline-block [&_a]:py-3.5">
+          {footer}
+        </div>
+      )}
     </div>
   );
 }

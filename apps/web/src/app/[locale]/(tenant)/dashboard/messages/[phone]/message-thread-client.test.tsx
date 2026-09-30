@@ -81,6 +81,27 @@ describe("MessageThreadClient", () => {
     expect(screen.queryByText("AI")).not.toBeInTheDocument();
   });
 
+  it("reserves room for the phone tab bar and keeps bubble timestamps legible (QA-1 F-25)", async () => {
+    tables = {
+      customers: { data: { name: null, sms_opt_out: false }, error: null },
+      text_conversations: { data: null, error: null },
+      messages_inbound: {
+        data: [{ id: "in1", body: "Hi, are you open?", created_at: "2026-01-01T10:00:00Z" }],
+        error: null,
+      },
+      messages_outbound: { data: [], error: null },
+    };
+    const { container } = renderClient("+15551234567");
+    await screen.findByText("Hi, are you open?");
+    // eslint-disable-next-line testing-library/no-container, testing-library/no-node-access -- the layout wrapper has no role
+    const layout = container.firstElementChild as HTMLElement;
+    expect(layout.className).toContain("h-[calc(100dvh-9.5rem)]");
+    expect(layout.className).toContain("md:h-[calc(100dvh-8rem)]");
+    expect(layout.className).not.toContain("100vh");
+    // eslint-disable-next-line testing-library/no-container, testing-library/no-node-access -- timestamps have no role
+    expect(container.querySelector(".opacity-70")).toBeNull();
+  });
+
   it("shows the author-tagged transcript and Take over control when a conversation exists", async () => {
     tables = {
       customers: { data: { name: "Jamie", sms_opt_out: false }, error: null },
