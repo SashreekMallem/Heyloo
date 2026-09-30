@@ -102,6 +102,88 @@ describe("scheduleOneReminder", () => {
   });
 });
 
+describe("reminder coverage across the day (QA-1 BE-12)", () => {
+  /** Runs the real query + scheduler for every hourly tick before an
+   * appointment, with a fake database that applies the query's bound window. */
+  async function simulate(startAtIso: string): Promise<{ sentAt: string | null }> {
+    const start = new Date(startAtIso);
+    let sentAt: string | null = null;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("insert into public.messages_outbound")) {
+        return Promise.resolve([{ id: "msg_1" }]);
+      }
+      if (text.includes("pgmq.send")) return Promise.resolve([]);
+      // findReminderCandidates: values[0]/[1] are the bound window.
+      const from = new Date(String(values[0])).getTime();
+      const to = new Date(String(values[1])).getTime();
+      const inWindow = start.getTime() > from && start.getTime() <= to;
+      const alreadySent = sentAt !== null;
+      return Promise.resolve(
+        inWindow && !alreadySent ? [{ ...BASE_ROW, start_at: startAtIso }] : [],
+      );
+    }) as SqlClient;
+
+    // Hourly ticks from 30 h before the start until the start itself.
+    for (let h = 30; h >= 0; h -= 1) {
+      const now = new Date(start.getTime() - h * 3_600_000);
+      const candidates = await findReminderCandidates(sql, now);
+      for (const row of candidates) {
+        const outcome = await scheduleOneReminder(sql, row, now);
+        if (outcome === "sent") sentAt = now.toISOString();
+      }
+    }
+    return { sentAt };
+  }
+
+  // 2026-10-06 is EDT (UTC-4): local 05:00 = 09:00Z.
+  const localToUtc = (hh: number, mm = 0) =>
+    new Date(Date.UTC(2026, 9, 6, hh + 4, mm)).toISOString();
+
+  it.each([
+    [5, 0],
+    [6, 0],
+    [7, 0],
+    [7, 30],
+    [8, 0],
+    [12, 0],
+    [20, 0],
+    [21, 0],
+    [21, 30],
+    [22, 0],
+    [23, 0],
+  ])("sends exactly one reminder for a %i:%i local appointment, outside quiet hours", async (hh, mm) => {
+    const { sentAt } = await simulate(localToUtc(hh, mm));
+    expect(sentAt).not.toBeNull();
+    const sent = new Date(sentAt as string);
+    // Never in tenant-local quiet hours (21:00-09:00) and never after the start.
+    const localHour = Number(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        hour: "numeric",
+        hour12: false,
+      }).format(sent),
+    );
+    expect(localHour).toBeGreaterThanOrEqual(9);
+    expect(localHour).toBeLessThan(21);
+    expect(sent.getTime()).toBeLessThan(new Date(localToUtc(hh, mm)).getTime());
+  });
+
+  it("only selects bookings made at least 23 hours ahead, so a same-day booking is not newly reminded", async () => {
+    const { sql, calls } = makeSql([]);
+    await findReminderCandidates(sql, new Date("2026-10-05T14:00:00.000Z"));
+    expect(String(calls[0]?.[0])).toContain("b.created_at <= b.start_at - interval '23 hours'");
+  });
+
+  it("binds a window from 1 h to 25 h ahead", async () => {
+    const { sql, calls } = makeSql([]);
+    const now = new Date("2026-10-05T14:00:00.000Z");
+    await findReminderCandidates(sql, now);
+    expect(calls[0]?.[1]).toBe("2026-10-05T15:00:00.000Z");
+    expect(calls[0]?.[2]).toBe("2026-10-06T15:00:00.000Z");
+  });
+});
+
 describe("findReminderCandidates (SEC-2 review)", () => {
   it("never casts tenant-writable JSON, which would abort the query for every tenant", async () => {
     const { sql, calls } = makeSql([]);

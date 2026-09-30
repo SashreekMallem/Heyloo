@@ -31,6 +31,21 @@ export interface ReminderCandidateRow {
   quiet_hours: unknown;
 }
 
+const HOUR_MS = 3_600_000;
+/**
+ * QA-1 BE-12: a reminder is considered from 25 h before the appointment
+ * (`REMINDER_MAX_LEAD_HOURS`) until 1 h before it (`REMINDER_MIN_LEAD_HOURS`)
+ * and sent at the FIRST tick outside quiet hours. It used to be a fixed
+ * 23-25 h window: for an appointment before ~08:00 or after ~21:00 local every
+ * hourly tick of that window fell inside quiet hours, each answered
+ * "deferred_quiet_hours", and once the window closed the booking was never
+ * looked at again (05:00, 06:00, 07:00, 07:30, 21:30, 22:00 and 23:00 starts
+ * were never reminded). "Already sent" is still `messages_outbound`, so the
+ * wider window cannot double-send.
+ */
+export const REMINDER_MAX_LEAD_HOURS = 25;
+export const REMINDER_MIN_LEAD_HOURS = 1;
+
 /**
  * SEC-2 review: this ONE query spans every tenant, so it must never cast a
  * value a tenant can write. It used to select
@@ -45,6 +60,8 @@ export async function findReminderCandidates(
   sql: SqlClient,
   now: Date,
 ): Promise<ReminderCandidateRow[]> {
+  const windowStart = new Date(now.getTime() + REMINDER_MIN_LEAD_HOURS * HOUR_MS);
+  const windowEnd = new Date(now.getTime() + REMINDER_MAX_LEAD_HOURS * HOUR_MS);
   return sql<ReminderCandidateRow>`
     select
       b.id as booking_id,
@@ -60,8 +77,12 @@ export async function findReminderCandidates(
     left join public.customers c on c.id = b.customer_id
     where b.status = 'confirmed'
       and not b.is_test
-      and b.start_at between ${now.toISOString()}::timestamptz + interval '23 hours'
-                          and ${now.toISOString()}::timestamptz + interval '25 hours'
+      and b.start_at > ${windowStart.toISOString()}::timestamptz
+      and b.start_at <= ${windowEnd.toISOString()}::timestamptz
+      -- Only bookings made at least a day ahead get a "tomorrow" reminder
+      -- (what the fixed 23-25 h window used to select): a same-day booking
+      -- made hours ago must not start getting one now the window is wider.
+      and b.created_at <= b.start_at - interval '23 hours'
       and not exists (
         select 1 from public.messages_outbound mo
         where mo.related_booking_id = b.id and mo.template_key = 'reminder'
