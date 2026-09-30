@@ -9489,3 +9489,15 @@ FROM +16105383920 and is broken until it is given another caller number
 (it must not call from its own callee, +12602354330). The three numbers deleted
 in Retell (+16105383920, +12627551967, +14175452434) are marked released in
 phone_numbers so job-offboarding never tries to delete them again.
+
+## LAUNCH-restaurant-menu — do NOT run scripts/sync-agent-templates.ts until source is reconciled (2026-09-30)
+
+`packages/templates` (source) is BEHIND `supabase/functions/_shared/agent-template-seeds.ts`
+(the code copy) for all 8 verticals: fixes landed in the seed copy were never written back
+(e.g. the `{{upcoming_weekday_dates}}` weekday rule; states and tools differ for 7 of 8).
+Every live agent was compiled from the seed copy. Running the sync script (it writes on run,
+no dry-run) overwrote `agent_templates` with the older source on 2026-09-30; it was restored
+from the seed copy within minutes (all 8 system_prompt md5s verified equal to the seed copy)
+and no agent was republished in between. Until someone ports the seed-copy fixes back into
+`packages/templates`, template changes go into BOTH copies and reach the database via the
+seed copy (`ensureTemplateSeeded(..., forceReseed)` / a seed-based update), never the sync script.
