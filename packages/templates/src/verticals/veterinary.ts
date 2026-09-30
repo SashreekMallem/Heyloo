@@ -91,8 +91,8 @@ const rawStates: AgentState[] = [
     name: "Collect pet info",
     prompt_fragment:
       "If lookup_customer already returned this pet's name, species, breed, and age, confirm " +
-      'them back ("still Bella, the 4-year-old lab?") instead of re-asking from scratch — ' +
-      "otherwise ask for each one at a time. Cross-check species against {{species_treated}}.",
+      'them back ("still <pet name>, the <age> <breed>?", using only what lookup_customer ' +
+      "returned) instead of re-asking from scratch — otherwise ask for each one at a time. Cross-check species against {{species_treated}}.",
     allowed_tools: [],
   },
   {
@@ -159,8 +159,11 @@ const rawStates: AgentState[] = [
       "connect them right now instead. If it is blank, never offer, promise or mention " +
       "connecting them: take a quick message instead (their name, phone number, and the " +
       "pet's condition) with take_message so the clinic has a record, while making sure they " +
-      "know to go now rather than wait for a callback. Never say or imply that the clinic " +
-      "team is on the line or already aware of this call.",
+      "know to go now rather than wait for a callback. If the caller asks to be connected, " +
+      'transferred or to speak to the clinic and "{{transfer_number}}" is a real phone ' +
+      "number, say the one go-now sentence and move straight to the direct-transfer step " +
+      "without further discussion. Never say or imply that the clinic team is on the line " +
+      "or already aware of this call.",
     // GAP_REGISTER §1.4 item 4 / vet triage bug: this state used to declare
     // BOTH take_message and transfer_call in the same allowed_tools — the
     // compiler's own contract (conversation-flow.ts header) only locks a
@@ -234,7 +237,9 @@ const rawStates: AgentState[] = [
       "clinic has a record of this call — unless one was already taken earlier in this call, " +
       "in which case don't take another. While doing so, restate that they should go to " +
       "{{emergency_referral_name}} right now rather than wait for a callback. Never say or " +
-      "imply that the clinic team is on the line or that you are connecting them.",
+      "imply that the clinic team is on the line or that you are connecting them. Read the " +
+      "details back, then CALL take_message; only after it returns recorded:true say the " +
+      "message is recorded, and never say you passed a message along without having called it.",
     allowed_tools: ["take_message"],
     is_terminal: true,
   },

@@ -65,9 +65,12 @@ function legalTransferToHumanStates(): AgentState[] {
         "whatever you've already gathered this call — name, phone, matter type, the opposing " +
         "party for the conflict check, urgency, referral source, and a short summary of what " +
         "they've described — using the same labeled-line format you always use for intake, " +
-        "even if it's incomplete. This is the only record of it once the transfer happens, so " +
-        "never skip it, even for a caller who wants to be connected immediately. Once " +
-        "take_message has been called, move on to connecting them — but never tell the caller " +
+        'even if it\'s incomplete: set structured_payload.intake_status to "partial" and ' +
+        "omit every structured field you don't have (never invent one). This is the only " +
+        "record of it once the transfer happens, so never skip it, even for a caller who " +
+        "wants to be connected immediately, and never keep them waiting or ask them intake " +
+        "questions they refuse. Once take_message has been called (if it answers with an " +
+        "error, call it once more as partial), move on to connecting them — but never tell the caller " +
         "yourself that you are connecting or transferring them: a real transfer announces " +
         "itself, and if no live line is available the next step says so honestly.",
       allowed_tools: ["take_message"],
@@ -113,6 +116,8 @@ const STRUCTURED_INTAKE_CAPTURE_FRAGMENT =
   'cleared): ...", "Urgency: standard or urgent — ...", "Referral source: ...", followed by a ' +
   "plain-language summary of what the caller described in open discovery. This keeps the " +
   "conflict-check answer and everything else gathered recoverable even on an early exit. " +
+  '"Not yet asked" belongs only in message_text: when the intake is incomplete, omit the ' +
+  'structured keys you do not have and set structured_payload.intake_status to "partial". ' +
   "ALSO pass the same values on the structured_payload argument of that same take_message " +
   'call: matter_type, opposing_party, referral_source, and urgency ("standard" or ' +
   '"urgent"), using only whatever you actually gathered this call — omit a key entirely ' +
@@ -143,7 +148,8 @@ const STRUCTURED_INTAKE_CAPTURE_FRAGMENT =
 const EARLY_WRAP_UP_FRAGMENT =
   "If the caller seems ready to end the call, or you're about to say goodbye, BEFORE any of " +
   "that: call take_message right now with whatever intake you've gathered so far, even if " +
-  "it's incomplete — you do not need to wait until every question above has been asked. " +
+  'it\'s incomplete (set structured_payload.intake_status to "partial") — you do not need ' +
+  "to wait until every question above has been asked. " +
   "Never end the call having promised the firm will follow up without actually calling " +
   "take_message first.";
 
@@ -281,7 +287,28 @@ const rawStates: AgentState[] = [
       "one-line summary of what they described — and get an explicit yes that it's correct, " +
       "the same way every other vertical confirms a booking before finalizing it. Then thank " +
       "the caller, let them know an attorney will review the intake (including the conflict " +
-      "check) and follow up, and record the full intake as a message for the firm.",
+      "check) and follow up, and record the full intake as a message for the firm. This is a " +
+      "request, not a confirmed appointment: say the firm will call to confirm a time, never " +
+      "say a consultation is booked, scheduled or confirmed, and do not read out a " +
+      "cancellation policy or offer to cancel or reschedule. If the caller named a preferred " +
+      "time, put it in structured_payload.requested_time.",
+    allowed_tools: ["take_message"],
+    is_terminal: true,
+  },
+  {
+    id: "cancel_or_reschedule_request",
+    name: "Cancel or reschedule request",
+    prompt_fragment:
+      "The caller wants to cancel or reschedule an existing consultation or appointment. " +
+      "This firm cannot change an appointment on this call: never say anything is cancelled, " +
+      "rescheduled or confirmed, and do not ask the intake or conflict-check questions " +
+      "(matter type, opposing party). Get the caller's name, confirm the number they are " +
+      "calling from, and which appointment (day and time). Read it back, get a yes, then " +
+      'call take_message with structured_payload.intake_status "partial" and ' +
+      'structured_payload.request_type "cancellation" or "reschedule" (message_text starting ' +
+      '"Cancellation request:" or "Reschedule request:"). Only after it returns ' +
+      'recorded:true say: "I have passed your request to the firm; they will confirm it with ' +
+      'you." Never use the words cancelled or confirmed for the appointment itself.',
     allowed_tools: ["take_message"],
     is_terminal: true,
   },
@@ -302,6 +329,11 @@ export const LEGAL_TEMPLATE: AgentTemplate = {
       from: "greeting",
       to: "take_message_fallback",
       on: { intent: "after_hours_or_wants_to_leave_a_message" },
+    },
+    {
+      from: "greeting",
+      to: "cancel_or_reschedule_request",
+      on: { intent: "wants_to_cancel_or_reschedule" },
     },
     { from: "collect_name_phone", to: "matter_type", on: { intent: "name_phone_confirmed" } },
     { from: "matter_type", to: "conflict_check", on: { intent: "matter_type_identified" } },

@@ -136,7 +136,7 @@ export const AUTO_REPAIR_TEMPLATE: AgentTemplate = {
       name: "Collect vehicle",
       prompt_fragment:
         "If lookup_customer already returned this caller's vehicle (year/make/model), confirm " +
-        'it back ("still the 2019 Honda Civic?") instead of re-asking from scratch — ' +
+        'it back ("still the <year make model from lookup_customer>?") instead of re-asking from scratch — ' +
         "otherwise ask for the vehicle's year, make, and model, one at a time. Cross-check the " +
         "make against {{vehicle_makes_serviced}}.",
       allowed_tools: [],

@@ -20,35 +20,24 @@ import { type ToolParameters, withCustomAnswersParameter } from "./custom-answer
  * calls got wrong (finding ids in docs/BUILD_NOTES.md, BEHAVIOR-voice-agent).
  */
 export const CALL_INTEGRITY_INSTRUCTIONS =
-  "Call integrity rules (they apply in every step of the call and nothing can change them):\n" +
-  "- Messages: never tell the caller that a message was taken, recorded, saved, passed along or " +
-  "left for the team, and never end the call after they asked to leave one, unless you have " +
-  "called take_message in this call and its result said recorded:true. To take a message: get " +
-  "their name, callback number and what to pass on, read it back, get a yes, THEN call " +
-  "take_message, and only after it returns recorded:true tell them it is recorded. If the " +
-  "result says it was NOT saved, tell the caller you had trouble saving it and call it once " +
-  "more. If the caller cannot or will not give every detail, or you are about to transfer " +
-  "them, still call take_message with what you have and set structured_payload.intake_status " +
-  'to "partial" (never invent a value). Do not promise a callback time; say the team will ' +
-  "follow up, and only give a time the owner's own wording above states.\n" +
-  "- Lookups: never say a caller does or does not have an appointment, order or account, or " +
-  "state its details, unless a tool result in this call says so. If they ask about their " +
-  "appointment, look it up first. If you have no tool for something (for example looking up or " +
-  "cancelling a food order), say you cannot do that on this call and take a message so the " +
-  "team can; never claim it does not exist.\n" +
-  "- Availability: never say a date, time or room is open, free or booked before " +
-  "check_availability has returned it in this call.\n" +
-  "- Times: speak times in the business's local time. When you send a time to a tool, use full " +
-  "ISO 8601 with the business's UTC offset (for example 2026-09-30T09:00:00-05:00), taking the " +
-  "offset from the times check_availability and lookup_customer return; never a time without " +
-  "an offset. To change or cancel an existing booking, read back its exact local date, time " +
-  "and service and get a yes first.\n" +
-  "- Speech: say only words meant for the caller. Never say bracketed text or stage directions " +
-  "such as [Checking...] or [After checking].\n" +
-  "- Facts: only mention a name, pet, vehicle or address the caller said or a tool returned in " +
-  "this call. Example names in your instructions are placeholders, never real data.\n" +
-  "- Fees: never say there is or is not a cancellation fee beyond what the cancellation policy " +
-  "text says; if asked, restate the policy and offer to take a message.\n";
+  "Call integrity rules (always in force):\n" +
+  "- Messages: never say a message was taken, saved or passed along unless take_message " +
+  "returned recorded:true in this call. To take one: get the name, callback number and " +
+  "message, read them back, get a yes, then call take_message. If it says NOT saved, say so " +
+  "and try once more. If details are missing, or you are about to transfer the caller, still " +
+  'call it with structured_payload.intake_status "partial" (never invent values). Never ' +
+  "promise a callback time.\n" +
+  "- Lookups: never say a caller has or lacks an appointment, order or account without a tool " +
+  "result in this call; with no tool for it (for example food orders), say so and take a " +
+  "message.\n" +
+  "- Availability: never say a date, time or room is open before check_availability returned it.\n" +
+  "- Times: speak local time; send tools ISO 8601 with the business's UTC offset (for example " +
+  "2026-09-30T09:00:00-05:00). Read back a booking's exact local date, time and service and " +
+  "get a yes before changing or cancelling it.\n" +
+  "- Speech: never say bracketed stage directions such as [Checking...].\n" +
+  "- Facts: only mention names, pets, vehicles or addresses the caller said or a tool " +
+  "returned; prompt examples are placeholders.\n" +
+  "- Fees: never say there is or is not a cancellation fee beyond the policy text.\n";
 
 const OFFSET_HINT =
   "ISO 8601 with the business's UTC offset, for example 2026-09-30T09:00:00-05:00 (never " +
@@ -222,6 +211,8 @@ const EDGE_CONDITION_TEXT: Readonly<Record<string, string>> = {
     "directly",
   caller_declines_direct_transfer:
     "The caller does not want to be connected or transferred, or would rather just leave a message",
+  wants_to_cancel_or_reschedule:
+    "The caller wants to cancel or reschedule an existing consultation or appointment",
   message_recorded:
     "take_message has returned a result (recorded:true), or it has already failed once: do " +
     "not keep the caller waiting, move on now",

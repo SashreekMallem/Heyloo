@@ -85,7 +85,14 @@ export function manageBookingState(): AgentState {
       "lookup_customer using the number they're calling from. " +
       IDENTITY_FALLBACK_FRAGMENT +
       " Once identity is settled, use update_booking to reschedule or cancel_booking to " +
-      "cancel, and state the cancellation policy again if they're cancelling.",
+      "cancel, and state the cancellation policy again if they're cancelling. If they only " +
+      "ask about an existing appointment, answer from lookup_customer's recent_bookings " +
+      "(say start_local, never start_at) — never say they have no appointment unless " +
+      "lookup_customer returned none. Before update_booking or cancel_booking, read back " +
+      "the exact local date, time and service of the booking you are about to change and get " +
+      "a yes; if several bookings could match, list them by local date, time and service and " +
+      "ask which. To reschedule, call check_availability for the new time first, read the " +
+      "exact new time back, then call update_booking (the booking keeps its length).",
     allowed_tools: ["lookup_customer", "update_booking", "cancel_booking"],
     is_terminal: true,
   };
@@ -98,10 +105,17 @@ export function takeMessageFallbackState(): AgentState {
     prompt_fragment:
       "You were not able to complete this in real time (after-hours, repeated " +
       "misunderstandings, or the caller asked to leave a message instead). Collect the " +
-      "caller's name, phone number, and a short message, and let them know when to expect a " +
-      "call back. If you already gathered any information earlier in this call (what they " +
-      "were calling about, details already discussed), fold it into message_text rather than " +
-      "discarding it — a partial intake is still worth more to staff than a blank message.",
+      "caller's name, phone number, and a short message. If you already gathered any " +
+      "information earlier in this call (what they were calling about, details already " +
+      "discussed), fold it into message_text rather than discarding it — a partial intake is " +
+      "still worth more to staff than a blank message. Then read the details back, get a " +
+      "yes, and CALL take_message: saying it out loud records nothing, and take_message is " +
+      "what makes the message durable. Only after it returns recorded:true tell the caller " +
+      "their message is recorded and the team will follow up — never say you passed a " +
+      "message along without having called take_message. Do not promise a callback time or " +
+      "day (say the team will follow up, unless the owner's own wording states a time). If " +
+      "the caller won't give every detail, still call take_message with what you have and " +
+      'structured_payload.intake_status set to "partial".',
     allowed_tools: ["take_message"],
     is_terminal: true,
   };

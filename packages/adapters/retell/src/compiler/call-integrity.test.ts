@@ -51,9 +51,11 @@ describe("call-integrity rules block", () => {
   });
 
   it("forbids claiming a message was taken before take_message returned recorded:true", () => {
-    expect(CALL_INTEGRITY_INSTRUCTIONS).toMatch(/never tell the caller that a message was taken/);
+    expect(CALL_INTEGRITY_INSTRUCTIONS).toMatch(
+      /never say a message was taken, saved or passed along/,
+    );
     expect(CALL_INTEGRITY_INSTRUCTIONS).toContain("recorded:true");
-    expect(CALL_INTEGRITY_INSTRUCTIONS).toContain('intake_status to "partial"');
+    expect(CALL_INTEGRITY_INSTRUCTIONS).toContain('intake_status "partial"');
   });
 
   for (const { key, template } of REGISTRY) {

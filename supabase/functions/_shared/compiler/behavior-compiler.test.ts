@@ -47,7 +47,7 @@ describe("call-integrity rules reach every vertical and every compile target", (
       for (const target of ["conversation_flow", "multi_prompt", "single_prompt"] as const) {
         const text = promptOf(compileAs(seed.content, target));
         expect(text, `${vertical} as ${target}`).toContain(
-          "never tell the caller that a message was taken",
+          "never say a message was taken, saved or passed along",
         );
         expect(text).toContain("recorded:true");
         expect(text).toContain("[[BEGIN OWNER INFO]]");
@@ -155,5 +155,63 @@ describe("compile-time tool guidance (F1, F4, F8, F-AUTO-RESCHED-1)", () => {
         ]);
       }
     }
+  });
+});
+
+describe("the deployed template copy carries the same wording fixes (agent-template-seeds.ts)", () => {
+  const stateText = (vertical: string, id: string): string =>
+    AGENT_TEMPLATE_SEEDS[vertical as keyof typeof AGENT_TEMPLATE_SEEDS].content.states.find(
+      (s) => s.id === id,
+    )?.prompt_fragment ?? "";
+
+  it("every take-a-message state makes the model call take_message before saying it is recorded", () => {
+    for (const [vertical, seed] of SEEDS) {
+      if (!seed.content.states.some((s) => s.id === "take_message_fallback")) continue;
+      const text = stateText(vertical, "take_message_fallback");
+      expect(text, vertical).toContain("CALL take_message");
+      expect(text, vertical).toContain("recorded:true");
+      expect(text, vertical).not.toMatch(/when to expect a call back/);
+    }
+  });
+
+  it("vet emergency message step and direct-transfer hand-off", () => {
+    expect(stateText("vet", "emergency_take_message")).toContain("CALL take_message");
+    expect(stateText("vet", "emergency_referral")).toMatch(
+      /move straight to the direct-transfer step/,
+    );
+  });
+
+  it("no real-looking example pet or vehicle in any prompt", () => {
+    for (const [vertical, seed] of SEEDS) {
+      const all = [
+        seed.content.system_prompt ?? "",
+        ...seed.content.states.map((s) => s.prompt_fragment),
+      ].join("\n");
+      expect(all, vertical).not.toMatch(/Bella|2019 Civic|2019 Honda Civic/);
+    }
+  });
+
+  it("manage_booking reads the booking back, checks availability and answers status questions from a lookup", () => {
+    for (const [vertical, seed] of SEEDS) {
+      if (!seed.content.states.some((s) => s.id === "manage_booking")) continue;
+      const text = stateText(vertical, "manage_booking");
+      expect(text, vertical).toContain("start_local");
+      expect(text, vertical).toMatch(/call check_availability for the new time first/);
+    }
+  });
+
+  it("legal: partial intake on transfer, a cancel/reschedule request state, request-not-appointment wording", () => {
+    expect(stateText("legal", "transfer_to_human")).toContain('intake_status to "partial"');
+    expect(stateText("legal", "cancel_or_reschedule_request")).toMatch(
+      /never say anything is cancelled, rescheduled or confirmed/,
+    );
+    expect(stateText("legal", "intake_complete")).toMatch(/request, not a confirmed appointment/);
+    const legal = AGENT_TEMPLATE_SEEDS.legal.content;
+    expect(
+      legal.transitions.some(
+        (t) => t.from === "greeting" && t.to === "cancel_or_reschedule_request",
+      ),
+    ).toBe(true);
+    expect(legal.system_prompt).toContain('"Not yet asked" belongs only in message_text');
   });
 });
