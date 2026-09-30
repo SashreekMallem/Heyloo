@@ -9091,7 +9091,7 @@ Branch `wave/EMAIL-MSGRAPH`. Owner decision (binding): ALL email (product and Su
 
 ## QA-1-auth (2026-09-30, session_012xvcAnjqsMbPqitErDJQbR) — auth defects from the pre-launch QA round
 
-Branch `wave/QA-1-auth`. Migration `20260930200100_platform_admin_requires_aal2.sql`; needs a deploy of the `admin` and `api-outreach-fetch-leads` edge functions and a web deploy. Nothing was deployed, pushed or written live.
+Branch `wave/QA-1-auth`. Migration `20260930250000_platform_admin_requires_aal2.sql`; needs a deploy of the `admin` and `api-outreach-fetch-leads` edge functions and a web deploy. Nothing was deployed, pushed or written live.
 
 **SEC-01 (blocker) — platform-admin authority now requires aal2 at every layer.**
 - Token: `custom_access_token_hook` stamps `app_metadata.platform_admin` only when `event.claims.aal = 'aal2'`. A platform admin below aal2 instead gets the inert marker `app_metadata.admin_mfa_required = true` (no RLS policy, edge function or API guard reads it as authority). It exists so the web guards can send an aal1 admin to `/mfa/enroll` or `/mfa/challenge` rather than "no access". Completing `mfa.verify` mints a fresh aal2 token through the same hook.
@@ -9123,3 +9123,5 @@ Branch `wave/QA-1-auth`. Migration `20260930200100_platform_admin_requires_aal2.
 **Tests added:** unit/component for every item above plus `apps/web/tests/e2e/auth-hardening.spec.ts` (headers, deep link, failed-link notices, mocked 429/abort login, expired reset card, `<main>`). The signed-in bounce, `/no-access` render and MFA flows need a real session and are covered by component/middleware tests only.
 
 **Not fixed / callouts:** the AUTH-13 cookie flags (`Secure`/`HttpOnly` are not settable for `@supabase/ssr` browser cookies) were excluded by the QA report itself. `x-pathname` is set on the RESPONSE by middleware, so `headers()` in a layout does not see it (the partner layout's disclosure check relies on it); left alone, noted here for a follow-up (`x-middleware-request-x-pathname` or a request-header override).
+
+**QA-1-auth hostile review (2026-09-30):** (1) `/mfa/enroll` sent any admin with `platform_admin` to `/cockpit` regardless of `aal`; a token minted before SEC-01 (aal1 + `platform_admin`, no `admin_mfa_required`) then looped `/cockpit` -> `requireAdminSession` -> `/mfa/enroll` -> `/cockpit`. It now redirects only when `aal2`, and lets a stale aal1 admin enroll. (2) The migration was renamed `20260930200100` -> `20260930250000`: it was not applied live, and a version older than the live head (`20260930240000`) is refused by `supabase db push` without `--include-all`.

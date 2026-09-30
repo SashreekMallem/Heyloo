@@ -54,7 +54,7 @@ export async function claimsFromSupabaseClient(
 /**
  * SEC-01: the verified JWT claims plus the session assurance level. The
  * Custom Access Token Hook stamps `platform_admin` only onto aal2 tokens
- * (20260930200100_platform_admin_requires_aal2.sql), and stamps the inert
+ * (20260930250000_platform_admin_requires_aal2.sql), and stamps the inert
  * `admin_mfa_required` marker on a platform admin's lower-assurance token so
  * the guards can route them to MFA instead of "no access". Every admin API
  * guard uses this so the check is `platform_admin && aal === "aal2"` in code

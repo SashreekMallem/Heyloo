@@ -42,13 +42,17 @@ export default function MfaEnrollPage() {
       router.replace("/login?next=%2Fmfa%2Fenroll");
       return;
     }
-    const { claims, adminMfaRequired } =
+    const { claims, aal, adminMfaRequired } =
       await sessionAssuranceFromSupabaseClient(supabaseBrowserClient);
-    if (claims.platform_admin) {
+    if (claims.platform_admin && aal === "aal2") {
       router.replace("/cockpit");
       return;
     }
-    if (!adminMfaRequired) {
+    // A token minted before SEC-01 still carries `platform_admin` at aal1 and
+    // has no `admin_mfa_required` marker; sending it to /cockpit would bounce
+    // straight back here (requireAdminSession -> /mfa/enroll), an endless loop.
+    // It is an admin who must enroll, exactly like the marker case.
+    if (!adminMfaRequired && !claims.platform_admin) {
       router.replace("/no-access");
       return;
     }

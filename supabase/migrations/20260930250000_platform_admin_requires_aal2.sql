@@ -109,4 +109,4 @@ language sql stable as $$
 $$;
 
 comment on function public.custom_access_token_hook is
-  'Registered via [auth.hook.custom_access_token] in supabase/config.toml (local) / Auth Hooks dashboard config (hosted) — uri = pg-functions://postgres/public/custom_access_token_hook. platform_admin is stamped only on aal2 tokens (SEC-01, 20260930200100); an aal1 admin gets the inert admin_mfa_required marker instead. See docs/BUILD_NOTES.md QA-1-auth.';
+  'Registered via [auth.hook.custom_access_token] in supabase/config.toml (local) / Auth Hooks dashboard config (hosted) — uri = pg-functions://postgres/public/custom_access_token_hook. platform_admin is stamped only on aal2 tokens (SEC-01, 20260930250000); an aal1 admin gets the inert admin_mfa_required marker instead. See docs/BUILD_NOTES.md QA-1-auth.';

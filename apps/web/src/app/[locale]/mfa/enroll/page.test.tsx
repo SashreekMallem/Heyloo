@@ -14,6 +14,7 @@ type Factor = {
 // A tiny model of GoTrue's factor store, including its name-conflict rule.
 let factors: Factor[] = [];
 let claimsAppMetadata: Record<string, unknown> = { admin_mfa_required: true };
+let claimsAal: "aal1" | "aal2" = "aal1";
 let user: { id: string } | null = { id: "u1" };
 let failNextEnroll = false;
 let seq = 0;
@@ -62,7 +63,7 @@ vi.mock("@/lib/supabase/browser", () => ({
     auth: {
       getUser: async () => ({ data: { user } }),
       getClaims: async () => ({
-        data: { claims: { aal: "aal1", app_metadata: claimsAppMetadata } },
+        data: { claims: { aal: claimsAal, app_metadata: claimsAppMetadata } },
         error: null,
       }),
       mfa: { listFactors, unenroll, enroll, challenge, verify },
@@ -86,6 +87,7 @@ beforeEach(() => {
   failNextEnroll = false;
   user = { id: "u1" };
   claimsAppMetadata = { admin_mfa_required: true };
+  claimsAal = "aal1";
 });
 
 describe("/mfa/enroll (AUTH-03)", () => {
@@ -136,11 +138,20 @@ describe("/mfa/enroll (AUTH-03)", () => {
     expect(unenroll).not.toHaveBeenCalled();
   });
 
-  it("sends an already-elevated admin straight to the cockpit", async () => {
+  it("sends an already-elevated (aal2) admin straight to the cockpit", async () => {
     claimsAppMetadata = { platform_admin: true };
+    claimsAal = "aal2";
     render(<MfaEnrollPage />);
     await waitFor(() => expect(replace).toHaveBeenCalledWith("/cockpit"));
     expect(enroll).not.toHaveBeenCalled();
+  });
+
+  it("a stale aal1 token still carrying platform_admin enrols instead of looping to /cockpit", async () => {
+    claimsAppMetadata = { platform_admin: true };
+    claimsAal = "aal1";
+    render(<MfaEnrollPage />);
+    await screen.findByAltText("TOTP QR code");
+    expect(replace).not.toHaveBeenCalledWith("/cockpit");
   });
 
   it("sends an anonymous visitor to log in", async () => {
