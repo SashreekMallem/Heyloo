@@ -192,4 +192,26 @@ describe("CallsListClient", () => {
     const href = screen.getByRole("link", { name: "Export CSV" }).getAttribute("href") ?? "";
     expect(href).toBe("/api/tenant/calls/export?tenant_id=t1");
   });
+  it("shows the customer's name next to their number (QA-1 F-15)", async () => {
+    queryResult = {
+      data: [
+        {
+          id: "call-named",
+          started_at: "2026-09-01T00:00:00Z",
+          caller_number: "+15551234567",
+          classification: "new_booking",
+          duration_seconds: 90,
+          outcome: "booked",
+          urgency_flag: false,
+          sentiment: null,
+        },
+      ],
+      count: 1,
+      error: null,
+    };
+    customersResult = { data: [{ phone_e164: "+15551234567", name: "Jamie Rivera" }], error: null };
+    renderClient();
+    expect((await screen.findAllByText("Jamie Rivera")).length).toBeGreaterThan(0);
+    customersResult = { data: [], error: null };
+  });
 });

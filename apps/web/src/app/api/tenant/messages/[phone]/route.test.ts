@@ -26,7 +26,12 @@ let serviceQueue: Record<string, unknown[]> = {};
 let mockGetUser: () => Promise<{ data: { user: unknown } }> = async () => ({
   data: { user: null },
 });
-let rpcMock = vi.fn(async (..._args: unknown[]) => ({ data: null, error: null }));
+let rpcMock = vi.fn(
+  async (..._args: unknown[]): Promise<{ data: null; error: { message: string } | null }> => ({
+    data: null,
+    error: null,
+  }),
+);
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerComponentClient: async () => ({

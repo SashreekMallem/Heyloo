@@ -28,6 +28,8 @@ interface CallRow {
   outcome: string | null;
   urgency_flag: boolean;
   sentiment: "positive" | "neutral" | "negative" | null;
+  /** `customers.name` for the caller's number, when the tenant has that customer (QA-1 F-15). */
+  customer_name?: string | null;
 }
 
 const PAGE_SIZE = 25;
@@ -60,8 +62,20 @@ const columns: ColumnDef<CallRow, unknown>[] = [
   {
     accessorKey: "caller_number",
     header: "Customer",
-    cell: ({ row }) =>
-      row.original.caller_number ? formatPhoneDisplay(row.original.caller_number) : "Unknown",
+    cell: ({ row }) => {
+      const number = row.original.caller_number
+        ? formatPhoneDisplay(row.original.caller_number)
+        : "Unknown";
+      const name = row.original.customer_name?.trim();
+      return name ? (
+        <span className="flex flex-col">
+          <span>{name}</span>
+          <span className="text-xs text-muted-foreground">{number}</span>
+        </span>
+      ) : (
+        number
+      );
+    },
   },
   {
     accessorKey: "classification",
@@ -182,8 +196,24 @@ export function CallsListClient({
 
       const { data, count, error } = await q;
       if (error) throw new Error(error.message);
+      const rows = (data ?? []) as CallRow[];
+
+      // Resolve the caller's name for this page of calls (one tenant-scoped lookup).
+      const numbers = [
+        ...new Set(rows.map((r) => r.caller_number).filter((n): n is string => !!n)),
+      ];
+      if (numbers.length) {
+        const { data: customers } = await supabaseBrowserClient
+          .from("customers")
+          .select("phone_e164, name")
+          .eq("tenant_id", tenantId)
+          .in("phone_e164", numbers);
+        const nameByPhone = new Map((customers ?? []).map((c) => [c.phone_e164, c.name]));
+        for (const r of rows)
+          r.customer_name = r.caller_number ? (nameByPhone.get(r.caller_number) ?? null) : null;
+      }
       return {
-        rows: (data ?? []) as CallRow[],
+        rows,
         pageCount: Math.max(1, Math.ceil((count ?? 0) / PAGE_SIZE)),
       };
     },
@@ -295,7 +325,8 @@ export function CallsListClient({
           <div className="rounded-lg border border-border p-3">
             <div className="flex items-center gap-1.5">
               <p className="text-sm font-medium">
-                {row.caller_number ? formatPhoneDisplay(row.caller_number) : "Unknown"}
+                {row.customer_name?.trim() ||
+                  (row.caller_number ? formatPhoneDisplay(row.caller_number) : "Unknown")}
               </p>
               {row.urgency_flag && <Badge variant="destructive">Urgent</Badge>}
             </div>
