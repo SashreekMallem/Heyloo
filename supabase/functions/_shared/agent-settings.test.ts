@@ -313,7 +313,9 @@ describe("buildAgentSettingsVariables", () => {
     for (const value of Object.values(vars)) expect(typeof value).toBe("string");
     expect(vars.special_instructions).toBe("");
     expect(vars.faq_text).toBe(NO_FAQ_TEXT);
-    expect(vars.business_facts).toBe(NO_FACTS_TEXT);
+    // Only the hours line: the owner set no facts, but the weekly hours are always given.
+    expect(vars.business_facts).toMatch(/^Opening hours \(/);
+    expect(vars.business_facts).not.toContain("Parking");
     expect(vars.voicemail_message).toBe("");
     expect(vars.booking_mode_text).toBe(BOOKING_MODE_NORMAL);
   });
@@ -349,5 +351,63 @@ describe("resolveTextPersona", () => {
     expect(persona.signOff).not.toContain("{{");
     expect(persona.signOff).not.toContain("[[");
     expect(persona.signOff.length).toBeLessThanOrEqual(120);
+  });
+});
+
+describe("F-HOURS-1 / F6 / VCC-3: the weekly hours reach the agent as the first business fact", () => {
+  it("renders the configured hours and today's status, ahead of the owner's other facts", () => {
+    const facts = resolveBusinessFacts({
+      overrides: { parking_info: "Behind the building." },
+      vertical: "auto",
+      now: OPEN_NOW,
+      timezone: TZ,
+      businessHours: HOURS,
+      hoursExceptions: [],
+    });
+    const lines = facts.split("\n");
+    expect(lines[0]).toContain(
+      "Opening hours (America/New_York): Mon-Fri 8 AM-6 PM, Sat-Sun closed.",
+    );
+    expect(lines[0]).toContain("Right now: We're open until 6 PM.");
+    expect(lines[0]).toContain("Answer questions about hours from this line only");
+    expect(lines[1]).toBe("Parking: Behind the building.");
+  });
+
+  it("adds no hours line when the owner entered none, and callers that omit hours are unchanged", () => {
+    expect(
+      resolveBusinessFacts({
+        overrides: {},
+        vertical: "auto",
+        now: OPEN_NOW,
+        timezone: TZ,
+        businessHours: {},
+        hoursExceptions: [],
+      }),
+    ).toBe(NO_FACTS_TEXT);
+    expect(
+      resolveBusinessFacts({ overrides: {}, vertical: "auto", now: OPEN_NOW, timezone: TZ }),
+    ).toBe(NO_FACTS_TEXT);
+  });
+
+  it("buildAgentSettingsVariables carries the hours into business_facts", () => {
+    const vars = buildAgentSettingsVariables({
+      specialInstructions: null,
+      overrides: {},
+      manualMode: false,
+      transferNumber: null,
+      vertical: "dental",
+      timezone: TZ,
+      businessHours: HOURS,
+      hoursExceptions: [],
+      now: OPEN_NOW,
+    });
+    expect(vars.business_facts).toContain("Mon-Fri 8 AM-6 PM");
+  });
+});
+
+describe("VCC-1: manual mode does not volunteer why booking is off", () => {
+  it("tells the agent to say the team will confirm, and to record via take_message before saying so", () => {
+    expect(BOOKING_MODE_MANUAL).toMatch(/never say the owner paused or turned off booking/);
+    expect(BOOKING_MODE_MANUAL).toContain("recorded:true");
   });
 });

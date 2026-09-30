@@ -25,6 +25,17 @@ describe("test scenarios (DISCLOSE-1)", () => {
     expect(scenario?.personaPrompt).toContain("555-201-0198");
   });
 
+  it("F-DENTAL-MSG-1 / F-LEGAL-CANCEL-1: leave-a-message (dental) and cancel-a-consult (legal) scenarios exist and must end in a take_message record", () => {
+    const leave = scenariosForVertical("dental").find((s) => s.id === "leave_message");
+    expect(leave?.writeIntent).toBe("take_message");
+    expect(leave?.expectedPhone).toBe("+15552010197");
+    expect(leave?.personaPrompt).toContain("555-201-0197");
+    const cancel = scenariosForVertical("legal").find((s) => s.id === "cancel_consult");
+    expect(cancel?.writeIntent).toBe("take_message");
+    expect(cancel?.expectedPhone).toBe("+15552010165");
+    expect(cancel?.personaPrompt).toContain("555-201-0165");
+  });
+
   it("every vertical's returning_caller scenario still simulates the seeded returning caller's number (the caller_greeting path)", () => {
     for (const vertical of VERTICALS) {
       const returning = scenariosForVertical(vertical).find((s) => s.id === "returning_caller");

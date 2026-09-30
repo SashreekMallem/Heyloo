@@ -201,3 +201,93 @@ export function computeGreetingHoursContext(
 
   return "We're closed for the day.";
 }
+
+const DAY_LABELS: Record<(typeof DOW_KEYS)[number], string> = {
+  sun: "Sun",
+  mon: "Mon",
+  tue: "Tue",
+  wed: "Wed",
+  thu: "Thu",
+  fri: "Fri",
+  sat: "Sat",
+};
+/** Monday-first display order. */
+const DISPLAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+
+function formatWindows(windows: HoursWindow[]): string {
+  if (windows.length === 0) return "closed";
+  const sorted = [...windows].sort((a, b) => timeStrToMinutes(a.open) - timeStrToMinutes(b.open));
+  // A single 00:00-23:59 window is how "open 24 hours" is stored.
+  if (
+    sorted.length === 1 &&
+    timeStrToMinutes(sorted[0]?.open ?? "") === 0 &&
+    timeStrToMinutes(sorted[0]?.close ?? "") >= 1439
+  ) {
+    return "open 24 hours";
+  }
+  return sorted
+    .map((w) => {
+      const close = timeStrToMinutes(w.close);
+      return `${formatMinutesAs12h(timeStrToMinutes(w.open))}-${
+        close >= 1439 ? "midnight" : formatMinutesAs12h(close)
+      }`;
+    })
+    .join(" and ");
+}
+
+/**
+ * F-HOURS-1 / F6 / VCC-3: the weekly opening hours and upcoming exceptions as
+ * one sentence for the agent, e.g. `Mon-Thu 8 AM-5 PM, Fri 8 AM-2 PM, Sat-Sun
+ * closed. Exceptions: closed 2026-11-26.` Consecutive days with identical hours
+ * are grouped. `""` when the tenant has entered no hours at all (never guessed).
+ * Only exceptions from today on, within `EXCEPTION_HORIZON_DAYS`, are listed.
+ */
+const EXCEPTION_HORIZON_DAYS = 90;
+
+export function formatBusinessHoursText(
+  now: Date,
+  timeZone: string,
+  businessHours: WeeklyBusinessHours,
+  exceptions: HoursException[] = [],
+): string {
+  const configured = DOW_KEYS.some((key) => (businessHours[key] ?? []).length > 0);
+  if (!configured) return "";
+  const groups: { days: (typeof DOW_KEYS)[number][]; text: string }[] = [];
+  for (const day of DISPLAY_ORDER) {
+    const text = formatWindows(businessHours[day] ?? []);
+    const last = groups[groups.length - 1];
+    if (last && last.text === text) last.days.push(day);
+    else groups.push({ days: [day], text });
+  }
+  const weekly = groups
+    .map((g) => {
+      const first = g.days[0];
+      const end = g.days[g.days.length - 1];
+      const label =
+        first && end && first !== end
+          ? `${DAY_LABELS[first]}-${DAY_LABELS[end]}`
+          : first
+            ? DAY_LABELS[first]
+            : "";
+      return `${label} ${g.text}`;
+    })
+    .join(", ");
+
+  const { dateStr: today } = localParts(now, timeZone);
+  const horizon = localParts(
+    new Date(now.getTime() + EXCEPTION_HORIZON_DAYS * 86_400_000),
+    timeZone,
+  ).dateStr;
+  const upcoming = exceptions
+    .filter((e) => typeof e.date === "string" && e.date >= today && e.date <= horizon)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(0, 12)
+    .map((e) => {
+      const label = (e as { label?: unknown }).label;
+      const suffix =
+        typeof label === "string" && label.trim() ? ` (${label.trim().slice(0, 40)})` : "";
+      if (e.closed || !e.hours || e.hours.length === 0) return `closed ${e.date}${suffix}`;
+      return `${e.date}${suffix} ${formatWindows(e.hours)}`;
+    });
+  return upcoming.length > 0 ? `${weekly}. Exceptions: ${upcoming.join("; ")}.` : `${weekly}.`;
+}

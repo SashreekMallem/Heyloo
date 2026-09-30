@@ -68,6 +68,11 @@ function obj(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+/** F10: appended when the owner configured no fee at all (the default text says nothing about fees, and the model filled the silence with "we don't have any cancellation fee"). */
+export const NO_FEE_INFO_TEXT =
+  "no fee information on file: if asked about fees, do not say there is or is not one, say " +
+  "you don't have fee details and offer to take a message";
+
 const DEFAULT_CANCELLATION_POLICY_TEXT =
   "we ask that you let us know as soon as possible if you need to cancel or reschedule";
 
@@ -99,6 +104,13 @@ export function resolveCancellationPolicyText(overrides: Record<string, unknown>
   const feeCents = num(policy?.["fee_cents"]);
   if (feeCents !== undefined && feeCents > 0) {
     parts.push(`a late-cancellation fee of ${formatUsd(feeCents)} may apply`);
+  } else if (feeCents === 0) {
+    parts.push("there is no late-cancellation fee");
+  } else {
+    // F10: with nothing configured the default text says nothing about fees,
+    // and the model filled that silence with "we don't have any cancellation
+    // fee": a commitment the owner never made.
+    parts.push(NO_FEE_INFO_TEXT);
   }
   return parts.join("; ");
 }

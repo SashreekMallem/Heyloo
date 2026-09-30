@@ -30,7 +30,13 @@
  * unchanged under Deno and Node/Vitest. No I/O: the hot path stays lean.
  */
 
-import { type HoursException, isOpenAt, type WeeklyBusinessHours } from "./business-hours.ts";
+import {
+  computeGreetingHoursContext,
+  formatBusinessHoursText,
+  type HoursException,
+  isOpenAt,
+  type WeeklyBusinessHours,
+} from "./business-hours.ts";
 import { normalizeE164 } from "./phone.ts";
 import { sanitizeScrapedContent } from "./sanitize.ts";
 
@@ -212,9 +218,33 @@ export function resolveBusinessFacts(params: {
   vertical: string;
   now: Date;
   timezone: string;
+  /** F-HOURS-1: `tenants.business_hours` / `hours_exceptions`. Omitted (older callers) = no hours line. */
+  businessHours?: unknown;
+  hoursExceptions?: unknown;
 }): string {
   const { overrides, vertical, now, timezone } = params;
   const lines: string[] = [];
+
+  // F-HOURS-1 / F6 / VCC-3: the weekly hours reached the agent only as the
+  // greeting's "we're open until 5 PM", so "are you open Saturday?" was
+  // unanswerable (or, for one agent, invented). First line of the facts so it
+  // is the first thing the model finds; nothing when the owner entered no hours.
+  const weekly = formatBusinessHoursText(
+    now,
+    timezone,
+    (record(params.businessHours) ?? {}) as WeeklyBusinessHours,
+    Array.isArray(params.hoursExceptions) ? (params.hoursExceptions as HoursException[]) : [],
+  );
+  if (weekly) {
+    lines.push(
+      `Opening hours (${timezone}): ${weekly} Right now: ${computeGreetingHoursContext(
+        now,
+        timezone,
+        (record(params.businessHours) ?? {}) as WeeklyBusinessHours,
+        Array.isArray(params.hoursExceptions) ? (params.hoursExceptions as HoursException[]) : [],
+      )} Answer questions about hours from this line only; if a day or date is not covered by it, say you don't have that and offer to take a message.`,
+    );
+  }
 
   const managerName = sanitizeOwnerText(overrides["manager_name"], NAME_MAX_CHARS);
   const managerPhone = normalizeE164(
@@ -358,7 +388,9 @@ export const BOOKING_MODE_MANUAL =
   "and do not call create_booking or any other tool that creates or changes a booking or reservation. " +
   "Answer the caller's questions as usual; if they want an appointment, reservation or a change, collect " +
   "their name, phone number and what they need and record it with take_message, then tell them someone from " +
-  "the team will confirm with them personally. Never tell them they are booked or that anything is confirmed.";
+  "the team will confirm with them personally. Never tell them they are booked or that anything is confirmed, " +
+  "and do not explain why: never say the owner paused or turned off booking, just that the team will confirm. " +
+  "Only say the request is recorded after take_message has returned recorded:true.";
 
 export function resolveBookingModeText(manualMode: boolean): string {
   return manualMode ? BOOKING_MODE_MANUAL : BOOKING_MODE_NORMAL;
@@ -413,6 +445,8 @@ export function buildAgentSettingsVariables(input: AgentSettingsInput): AgentSet
       vertical: input.vertical,
       now: input.now,
       timezone: input.timezone,
+      businessHours: input.businessHours,
+      hoursExceptions: input.hoursExceptions,
     }),
     voicemail_message: sanitizeOwnerText(input.overrides["voicemail_message"], VOICEMAIL_MAX_CHARS),
     transfer_number: routing.transferNumber,
