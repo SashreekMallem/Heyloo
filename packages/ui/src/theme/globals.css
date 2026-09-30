@@ -19,6 +19,14 @@
  * signature accent used sparingly).
  */
 
+/* react-day-picker v10 ships NO styles of its own unless its stylesheet is
+   imported (QA-1 MAP-03: the date-range popover rendered as an unstyled
+   "SuMoTuWeThFrSa" list). Resolved from this package's own node_modules, so
+   apps/web needs no dependency of its own. The `.rdp-root` variables are
+   re-pointed at Heyloo tokens in the "Calendar" block at the end of this
+   file (after the import, so the overrides win). */
+@import "react-day-picker/style.css";
+
 @theme {
   /* ---- Typography -----------------------------------------------------
    * `--font-display`/`--font-sans`/`--font-mono` resolve to the
@@ -545,4 +553,24 @@ body {
 .heyloo-tenant-branded {
   --primary: var(--tenant-primary, var(--primary));
   --accent: var(--tenant-accent, var(--accent));
+}
+
+/* ---- Calendar (react-day-picker v10) -------------------------------------
+ * Re-points the library's default stylesheet variables at Heyloo tokens so
+ * the month grid follows light/dark and per-tenant branding (`--primary` is
+ * remapped inside `.heyloo-tenant-branded`). Day cells and nav buttons stay
+ * >= 44px for touch. */
+.rdp-root {
+  --rdp-accent-color: var(--primary);
+  --rdp-accent-background-color: color-mix(in oklab, var(--primary) 16%, transparent);
+  --rdp-range_start-color: var(--primary-foreground);
+  --rdp-range_end-color: var(--primary-foreground);
+  --rdp-today-color: var(--accent-text);
+  --rdp-nav_button-height: 2.75rem;
+  --rdp-nav_button-width: 2.75rem;
+  --rdp-nav-height: 2.75rem;
+}
+
+.rdp-root .rdp-chevron {
+  fill: currentColor;
 }
