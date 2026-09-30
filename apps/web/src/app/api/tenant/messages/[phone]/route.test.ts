@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 function chain(result: unknown) {
   const obj: Record<string, unknown> = {};
-  for (const method of ["select", "eq", "gte", "limit", "maybeSingle", "insert"]) {
+  for (const method of ["select", "eq", "gte", "limit", "maybeSingle", "insert", "update"]) {
     obj[method] = vi.fn(() => obj);
   }
   // biome-ignore lint/suspicious/noThenProperty: intentional thenable mock of a Supabase query-builder chain.
@@ -113,6 +113,32 @@ describe("POST /api/tenant/messages/[phone]", () => {
     expect(rpcMock).toHaveBeenCalledWith("fn_enqueue_message_outbound", {
       p_message_id: "m1",
     });
+  });
+
+  it("fails the request (502) and marks the row failed when the enqueue RPC errors (QA-1 F-11)", async () => {
+    serverQueue = {};
+    serviceQueue = {
+      customers: [{ data: { sms_opt_out: false }, error: null }],
+      messages_outbound: [
+        { count: 0, data: null, error: null },
+        { data: { id: "m-enq" }, error: null },
+        { data: null, error: null },
+      ],
+    };
+    rpcMock = vi.fn(async (..._args: unknown[]) => ({
+      data: null,
+      error: { message: "pgmq down" },
+    }));
+    mockGetUser = async () => ({ data: { user: mockUser } });
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await POST(postRequest({ body: "hi" }), {
+      params: Promise.resolve({ phone: "+15551234567" }),
+    });
+    errSpy.mockRestore();
+    rpcMock = vi.fn(async (..._args: unknown[]) => ({ data: null, error: null }));
+    expect(res.status).toBe(502);
+    // the follow-up status update consumed the third queued result
+    expect(serviceQueue["messages_outbound"]).toHaveLength(0);
   });
 
   it("rejects a non-E.164 path segment with 422 and never inserts it as the recipient (QA-1 SEC-10 / F-22)", async () => {

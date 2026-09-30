@@ -127,7 +127,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ pho
     p_message_id: message.id,
   });
   if (enqueueError) {
+    // The row would sit at 'queued' forever and the client would record a "You"
+    // message that never goes out (QA-1 F-11): fail the row and the request.
     console.error("fn_enqueue_message_outbound failed", enqueueError);
+    await service
+      .from("messages_outbound")
+      .update({ status: "failed", error: "enqueue_failed" })
+      .eq("id", message.id)
+      .eq("tenant_id", claims.tenant_id);
+    return NextResponse.json({ error: "send_failed" }, { status: 502 });
   }
 
   return NextResponse.json({ ok: true, message_id: message.id });
