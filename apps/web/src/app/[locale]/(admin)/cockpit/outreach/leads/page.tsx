@@ -1,8 +1,7 @@
 "use client";
 
-import { VERTICALS } from "@heyloo/canonical-types";
 import {
-  Button,
+  Callout,
   DataState,
   Input,
   type LeadRowData,
@@ -15,7 +14,6 @@ import {
   SelectValue,
 } from "@heyloo/ui";
 import { useState } from "react";
-import { toast } from "sonner";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
 import { buildLeadsQueryString, type LeadsSort } from "./query";
 
@@ -53,9 +51,6 @@ const SORT_OPTIONS: { value: LeadsSort; label: string }[] = [
 ];
 
 export default function LeadsPage() {
-  const [vertical, setVertical] = useState("generic");
-  const [source, setSource] = useState<"apollo" | "outscraper" | "apify">("apollo");
-  const [triggering, setTriggering] = useState(false);
   // OUTREACH-2: sort/filter by phone-complaint score (job-outreach-review-
   // score's own output) — re-ranks the same fetch batch toward the
   // highest-intent leads before personalize/send picks them up.
@@ -69,58 +64,18 @@ export default function LeadsPage() {
     `admin-outreach/leads${queryString ? `?${queryString}` : ""}`,
   );
 
-  async function trigger() {
-    setTriggering(true);
-    const res = await fetch("/api/admin/admin-outreach/leads", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ vertical, source }),
-    });
-    setTriggering(false);
-    if (res.ok) toast.success("Lead fetch job queued");
-    else toast.error("Lead fetch isn't available yet.");
-  }
-
   return (
     <div className="space-y-6">
-      <PageHeader title="Leads" description="Pull fresh prospect lists from a sourcing provider." />
-      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-border p-4 shadow-xs">
-        <div>
-          <label htmlFor="leads-vertical" className="mb-1 block text-micro text-muted-foreground">
-            Vertical
-          </label>
-          <Select value={vertical} onValueChange={setVertical}>
-            <SelectTrigger id="leads-vertical" className="w-40">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {VERTICALS.map((v) => (
-                <SelectItem key={v} value={v} className="capitalize">
-                  {v.replace(/_/g, " ")}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div>
-          <label htmlFor="leads-source" className="mb-1 block text-micro text-muted-foreground">
-            Source
-          </label>
-          <Select value={source} onValueChange={(v) => setSource(v as typeof source)}>
-            <SelectTrigger id="leads-source" className="w-40">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="apollo">Apollo</SelectItem>
-              <SelectItem value="outscraper">Outscraper</SelectItem>
-              <SelectItem value="apify">Apify</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <Button onClick={trigger} disabled={triggering}>
-          Fetch leads
-        </Button>
-      </div>
+      <PageHeader title="Leads" description="Prospects already sourced for outbound campaigns." />
+      {/* COCKPIT-F09: the "Fetch leads" button POSTed to a route that does not
+          exist (leads is GET-only on the admin function), so it always failed.
+          The sourcing job (`api-outreach-fetch-leads`, Apollo/Outscraper) has
+          per-source parameters and spends provider credit, so it is not exposed
+          here until it has its own confirmed form. */}
+      <Callout tone="info" title="Lead sourcing isn't run from the cockpit yet">
+        This list shows the leads that are already in the database. Fetching a new list from Apollo
+        or Outscraper is not wired to this page.
+      </Callout>
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-border p-4 shadow-xs">
         <div>
           <label htmlFor="leads-sort" className="mb-1 block text-micro text-muted-foreground">
@@ -160,7 +115,7 @@ export default function LeadsPage() {
         query={query}
         empty={{
           title: "No leads fetched yet",
-          description: "Choose a vertical and source, then Fetch leads.",
+          description: "Leads appear here once they have been sourced.",
           isEmpty: (d) => (d?.leads?.length ?? 0) === 0,
         }}
         render={(data) => <LeadTable data={data.leads.map(toLeadRow)} />}

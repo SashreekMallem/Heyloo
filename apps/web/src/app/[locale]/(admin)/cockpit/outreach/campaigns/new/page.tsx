@@ -23,6 +23,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { useRouter } from "@/i18n/navigation";
+import { describeCampaignCreateFailure } from "./create-campaign";
 
 export default function NewCampaignPage() {
   const router = useRouter();
@@ -47,9 +48,12 @@ export default function NewCampaignPage() {
     if (res.ok) {
       toast.success("Campaign created");
       router.push("/cockpit/outreach/campaigns");
-    } else {
-      toast.error("Couldn't create the campaign yet — backend endpoint pending.");
+      return;
     }
+    const body: unknown = await res.json().catch(() => null);
+    const failure = describeCampaignCreateFailure(res.status, body);
+    for (const { field, message } of failure.fieldErrors) form.setError(field, { message });
+    toast.error(failure.message);
   }
 
   return (
@@ -101,7 +105,7 @@ export default function NewCampaignPage() {
               <FormItem>
                 <FormLabel>Sending domain</FormLabel>
                 <FormControl>
-                  <Input {...field} />
+                  <Input {...field} placeholder="mail.example.com" autoComplete="off" />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -116,6 +120,8 @@ export default function NewCampaignPage() {
                 <FormControl>
                   <Input
                     type="number"
+                    min={1}
+                    max={2000}
                     {...field}
                     onChange={(e) => field.onChange(Number(e.target.value))}
                   />
@@ -129,9 +135,13 @@ export default function NewCampaignPage() {
             name="template_id"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Template ID</FormLabel>
+                <FormLabel>Template ID (optional)</FormLabel>
                 <FormControl>
-                  <Input {...field} />
+                  <Input
+                    {...field}
+                    value={field.value ?? ""}
+                    placeholder="A template UUID, or leave blank"
+                  />
                 </FormControl>
                 <FormMessage />
               </FormItem>

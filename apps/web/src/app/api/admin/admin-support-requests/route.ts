@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireAdminApiSession } from "@/app/api/admin/_lib/admin-auth";
+import { adminRoute, requireAdminApiSession } from "@/app/api/admin/_lib/admin-auth";
 import { createSupabaseServiceRoleServerClient } from "@/lib/supabase/service-role";
 
 export const runtime = "nodejs";
@@ -20,7 +20,7 @@ function isTicketStatus(value: string): value is TicketStatus {
  * the edge function later for consistency with the rest of `/api/admin/*`.
  * `platform_admin`-gated the same way `api/admin/[...path]/route.ts` is.
  */
-export async function GET(request: Request) {
+export const GET = adminRoute(async function GET(request: Request) {
   const session = await requireAdminApiSession();
   if (!session.ok) return session.response;
 
@@ -52,4 +52,4 @@ export async function GET(request: Request) {
   return NextResponse.json({
     rows: (data ?? []).map((r) => ({ ...r, tenant_name: nameById.get(r.tenant_id) ?? "—" })),
   });
-}
+});

@@ -28,6 +28,7 @@ import {
   TableRow,
   Textarea,
 } from "@heyloo/ui";
+import { useQueryClient } from "@tanstack/react-query";
 import { use, useState } from "react";
 import { toast } from "sonner";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
@@ -43,8 +44,12 @@ interface TenantDetail {
 }
 
 interface TenantMetrics {
-  mrr_cents: number;
-  margin_pct: number;
+  /** null = no live Stripe subscription, so no recurring revenue (COCKPIT-F14). */
+  mrr_cents: number | null;
+  /** The plan's list price; shown only as a caption when there is no subscription. */
+  list_price_cents?: number;
+  /** null = no paid revenue this month, so no margin (COCKPIT-F12). */
+  margin_pct: number | null;
   minutes_used: number;
 }
 
@@ -105,6 +110,7 @@ function RecentCalls({ calls, loading }: { calls: RecentCall[] | undefined; load
 
 export default function TenantDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const queryClient = useQueryClient();
   const query = useAdminQuery<TenantDetailResponse>("tenant-detail", [id], `admin-tenants/${id}`);
   // Read-only observability: this tenant's recent calls with provider cost
   // (same route as the margin drill-down — includes test calls, flagged).
@@ -112,62 +118,97 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
     "tenant-recent-calls",
     [id],
     `admin-cockpit/per-customer-margin/${id}?period=quarter`,
+    // Dependent card: never fetched (or shown) while the tenant itself failed to load.
+    { enabled: query.isSuccess },
   );
   const [impersonateOpen, setImpersonateOpen] = useState(false);
   const [suspendOpen, setSuspendOpen] = useState(false);
-  const [reason, setReason] = useState("");
+  const [impersonateReason, setImpersonateReason] = useState("");
+  const [suspendReason, setSuspendReason] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  function refresh() {
+    return queryClient.invalidateQueries({ queryKey: ["admin", "tenant-detail", id] });
+  }
 
   async function impersonate() {
-    if (!reason.trim()) {
-      toast.error("A reason is required for the audit log.");
-      return;
+    const reason = impersonateReason.trim();
+    if (!reason) return; // the confirm button is disabled until a reason is typed
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/admin/admin-tenants/${id}/impersonate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tenant_id: id, reason }),
+      });
+      // A failure leaves the dialog (and the typed reason) open so it can be retried.
+      if (!res.ok) {
+        toast.error(
+          res.status === 501
+            ? "Impersonation isn't available yet."
+            : "Couldn't start impersonation — please try again.",
+        );
+        return;
+      }
+      const body = (await res.json()) as {
+        impersonation_link?: string;
+        tenant_id?: string;
+        expires_at?: string;
+      };
+      if (!body.impersonation_link || !body.expires_at) {
+        toast.error("Impersonation isn't available yet.");
+        return;
+      }
+      const {
+        data: { session: adminSession },
+      } = await supabaseBrowserClient.auth.getSession();
+      startImpersonation({
+        tenantId: id,
+        tenantName: query.data?.tenant.name ?? "this tenant",
+        adminEmail: adminSession?.user.email ?? "an admin",
+        expiresAt: body.expires_at,
+        editMode: false,
+      });
+      setImpersonateOpen(false);
+      window.open(body.impersonation_link, "_blank", "noopener");
+      toast.success("Impersonation session started in a new tab");
+    } finally {
+      setBusy(false);
     }
-    const res = await fetch(`/api/admin/admin-tenants/${id}/impersonate`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tenant_id: id, reason }),
-    });
-    setImpersonateOpen(false);
-    if (!res.ok) {
-      toast.error(
-        res.status === 501
-          ? "Impersonation isn't available yet."
-          : "Couldn't start impersonation — please try again.",
-      );
-      return;
+  }
+
+  /** PATCH the tenant's status; the reason (required to pause) is stored in the audit row. */
+  async function setStatus(status: "paused" | "active", reason?: string) {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/admin/admin-tenants/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status, ...(reason ? { reason } : {}) }),
+      });
+      if (!res.ok) {
+        toast.error(
+          status === "paused"
+            ? "Couldn't suspend the tenant. Nothing was changed."
+            : "Couldn't resume the tenant. Nothing was changed.",
+        );
+        return false;
+      }
+      toast.success(status === "paused" ? "Tenant suspended" : "Tenant resumed");
+      await refresh();
+      return true;
+    } finally {
+      setBusy(false);
     }
-    const body = (await res.json()) as {
-      impersonation_link?: string;
-      tenant_id?: string;
-      expires_at?: string;
-    };
-    if (!body.impersonation_link || !body.expires_at) {
-      toast.error("Impersonation isn't available yet.");
-      return;
-    }
-    const {
-      data: { session: adminSession },
-    } = await supabaseBrowserClient.auth.getSession();
-    startImpersonation({
-      tenantId: id,
-      tenantName: query.data?.tenant.name ?? "this tenant",
-      adminEmail: adminSession?.user.email ?? "an admin",
-      expiresAt: body.expires_at,
-      editMode: false,
-    });
-    window.open(body.impersonation_link, "_blank", "noopener");
-    toast.success("Impersonation session started in a new tab");
   }
 
   async function suspend() {
-    const res = await fetch(`/api/admin/admin-tenants/${id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tenant_id: id, reason, status: "paused" }),
-    });
-    setSuspendOpen(false);
-    if (res.ok) toast.success("Tenant suspended");
-    else toast.error("Couldn't suspend the tenant yet.");
+    const reason = suspendReason.trim();
+    if (!reason) return; // the confirm button is disabled until a reason is typed
+    if (await setStatus("paused", reason)) {
+      setSuspendOpen(false);
+      setSuspendReason("");
+    }
   }
 
   return (
@@ -185,29 +226,50 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
                   <Button variant="outline" onClick={() => setImpersonateOpen(true)}>
                     Impersonate
                   </Button>
-                  <Button variant="destructive" onClick={() => setSuspendOpen(true)}>
-                    Suspend
-                  </Button>
+                  {tenant.status === "paused" ? (
+                    <Button disabled={busy} onClick={() => void setStatus("active")}>
+                      Resume tenant
+                    </Button>
+                  ) : (
+                    tenant.status !== "canceled" && (
+                      <Button variant="destructive" onClick={() => setSuspendOpen(true)}>
+                        Suspend
+                      </Button>
+                    )
+                  )}
                 </>
               }
             />
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <MetricCard label="MRR" value={metrics.mrr_cents} format="currency" />
-              <MetricCard label="Margin %" value={metrics.margin_pct} format="percent" />
+              <div className="space-y-1">
+                <MetricCard label="MRR" value={metrics.mrr_cents ?? Number.NaN} format="currency" />
+                {metrics.mrr_cents === null && (
+                  <p className="text-xs text-muted-foreground">
+                    No active subscription
+                    {metrics.list_price_cents
+                      ? ` · list price ${formatCentsUSD(metrics.list_price_cents)}/mo`
+                      : ""}
+                  </p>
+                )}
+              </div>
+              <MetricCard
+                label="Margin %"
+                value={metrics.margin_pct ?? Number.NaN}
+                format="percent"
+              />
               <MetricCard label="Minutes used" value={metrics.minutes_used} format="number" />
             </div>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Recent calls</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <RecentCalls calls={callsQuery.data?.calls} loading={callsQuery.isLoading} />
+              </CardContent>
+            </Card>
           </>
         )}
       />
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Recent calls</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <RecentCalls calls={callsQuery.data?.calls} loading={callsQuery.isLoading} />
-        </CardContent>
-      </Card>
 
       <AlertDialog open={impersonateOpen} onOpenChange={setImpersonateOpen}>
         <AlertDialogContent>
@@ -220,12 +282,22 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
           </AlertDialogHeader>
           <Input
             placeholder="Reason (required)"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
+            aria-label="Impersonation reason"
+            value={impersonateReason}
+            onChange={(e) => setImpersonateReason(e.target.value)}
           />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={impersonate}>Start impersonation</AlertDialogAction>
+            <AlertDialogAction
+              disabled={busy || !impersonateReason.trim()}
+              onClick={(e) => {
+                // Keep the dialog open until the request finishes (it closes itself in `impersonate`).
+                e.preventDefault();
+                void impersonate();
+              }}
+            >
+              Start impersonation
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -235,17 +307,27 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
           <AlertDialogHeader>
             <AlertDialogTitle>Suspend this tenant?</AlertDialogTitle>
             <AlertDialogDescription>
-              This stops their AI answering calls immediately.
+              This stops their AI answering calls immediately. You can resume them from this page.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <Textarea
             placeholder="Reason (required)"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
+            aria-label="Suspension reason"
+            value={suspendReason}
+            onChange={(e) => setSuspendReason(e.target.value)}
           />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={suspend}>Suspend tenant</AlertDialogAction>
+            <AlertDialogAction
+              disabled={busy || !suspendReason.trim()}
+              onClick={(e) => {
+                // A failed request must not silently close the dialog and drop the typed reason.
+                e.preventDefault();
+                void suspend();
+              }}
+            >
+              Suspend tenant
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -111,6 +111,22 @@ export async function impersonatedByFromSupabaseClient(
 
 export type Aal = "aal1" | "aal2";
 
+/**
+ * COCKPIT-F01: the session's Authenticator Assurance Level, read from the
+ * verified JWT's own `aal` claim (the token the edge function checks too),
+ * not from a separate MFA call that could disagree with it. `null` when there
+ * is no verifiable session or no `aal` claim; every caller must treat that as
+ * NOT aal2 (fail closed).
+ */
+export async function aalFromSupabaseClient(
+  supabase: Pick<SupabaseClient, "auth">,
+): Promise<Aal | null> {
+  const { data, error } = await supabase.auth.getClaims();
+  if (error || !data) return null;
+  const aal = (data.claims as { aal?: unknown }).aal;
+  return aal === "aal1" || aal === "aal2" ? aal : null;
+}
+
 /** Supabase's built-in Authenticator Assurance Level claim (not a custom claim — set by GoTrue itself once an MFA factor is verified). Read from the user's session via `supabase.auth.mfa.getAuthenticatorAssuranceLevel()` at call sites; this type alias just documents the shape. */
 export interface AalStatus {
   currentLevel: Aal | null;

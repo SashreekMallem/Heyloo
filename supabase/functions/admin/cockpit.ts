@@ -601,18 +601,31 @@ export async function handleCockpit(sql: SqlClient, ctx: CockpitContext): Promis
 
   if (page === "per-customer-margin" && parts[2]) {
     const tenantId = parts[2];
+    // COCKPIT-F13: the list applies `include_test`; this drill-down always used
+    // `true`, so the same tenant/period showed cost 16c on the list and 380c
+    // here. It now honors the flag the list was opened with. A TEST tenant only
+    // exists in the include-test view, so its own page always shows its data.
+    const allRows = await loadMarginRows(sql, win, true);
+    const anyRow = allRows.find((r) => r.tenant_id === tenantId);
+    if (!anyRow) return { status: 404, body: { error: "tenant_not_found" } };
+    const effectiveIncludeTest = includeTest || anyRow.is_test;
     const [rows, included, calls] = await Promise.all([
-      loadMarginRows(sql, win, true),
+      effectiveIncludeTest ? Promise.resolve(allRows) : loadMarginRows(sql, win, false),
       loadIncludedMinutes(sql),
-      loadCalls(sql, { includeTest: true, tenantId, start: win.start, end: win.end }),
+      loadCalls(sql, {
+        includeTest: effectiveIncludeTest,
+        tenantId,
+        start: win.start,
+        end: win.end,
+      }),
     ]);
-    const row = rows.find((r) => r.tenant_id === tenantId);
-    if (!row) return { status: 404, body: { error: "tenant_not_found" } };
+    const row = rows.find((r) => r.tenant_id === tenantId) ?? anyRow;
     const diagnosis = diagnoseMargin(row, included.get(row.vertical) ?? null);
     return {
       status: 200,
       body: {
         ...windowBody,
+        include_test: effectiveIncludeTest,
         tenant: { id: row.tenant_id, name: row.name, vertical: row.vertical, is_test: row.is_test },
         summary: { ...row, ...diagnosis },
         calls,
@@ -708,13 +721,24 @@ export async function handleCockpit(sql: SqlClient, ctx: CockpitContext): Promis
         group by tool_name, date_trunc('hour', occurred_at)
         order by date_trunc('hour', occurred_at)
       `,
-      sql<{ tool_name: string; calls: unknown; error_rate: unknown; p95_ms: unknown }>`
-        select tool_name, count(*)::int as calls,
-               (count(*) filter (where not success))::numeric / nullif(count(*), 0) as error_rate,
-               percentile_cont(0.95) within group (order by latency_ms) as p95_ms
-        from public.tool_health
-        where occurred_at >= now() - interval '1 hour'
-        group by tool_name
+      sql<{
+        tool_name: string;
+        calls: unknown;
+        error_rate: unknown;
+        p95_ms: unknown;
+        top_error_type: string | null;
+      }>`
+        select th.tool_name, count(*)::int as calls,
+               (count(*) filter (where not th.success))::numeric / nullif(count(*), 0) as error_rate,
+               percentile_cont(0.95) within group (order by th.latency_ms) as p95_ms,
+               -- COCKPIT-F11: the failure reason to show next to the error rate.
+               (select f.error_type from public.tool_health f
+                where f.tool_name = th.tool_name and not f.success and f.error_type is not null
+                  and f.occurred_at >= now() - interval '1 hour'
+                group by f.error_type order by count(*) desc, f.error_type limit 1) as top_error_type
+        from public.tool_health th
+        where th.occurred_at >= now() - interval '1 hour'
+        group by th.tool_name
         order by p95_ms desc nulls last
       `,
     ]);
@@ -740,6 +764,7 @@ export async function handleCockpit(sql: SqlClient, ctx: CockpitContext): Promis
           calls: n(r.calls),
           error_rate: n(r.error_rate),
           p95_ms: n(r.p95_ms),
+          top_error_type: r.top_error_type ?? null,
         })),
       },
     };

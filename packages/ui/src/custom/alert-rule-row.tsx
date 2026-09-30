@@ -1,6 +1,6 @@
 "use client";
 
-import { Beaker, Pencil } from "lucide-react";
+import { Beaker, Pencil, Trash2 } from "lucide-react";
 import { Button } from "../primitives/button.js";
 import { Switch } from "../primitives/switch.js";
 import { TableCell, TableRow } from "../primitives/table.js";
@@ -19,11 +19,14 @@ export interface AlertRuleRowProps {
   rule: AlertRule;
   onEdit: (rule: AlertRule) => void;
   onToggle: (rule: AlertRule, enabled: boolean) => void;
-  onTest: (rule: AlertRule) => void;
+  /** Omit to hide the Test action (COCKPIT-F24: no test endpoint exists yet, so the button always failed). */
+  onTest?: (rule: AlertRule) => void;
+  /** Omit to hide the Delete action; the caller owns the confirm step. */
+  onDelete?: (rule: AlertRule) => void;
 }
 
 /** One alert-rule row + edit affordance — admin alerts (FRONTEND_SPEC.md §1.3/§7.1.9). "Test alert" sends a sample through the real channel. */
-export function AlertRuleRow({ rule, onEdit, onToggle, onTest }: AlertRuleRowProps) {
+export function AlertRuleRow({ rule, onEdit, onToggle, onTest, onDelete }: AlertRuleRowProps) {
   return (
     <TableRow>
       <TableCell className="font-medium">{rule.metric.replace(/_/g, " ")}</TableCell>
@@ -41,9 +44,16 @@ export function AlertRuleRow({ rule, onEdit, onToggle, onTest }: AlertRuleRowPro
         <Button size="sm" variant="ghost" onClick={() => onEdit(rule)}>
           <Pencil className="size-3.5" /> Edit
         </Button>
-        <Button size="sm" variant="outline" onClick={() => onTest(rule)}>
-          <Beaker className="size-3.5" /> Test
-        </Button>
+        {onTest && (
+          <Button size="sm" variant="outline" onClick={() => onTest(rule)}>
+            <Beaker className="size-3.5" /> Test
+          </Button>
+        )}
+        {onDelete && (
+          <Button size="sm" variant="ghost" onClick={() => onDelete(rule)}>
+            <Trash2 className="size-3.5" /> Delete
+          </Button>
+        )}
       </TableCell>
     </TableRow>
   );

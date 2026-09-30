@@ -20,6 +20,8 @@ interface CallCostRow {
 }
 
 interface TenantMarginDetail {
+  /** Whether test calls are in the numbers below (a test tenant always shows its own). */
+  include_test?: boolean;
   tenant: { id: string; name: string; vertical: string; is_test: boolean };
   summary: {
     revenue_cents: number;
@@ -81,12 +83,13 @@ export default function TenantMarginDetailPage({
   params: Promise<{ tenantId: string }>;
 }) {
   const { tenantId } = use(params);
-  const { period, qs, controls } = useMarginControls({ withPeriod: true, withTestToggle: false });
-  // A single tenant's page always shows all of that tenant's data (the
-  // include-test switch only matters on the cross-tenant pages).
+  // COCKPIT-F13: the include-test choice made on the customer list carries over to
+  // this drill-down (shared through the margin layout), so a customer's cost here
+  // matches the list; the switch is shown so it can be changed in place.
+  const { period, includeTest, qs, controls } = useMarginControls({ withPeriod: true });
   const query = useAdminQuery<TenantMarginDetail>(
     "per-customer-margin-detail",
-    [tenantId, period],
+    [tenantId, period, includeTest],
     `admin-cockpit/per-customer-margin/${tenantId}${qs}`,
   );
 
@@ -94,7 +97,9 @@ export default function TenantMarginDetailPage({
     <div className="space-y-6">
       <PageHeader
         title={query.data?.tenant.name ?? "Tenant margin detail"}
-        description="Per-call cost vs. billed for this customer."
+        description={`Per-call cost vs. billed for this customer. ${
+          query.data?.include_test ? "Includes test calls." : "Real calls only."
+        }`}
         actions={controls}
       />
       <DataState

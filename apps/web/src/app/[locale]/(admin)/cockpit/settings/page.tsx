@@ -26,6 +26,7 @@ import {
 } from "@heyloo/ui";
 import { useState } from "react";
 import { toast } from "sonner";
+import { z } from "zod";
 import { useAdminQuery } from "@/lib/hooks/use-admin-query";
 
 interface PriceCard {
@@ -36,8 +37,23 @@ interface PriceCard {
   text_conversation_overage_cents?: number;
 }
 
+/**
+ * COCKPIT-F06: the only rule the referral SQL function (`fn_check_referral_
+ * qualification`) reads is `paid_invoices_gte` + a paid-invoice count, so the
+ * form edits exactly that instead of free text nothing consumes.
+ */
+const QUALIFICATION_RULE = "paid_invoices_gte";
+const referralFormSchema = adminReferralSettingSchema.extend({
+  qualification_rule: z.literal(QUALIFICATION_RULE),
+  qualification_value: z.number().int().min(1).max(24),
+});
+
 interface PlatformSettingsResponse {
-  referral: { flat_amount_cents: number; qualification_rule: string };
+  referral: {
+    flat_amount_cents: number;
+    qualification_rule: string;
+    qualification_value?: number;
+  };
   price_cards: Record<string, PriceCard | null>;
 }
 
@@ -55,12 +71,13 @@ function ReferralTab({
   onSaved: () => void;
 }) {
   const [flatAmount, setFlatAmount] = useState<number | undefined>(initial.flat_amount_cents);
-  const [rule, setRule] = useState(initial.qualification_rule);
+  const [paidInvoices, setPaidInvoices] = useState(initial.qualification_value ?? 2);
 
   async function saveReferral() {
-    const parsed = adminReferralSettingSchema.safeParse({
+    const parsed = referralFormSchema.safeParse({
       flat_amount_cents: flatAmount,
-      qualification_rule: rule,
+      qualification_rule: QUALIFICATION_RULE,
+      qualification_value: paidInvoices,
     });
     if (!parsed.success) {
       toast.error("Check the referral settings.");
@@ -88,14 +105,22 @@ function ReferralTab({
         <CentsInput id="referral-flat-amount" value={flatAmount} onChange={setFlatAmount} />
       </div>
       <div className="space-y-1">
-        <label htmlFor="referral-qualification-rule" className="text-sm font-medium">
-          Qualification rule
+        <label htmlFor="referral-paid-invoices" className="text-sm font-medium">
+          Paid invoices before a referral qualifies
         </label>
-        <Textarea
-          id="referral-qualification-rule"
-          value={rule}
-          onChange={(e) => setRule(e.target.value)}
+        <Input
+          id="referral-paid-invoices"
+          type="number"
+          min={1}
+          max={24}
+          step={1}
+          value={paidInvoices}
+          onChange={(e) => setPaidInvoices(Number(e.target.value))}
         />
+        <p className="text-xs text-muted-foreground">
+          The referred customer must have this many paid invoices; the flat amount is then accrued
+          once for the partner.
+        </p>
       </div>
       <Button onClick={saveReferral}>Save</Button>
     </TabsContent>
@@ -374,7 +399,13 @@ export default function PlatformSettingsPage() {
               <TabsTrigger value="fees">Fees</TabsTrigger>
             </TabsList>
             <ReferralTab
-              initial={data.referral ?? { flat_amount_cents: 0, qualification_rule: "" }}
+              initial={
+                data.referral ?? {
+                  flat_amount_cents: 0,
+                  qualification_rule: QUALIFICATION_RULE,
+                  qualification_value: 2,
+                }
+              }
               onSaved={() => void settingsQuery.refetch()}
             />
             <PricingTab
@@ -384,14 +415,25 @@ export default function PlatformSettingsPage() {
               initial={data.price_cards?.[vertical] ?? null}
               onSaved={() => void settingsQuery.refetch()}
             />
-            {feesQuery.data && (
+            {feesQuery.data ? (
               <FeesTab
                 key={`fees-${vertical}`}
                 vertical={vertical}
                 onVerticalChange={setVertical}
-                initial={feesQuery.data?.fees?.[vertical] ?? DEFAULT_VERTICAL_FEES}
+                initial={feesQuery.data.fees?.[vertical] ?? DEFAULT_VERTICAL_FEES}
                 onSaved={() => void feesQuery.refetch()}
               />
+            ) : (
+              // COCKPIT-F03: a failed/loading fees read used to leave the tab
+              // header with an empty panel; show the same loading / retry
+              // state every other admin read gets.
+              <TabsContent value="fees" className="space-y-4">
+                <DataState
+                  query={feesQuery}
+                  empty={{ title: "No fee settings found" }}
+                  render={() => null}
+                />
+              </TabsContent>
             )}
           </Tabs>
         )}

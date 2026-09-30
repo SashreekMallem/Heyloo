@@ -4,6 +4,7 @@
 // verification alone is not treated as sufficient), same pattern as
 // `admin/index.ts`.
 
+import type { AdminJwtClaims } from "../_shared/admin-auth.ts";
 import { isAal2, isPlatformAdmin } from "../_shared/admin-auth.ts";
 import { getSql } from "../_shared/deno/db.ts";
 import { requireEnv } from "../_shared/deno/env.ts";
@@ -16,9 +17,7 @@ const logger = createLogger({ fn: "api-outreach-fetch-leads" });
 const APOLLO_API_KEY = requireEnv("APOLLO_API_KEY");
 const OUTSCRAPER_API_KEY = requireEnv("OUTSCRAPER_API_KEY");
 
-interface DecodedClaims {
-  app_metadata?: { platform_admin?: boolean };
-}
+type DecodedClaims = AdminJwtClaims;
 
 function decodeJwtPayload(authHeader: string | null): DecodedClaims | null {
   if (!authHeader?.startsWith("Bearer ")) return null;
@@ -41,7 +40,9 @@ Deno.serve(async (req: Request) => {
   if (!isPlatformAdmin(claims)) {
     return jsonResponse({ error: "not_a_platform_admin" }, { status: 403 });
   }
-  // SEC-01: admin authority requires an aal2 (MFA-completed) session.
+  // COCKPIT-F01: this function spends Apollo/Outscraper credit and is directly
+  // callable with the admin's bearer token, so a password-only (AAL1) session
+  // is refused here exactly as on every `admin` route.
   if (!isAal2(claims)) {
     return jsonResponse({ error: "aal2_required" }, { status: 403 });
   }

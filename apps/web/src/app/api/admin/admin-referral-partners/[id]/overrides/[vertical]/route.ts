@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  adminRoute,
   fromUntypedTable,
   requireAdminApiSession,
   writeAdminAction,
@@ -15,7 +16,10 @@ export const runtime = "nodejs";
 type Params = { id: string; vertical: string };
 
 /** Per-vertical commission override (Cluster H task brief item 4 — any NULL column here falls back to the partner-level value, never a platform default, per the migration's own comment). */
-export async function PUT(request: Request, { params }: { params: Promise<Params> }) {
+export const PUT = adminRoute(async function PUT(
+  request: Request,
+  { params }: { params: Promise<Params> },
+) {
   const session = await requireAdminApiSession();
   if (!session.ok) return session.response;
   const { id, vertical } = await params;
@@ -79,9 +83,12 @@ export async function PUT(request: Request, { params }: { params: Promise<Params
   });
 
   return NextResponse.json({ override: after });
-}
+});
 
-export async function DELETE(_request: Request, { params }: { params: Promise<Params> }) {
+export const DELETE = adminRoute(async function DELETE(
+  _request: Request,
+  { params }: { params: Promise<Params> },
+) {
   const session = await requireAdminApiSession();
   if (!session.ok) return session.response;
   const { id, vertical } = await params;
@@ -110,4 +117,4 @@ export async function DELETE(_request: Request, { params }: { params: Promise<Pa
   });
 
   return NextResponse.json({ ok: true });
-}
+});

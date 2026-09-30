@@ -33,6 +33,8 @@ import {
   AdminReferralSettingSchema,
   AdminSupportRequestNoteSchema,
   AdminSupportRequestUpdateSchema,
+  AdminTenantPatchSchema,
+  OutreachCampaignCreateSchema,
   PlatformPricingTableSchema,
   VERTICALS,
 } from "./schemas.ts";
@@ -142,6 +144,11 @@ function isImpersonationSelfServicePath(path: string): boolean {
   );
 }
 
+/** A tenant that is actually being billed: a Stripe subscription exists AND it is in a billing status. */
+function hasLiveSubscription(status: string, subscriptionId: string | null): boolean {
+  return !!subscriptionId && (status === "active" || status === "past_due");
+}
+
 async function handleTenants(
   sql: SqlClient,
   ctx: AdminRequestContext,
@@ -164,11 +171,12 @@ async function handleTenants(
       status: string;
       plan_code: string | null;
       created_at: string;
+      stripe_subscription_id: string | null;
       base_cents: unknown;
       revenue_cents: unknown;
       margin_cents: unknown;
     }>`
-      select t.id, t.name, t.vertical, t.status, t.plan_code, t.created_at,
+      select t.id, t.name, t.vertical, t.status, t.plan_code, t.created_at, t.stripe_subscription_id,
              (ps.value->>'base_cents')::numeric as base_cents,
              m.revenue_cents, m.margin_cents
       from public.tenants t
@@ -193,8 +201,13 @@ async function handleTenants(
             status: r.status,
             plan_code: r.plan_code,
             created_at: r.created_at,
-            mrr_cents:
-              r.status === "active" || r.status === "past_due" ? toNumber(r.base_cents) : 0,
+            // COCKPIT-F14: MRR only for a tenant with a live Stripe subscription;
+            // a tenant without one has no recurring revenue, whatever its plan's
+            // list price says (`list_price_cents`, shown separately).
+            mrr_cents: hasLiveSubscription(r.status, r.stripe_subscription_id)
+              ? toNumber(r.base_cents)
+              : null,
+            list_price_cents: toNumber(r.base_cents),
             margin_pct: revenue > 0 ? (toNumber(r.margin_cents) / revenue) * 100 : null,
           };
         }),
@@ -241,12 +254,21 @@ async function handleTenants(
       select (value->>'base_cents')::numeric as base_cents
       from public.platform_settings where key = ${`price_card_${String(tenant["vertical"])}`}
     `;
-    const billing = tenant["status"] === "active" || tenant["status"] === "past_due";
+    const listPriceCents = toNumber(baseRows[0]?.base_cents);
 
     const metrics = {
-      mrr_cents: billing ? toNumber(baseRows[0]?.base_cents) : 0,
-      margin_pct: revenueCents > 0 ? (marginCents / revenueCents) * 100 : 0,
-      minutes_used: Number(minutesRows[0]?.minutes_used ?? 0),
+      // COCKPIT-F14: null (not 0, not the list price) without a live subscription.
+      mrr_cents: hasLiveSubscription(
+        String(tenant["status"]),
+        (tenant["stripe_subscription_id"] as string | null | undefined) ?? null,
+      )
+        ? listPriceCents
+        : null,
+      list_price_cents: listPriceCents,
+      // COCKPIT-F12: no paid revenue means no margin, never a fabricated 0.0%.
+      margin_pct: revenueCents > 0 ? (marginCents / revenueCents) * 100 : null,
+      // Rounded to one decimal (was "3.567").
+      minutes_used: Math.round(Number(minutesRows[0]?.minutes_used ?? 0) * 10) / 10,
     };
 
     return { status: 200, body: { tenant, metrics } };
@@ -258,19 +280,24 @@ async function handleTenants(
     )[0];
     if (!before) return { status: 404, body: { error: "tenant_not_found" } };
 
-    const patch = (ctx.body ?? {}) as Record<string, unknown>;
-    const allowedFields = new Set([
-      "status",
-      "usage_hard_cap_minutes",
-      "manual_mode",
-      "retention_days",
-    ]);
+    // COCKPIT-F16: validate before the values reach SQL (an unknown status or a
+    // fractional cap used to hit the CHECK / int cast as a 500).
+    const parsed = AdminTenantPatchSchema.safeParse(ctx.body ?? {});
+    if (!parsed.success) {
+      return { status: 422, body: { error: "invalid_tenant_patch", issues: parsed.error.issues } };
+    }
+    const { reason, ...fields } = parsed.data;
     const updates: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(patch)) {
-      if (allowedFields.has(key)) updates[key] = value;
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== undefined) updates[key] = value;
     }
     if (Object.keys(updates).length === 0)
       return { status: 422, body: { error: "no_valid_fields" } };
+    // Pausing or cancelling a customer stops their phone answering: it needs a
+    // recorded reason (resuming does not).
+    if ((updates["status"] === "paused" || updates["status"] === "canceled") && !reason) {
+      return { status: 422, body: { error: "reason_required" } };
+    }
 
     if ("status" in updates) {
       await sql`update public.tenants set status = ${updates["status"] as string} where id = ${tenantId}`;
@@ -295,7 +322,8 @@ async function handleTenants(
         targetType: "tenant",
         targetId: tenantId,
         before,
-        after,
+        // The reason is not a tenants column: it lives only in this audit row.
+        after: reason ? { ...after, reason } : after,
         ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
         ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
       });
@@ -533,8 +561,13 @@ async function handleAlerts(sql: SqlClient, ctx: AdminRequestContext): Promise<A
   const alertId = parts[1];
 
   if (ctx.method === "GET" && !alertId) {
+    // COCKPIT-F07: the cockpit lists these with the tenant's name, so join it in.
     const rows = await sql<Record<string, unknown>>`
-      select * from public.alerts where status = 'open' order by created_at desc limit 100
+      select a.*, t.name as tenant_name
+      from public.alerts a
+      left join public.tenants t on t.id = a.tenant_id
+      where a.status = 'open'
+      order by a.created_at desc limit 100
     `;
     return { status: 200, body: { alerts: rows } };
   }
@@ -794,15 +827,23 @@ async function handlePlatformSettings(
       ]})
     `;
     const byKey = new Map(rows.map((r) => [r.key, r.value]));
+    // COCKPIT-F06: the seeded/DB shapes are `{flat_amount_cents}` and
+    // `{rule, value}` (what fn_check_referral_qualification reads); the old
+    // route looked for `amount_cents`, so the page showed $0.00. The legacy key
+    // is still accepted for rows the old route wrote.
+    const flat = byKey.get("referral_flat_amount_cents") as
+      | { flat_amount_cents?: number; amount_cents?: number }
+      | undefined;
+    const qualification = byKey.get("referral_qualification_rule") as
+      | { rule?: string; value?: number }
+      | undefined;
     return {
       status: 200,
       body: {
         referral: {
-          flat_amount_cents:
-            (byKey.get("referral_flat_amount_cents") as { amount_cents?: number })?.amount_cents ??
-            0,
-          qualification_rule:
-            (byKey.get("referral_qualification_rule") as { rule?: string })?.rule ?? "",
+          flat_amount_cents: flat?.flat_amount_cents ?? flat?.amount_cents ?? 0,
+          qualification_rule: qualification?.rule ?? "paid_invoices_gte",
+          qualification_value: qualification?.value ?? 2,
         },
         price_cards: Object.fromEntries(
           VERTICALS.map((v) => [v, byKey.get(`price_card_${v}`) ?? null]),
@@ -826,14 +867,29 @@ async function handlePlatformSettings(
     `;
     const before = Object.fromEntries(beforeRows.map((r) => [r.key, r.value]));
 
+    // Merge onto the stored values (never replace the blob) and write the keys
+    // fn_check_referral_qualification reads: `flat_amount_cents`, `rule`, `value`.
+    const { amount_cents: _legacyAmount, ...flatBefore } = (before["referral_flat_amount_cents"] ??
+      {}) as Record<string, unknown>;
+    const qualificationBefore = (before["referral_qualification_rule"] ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const flatValue = { ...flatBefore, flat_amount_cents: parsed.data.flat_amount_cents };
+    const qualificationValue = {
+      ...qualificationBefore,
+      rule: parsed.data.qualification_rule,
+      value: parsed.data.qualification_value ?? qualificationBefore["value"] ?? 2,
+    };
+
     await sql`
       insert into public.platform_settings (key, value)
-      values ('referral_flat_amount_cents', ${{ amount_cents: parsed.data.flat_amount_cents }}::jsonb)
+      values ('referral_flat_amount_cents', ${flatValue}::jsonb)
       on conflict (key) do update set value = excluded.value, updated_by = ${ctx.adminUserId}, updated_at = now()
     `;
     await sql`
       insert into public.platform_settings (key, value)
-      values ('referral_qualification_rule', ${{ rule: parsed.data.qualification_rule }}::jsonb)
+      values ('referral_qualification_rule', ${qualificationValue}::jsonb)
       on conflict (key) do update set value = excluded.value, updated_by = ${ctx.adminUserId}, updated_at = now()
     `;
 
@@ -843,12 +899,24 @@ async function handlePlatformSettings(
         action: "platform_settings_referral_edit",
         targetType: "other",
         before,
-        after: parsed.data,
+        after: {
+          referral_flat_amount_cents: flatValue,
+          referral_qualification_rule: qualificationValue,
+        },
         ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
         ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
       });
     }
-    return { status: 200, body: { referral: parsed.data } };
+    return {
+      status: 200,
+      body: {
+        referral: {
+          flat_amount_cents: parsed.data.flat_amount_cents,
+          qualification_rule: parsed.data.qualification_rule,
+          qualification_value: qualificationValue.value,
+        },
+      },
+    };
   }
 
   if (ctx.method === "POST" && parts[1] === "pricing") {
@@ -1305,6 +1373,9 @@ async function handleTemplates(
   }
 
   if (ctx.method === "PATCH" && templateId && parts[2] === undefined) {
+    // The lookup below is `where id = $1` against a uuid column: a vertical slug
+    // or other junk must answer 404, not surface as a Postgres cast error (500).
+    if (!UUID_RE.test(templateId)) return { status: 404, body: { error: "template_not_found" } };
     const before = (
       await sql<
         Record<string, unknown>
@@ -1510,7 +1581,9 @@ async function handleOutreach(
     // Score column sort control.
     const minScoreRaw = query["min_score"];
     const minScore = minScoreRaw !== undefined ? Number(minScoreRaw) : null;
-    const validMinScore = minScore !== null && Number.isFinite(minScore) ? minScore : null;
+    // COCKPIT-F23: the score is a 0-1 confidence; clamp instead of trusting the input's min/max.
+    const validMinScore =
+      minScore !== null && Number.isFinite(minScore) ? Math.min(1, Math.max(0, minScore)) : null;
     const sortByScore = query["sort"] === "score";
 
     const rows = sortByScore
@@ -1566,30 +1639,100 @@ async function handleOutreach(
 
   if (resource === "campaigns" && ctx.method === "GET" && !parts[2]) {
     const rows = await sql<Record<string, unknown>>`
-      select id, name, vertical, sender_domain, provider, status, external_campaign_id, complaint_rate, created_at
+      select id, name, vertical, sender_domain, provider, status, external_campaign_id,
+             complaint_rate, daily_send_cap, template_id, created_at
       from public.campaigns order by created_at desc limit 100
     `;
     return { status: 200, body: { campaigns: rows } };
   }
 
-  if (resource === "campaigns" && ctx.method === "POST" && !parts[2]) {
-    if (!deps.outreach) return { status: 501, body: { error: "outreach_sender_not_configured" } };
-    const body = (ctx.body ?? {}) as {
-      name?: string;
-      vertical?: string;
-      sender_domain?: string;
-      provider?: string;
+  // COCKPIT-F08: the campaign detail page reads `{ name, status, funnel, leads }`;
+  // there was no branch, so every campaign opened as a 404.
+  if (resource === "campaigns" && ctx.method === "GET" && parts[2] && !parts[3]) {
+    const campaignId = parts[2];
+    const campaign = (
+      await sql<Record<string, unknown>>`
+        select id, name, vertical, sender_domain, provider, status, external_campaign_id,
+               complaint_rate, daily_send_cap, template_id, created_at
+        from public.campaigns where id = ${campaignId}
+      `
+    )[0];
+    if (!campaign) return { status: 404, body: { error: "campaign_not_found" } };
+
+    const counts = (
+      await sql<Record<string, unknown>>`
+        select count(distinct se.lead_id)::int as added,
+               count(distinct se.lead_id) filter (where se.sent_at is not null)::int as sent,
+               count(distinct se.lead_id) filter (where se.opened_at is not null)::int as opened,
+               count(distinct se.lead_id) filter (where se.clicked_at is not null)::int as clicked,
+               count(distinct r.lead_id)::int as replied
+        from public.send_events se
+        left join public.replies r on r.send_event_id = se.id
+        where se.campaign_id = ${campaignId}
+      `
+    )[0];
+    const leads = await sql<{
+      id: string;
+      company_name: string | null;
+      contact_name: string | null;
+      email: string | null;
+      status: string;
+      phone_complaint_score: unknown;
+    }>`
+      select l.id, l.company_name, l.contact_name, l.email, l.status, l.phone_complaint_score
+      from public.leads l
+      where l.id in (select lead_id from public.send_events where campaign_id = ${campaignId})
+      order by l.created_at desc
+      limit 200
+    `;
+    return {
+      status: 200,
+      body: {
+        ...campaign,
+        funnel: [
+          { label: "Leads added", count: toNumber(counts?.["added"]) },
+          { label: "Sent", count: toNumber(counts?.["sent"]) },
+          { label: "Opened", count: toNumber(counts?.["opened"]) },
+          { label: "Clicked", count: toNumber(counts?.["clicked"]) },
+          { label: "Replied", count: toNumber(counts?.["replied"]) },
+        ],
+        leads: leads.map((l) => ({
+          id: l.id,
+          companyName: l.company_name,
+          contactName: l.contact_name,
+          email: l.email,
+          status: l.status,
+          suppressed: l.status === "suppressed",
+          isDuplicate: false,
+          phoneComplaintScore:
+            l.phone_complaint_score === null ? null : toNumber(l.phone_complaint_score),
+        })),
+      },
     };
-    if (!body.name || !body.sender_domain) {
-      return { status: 422, body: { error: "missing_name_or_sender_domain" } };
-    }
-    const provider = body.provider ?? "smartlead";
+  }
+
+  if (resource === "campaigns" && ctx.method === "POST" && !parts[2]) {
+    const raw = (ctx.body ?? {}) as Record<string, unknown>;
+    const provider = typeof raw["provider"] === "string" ? raw["provider"] : "smartlead";
     if (provider !== "smartlead") {
       // Compliance/scope: only the Smartlead adapter is implemented (see
       // this module's provider-choice docstring) — never silently accept
       // a provider value this build can't actually create a campaign for.
       return { status: 422, body: { error: "unsupported_provider" } };
     }
+    // COCKPIT-F08/F23: validate the form's canonical body BEFORE the
+    // not-configured answer, so an invalid form always gets field errors.
+    // `sender_domain` is accepted as the pre-F08 spelling of `sending_domain`.
+    const parsed = OutreachCampaignCreateSchema.safeParse({
+      respect_suppression: true,
+      ...raw,
+      sending_domain: raw["sending_domain"] ?? raw["sender_domain"],
+    });
+    if (!parsed.success) {
+      return { status: 422, body: { error: "invalid_campaign", issues: parsed.error.issues } };
+    }
+    const body = parsed.data;
+    if (!deps.outreach) return { status: 501, body: { error: "outreach_sender_not_configured" } };
 
     const created = await createSmartleadCampaign(
       deps.outreach.smartleadFetchImpl,
@@ -1602,9 +1745,13 @@ async function handleOutreach(
       return { status: 502, body: { error: "smartlead_campaign_create_failed" } };
     }
 
+    // The cap and template are stored for the sender; they are not pushed to
+    // Smartlead yet (docs/BUILD_NOTES.md QA-1-cockpit).
     const inserted = await sql<{ id: string }>`
-      insert into public.campaigns (name, vertical, sender_domain, provider, status, external_campaign_id)
-      values (${body.name}, ${body.vertical ?? null}, ${body.sender_domain}, ${provider}, 'draft', ${created.externalCampaignId})
+      insert into public.campaigns
+        (name, vertical, sender_domain, provider, status, external_campaign_id, daily_send_cap, template_id)
+      values (${body.name}, ${body.vertical}, ${body.sending_domain}, ${provider}, 'draft',
+              ${created.externalCampaignId}, ${body.daily_send_cap}, ${body.template_id || null})
       returning id
     `;
     const campaignId = inserted[0]?.id;
@@ -1616,7 +1763,13 @@ async function handleOutreach(
         action: "outreach_campaign_create",
         targetType: "campaign",
         targetId: campaignId,
-        after: { name: body.name, provider, external_campaign_id: created.externalCampaignId },
+        after: {
+          name: body.name,
+          provider,
+          external_campaign_id: created.externalCampaignId,
+          sender_domain: body.sending_domain,
+          daily_send_cap: body.daily_send_cap,
+        },
         ...(ctx.ipAddress ? { ipAddress: ctx.ipAddress } : {}),
         ...(ctx.userAgent ? { userAgent: ctx.userAgent } : {}),
       });
@@ -1742,7 +1895,22 @@ async function handleOutreach(
     const byIntent = await sql<{ ai_intent: string | null; count: number }>`
       select ai_intent, count(*)::int as count from public.replies group by ai_intent
     `;
-    return { status: 200, body: { leads_by_status: byStatus, replies_by_intent: byIntent } };
+    // COCKPIT-F09: overall complaint rate (a percentage; campaigns auto-pause at
+    // 0.3%) so the overview can warn before the auto-pause trips.
+    const complaint = (
+      await sql<{ rate: unknown }>`
+        select (count(*) filter (where status = 'complained'))::numeric / nullif(count(*), 0) as rate
+        from public.send_events
+      `
+    )[0];
+    return {
+      status: 200,
+      body: {
+        leads_by_status: byStatus,
+        replies_by_intent: byIntent,
+        complaint_rate_pct: complaint?.rate == null ? 0 : toNumber(complaint.rate) * 100,
+      },
+    };
   }
 
   if (resource === "replies" && ctx.method === "GET" && !parts[2]) {
@@ -1909,6 +2077,33 @@ async function handleAgentRegression(
 
 const NOT_YET_IMPLEMENTED_PREFIXES = ["admin-flags"];
 
+/**
+ * COCKPIT-F17: every path id below is interpolated into a `where id = $1`
+ * against a `uuid` column, so a malformed one (`/admin-tenants/not-a-uuid`)
+ * used to surface as an unhandled Postgres cast error, a 500 with no body.
+ * A syntactically invalid id can never name a row: answer 404 up front.
+ * (`admin-templates/:key` is deliberately absent: its key is a vertical slug
+ * or a uuid and `resolveTemplateByKey` already handles both.)
+ */
+function pathIdSegments(parts: string[]): (string | undefined)[] {
+  const [first, second, third] = parts;
+  switch (first) {
+    case "admin-tenants":
+    case "admin-support-requests":
+      return [second];
+    case "admin-alerts":
+      return [second === "rules" ? third : second];
+    case "admin-cockpit":
+      return second === "per-customer-margin" ? [third] : [];
+    case "admin-outreach":
+      return second === "campaigns" || second === "replies" ? [third] : [];
+    case "admin-referrals":
+      return [second === "partners" ? third : second];
+    default:
+      return [];
+  }
+}
+
 export async function routeAdminRequest(
   sql: SqlClient,
   ctx: AdminRequestContext,
@@ -1926,14 +2121,21 @@ export async function routeAdminRequest(
   if (!isPlatformAdmin(ctx.claims) && !isSelfServiceImpersonation) {
     return { status: 403, body: { error: "not_a_platform_admin" } };
   }
-  // SEC-01: every admin route needs an MFA-completed (aal2) session, not just
-  // the impersonation ones. The Custom Access Token Hook already withholds
-  // `platform_admin` below aal2; this is the independent second check.
-  if (isPlatformAdmin(ctx.claims) && !isAal2(ctx.claims) && !isSelfServiceImpersonation) {
+  // COCKPIT-F01: a password-only (AAL1) session must not reach ANY admin
+  // route. The page guard (`requireAdminSession`) is not enough on its own:
+  // the API is directly callable. The only caller that gets past the
+  // platform_admin check WITHOUT the claim is the self-service impersonation
+  // route, served on the impersonated tenant owner's token (no admin MFA
+  // level of its own), so the check keys on the claim rather than the path.
+  if (isPlatformAdmin(ctx.claims) && !isAal2(ctx.claims)) {
     return { status: 403, body: { error: "aal2_required" } };
   }
 
-  const [first] = segments(ctx.path);
+  const parts = segments(ctx.path);
+  const [first] = parts;
+  if (pathIdSegments(parts).some((id) => id !== undefined && !UUID_RE.test(id))) {
+    return { status: 404, body: { error: "invalid_id" } };
+  }
   if (first === "admin-tenants") return handleTenants(sql, ctx, logger, deps);
   if (first === "admin-alerts") return handleAlerts(sql, ctx);
   if (first === "admin-platform-settings") return handlePlatformSettings(sql, ctx);

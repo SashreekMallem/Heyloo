@@ -26,7 +26,7 @@ export function fromUntypedTable(supabase: SupabaseServiceRoleClient, table: str
  * `supabase/functions/admin` (that edge function does not implement every
  * route this cluster needs yet — see `docs/audit/FIX_REQUESTS.md`).
  * Mirrors `api/admin/[...path]/route.ts`'s own check exactly (session +
- * `platform_admin` app_metadata claim) so every `/api/admin/*` path shares
+ * `platform_admin` app_metadata claim + the AAL2 `aal` claim) so every `/api/admin/*` path shares
  * one security bar regardless of which handler serves it.
  */
 export async function requireAdminApiSession(): Promise<
@@ -57,6 +57,26 @@ export async function requireAdminApiSession(): Promise<
     return { ok: false, response: NextResponse.json({ error: "aal2_required" }, { status: 403 }) };
   }
   return { ok: true, adminUserId: session.user.id };
+}
+
+/**
+ * COCKPIT-F03: an exception thrown inside a direct-Postgres admin handler
+ * (a missing service-role secret, a network blip) used to surface as Next's
+ * empty-body 500, which the cockpit could only render as a generic failure.
+ * Wrap each exported verb so an unexpected throw is logged and answered with
+ * a JSON `{ error }` body like every other failure of these routes.
+ */
+export function adminRoute<A extends unknown[]>(
+  handler: (...args: A) => Promise<Response>,
+): (...args: A) => Promise<Response> {
+  return async (...args: A) => {
+    try {
+      return await handler(...args);
+    } catch (err) {
+      console.error("admin_route_failed", err instanceof Error ? err.message : String(err));
+      return NextResponse.json({ error: "internal_error" }, { status: 500 });
+    }
+  };
 }
 
 export type AdminActionTargetType =

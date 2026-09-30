@@ -74,15 +74,36 @@ describe("evaluateToolFailureSpike", () => {
 });
 
 describe("upsertAlert", () => {
-  it("issues an insert-if-not-exists-in-the-last-hour query", async () => {
+  // COCKPIT-F07: a persistent condition inserted a new open row every hour.
+  it("refreshes an existing open alert, then inserts only when none is open (no time window)", async () => {
     const { sql, calls } = makeSql();
     await upsertAlert(sql, {
       rule: "negative_margin",
       severity: "warning",
       tenant_id: "t1",
-      payload: {},
+      payload: { margin_cents: -500 },
     });
-    expect(calls[0]?.text).toContain("insert into public.alerts");
-    expect(calls[0]?.values).toContain("negative_margin");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.text).toContain("update public.alerts");
+    expect(calls[0]?.text).toContain("set payload =");
+    expect(calls[1]?.text).toContain("insert into public.alerts");
+    expect(calls[1]?.text).toContain("where not exists");
+    expect(calls[1]?.text).toContain("on conflict do nothing");
+    for (const call of calls) {
+      expect(call.text).not.toContain("interval");
+      expect(call.values).toContain("negative_margin");
+    }
+  });
+
+  it("keys tool_failure_spike alerts per tool so one failing tool cannot hide another", async () => {
+    const { sql, calls } = makeSql();
+    await upsertAlert(sql, {
+      rule: "tool_failure_spike",
+      severity: "critical",
+      tenant_id: null,
+      payload: { tool_name: "book_appointment", total: 10, errors: 5 },
+    });
+    expect(calls[0]?.values).toContain("book_appointment");
+    expect(calls[1]?.values).toContain("book_appointment");
   });
 });

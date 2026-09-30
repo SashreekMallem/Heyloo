@@ -42,6 +42,18 @@ describe("LeadsPage — phone-complaint score", () => {
     expect(await screen.findByText("75%")).toBeInTheDocument();
   });
 
+  // COCKPIT-F09: the button POSTed to a route the admin function does not have.
+  it("does not offer a Fetch leads action that has no backend", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ leads: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+    await screen.findByText("No leads fetched yet");
+    expect(screen.queryByRole("button", { name: /fetch leads/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/isn't run from the cockpit yet/i)).toBeInTheDocument();
+    const calls = fetchMock.mock.calls as unknown as [string, RequestInit?][];
+    expect(calls.every((c) => (c[1]?.method ?? "GET") === "GET")).toBe(true);
+  });
+
   it("shows a dash for an unscored lead", async () => {
     vi.stubGlobal(
       "fetch",
