@@ -8,10 +8,24 @@ export interface WizardStepperProps {
   className?: string;
 }
 
+/** Container width at which every label fits on one line, by step count
+ * (literal class names so Tailwind generates them). */
+const ALL_LABELS_MIN_WIDTH: Record<number, string> = {
+  1: "@xs:inline",
+  2: "@md:inline",
+  3: "@xl:inline",
+  4: "@2xl:inline",
+  5: "@3xl:inline",
+  6: "@4xl:inline",
+};
+
 /** Generic numbered-step header — signup, phone setup, config lab (FRONTEND_SPEC.md §1.3). */
 export function WizardStepper({ steps, current, completed, className }: WizardStepperProps) {
   return (
-    <ol className={cn("flex w-full items-center gap-2", className)}>
+    // `@container`: label visibility follows the stepper's OWN width, not the
+    // viewport's. At lg the signup wizard's narrow (max-w-md) column still
+    // showed all six nowrap labels, which ran into each other.
+    <ol className={cn("@container flex w-full items-center gap-2", className)}>
       {steps.map((step, index) => {
         const isDone = completed.includes(index);
         const isCurrent = index === current;
@@ -19,7 +33,12 @@ export function WizardStepper({ steps, current, completed, className }: WizardSt
           <li
             key={step}
             aria-current={isCurrent ? "step" : undefined}
-            className="flex min-w-0 flex-1 items-center gap-2"
+            // The current step never shrinks below its own label; the rest share
+            // what is left (equal slices clipped "Account" to "Accou").
+            className={cn(
+              "flex min-w-0 items-center gap-2",
+              isCurrent ? "flex-[1_0_auto]" : "flex-1",
+            )}
           >
             <div
               className={cn(
@@ -34,12 +53,14 @@ export function WizardStepper({ steps, current, completed, className }: WizardSt
               {isDone ? <Check className="size-3.5" /> : index + 1}
             </div>
             {/* Labels never wrap (QA-1 F-18: "Business info" broke onto two
-                lines at 1440). Below lg only the current step keeps its label
-                so a 4-step header still fits on one line. */}
+                lines at 1440). Every label shows only when the stepper itself
+                has room for all of them on one line (≈ 7rem per step); in a
+                narrower stepper only the current step keeps its label. */}
             <span
               className={cn(
                 "hidden whitespace-nowrap text-sm",
-                isCurrent ? "font-medium sm:inline" : "text-muted-foreground lg:inline",
+                isCurrent ? "font-medium @2xs:inline" : "text-muted-foreground",
+                !isCurrent && ALL_LABELS_MIN_WIDTH[Math.min(steps.length, 6)],
               )}
             >
               {step}
