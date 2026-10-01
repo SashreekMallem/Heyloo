@@ -9537,3 +9537,9 @@ Restore point first: docs/ROLLBACK_2026-10-01.md (code at b6fac4b, DB snapshots 
   rollback is "restore templates + revert code + republish", not an agent-id switch.
 - Not measured yet: no scripted calls were possible from this session (the admin internal
   key is not available here). Measure with the same call_logs query after republishing.
+- **Templates applied to the database (2026-10-01).** Owner "Publish changes" compiles from
+  `agent_templates` (no reseed), so the 8 active rows were updated from the generated seed copy
+  (system_prompt, states, transitions; tools/global_intents unchanged) with an md5 guard per
+  column. New system_prompt fingerprints: auto a1233bd8, dental b9941acc, generic fafdd7fe,
+  legal c7fd77ea, motel 9e72e2b5, real_estate 47ceffe7, restaurant 067b5f88, vet 73a80377.
+  The previous rows are in `ops_backup.agent_templates_20261001`.
