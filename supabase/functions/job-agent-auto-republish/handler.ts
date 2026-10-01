@@ -21,10 +21,12 @@ import { handlePublishAgent, type PublishAgentDeps } from "../api-tenant-agent-p
  * KEPT (never deleted here), so a bad upgrade can be rolled back by
  * pointing the tenant at its old agent.
  *
- * `agent_configs.auto_republish_attempted_at` is the claim: a tenant is
- * skipped for 6 hours after an attempt, so two overlapping runs never
- * rebuild the same tenant and a failing one is retried, not hammered. A
- * success clears the version gap, so it is not picked again.
+ * `agent_configs.auto_republish_attempted_at` is the claim: a fresh claim
+ * (15 minutes) is in progress, so two overlapping runs never rebuild the
+ * same tenant; a FAILED attempt (`auto_republish_error` set) waits 6 hours,
+ * so a failing tenant is retried, not hammered. A success leaves no error,
+ * so the next platform update picks the tenant up again within minutes
+ * (the first version made successes wait 6 hours too).
  */
 
 export interface AutoRepublishDeps extends PublishAgentDeps {
@@ -37,7 +39,10 @@ export interface AutoRepublishTally {
   failed: number;
 }
 
+/** A failed tenant is retried after this long. */
 const RETRY_AFTER = "6 hours";
+/** A claim younger than this is still in progress (a publish takes seconds). */
+const IN_FLIGHT_FOR = "15 minutes";
 
 export async function runAutoRepublish(
   sql: SqlClient,
@@ -63,6 +68,10 @@ export async function runAutoRepublish(
         )
         and (
           ac.auto_republish_attempted_at is null
+          or (
+            ac.auto_republish_error is null
+            and ac.auto_republish_attempted_at < now() - ${IN_FLIGHT_FOR}::interval
+          )
           or ac.auto_republish_attempted_at < now() - ${RETRY_AFTER}::interval
         )
       order by t.is_test asc, ac.published_at asc

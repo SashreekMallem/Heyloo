@@ -49,6 +49,10 @@ describe("runAutoRepublish", () => {
     expect(claim?.text).toContain("language_config ->> 'changed_at'");
     expect(claim?.text).toContain("order by t.is_test asc");
     expect(claim?.text).toContain("skip locked");
+    // A success (no error) is only held while in flight; a failure waits the retry window.
+    expect(claim?.text).toContain("ac.auto_republish_error is null");
+    expect(claim?.values).toContain("15 minutes");
+    expect(claim?.values).toContain("6 hours");
     expect(claim?.values).toContain(AGENT_COMPILER_VERSION);
     expect(claim?.values).toContain(2);
     expect(publishMock).toHaveBeenCalledTimes(2);
