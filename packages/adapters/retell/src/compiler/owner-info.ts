@@ -24,7 +24,7 @@ import { CALL_INTEGRITY_INSTRUCTIONS } from "./call-integrity.js";
  * global node, and descriptive edge conditions.
  */
 /** Compiler-output version stamped on `agent_configs.compiled_with_version`; bump with the Deno constant. */
-export const AGENT_COMPILER_VERSION = 3;
+export const AGENT_COMPILER_VERSION = 4;
 
 export const OWNER_INFO_INSTRUCTIONS =
   "Business settings for this call. Booking status right now: {{booking_mode_text}} " +

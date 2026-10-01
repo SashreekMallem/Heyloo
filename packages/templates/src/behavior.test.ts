@@ -51,8 +51,8 @@ describe("no real-looking example data in prompts (F-HALLU-1)", () => {
   it("uses placeholders, not Bella / a 2019 Civic", () => {
     const all = [
       MULTI_ENTITY_FRAGMENT,
-      state(VETERINARY_TEMPLATE, "collect_pet_info").prompt_fragment,
-      state(AUTO_REPAIR_TEMPLATE, "collect_vehicle").prompt_fragment,
+      state(VETERINARY_TEMPLATE, "booking_details").prompt_fragment,
+      state(AUTO_REPAIR_TEMPLATE, "booking_details").prompt_fragment,
     ].join("\n");
     expect(all).not.toMatch(/Bella|2019/);
     expect(all).toContain("<pet name from lookup_customer>");
@@ -99,9 +99,7 @@ describe("legal", () => {
   });
 
   it("early wrap-up and the labeled-line fragment mark an incomplete intake partial instead of inventing values", () => {
-    expect(state(LEGAL_TEMPLATE, "matter_type").prompt_fragment).toContain(
-      'intake_status to "partial"',
-    );
+    expect(state(LEGAL_TEMPLATE, "intake").prompt_fragment).toContain('intake_status to "partial"');
     expect(LEGAL_TEMPLATE.system_prompt).toContain('"Not yet asked" belongs only in message_text');
   });
 });

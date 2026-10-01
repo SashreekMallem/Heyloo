@@ -24,6 +24,7 @@ import { withCallOutcomeExtraction } from "../shared/extraction.js";
 import {
   CANCELLATION_POLICY_READOUT_FRAGMENT,
   CONSENT_ASK_FRAGMENT,
+  CONTACT_DETAILS,
   MULTI_ENTITY_FRAGMENT,
   WAITLIST_OFFER_FRAGMENT,
 } from "../shared/fragments.js";
@@ -71,15 +72,16 @@ const ALLERGY_ASK_FRAGMENT =
   "volunteered — never skip this question for a food order.";
 
 const FULL_READBACK_FRAGMENT =
-  "Before closing out an order, ask for the caller's name and a callback number if you " +
-  "haven't already, reading the number back digit by digit to confirm — create_order needs " +
-  "both. Then read back every item, quantity, and modifier, the pickup-or-delivery choice " +
-  "(and address if delivery), and the total, and get an explicit yes before calling " +
-  "create_order.";
+  "Before closing out an order, make sure you have the caller's name and a callback number " +
+  "(per the Caller ID rule: normally just confirm the number they're calling from) — " +
+  "create_order needs both. Then, in the one read-back, say every item with its quantity " +
+  "and modifiers, pickup or delivery (and the address if delivery) and the total, and get " +
+  "an explicit yes before calling create_order.";
 
 const SYSTEM_PROMPT = buildSystemPrompt(
   "You are the phone assistant for a restaurant. Find out right away whether the caller wants " +
-    "to place an order or make a table reservation, then follow that path.",
+    "to place an order or make a table reservation, then follow that path. Answer quick " +
+    "questions (hours, menu, prices) briefly from what you were given.",
   CATALOG_DISCIPLINE_FRAGMENT,
   ALLERGY_ASK_FRAGMENT,
   FULL_READBACK_FRAGMENT,
@@ -98,76 +100,52 @@ export const RESTAURANT_TEMPLATE: AgentTemplate = {
       id: "greeting",
       name: "Greeting",
       prompt_fragment:
-        "The caller has already been greeted by your opening line. Respond to what they said " +
-        "and find out what they need.",
+        "The caller has already been greeted by your opening line. Respond to what they said. " +
+        "If they ask a quick question first (hours, menu items, prices), answer it briefly; " +
+        "then, once they're ready, find out whether they want to place an order (pickup or " +
+        "delivery) or reserve a table — unless they already said.",
       allowed_tools: [],
     },
     {
-      id: "order_or_reservation",
-      name: "Order vs reservation (branch early)",
+      id: "reservation_details",
+      name: "Reservation details",
       prompt_fragment:
-        "If the caller has a quick question (hours, menu items, etc.) before deciding, answer " +
-        "it briefly first — then ask right away: order (pickup/delivery) or a table " +
-        "reservation? This determines the whole rest of the call once they are ready to " +
-        "proceed.",
-      allowed_tools: [],
-    },
-    // --- Reservation branch ---
-    {
-      id: "collect_party_size",
-      name: "Collect party size",
-      prompt_fragment: "Ask how many people the reservation is for, then what day/time works.",
-      allowed_tools: [],
-    },
-    {
-      id: "check_time_reservation",
-      name: "Check reservation availability",
-      prompt_fragment:
-        "Call check_availability for the requested party size and time. If none_available, " +
-        "follow the waitlist-offer rule.",
-      allowed_tools: ["check_availability", "join_waitlist"],
+        "Get what the reservation needs, taking whatever the caller already said: how many " +
+        "people, the day and time, and " +
+        CONTACT_DETAILS +
+        ". As soon as you have the party size and time, call check_availability and offer the " +
+        "open times it returns (if none, follow the waitlist rule).",
+      allowed_tools: ["lookup_customer", "check_availability", "join_waitlist"],
     },
     {
       id: "confirm_reservation",
       name: "Confirm reservation",
       prompt_fragment:
-        "Read back party size and date/time, ask the consent question, then create the " +
-        "booking and, if text messages are available, send the SMS confirmation.",
+        "Do the one read-back (name, party size, day and time) with the consent question and " +
+        "the cancellation policy, then create the booking and, if text messages are " +
+        "available, send the SMS confirmation.",
       allowed_tools: ["create_booking", "send_sms_confirmation"],
       is_terminal: true,
     },
     // --- Order branch ---
     {
       id: "collect_items",
-      name: "Collect order items",
+      name: "Order details",
       prompt_fragment:
-        "Take the order one item at a time from {{menu_text}} per the catalog-discipline rule, " +
-        "confirming each item and quantity as you go.",
+        "Take the order from {{menu_text}} per the catalog-discipline rule — callers often " +
+        "list several items at once, so take them all and only ask about what's unclear " +
+        '(a quantity, a size, which of two dishes). Ask "Anything else?" until they\'re done. ' +
+        "Then make sure you have the rest, taking whatever they already said: allergies (ask " +
+        "explicitly per the allergy-ask rule — never skip it), pickup or delivery, the delivery " +
+        "address if delivery, and " +
+        CONTACT_DETAILS +
+        ". For delivery, resolve the address per the saved-address rule (call lookup_customer " +
+        "with no arguments to see saved addresses): if they pick a saved one, pass its " +
+        "address_id on create_order and don't re-ask the street; a new address goes in as " +
+        "street/city/state/zip. If create_order later declines the order as " +
+        "out_of_delivery_radius, apologize and offer pickup instead — never argue about the " +
+        "radius or offer a discount for it.",
       allowed_tools: ["lookup_customer"],
-    },
-    {
-      id: "collect_allergies",
-      name: "Collect allergies",
-      prompt_fragment: "Ask explicitly about food allergies per the allergy-ask rule.",
-      allowed_tools: [],
-    },
-    {
-      id: "pickup_or_delivery",
-      name: "Pickup vs delivery",
-      prompt_fragment: "Ask whether this order is for pickup or delivery.",
-      allowed_tools: [],
-    },
-    {
-      id: "collect_delivery_address",
-      name: "Collect delivery address",
-      prompt_fragment:
-        "Resolve the delivery address per the saved-address rule (none/one/several). If the " +
-        "caller picks a saved address, pass its address_id on create_order — do not re-ask for " +
-        "the full street. If they give a brand-new address, read it back and pass street/city/" +
-        "state/zip instead. If create_order later declines the order as out_of_delivery_radius, " +
-        "apologize and offer pickup instead — never argue about the radius or offer a discount " +
-        "to make up for it.",
-      allowed_tools: [],
     },
     {
       id: "confirm_order",
@@ -190,51 +168,29 @@ export const RESTAURANT_TEMPLATE: AgentTemplate = {
     takeMessageFallbackState(),
   ].map(withCallOutcomeExtraction),
   transitions: [
-    { from: "greeting", to: "order_or_reservation", on: { intent: "greeting_complete" } },
+    { from: "greeting", to: "reservation_details", on: { intent: "wants_reservation" } },
+    { from: "greeting", to: "collect_items", on: { intent: "wants_order" } },
     {
-      from: "order_or_reservation",
-      to: "collect_party_size",
-      on: { intent: "wants_reservation" },
-    },
-    { from: "order_or_reservation", to: "collect_items", on: { intent: "wants_order" } },
-    {
-      from: "order_or_reservation",
+      from: "greeting",
       to: "manage_booking",
       on: { intent: "wants_to_change_existing_reservation" },
     },
     {
-      from: "order_or_reservation",
+      from: "greeting",
       to: "take_message_fallback",
       on: { intent: "after_hours_or_general_message" },
     },
     {
-      from: "collect_party_size",
-      to: "check_time_reservation",
-      on: { intent: "party_size_and_time_given" },
-    },
-    {
-      from: "check_time_reservation",
+      from: "reservation_details",
       to: "confirm_reservation",
       on: { predicate: "slot_selected" },
     },
     {
-      from: "check_time_reservation",
+      from: "reservation_details",
       to: "take_message_fallback",
       on: { predicate: "none_available_and_caller_declines_waitlist" },
     },
-    { from: "collect_items", to: "collect_allergies", on: { intent: "items_confirmed" } },
-    {
-      from: "collect_allergies",
-      to: "pickup_or_delivery",
-      on: { intent: "allergies_recorded" },
-    },
-    {
-      from: "pickup_or_delivery",
-      to: "collect_delivery_address",
-      on: { intent: "wants_delivery" },
-    },
-    { from: "pickup_or_delivery", to: "confirm_order", on: { intent: "wants_pickup" } },
-    { from: "collect_delivery_address", to: "confirm_order", on: { intent: "address_confirmed" } },
+    { from: "collect_items", to: "confirm_order", on: { intent: "order_details_complete" } },
   ],
   global_intents: [
     safetyEmergencyGlobalIntent("safety_emergency"),

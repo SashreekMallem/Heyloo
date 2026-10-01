@@ -11,6 +11,7 @@ import { withCallOutcomeExtraction } from "../shared/extraction.js";
 import {
   CANCELLATION_POLICY_READOUT_FRAGMENT,
   CONSENT_ASK_FRAGMENT,
+  CONTACT_DETAILS,
   MULTI_ENTITY_FRAGMENT,
   WAITLIST_OFFER_FRAGMENT,
 } from "../shared/fragments.js";
@@ -112,64 +113,27 @@ export const AUTO_REPAIR_TEMPLATE: AgentTemplate = {
       allowed_tools: [],
     },
     {
-      id: "collect_name",
-      name: "Collect name",
+      id: "booking_details",
+      name: "Booking details",
       prompt_fragment:
-        "Ask for the caller's full name and confirm it back." +
-        " If the caller is a recognized returning caller (a name or number is on file — see " +
-        "Caller history), confirm what's on file instead of asking for it again.",
-      allowed_tools: [],
-    },
-    {
-      id: "collect_phone",
-      name: "Collect phone",
-      prompt_fragment:
-        "Ask for the best callback number and read it back digit by digit to confirm. Call " +
-        "lookup_customer with that number — if it returns a vehicle already on file, confirm " +
-        "it back in the next step instead of asking from scratch." +
-        " If the caller is a recognized returning caller (a name or number is on file — see " +
-        "Caller history), confirm what's on file instead of asking for it again.",
-      allowed_tools: ["lookup_customer"],
-    },
-    {
-      id: "collect_vehicle",
-      name: "Collect vehicle",
-      prompt_fragment:
-        "If lookup_customer already returned this caller's vehicle (year/make/model), confirm " +
-        'it back ("still the <year make model from lookup_customer>?") instead of re-asking from scratch — ' +
-        "otherwise ask for the vehicle's year, make, and model, one at a time. Cross-check the " +
-        "make against {{vehicle_makes_serviced}}.",
-      allowed_tools: [],
-    },
-    {
-      id: "collect_symptom",
-      name: "Collect symptom",
-      prompt_fragment:
-        "Ask what's going on with the vehicle and map it to a service category (oil change, " +
-        "brakes, check-engine light, tires, general inspection, etc.) — never diagnose the " +
-        "actual mechanical cause yourself.",
-      allowed_tools: [],
-    },
-    {
-      id: "drop_off_or_wait",
-      name: "Drop-off vs wait",
-      prompt_fragment: "Ask whether they'd like to drop the vehicle off or wait on-site.",
-      allowed_tools: [],
-    },
-    {
-      id: "check_time",
-      name: "Check availability",
-      prompt_fragment:
-        "Ask what day/time works, then call check_availability for that window. Offer the " +
-        "returned open slots; if none_available, follow the waitlist-offer rule.",
-      allowed_tools: ["check_availability", "join_waitlist"],
+        "Get what the booking needs, taking whatever the caller already said: " +
+        CONTACT_DETAILS +
+        "; the vehicle's year, make and model (if lookup_customer returned a vehicle on file, " +
+        'confirm it instead: "still the <year make model from lookup_customer>?"); what\'s ' +
+        "going on with it, mapped to a service category (oil change, brakes, check-engine " +
+        "light, tires, inspection, etc. — never diagnose the cause); whether they'll drop it " +
+        "off or wait; and when they'd like to come in. Call lookup_customer (no arguments) " +
+        "early to see what's on file. Cross-check the make against {{vehicle_makes_serviced}}. " +
+        "As soon as you know when they'd like to come, call check_availability for that " +
+        "window and offer the open times it returns (if none, follow the waitlist rule).",
+      allowed_tools: ["lookup_customer", "check_availability", "join_waitlist"],
     },
     {
       id: "confirm_booking",
       name: "Confirm booking",
       prompt_fragment:
-        "Read back the full appointment (vehicle, service, drop-off/wait, date/time), ask the " +
-        "consent question, state the cancellation policy, then create the booking — pass " +
+        "Do the one read-back (vehicle, service, drop-off or wait, day and time) with the " +
+        "consent question and the cancellation policy, then create the booking — pass " +
         "structured_payload with vehicle_year, vehicle_make, vehicle_model, symptom_category, " +
         "and drop_off_or_wait — and, if text messages are available, send the SMS confirmation.",
       allowed_tools: ["create_booking", "send_sms_confirmation"],
@@ -182,21 +146,16 @@ export const AUTO_REPAIR_TEMPLATE: AgentTemplate = {
     takeMessageFallbackState(),
   ].map(withCallOutcomeExtraction),
   transitions: [
-    { from: "greeting", to: "collect_name", on: { intent: "wants_to_book_service" } },
+    { from: "greeting", to: "booking_details", on: { intent: "wants_to_book_service" } },
     { from: "greeting", to: "manage_booking", on: { intent: "wants_to_reschedule_or_cancel" } },
     {
       from: "greeting",
       to: "take_message_fallback",
       on: { intent: "after_hours_or_general_message" },
     },
-    { from: "collect_name", to: "collect_phone", on: { intent: "name_confirmed" } },
-    { from: "collect_phone", to: "collect_vehicle", on: { intent: "phone_confirmed" } },
-    { from: "collect_vehicle", to: "collect_symptom", on: { intent: "vehicle_confirmed" } },
-    { from: "collect_symptom", to: "drop_off_or_wait", on: { intent: "symptom_confirmed" } },
-    { from: "drop_off_or_wait", to: "check_time", on: { intent: "preference_confirmed" } },
-    { from: "check_time", to: "confirm_booking", on: { predicate: "slot_selected" } },
+    { from: "booking_details", to: "confirm_booking", on: { predicate: "slot_selected" } },
     {
-      from: "check_time",
+      from: "booking_details",
       to: "take_message_fallback",
       on: { predicate: "none_available_and_caller_declines_waitlist" },
     },

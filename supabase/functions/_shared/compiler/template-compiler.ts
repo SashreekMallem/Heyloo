@@ -215,7 +215,7 @@ function withCustomAnswersParameter(toolName: string, parameters: unknown): unkn
  *      no-transfer-fallback exit conditions that need a saved message, a
  *      leave-a-message global node, and descriptive edge conditions.
  */
-export const AGENT_COMPILER_VERSION = 3;
+export const AGENT_COMPILER_VERSION = 4;
 
 // ---------------------------------------------------------------------
 // Static opening line (DISCLOSE-1, docs/BUILD_NOTES.md)
@@ -373,6 +373,17 @@ function openingAlreadySpokenInstruction(opening: OpeningLine): string {
  * defaulted in `default_dynamic_variables` — never a raw placeholder.
  */
 const RETURNING_CALLER_INSTRUCTION =
+  // SPEED-1 (docs/BUILD_NOTES.md): the Caller ID rule. Dictating and
+  // reading back a phone number digit by digit was one of the longest
+  // stretches of every recorded call; most callers call from the number
+  // they want to be reached on. `{{caller_number}}` is the live caller ID
+  // (E.164) from `_shared/inbound-dynamic-variables.ts`, blank on web calls
+  // and withheld numbers; `voice-tools` already falls back to it when a
+  // tool call leaves the phone out.
+  'Caller ID: "{{caller_number}}". If it is not blank, never ask the caller to say their ' +
+  'phone number: ask once, "Is the number you\'re calling from the best one to reach you?", ' +
+  "and if yes use it (you may leave the phone out of a tool call — the system fills in the " +
+  "caller ID). Only ask for a number if they say no or the caller ID is blank.\n\n" +
   'Caller history: {{caller_recent_context}} Name on file: "{{caller_name_on_file}}". Number ' +
   'on file: "{{caller_phone_on_file}}". If the name or number on file is not blank, this is a ' +
   "recognized returning caller who was already welcomed back by name in your opening line: at " +
@@ -401,6 +412,7 @@ const RETURNING_CALLER_INSTRUCTION =
  */
 const COMPILER_DEFAULT_DYNAMIC_VARIABLES: Readonly<Record<string, string>> = {
   caller_greeting: "",
+  caller_number: "",
   caller_name_on_file: "",
   caller_phone_on_file: "",
   caller_recent_context:
@@ -427,8 +439,8 @@ const COMPILER_DEFAULT_DYNAMIC_VARIABLES: Readonly<Record<string, string>> = {
     "message the caller, never say or imply that you are texting, messaging or sending anything " +
     "to their phone (no text confirmation, no link, no reminder), and do not call " +
     "send_sms_confirmation or send_payment_link. Confirm out loud instead: after a tool reports " +
-    "the booking or order is confirmed, read back the day, time and key details once and say it " +
-    "is confirmed. If the caller wants it in writing or asks for a link, tell them someone from " +
+    "the booking or order is confirmed, say so in one sentence with the day and time (the " +
+    "details were already read back once before saving). If the caller wants it in writing or asks for a link, tell them someone from " +
     "the team will follow up.",
   custom_questions_text: "(no custom questions)",
   transfer_policy_text:
@@ -681,6 +693,21 @@ const WRITE_TOOL_NAMES_FOR_MESSAGE: ReadonlySet<string> = new Set([
  * passed through unchanged.
  */
 const EDGE_CONDITION_TEXT: Readonly<Record<string, string>> = {
+  // SPEED-1: one details step now gathers what used to take a chain of
+  // single-field steps, so its exit names "everything this step asks for".
+  slot_selected:
+    "The caller has picked one of the open times check_availability returned and you have " +
+    "every other detail this step asks for",
+  order_details_complete:
+    "The caller has finished listing items and you have the allergy answer, pickup or " +
+    "delivery (and the address for delivery), and their name and callback number",
+  intake_details_complete:
+    "You have the caller's name and callback number, the matter type, the opposing party, a " +
+    "short account of what happened, whether anything is urgent, and how they heard about the " +
+    "firm (or they declined to say)",
+  triage_complete: "You know what the visit is for and whether it is urgent",
+  no_red_flag_detected:
+    "You know what's going on with the pet and none of the emergency red flags is present",
   wants_to_reschedule_or_cancel:
     "The caller wants to reschedule or cancel an appointment, or asks about, checks on or " +
     'wants to confirm an existing appointment or booking (for example "do I have an ' +
@@ -1495,7 +1522,9 @@ function compileConversationFlow(
       speak_during_execution: true,
       instruction: {
         type: "prompt",
-        text: "Thank the caller, confirm there's nothing else you can help with, and say a warm goodbye.",
+        // SPEED-1: an end node hangs up right after speaking, so it must not
+        // ask a question; "anything else?" belongs to the wrap-up node.
+        text: "Say a short, warm goodbye in one sentence. Do not ask any question.",
       },
     });
     owner.edges.push({
@@ -1555,7 +1584,7 @@ function compileConversationFlow(
     name: "Wrap-up",
     instruction: {
       type: "prompt",
-      text: 'Ask the caller: "Is there anything else I can help with?" and wait for their answer.',
+      text: 'Ask the caller, in a few words: "Anything else I can help with?" and wait for their answer.',
     },
     edges: [
       {
@@ -1599,7 +1628,7 @@ function compileConversationFlow(
     type: "end",
     name: "Wrap-up — end call",
     speak_during_execution: true,
-    instruction: { type: "prompt", text: "Thank the caller and say a warm goodbye." },
+    instruction: { type: "prompt", text: "Say a short, warm goodbye in one sentence." },
   };
 
   return {
@@ -1738,7 +1767,8 @@ export interface MultiPromptBody extends RetellLlmOpeningFields {
 const END_CALL_INSTRUCTION =
   "\n\nWhen the caller's request has been fully handled and they have nothing further to " +
   "discuss (they say goodbye, thank you, that's all, or similar, or you have already clearly " +
-  "wrapped up the call), say a warm goodbye and then call the end_call tool to hang up. Never " +
+  "wrapped up the call), say a short goodbye in one sentence and then call the end_call tool " +
+  "to hang up. Never " +
   "just stop responding or repeat the same goodbye more than once — always end the call with " +
   "this tool once you've said goodbye.\n\n" +
   // CALL-8 (docs/BUILD_PLAN.md): live-observed real bug — a multi_prompt

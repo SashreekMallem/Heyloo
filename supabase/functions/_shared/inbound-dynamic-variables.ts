@@ -59,6 +59,9 @@ export type InboundDynamicVariables = VoiceInboundResponse["call_inbound"]["dyna
   caller_greeting: string;
   caller_name_on_file: string;
   caller_phone_on_file: string;
+  /** SPEED-1: `{{caller_number}}` — the live caller ID (E.164) for ANY caller, new or
+   * returning, so the agent confirms it instead of asking for a number; `""` when unknown. */
+  caller_number: string;
 };
 
 /** Everything `voice-inbound/handler.ts`'s own DB row (or an equivalent
@@ -365,6 +368,7 @@ export async function buildInboundDynamicVariables(params: {
     caller_greeting: callerContext.greeting,
     caller_name_on_file: callerContext.nameOnFile,
     caller_phone_on_file: callerContext.phoneOnFile,
+    caller_number: fromNumber ?? "",
   };
 
   return dynamicVariables;

@@ -239,10 +239,10 @@ export const SIMULATION_SCENARIOS: readonly SimulationScenario[] = [
       // create_order returns { fallback: true, reason: 'out_of_delivery_radius' }-shaped result.
     ],
     expectation:
-      "Per collect_delivery_address's explicit instruction, the model apologizes and offers " +
+      "Per the order step's explicit instruction, the model apologizes and offers " +
       "pickup instead — it never argues about the radius or invents a discount/exception to " +
       "make the delivery happen anyway.",
-    expect: () => stateReached("collect_delivery_address"),
+    expect: () => stateReached("collect_items"),
   },
   // -------------------------------------------------------------------
   // emergency — a domain-specific or the generic 911 safety net fires.

@@ -81,33 +81,15 @@ const rawStates: AgentState[] = [
     allowed_tools: [],
   },
   {
-    id: "collect_patient_name",
-    name: "Collect patient name",
-    prompt_fragment:
-      "Ask for the patient's full name (the person being seen, which may differ from the " +
-      "caller for a child or dependent) and confirm it. If the caller is a recognized " +
-      "returning caller (a name is on file — see Caller history) and the patient is the " +
-      "caller themself, confirm the name on file instead of asking for it again.",
-    allowed_tools: [],
-  },
-  {
-    id: "new_or_existing",
-    name: "New vs existing patient",
-    prompt_fragment:
-      "Ask whether this patient has been seen at this office before. If the caller is on an " +
-      "existing patient's own number, you may call lookup_customer to confirm.",
-    allowed_tools: ["lookup_customer"],
-  },
-  {
     id: "pain_triage",
     name: "Pain triage",
     prompt_fragment:
-      "Ask if this visit is for pain or a routine check-up, and — either way — what the " +
-      "visit is actually for in the caller's own words (e.g. cleaning, filling, a broken " +
-      "tooth, a check-up); note that as the reason for visit. If pain: ask about pain level " +
-      "(0-10), swelling, fever, and specifically whether a tooth was knocked out or badly " +
-      "broken — any of those is a same-day urgency tier, so flag it clearly and prioritize " +
-      "the earliest possible slot in the next step. If there's severe facial swelling " +
+      "Find out what the visit is for, in the caller's own words (e.g. cleaning, filling, a " +
+      "broken tooth, a check-up) — skip the question if they already said — and note it as " +
+      "the reason for visit. If it involves pain: ask about pain level (0-10), swelling, " +
+      "fever, and whether a tooth was knocked out or badly broken, in as few questions as " +
+      "you can — any of those is a same-day urgency tier, so flag it clearly and prioritize " +
+      "the earliest possible slot. If there's severe facial swelling " +
       "affecting breathing or swallowing, treat this as a safety emergency instead of " +
       "routine triage. Once you know the visit type, call list_offerings ONCE and match it to " +
       "the closest offering — pass its offering_id (never invented) into check_availability " +
@@ -149,21 +131,27 @@ const rawStates: AgentState[] = [
     ],
   },
   {
-    id: "check_time",
-    name: "Check availability",
+    id: "booking_details",
+    name: "Booking details",
     prompt_fragment:
-      "If same-day urgency was flagged, ask check_availability for the soonest possible " +
-      "window today; otherwise ask what day/time works. Offer the returned open slots; if " +
-      "none_available, follow the waitlist-offer rule (for a same-day urgent case, also " +
-      "offer to take a message so the office can call back immediately if nothing opens).",
-    allowed_tools: ["check_availability", "join_waitlist"],
+      "Get what the booking still needs, taking whatever the caller already said: the " +
+      "patient's full name (the person being seen, who may be the caller's child or " +
+      "dependent; for a recognized returning caller booking for themself, confirm the name " +
+      "on file), the caller's callback number (per the Caller ID rule: normally just confirm " +
+      "the number they're calling from), whether the patient has been seen here before (you " +
+      "may call lookup_customer with no arguments to check), and when they'd like to come " +
+      "in. If same-day urgency was flagged, call check_availability for the soonest window " +
+      "today; otherwise call it as soon as you know when they'd like to come, and offer the " +
+      "open times it returns. If none, follow the waitlist rule (for a same-day urgent case, " +
+      "also offer to take a message so the office can call back right away).",
+    allowed_tools: ["lookup_customer", "check_availability", "join_waitlist"],
   },
   {
     id: "confirm_booking",
     name: "Confirm booking",
     prompt_fragment:
-      "Read back the patient name, reason for visit, and date/time, ask the consent " +
-      "question, state the cancellation policy, then create the booking — pass " +
+      "Do the one read-back (patient name, reason for visit, day and time) with the consent " +
+      "question and the cancellation policy, then create the booking — pass " +
       "structured_payload with new_or_existing, reason_for_visit, and pain_level (if " +
       "asked) — and, if text messages are available, send the SMS confirmation, including a " +
       "mention that a secure link for insurance/DOB will follow separately (otherwise say the " +
@@ -189,23 +177,17 @@ export const DENTAL_TEMPLATE: AgentTemplate = {
   system_prompt: SYSTEM_PROMPT,
   states: rawStates.map(withCallOutcomeExtraction),
   transitions: [
-    { from: "greeting", to: "collect_patient_name", on: { intent: "wants_to_book" } },
+    { from: "greeting", to: "pain_triage", on: { intent: "wants_to_book" } },
     { from: "greeting", to: "manage_booking", on: { intent: "wants_to_reschedule_or_cancel" } },
     {
       from: "greeting",
       to: "take_message_fallback",
       on: { intent: "after_hours_or_general_message" },
     },
+    { from: "pain_triage", to: "booking_details", on: { intent: "triage_complete" } },
+    { from: "booking_details", to: "confirm_booking", on: { predicate: "slot_selected" } },
     {
-      from: "collect_patient_name",
-      to: "new_or_existing",
-      on: { intent: "patient_name_confirmed" },
-    },
-    { from: "new_or_existing", to: "pain_triage", on: { intent: "status_confirmed" } },
-    { from: "pain_triage", to: "check_time", on: { intent: "triage_complete" } },
-    { from: "check_time", to: "confirm_booking", on: { predicate: "slot_selected" } },
-    {
-      from: "check_time",
+      from: "booking_details",
       to: "take_message_fallback",
       on: { predicate: "none_available_and_caller_declines_waitlist" },
     },

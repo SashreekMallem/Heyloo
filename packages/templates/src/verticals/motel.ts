@@ -31,7 +31,11 @@
 import type { AgentTemplate } from "@heyloo/canonical-types";
 import { DISCLOSURE_LINE } from "../shared/disclosure.js";
 import { withCallOutcomeExtraction } from "../shared/extraction.js";
-import { CANCELLATION_POLICY_READOUT_FRAGMENT, CONSENT_ASK_FRAGMENT } from "../shared/fragments.js";
+import {
+  CANCELLATION_POLICY_READOUT_FRAGMENT,
+  CONSENT_ASK_FRAGMENT,
+  CONTACT_DETAILS,
+} from "../shared/fragments.js";
 import {
   humanRequestGlobalIntent,
   safetyEmergencyGlobalIntent,
@@ -85,57 +89,28 @@ export const MOTEL_TEMPLATE: AgentTemplate = {
       allowed_tools: [],
     },
     {
-      id: "collect_guest_contact",
-      name: "Collect guest name + phone",
+      id: "stay_details",
+      name: "Stay details",
       prompt_fragment:
-        "Ask for the guest's full name, then the best callback number, reading the number " +
-        "back digit by digit to confirm. This is the name/phone the reservation will be held " +
-        "under, distinct from the room dates/type — ask for it explicitly, don't assume the " +
-        "caller ID number is the number to use." +
-        " If the caller is a recognized returning caller (a name or number is on file — see " +
-        "Caller history), confirm what's on file instead of asking for it again.",
-      allowed_tools: [],
-    },
-    {
-      id: "collect_dates",
-      name: "Collect dates",
-      prompt_fragment:
-        "Ask for the check-in and check-out dates, one at a time, and read each back before " +
-        "moving on.",
-      allowed_tools: [],
-    },
-    {
-      id: "collect_guests",
-      name: "Collect guest count",
-      prompt_fragment: "Ask how many guests will be staying.",
-      allowed_tools: [],
-    },
-    {
-      id: "collect_room_type",
-      name: "Collect room type",
-      prompt_fragment:
-        "Ask which room type they'd like, then quote the nightly rate strictly from " +
-        "{{rate_table}} per the rate-discipline rule.",
-      allowed_tools: [],
-    },
-    {
-      id: "check_time",
-      name: "Check availability",
-      prompt_fragment:
-        "Call check_availability for the requested dates, passing the chosen room type as " +
-        "room_type so only that room type's real inventory is checked (never assume a room " +
-        "type is available just because a rate is on file for it). If none_available, offer " +
-        "the returned nearest_alternative first (\"I don't have that exact night open, but I " +
-        "do have ...\"); if the caller still can't be accommodated, offer to take a message so " +
-        "the motel can follow up if something opens.",
-      allowed_tools: ["check_availability"],
+        "Get what the reservation needs, taking whatever the caller already said: check-in " +
+        "and check-out dates (a number of nights is fine — work out the check-out date " +
+        "yourself), how many guests, which room type (quote its nightly rate strictly from " +
+        "{{rate_table}} per the rate-discipline rule), and the guest's " +
+        CONTACT_DETAILS +
+        " — the name the reservation is held under. As soon as you have the dates and room " +
+        "type, call check_availability for those dates with the room type as room_type, so " +
+        "only that room type's real inventory is checked (never assume a room is free just " +
+        "because it has a rate). If none_available, offer the returned nearest_alternative " +
+        "(\"I don't have that exact night, but I do have ...\"); if that doesn't work either, " +
+        "offer to take a message so the motel can follow up if something opens.",
+      allowed_tools: ["lookup_customer", "check_availability"],
     },
     {
       id: "confirm_booking",
       name: "Confirm booking",
       prompt_fragment:
-        "Read back the guest name, dates, guests, room type, and rate; ask the consent " +
-        "question; state the cancellation policy; then create the booking — pass " +
+        "Do the one read-back (guest name, dates, guests, room type and nightly rate) with the " +
+        "consent question and the cancellation policy, then create the booking — pass " +
         "structured_payload with room_type, quoted_rate_cents (the exact nightly rate you " +
         "quoted from {{rate_table}}), and num_guests. If a deposit is required " +
         "({{deposit_policy_text}}), say so and, if text messages are available, send a " +
@@ -152,24 +127,16 @@ export const MOTEL_TEMPLATE: AgentTemplate = {
     takeMessageFallbackState(),
   ].map(withCallOutcomeExtraction),
   transitions: [
-    { from: "greeting", to: "collect_guest_contact", on: { intent: "wants_to_book" } },
+    { from: "greeting", to: "stay_details", on: { intent: "wants_to_book" } },
     { from: "greeting", to: "manage_booking", on: { intent: "wants_to_reschedule_or_cancel" } },
     {
       from: "greeting",
       to: "take_message_fallback",
       on: { intent: "after_hours_or_general_message" },
     },
+    { from: "stay_details", to: "confirm_booking", on: { predicate: "slot_selected" } },
     {
-      from: "collect_guest_contact",
-      to: "collect_dates",
-      on: { intent: "guest_contact_confirmed" },
-    },
-    { from: "collect_dates", to: "collect_guests", on: { intent: "dates_confirmed" } },
-    { from: "collect_guests", to: "collect_room_type", on: { intent: "guests_confirmed" } },
-    { from: "collect_room_type", to: "check_time", on: { intent: "room_type_confirmed" } },
-    { from: "check_time", to: "confirm_booking", on: { predicate: "slot_selected" } },
-    {
-      from: "check_time",
+      from: "stay_details",
       to: "take_message_fallback",
       on: { predicate: "none_available_and_no_alternative_accepted" },
     },

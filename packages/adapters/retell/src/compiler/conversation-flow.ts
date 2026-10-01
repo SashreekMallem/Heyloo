@@ -500,7 +500,9 @@ export function compileConversationFlow(
       speak_during_execution: true,
       instruction: {
         type: "prompt",
-        text: "Thank the caller, confirm there's nothing else you can help with, and say a warm goodbye.",
+        // SPEED-1 (mirrors template-compiler.ts): an end node hangs up right
+        // after speaking, so it must not ask a question.
+        text: "Say a short, warm goodbye in one sentence. Do not ask any question.",
       },
     });
     if (fromNode.type === "transfer_call" || fromNode.type === "end") continue;
@@ -556,7 +558,7 @@ export function compileConversationFlow(
     name: "Wrap-up",
     instruction: {
       type: "prompt",
-      text: 'Ask the caller: "Is there anything else I can help with?" and wait for their answer.',
+      text: 'Ask the caller, in a few words: "Anything else I can help with?" and wait for their answer.',
     },
     edges: [
       {
@@ -600,7 +602,7 @@ export function compileConversationFlow(
     type: "end",
     name: "Wrap-up — end call",
     speak_during_execution: true,
-    instruction: { type: "prompt", text: "Thank the caller and say a warm goodbye." },
+    instruction: { type: "prompt", text: "Say a short, warm goodbye in one sentence." },
   };
 
   const flow: RetellConversationFlowRequest = {

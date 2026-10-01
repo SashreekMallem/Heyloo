@@ -7,12 +7,13 @@ exports[`compileMultiPrompt > matches the golden-file snapshot for the legal ver
     "booking_mode_text": "Normal — you can book, reschedule and cancel appointments as usual.",
     "business_facts": "(nothing extra on file)",
     "caller_greeting": "",
+    "caller_number": "",
     "cancellation_policy_text": "we ask that you let us know as soon as possible if you need to cancel or reschedule",
     "custom_questions_text": "(no custom questions)",
     "faq_text": "(no FAQ entries have been added)",
     "sms_enabled": "false",
     "special_instructions": "",
-    "texting_policy_text": "Text messages are NOT available for this business right now. Never offer to text or message the caller, never say or imply that you are texting, messaging or sending anything to their phone (no text confirmation, no link, no reminder), and do not call send_sms_confirmation or send_payment_link. Confirm out loud instead: after a tool reports the booking or order is confirmed, read back the day, time and key details once and say it is confirmed. If the caller wants it in writing or asks for a link, tell them someone from the team will follow up.",
+    "texting_policy_text": "Text messages are NOT available for this business right now. Never offer to text or message the caller, never say or imply that you are texting, messaging or sending anything to their phone (no text confirmation, no link, no reminder), and do not call send_sms_confirmation or send_payment_link. Confirm out loud instead: after a tool reports the booking or order is confirmed, say so in one sentence with the day and time (the details were already read back once before saving). If the caller wants it in writing or asks for a link, tell them someone from the team will follow up.",
     "transfer_number": "",
     "transfer_policy_text": "No live transfer number is set. Do not offer or attempt a transfer: take a message instead.",
     "voicemail_message": "",
@@ -45,7 +46,7 @@ Custom questions:
 Wording to use after taking a message or when nobody can be reached (blank means your own words): {{voicemail_message}}
 [[END OWNER INFO]]
 
-When the caller's request has been fully handled and they have nothing further to discuss (they say goodbye, thank you, that's all, or similar, or you have already clearly wrapped up the call), say a warm goodbye and then call the end_call tool to hang up. Never just stop responding or repeat the same goodbye more than once — always end the call with this tool once you've said goodbye.
+When the caller's request has been fully handled and they have nothing further to discuss (they say goodbye, thank you, that's all, or similar, or you have already clearly wrapped up the call), say a short goodbye in one sentence and then call the end_call tool to hang up. Never just stop responding or repeat the same goodbye more than once — always end the call with this tool once you've said goodbye.
 
 Before you say goodbye or call end_call: if this call was ABOUT booking an appointment, placing an order, or leaving a message/intake for the business to follow up on, you must have ALREADY called the tool that actually records that (create_booking, create_order, or take_message) earlier in this same call — never promise to record something, or act as if you have, without having actually called that tool. If you realize you have not yet called it, call it now (even with an incomplete set of fields — something recorded is always better than nothing) before ending the call. This never applies to a call that was ONLY an FAQ question, a transfer, or a cancellation with nothing new to record.",
   "general_tools": [

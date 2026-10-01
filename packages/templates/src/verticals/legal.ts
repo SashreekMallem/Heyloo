@@ -15,7 +15,7 @@
 import type { AgentState, AgentTemplate } from "@heyloo/canonical-types";
 import { DISCLOSURE_LINE } from "../shared/disclosure.js";
 import { withCallOutcomeExtraction } from "../shared/extraction.js";
-import { WARM_TRANSFER_FRAGMENT } from "../shared/fragments.js";
+import { CONTACT_DETAILS, WARM_TRANSFER_FRAGMENT } from "../shared/fragments.js";
 import {
   giveUpGlobalIntent,
   humanRequestGlobalIntent,
@@ -192,25 +192,27 @@ const rawStates: AgentState[] = [
     allowed_tools: [],
   },
   {
-    id: "collect_name_phone",
-    name: "Collect name + phone",
+    id: "intake",
+    name: "Intake (conflict check BEFORE any substantive discussion)",
     prompt_fragment:
-      "Ask for the caller's full name, then their phone number, confirming each. You may call " +
-      "lookup_customer with the number they're calling from to check whether they're an " +
-      "existing client — if so, greet them as a returning client, but still complete the rest " +
-      "of intake in full (a prior relationship never skips the conflict check)." +
-      " If the caller is a recognized returning caller (a name or number is on file — see " +
-      "Caller history), confirm what's on file instead of asking for it again.",
-    allowed_tools: ["lookup_customer"],
-  },
-  {
-    id: "matter_type",
-    name: "Matter type",
-    prompt_fragment:
-      "Ask what type of legal matter this is, guiding toward one of {{practice_areas}} if it " +
-      "fits. " +
+      "Gather the intake, taking whatever the caller already said and asking only for what's " +
+      "missing: " +
+      CONTACT_DETAILS +
+      " (you may call lookup_customer with no arguments to see if they're an existing " +
+      "client — a prior relationship never skips the conflict check); the type of legal " +
+      "matter, guided toward one of {{practice_areas}} if it fits; then — BEFORE discussing " +
+      "any details of the matter, every time, no exceptions — the opposing party's full name " +
+      "(and their attorney or firm, if known). That is a conflict-of-interest check: record it " +
+      "and let them know the firm will confirm there's no conflict before anything proceeds; " +
+      "never say a conflict check has passed or cleared — a human at the firm decides that. " +
+      'Then invite a short account in their own words ("Briefly, what happened?") and listen ' +
+      "without steering or evaluating — a few sentences is enough, the attorney will go " +
+      "through the details; ask at most one or two follow-ups. Find out whether anything is " +
+      "time-sensitive (a statute-of-limitations concern, a custody situation, an upcoming " +
+      "court date) unless they already said, and flag anything urgent clearly; and how they " +
+      "heard about the firm. " +
       EARLY_WRAP_UP_FRAGMENT,
-    allowed_tools: ["take_message"],
+    allowed_tools: ["lookup_customer", "take_message"],
     extraction: [
       {
         field: "matter_type",
@@ -219,41 +221,6 @@ const rawStates: AgentState[] = [
           "The type of legal matter the caller described (e.g. one of the firm's configured " +
           "practice areas, or their own words if it doesn't fit one).",
       },
-    ],
-  },
-  {
-    id: "conflict_check",
-    name: "Conflict check (BEFORE any substantive discussion)",
-    prompt_fragment:
-      "Before discussing any details of the matter itself, ask for the opposing party's full " +
-      "name (and their attorney's name/firm, if the caller knows it) — this happens BEFORE the " +
-      "open-discovery conversation, every time, no exceptions. This is a conflict-of-interest " +
-      "check: record what the caller says and let them know the firm will confirm there's no " +
-      "conflict before anything proceeds. Never tell the caller a conflict check has 'passed' " +
-      "or 'cleared' — that determination is always made by a human at the firm, never by you. " +
-      EARLY_WRAP_UP_FRAGMENT,
-    allowed_tools: ["take_message"],
-  },
-  {
-    id: "open_discovery",
-    name: "Open discovery",
-    prompt_fragment:
-      'Now invite the caller to explain, in their own words: "Walk me through what happened." ' +
-      "Listen and ask open, empathetic follow-up questions without steering them or evaluating " +
-      "what they say. " +
-      EARLY_WRAP_UP_FRAGMENT,
-    allowed_tools: ["take_message"],
-  },
-  {
-    id: "urgency",
-    name: "Urgency check",
-    prompt_fragment:
-      "Ask about anything time-sensitive: a statute-of-limitations concern, a custody " +
-      "situation, or an upcoming court date. Flag anything urgent for the attorney clearly in " +
-      "the message. " +
-      EARLY_WRAP_UP_FRAGMENT,
-    allowed_tools: ["take_message"],
-    extraction: [
       {
         field: "urgency",
         type: "enum",
@@ -263,14 +230,6 @@ const rawStates: AgentState[] = [
           "limitations concern, a custody situation, an upcoming court date, or similar — " +
           '"standard" otherwise.',
       },
-    ],
-  },
-  {
-    id: "referral_source",
-    name: "Referral source",
-    prompt_fragment: `Ask how the caller heard about this firm. ${EARLY_WRAP_UP_FRAGMENT}`,
-    allowed_tools: ["take_message"],
-    extraction: [
       {
         field: "referral_source",
         type: "text",
@@ -282,12 +241,12 @@ const rawStates: AgentState[] = [
     id: "intake_complete",
     name: "Intake complete",
     prompt_fragment:
-      "Before recording anything, read back what you have — the caller's name and phone, the " +
-      "matter type, the opposing party you'll run a conflict check on, the urgency, and a " +
-      "one-line summary of what they described — and get an explicit yes that it's correct, " +
-      "the same way every other vertical confirms a booking before finalizing it. Then thank " +
-      "the caller, let them know an attorney will review the intake (including the conflict " +
-      "check) and follow up, and record the full intake as a message for the firm. This is a " +
+      "Before recording anything, read back what you have in one or two sentences — the " +
+      "caller's name, the matter type, the opposing party you'll run a conflict check on, " +
+      "the urgency, and a one-line summary of what they described — and get an explicit yes " +
+      "that it's correct. Then record the full intake as a message for the firm and, once it " +
+      "returns recorded:true, tell them in one sentence that an attorney will review it " +
+      "(including the conflict check) and follow up. This is a " +
       "request, not a confirmed appointment: say the firm will call to confirm a time, never " +
       "say a consultation is booked, scheduled or confirmed, and do not read out a " +
       "cancellation policy or offer to cancel or reschedule. If the caller named a preferred " +
@@ -324,7 +283,7 @@ export const LEGAL_TEMPLATE: AgentTemplate = {
   system_prompt: SYSTEM_PROMPT,
   states: rawStates.map(withLegalGuardrail).map(withCallOutcomeExtraction),
   transitions: [
-    { from: "greeting", to: "collect_name_phone", on: { intent: "explains_reason_for_calling" } },
+    { from: "greeting", to: "intake", on: { intent: "explains_reason_for_calling" } },
     {
       from: "greeting",
       to: "take_message_fallback",
@@ -335,16 +294,7 @@ export const LEGAL_TEMPLATE: AgentTemplate = {
       to: "cancel_or_reschedule_request",
       on: { intent: "wants_to_cancel_or_reschedule" },
     },
-    { from: "collect_name_phone", to: "matter_type", on: { intent: "name_phone_confirmed" } },
-    { from: "matter_type", to: "conflict_check", on: { intent: "matter_type_identified" } },
-    {
-      from: "conflict_check",
-      to: "open_discovery",
-      on: { intent: "opposing_party_recorded" },
-    },
-    { from: "open_discovery", to: "urgency", on: { intent: "discovery_complete" } },
-    { from: "urgency", to: "referral_source", on: { intent: "urgency_recorded" } },
-    { from: "referral_source", to: "intake_complete", on: { intent: "referral_source_recorded" } },
+    { from: "intake", to: "intake_complete", on: { intent: "intake_details_complete" } },
     {
       from: "transfer_to_human",
       to: "transfer_to_human_connect",

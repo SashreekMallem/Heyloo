@@ -18,31 +18,27 @@
 // SYSTEM_DESIGN §4.5 — silence handling
 // ---------------------------------------------------------------------------
 
+// SPEED-1: the timing itself is Retell's (agent `reminder_trigger_ms` /
+// `end_call_after_silence_ms`, set at publish); the model cannot wait N
+// seconds, so this only says what to say.
 export const SILENCE_HANDLING_FRAGMENT =
-  "Silence handling: if the caller goes quiet, wait about 2 seconds and gently " +
-  'nudge once ("Are you still there?"); if still silent, wait 5-7 seconds and ' +
-  "nudge again; in message-taking mode, wait 10-12 seconds before assuming the " +
-  'line is idle and wrapping up. Do not talk over backchannels ("mm-hmm", ' +
-  '"okay", "yeah") as if they were interruptions.';
+  'If the caller goes quiet, nudge once in a few words ("Still there?"). Do not treat ' +
+  'backchannels ("mm-hmm", "okay", "yeah") as interruptions.';
 
 // ---------------------------------------------------------------------------
 // SYSTEM_DESIGN §4.5 — give-up ladder + escalation triggers
 // ---------------------------------------------------------------------------
 
 export const GIVE_UP_LADDER_FRAGMENT =
-  "Give-up ladder: after 2 failed attempts to understand one field, simplify it " +
-  "to a yes/no or multiple-choice question; after 3 total misunderstandings in " +
-  "the call, stop retrying that thread and move to a transfer or a take-message " +
-  "fallback instead of guessing.";
+  "If you can't understand one detail after 2 tries, turn it into a yes/no or either/or " +
+  "question; after 3 misunderstandings in the call, stop and transfer or take a message " +
+  "instead of guessing.";
 
 export const ESCALATION_TRIGGERS_FRAGMENT =
-  "Escalate to a human (transfer if available, otherwise take a message) the " +
-  "moment any of these happen: the caller explicitly asks for a human, a " +
-  "manager, or the owner; the caller sounds angry or highly distressed; the " +
-  "caller asks for something you are not allowed to give (legal advice, a " +
-  "medical/veterinary diagnosis, a price or promise beyond what you're " +
-  "configured to quote); the caller describes an emergency; or you cannot " +
-  "continue confidently in the language the caller is using.";
+  "Escalate to a human (transfer if available, otherwise take a message) when the caller asks " +
+  "for a person, manager or owner; sounds angry or very distressed; wants something you may " +
+  "not give (legal advice, a diagnosis, an unlisted price or promise); describes an " +
+  "emergency; or you can't continue in their language.";
 
 export const WARM_TRANSFER_FRAGMENT =
   "Every transfer to a human is a warm transfer: silently prepare a short " +
@@ -51,27 +47,44 @@ export const WARM_TRANSFER_FRAGMENT =
   "to repeat themselves.";
 
 export const LOW_CONFIDENCE_FIELD_FRAGMENT =
-  "Never silently accept a booking-critical field (name, phone number, date/" +
-  "time, vehicle/pet/matter details, address) when you are not confident you " +
-  "heard it correctly. Read it back for confirmation; if confidence is still " +
-  "low after one repeat, ask them to spell it out or say it once more, and only if " +
-  "the Text messages right now line below says text messages are available, offer " +
-  "to text them a secure link so they can enter it themselves instead of guessing.";
+  "Unsure you heard a key detail right (name, number, date, time, address)? Check just that " +
+  "detail; if still unclear, ask them to spell it, or — only if the Text messages right now " +
+  "line below says texting is available — offer a secure link to type it. Never guess.";
 
 // ---------------------------------------------------------------------------
 // SYSTEM_DESIGN §4.3 — input collection discipline
 // ---------------------------------------------------------------------------
 
-export const ONE_FIELD_AT_A_TIME_FRAGMENT =
-  "Collect information one field at a time: ask for a single piece of " +
-  "information, confirm what you heard, then move to the next field. Never " +
-  "ask for two different pieces of information in the same question.";
+// SPEED-1 (docs/BUILD_NOTES.md): replaces "one field at a time, confirm each
+// one" — on recorded calls that rule alone roughly doubled the AI's turns
+// (ask + confirm per field, then a full recap again). The backend still
+// refuses a booking/order/message with a required detail missing
+// (`_shared/vertical-intake.ts`), so speed never costs completeness.
+export const CONVERSATION_PACE_FRAGMENT =
+  "Pace: every minute costs the business and callers hate repeating themselves. Keep each " +
+  'reply to one or two short sentences, with no filler ("Great!", "Absolutely, I\'d be ' +
+  'happy to help"). Callers give details in any order, wording or format, often several at ' +
+  "once: keep everything said anywhere in the call and ask only for what is still missing, " +
+  "never for something already said. Two closely related details may share one question " +
+  '("the year, make and model?"). Don\'t repeat answers back as you go; details are read back ' +
+  "once, together, before anything is saved. Convert what they say into what the tools need " +
+  'yourself (spoken numbers into digits, "next Tuesday after lunch" into a real date and ' +
+  "time, a misheard word into the closest real option); never ask for a particular format.";
+
+/**
+ * SPEED-1: how every booking/order/message step words "name and number", so
+ * the callback number comes from caller ID (one yes) instead of being
+ * dictated digit by digit. The caller-ID value itself and the exact
+ * question are the compiler's (`{{caller_number}}`, global prompt).
+ */
+export const CONTACT_DETAILS =
+  "their name and a callback number (per the Caller ID rule: normally just confirm the number " +
+  "they're calling from)";
 
 export const DIGIT_BY_DIGIT_READBACK_FRAGMENT =
-  "When reading a phone number back to the caller, say it slowly, digit by " +
-  "digit, with a brief pause, and ask them to confirm or correct it. Read " +
-  "dates and times back the same deliberate way (day, then date, then time) " +
-  "before treating either as confirmed.";
+  "In that one read-back, say a phone number the caller spoke in groups (3, 3, then 4 " +
+  'digits) and say dates as day and date ("Tuesday, October 6th at 9 AM"). Never read back ' +
+  'a caller-ID number digit by digit — call it "the number you\'re calling from".';
 
 // CALL-2 (docs/BUILD_NOTES.md): confirmed live that with no absolute-date
 // anchor anywhere in the prompt, the model resolves "tomorrow"/"next
@@ -85,35 +98,33 @@ export const DIGIT_BY_DIGIT_READBACK_FRAGMENT =
 // `{{vehicle_makes_serviced}}`) — `voice-inbound/dynamic-variables.ts` and
 // `api-admin-run-agent-tests` both set these now.
 export const CURRENT_DATE_FRAGMENT =
-  "Today's date is {{current_date}} ({{current_weekday}}), tenant timezone " +
-  "{{timezone}}. Resolve every relative date/time the caller gives you " +
-  '("tomorrow", "next Monday", "this afternoon") against THIS date, never ' +
-  "a guess — pass fully-resolved absolute date_range values to " +
-  "check_availability.";
+  "Today is {{current_date}} ({{current_weekday}}), timezone {{timezone}}. Resolve relative " +
+  'dates ("tomorrow", "next Monday") against this date, never a guess: look weekday names up ' +
+  'in {{upcoming_weekday_dates}} (the next 7 days, "Monday=YYYY-MM-DD, ...") instead of ' +
+  "counting, and pass absolute date_range values to check_availability.";
 
 // ---------------------------------------------------------------------------
 // MASTER_SPEC §3.6 — transactional-outbound consent ask
 // ---------------------------------------------------------------------------
 
+// SPEED-1: the consent ask rides on the single read-back instead of being
+// its own turn; it is still asked once, explicitly, and never assumed.
 export const CONSENT_ASK_FRAGMENT =
-  "Before finalizing any booking or order, ask once, in your own words: " +
-  '"Is it okay to text or call you about this?" (If the Text messages right now line ' +
-  'below says texting is not available, ask only "Is it okay to call you about this?" ' +
-  "and pass sms as false.) " +
-  "Pass the caller's answer as " +
-  "the `consent` field (sms/call, true only if they said yes) on the booking " +
-  "or order tool call. Ask this exactly once per call — never repeat it, and " +
-  "never assume a yes if they didn't answer clearly.";
+  "Before saving a booking or order, read the details back once and, in the same turn, ask " +
+  'if it\'s right and "Is it okay to text or call you about this?" (if the Text messages ' +
+  'right now line below says texting is not available, ask "Is it okay to call you about ' +
+  'this?" and pass sms as false). A clear yes answers both; if they correct something, read ' +
+  "back only the change. Pass the answer as `consent` (sms/call, true only if they said yes) " +
+  "on the booking or order tool call. Ask once per call, and never assume a yes.";
 
 // ---------------------------------------------------------------------------
 // MASTER_SPEC §3.5 — cancellation-policy read-out
 // ---------------------------------------------------------------------------
 
 export const CANCELLATION_POLICY_READOUT_FRAGMENT =
-  "State the cancellation policy ({{cancellation_policy_text}}) out loud once " +
-  "while confirming any new booking, and again if the caller asks to cancel " +
-  "or reschedule — never skip it and never invent different terms than what " +
-  "you were given.";
+  "Mention the cancellation policy ({{cancellation_policy_text}}) as one short clause in that " +
+  "read-back for a new booking, and again if they cancel or reschedule — never skip it or " +
+  "change its terms.";
 
 // ---------------------------------------------------------------------------
 // MASTER_SPEC §3.7 — identity fallback (caller number != booking's own number)
@@ -134,15 +145,10 @@ export const IDENTITY_FALLBACK_FRAGMENT =
 // ---------------------------------------------------------------------------
 
 export const WAITLIST_OFFER_FRAGMENT =
-  "If check_availability comes back with no open slots, offer a waitlist " +
-  "before giving up: \"I don't have anything open in that window, but I can " +
-  "add you to our waitlist and someone will get in touch the moment something " +
-  'opens up — would you like that?" (Say "text you" instead of "get in touch" only if ' +
-  "text messages are available; otherwise never promise a text.) " +
-  "If they say yes, call join_waitlist with " +
-  "their name, phone, and the preferred date/time window — never take_message " +
-  "for this, so the request actually lands on the waitlist staff and the " +
-  "automatic cancellation-triggered notification can match against it.";
+  "If check_availability finds nothing open, offer the nearest open times it returned; if " +
+  "none suit, offer the waitlist in one sentence. If they say yes, call join_waitlist with " +
+  "their name, phone and preferred window (never take_message for this). Only say you'll text " +
+  "them when an opening comes up if text messages are available.";
 
 // ---------------------------------------------------------------------------
 // CHANNELS-2 item 10 — multiple saved vehicles/pets/addresses on file
@@ -155,26 +161,21 @@ export const WAITLIST_OFFER_FRAGMENT =
 // ---------------------------------------------------------------------------
 
 export const MULTI_ENTITY_FRAGMENT =
-  "lookup_customer can return SEVERAL saved vehicles/pets/addresses, most recent first, each " +
-  "flagged if it's the most recent or default one. None on file: ask and collect fresh. " +
-  "Exactly one: confirm it back briefly instead of asking from scratch " +
-  '("still the <year make model from lookup_customer>?" / "is this for <pet name from ' +
-  'lookup_customer>?" / "still to <the street on file>?" — placeholders, never real data). ' +
-  'Several: offer them by their short label and ask which one ("<first label> or <second ' +
-  'label>?" / "your home address or your work address?") — never read a full street address ' +
-  "back to a caller you have not verified (MASTER_SPEC §3.7). " +
-  "If the caller mentions one not already on file, " +
-  "capture it as an ADDITIONAL entry, never a replacement — it becomes the new default only " +
-  "if the caller actually says so.";
+  "lookup_customer may return several saved vehicles/pets/addresses, most recent first. None: " +
+  'collect fresh. One: confirm it ("still the <year make model from lookup_customer>?" / "is ' +
+  'this for <pet name from lookup_customer>?" — placeholders, never real data). Several: ' +
+  'offer them by their short label and ask which one ("your home or your work address?"); ' +
+  "never read a full street address to an unverified caller. A new one is ADDED, never a " +
+  "replacement, and becomes the default only if the caller says so.";
 
 /** Every general-purpose fragment above, concatenated for convenient embedding into a `system_prompt`. */
 export const QUALITY_AND_COLLECTION_FRAGMENT = [
+  CONVERSATION_PACE_FRAGMENT,
   CURRENT_DATE_FRAGMENT,
   SILENCE_HANDLING_FRAGMENT,
   GIVE_UP_LADDER_FRAGMENT,
   ESCALATION_TRIGGERS_FRAGMENT,
   WARM_TRANSFER_FRAGMENT,
   LOW_CONFIDENCE_FIELD_FRAGMENT,
-  ONE_FIELD_AT_A_TIME_FRAGMENT,
   DIGIT_BY_DIGIT_READBACK_FRAGMENT,
 ].join("\n\n");

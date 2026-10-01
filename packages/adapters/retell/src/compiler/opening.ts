@@ -98,6 +98,7 @@ export function openingAlreadySpokenInstruction(opening: OpeningLine): string {
 /** Defaults for every variable the compiler itself references. */
 export const COMPILER_DEFAULT_DYNAMIC_VARIABLES: Readonly<Record<string, string>> = {
   caller_greeting: "",
+  caller_number: "",
   transfer_number: "",
   // SETTINGS-2: safe "nothing set" values for the owner-info block's variables (parity with the Deno compiler's table).
   special_instructions: "",
@@ -112,8 +113,8 @@ export const COMPILER_DEFAULT_DYNAMIC_VARIABLES: Readonly<Record<string, string>
     "message the caller, never say or imply that you are texting, messaging or sending anything " +
     "to their phone (no text confirmation, no link, no reminder), and do not call " +
     "send_sms_confirmation or send_payment_link. Confirm out loud instead: after a tool reports " +
-    "the booking or order is confirmed, read back the day, time and key details once and say it " +
-    "is confirmed. If the caller wants it in writing or asks for a link, tell them someone from " +
+    "the booking or order is confirmed, say so in one sentence with the day and time (the " +
+    "details were already read back once before saving). If the caller wants it in writing or asks for a link, tell them someone from " +
     "the team will follow up.",
   custom_questions_text: "(no custom questions)",
   transfer_policy_text:

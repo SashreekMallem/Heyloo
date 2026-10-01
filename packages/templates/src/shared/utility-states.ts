@@ -12,7 +12,7 @@
  */
 
 import type { AgentState } from "@heyloo/canonical-types";
-import { IDENTITY_FALLBACK_FRAGMENT, WARM_TRANSFER_FRAGMENT } from "./fragments.js";
+import { CONTACT_DETAILS, WARM_TRANSFER_FRAGMENT } from "./fragments.js";
 
 export function transferToHumanState(): AgentState {
   return {
@@ -21,7 +21,9 @@ export function transferToHumanState(): AgentState {
     prompt_fragment:
       "The caller wants a human. " +
       WARM_TRANSFER_FRAGMENT +
-      " Let the caller know you're connecting them now, then use transfer_call.",
+      " Never tell the caller yourself that you are connecting or transferring them: a " +
+      "real transfer announces itself, and when no live line is available you must say so " +
+      "honestly and take a message instead.",
     allowed_tools: ["transfer_call"],
     is_terminal: true,
   };
@@ -81,10 +83,18 @@ export function manageBookingState(): AgentState {
     id: "manage_booking",
     name: "Reschedule or cancel an existing booking",
     prompt_fragment:
-      "The caller wants to reschedule or cancel an existing appointment. Look them up with " +
-      "lookup_customer using the number they're calling from. " +
-      IDENTITY_FALLBACK_FRAGMENT +
-      " Once identity is settled, use update_booking to reschedule or cancel_booking to " +
+      "The caller wants to reschedule or cancel an existing appointment. Call " +
+      "lookup_customer FIRST, immediately, with NO arguments at all — never ask the caller " +
+      "for their phone number before this first attempt, the server already knows the live " +
+      "caller ID and uses it automatically. If it returns a match (found: true), you already " +
+      "have their booking — proceed straight to update_booking/cancel_booking, do not re-ask " +
+      "for their name or phone, they're already confirmed. Only if that lookup comes back not " +
+      "found (or unverified) do you need to verify them: ask for BOTH their full name AND the " +
+      "exact date/time of the appointment they believe they have, and pass both as `verify` " +
+      "on the update_booking/cancel_booking tool call. Never proceed on a name alone or a " +
+      "time alone. If verification fails twice, stop trying to change the booking and take a " +
+      "message for staff to call back instead. Never read back any other personal details " +
+      "while verifying identity. Once identity is settled, use update_booking to reschedule or cancel_booking to " +
       "cancel, and state the cancellation policy again if they're cancelling. If they only " +
       "ask about an existing appointment, answer from lookup_customer's recent_bookings " +
       "(say start_local, never start_at) — never say they have no appointment unless " +
@@ -104,12 +114,13 @@ export function takeMessageFallbackState(): AgentState {
     name: "Take a message (fallback)",
     prompt_fragment:
       "You were not able to complete this in real time (after-hours, repeated " +
-      "misunderstandings, or the caller asked to leave a message instead). Collect the " +
-      "caller's name, phone number, and a short message. If you already gathered any " +
+      "misunderstandings, or the caller asked to leave a message instead). Get " +
+      CONTACT_DETAILS +
+      " and a short message, taking whatever they already said. If you already gathered any " +
       "information earlier in this call (what they were calling about, details already " +
       "discussed), fold it into message_text rather than discarding it — a partial intake is " +
-      "still worth more to staff than a blank message. Then read the details back, get a " +
-      "yes, and CALL take_message: saying it out loud records nothing, and take_message is " +
+      "still worth more to staff than a blank message. Then read the details back once, get " +
+      "a yes, and CALL take_message: saying it out loud records nothing, and take_message is " +
       "what makes the message durable. Only after it returns recorded:true tell the caller " +
       "their message is recorded and the team will follow up — never say you passed a " +
       "message along without having called take_message. Do not promise a callback time or " +

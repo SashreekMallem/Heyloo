@@ -198,6 +198,21 @@ export const WRITE_TOOL_NAMES_FOR_MESSAGE: ReadonlySet<string> = new Set([
  * passed through unchanged.
  */
 const EDGE_CONDITION_TEXT: Readonly<Record<string, string>> = {
+  // SPEED-1: one details step now gathers what used to take a chain of
+  // single-field steps, so its exit names "everything this step asks for".
+  slot_selected:
+    "The caller has picked one of the open times check_availability returned and you have " +
+    "every other detail this step asks for",
+  order_details_complete:
+    "The caller has finished listing items and you have the allergy answer, pickup or " +
+    "delivery (and the address for delivery), and their name and callback number",
+  intake_details_complete:
+    "You have the caller's name and callback number, the matter type, the opposing party, a " +
+    "short account of what happened, whether anything is urgent, and how they heard about the " +
+    "firm (or they declined to say)",
+  triage_complete: "You know what the visit is for and whether it is urgent",
+  no_red_flag_detected:
+    "You know what's going on with the pet and none of the emergency red flags is present",
   wants_to_reschedule_or_cancel:
     "The caller wants to reschedule or cancel an appointment, or asks about, checks on or " +
     'wants to confirm an existing appointment or booking (for example "do I have an ' +

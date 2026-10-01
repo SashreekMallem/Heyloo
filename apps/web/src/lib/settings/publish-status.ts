@@ -40,7 +40,7 @@
  * file and fails on drift); bump both whenever a compile of the same template
  * would produce different agent output.
  */
-export const CURRENT_AGENT_COMPILER_VERSION = 3;
+export const CURRENT_AGENT_COMPILER_VERSION = 4;
 
 export type PublishReason =
   | "never_published"

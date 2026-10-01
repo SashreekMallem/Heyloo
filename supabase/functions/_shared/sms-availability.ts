@@ -131,7 +131,8 @@ export const TEXTING_POLICY_OFF =
   "caller, never say or imply that you are texting, messaging or sending anything to their phone " +
   "(no text confirmation, no link, no reminder), and do not call send_sms_confirmation or " +
   "send_payment_link. Confirm out loud instead: after a tool reports the booking or order is " +
-  "confirmed, read back the day, time and key details once and say it is confirmed. If the caller " +
+  "confirmed, say so in one sentence with the day and time (the details were already read back " +
+  "once before saving). If the caller " +
   "wants it in writing or asks for a link, tell them someone from the team will follow up.";
 
 export interface TextingVariables extends Record<string, string> {

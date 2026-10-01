@@ -9501,3 +9501,39 @@ from the seed copy within minutes (all 8 system_prompt md5s verified equal to th
 and no agent was republished in between. Until someone ports the seed-copy fixes back into
 `packages/templates`, template changes go into BOTH copies and reach the database via the
 seed copy (`ensureTemplateSeeded(..., forceReseed)` / a seed-based update), never the sync script.
+
+## SPEED-1 — shorter calls for all 8 agents (2026-10-01)
+
+Restore point first: docs/ROLLBACK_2026-10-01.md (code at b6fac4b, DB snapshots in `ops_backup`).
+
+- **Source reconciled.** `packages/templates` now equals the live copy again (6 seed-only fixes
+  ported back). `scripts/generate-agent-template-seeds.ts` writes
+  `_shared/agent-template-seeds.ts` from the templates build; `packages/templates/src/seed-drift.test.ts`
+  fails when the two differ. This supersedes LAUNCH-restaurant-menu: edit the source, build,
+  regenerate, never hand-edit the seed copy.
+- **Baseline (call_logs since 09-15, booked calls):** 163–193 s and 17–22 AI turns for every
+  vertical except generic; about 19 words per AI turn. The cause was structural: each
+  vertical collected one field per flow node and confirmed each answer before moving on, then
+  recapped everything, then asked consent as its own turn, then asked "anything else?" twice
+  (end node + wrap-up node).
+- **Change.** Shared rules ask for only what is missing, take details in any order or format,
+  skip per-field confirmations, and read back once with the consent question folded in.
+  Single-field chains merged into one details step per vertical (auto 7→2 steps, vet 7→3
+  with red-flag triage still first, dental 6→3, motel 7→2, restaurant order 6→2 and table
+  4→2, legal 7→3 with the conflict check still before details). Caller ID rule:
+  `{{caller_number}}` (new per-call variable) is confirmed with one yes instead of
+  dictated; voice-tools already fills a missing phone from caller ID before the intake gate.
+  End nodes no longer ask a question before hanging up; the post-save confirmation is one
+  sentence. System prompts are 10–20% shorter than before.
+- **Retell agent settings** (`AGENT_CALL_PACING`, docs-verified): silence ends the call at
+  30 s (was 10 min), max call 15 min (was 60), 2 silence reminders, voice_speed 1.1.
+- **Web calls** (widget, dashboard test call, admin web call) now get the same per-call
+  variables as phone calls (`_shared/web-call-variables.ts`): date, hours, menu, owner
+  settings. They previously had only the disclosure line.
+- **Unchanged on purpose:** backend required-field gate (`_shared/vertical-intake.ts`), the
+  disclosure opening, every emergency/safety path, legal's conflict-check ordering.
+- `AGENT_COMPILER_VERSION` 4: every owner sees "Publish changes". The owner publish path
+  DELETES the superseded Retell agent (`api-tenant-agent-publish`), so for real tenants
+  rollback is "restore templates + revert code + republish", not an agent-id switch.
+- Not measured yet: no scripted calls were possible from this session (the admin internal
+  key is not available here). Measure with the same call_logs query after republishing.

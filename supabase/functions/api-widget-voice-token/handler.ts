@@ -1,6 +1,7 @@
 import type { RetellFetch } from "../_shared/providers/retell.ts";
 import { createWebCall } from "../_shared/providers/retell.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
+import { resolveWebCallDynamicVariables } from "../_shared/web-call-variables.ts";
 import { verifyWidgetToken } from "../_shared/widget-token.ts";
 
 /**
@@ -112,11 +113,19 @@ export async function handleWidgetVoiceToken(
     return { status: 404, body: { error: "agent_not_published" } };
   }
 
+  // A web call never runs `/voice-inbound`, so build the same per-call
+  // variables here, for the tenant the verified widget token names.
+  const dynamicVariables = await resolveWebCallDynamicVariables({
+    sql,
+    logger: deps.logger,
+    now: deps.now?.() ?? new Date(),
+    tenantId: verified.payload.tenant_id,
+    fallbackDisclosureLine: tenantRow.disclosure_line,
+    logPrefix: "widget_voice_token",
+  });
   const callResult = await createWebCall(deps.retellFetch, deps.retellApiKey, {
     agent_id: tenantRow.retell_agent_id,
-    ...(tenantRow.disclosure_line
-      ? { retell_llm_dynamic_variables: { disclosure_line: tenantRow.disclosure_line } }
-      : {}),
+    ...(dynamicVariables ? { retell_llm_dynamic_variables: dynamicVariables } : {}),
   });
   const callBody = callResult.body as { access_token?: string; call_id?: string };
   if (!callResult.ok || !callBody.access_token || !callBody.call_id) {

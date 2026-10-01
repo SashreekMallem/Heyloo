@@ -147,7 +147,12 @@ export function updateBookingTool(): CanonicalTool {
     parameters: {
       type: "object",
       properties: {
-        booking_id: { type: "string" },
+        booking_id: {
+          type: "string",
+          description:
+            "The real id of the booking to reschedule, from lookup_customer's own " +
+            "recent_bookings list — never invented or guessed.",
+        },
         new_start: { type: "string" },
         new_end: { type: "string" },
         verify: {
@@ -174,7 +179,12 @@ export function cancelBookingTool(): CanonicalTool {
     parameters: {
       type: "object",
       properties: {
-        booking_id: { type: "string" },
+        booking_id: {
+          type: "string",
+          description:
+            "The real id of the booking to cancel, from lookup_customer's own " +
+            "recent_bookings list — never invented or guessed.",
+        },
         reason: { type: "string" },
         verify: {
           type: "object",
@@ -203,12 +213,15 @@ export function lookupCustomerTool(): CanonicalTool {
   return {
     name: "lookup_customer",
     description:
-      "Look up the caller's own account by their phone number (always the number they are " +
-      "calling FROM — never a different number the caller provides).",
+      "Look up the caller's own account. Call this with NO arguments at all to check the " +
+      "number this call is actually coming in on — the server already knows it and will use " +
+      "it automatically, so never ask the caller for their phone number just to make this " +
+      "call. Only pass `phone` (a number the caller explicitly STATES out loud) when there " +
+      "is no live caller-ID number to use at all — the tool result will say so if that's " +
+      "the case.",
     parameters: {
       type: "object",
       properties: { phone: { type: "string" } },
-      required: ["phone"],
     },
     authorization: { scope: "caller_number" },
   };

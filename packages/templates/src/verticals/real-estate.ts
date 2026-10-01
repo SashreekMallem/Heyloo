@@ -40,6 +40,7 @@ import { withCallOutcomeExtraction } from "../shared/extraction.js";
 import {
   CANCELLATION_POLICY_READOUT_FRAGMENT,
   CONSENT_ASK_FRAGMENT,
+  CONTACT_DETAILS,
   WAITLIST_OFFER_FRAGMENT,
 } from "../shared/fragments.js";
 import {
@@ -116,9 +117,11 @@ export const REAL_ESTATE_TEMPLATE: AgentTemplate = {
       prompt_fragment:
         "Cover, conversationally, in any order the caller leads with: whether they're a buyer " +
         "or a seller · the property or area they're interested in · whether a buyer is " +
-        "pre-approved for financing · their timeline · their budget. You may call " +
-        "lookup_customer with the number they're calling from to check whether they're a " +
-        "returning contact and skip re-asking anything already on file. Once the above is " +
+        "pre-approved for financing · their timeline · their budget · " +
+        CONTACT_DETAILS +
+        ". Skip anything they already told you. You may call lookup_customer (no arguments) " +
+        "to check whether they're a returning contact and skip re-asking anything already on " +
+        "file. Once the above is " +
         "clear: if they want to schedule a showing, move to that; if they just want a quote/" +
         "valuation with no commitment yet, take a message instead so an agent can follow up — " +
         "don't force a showing booking.",
@@ -129,8 +132,8 @@ export const REAL_ESTATE_TEMPLATE: AgentTemplate = {
       name: "Schedule showing",
       prompt_fragment:
         "Call check_availability for the property/area and requested window. If none_available, " +
-        "follow the waitlist-offer rule. Once a slot is chosen, read back area, timeline, and " +
-        "the date/time, ask the consent question, state the cancellation policy, then create " +
+        "follow the waitlist-offer rule. Once a slot is chosen, do the one read-back (property " +
+        "or area, day and time) with the consent question and the cancellation policy, then create " +
         "the booking with structured_payload set to whatever you learned in qualification " +
         "(buyer_or_seller, area, pre_approved, timeline, budget_cents) and, if text messages " +
         "are available, send the SMS confirmation.",
@@ -147,8 +150,8 @@ export const REAL_ESTATE_TEMPLATE: AgentTemplate = {
       name: "Lead capture (no showing yet)",
       prompt_fragment:
         "The caller wants a valuation/quote or just isn't ready to schedule a showing yet. " +
-        "Before recording anything, read back their name and phone, whether they're buying or " +
-        "selling, and the property/area they're interested in, and get an explicit yes that " +
+        "Before recording anything, read back in one or two sentences their name, whether " +
+        "they're buying or selling, and the property or area, and get an explicit yes that " +
         "it's correct. Then take a message per the structured-lead-capture rule so an agent " +
         "can follow up.",
       allowed_tools: ["take_message"],

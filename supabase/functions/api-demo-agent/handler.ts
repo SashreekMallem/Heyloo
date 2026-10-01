@@ -12,6 +12,7 @@ import type {
   InstantDemoRequest,
 } from "../_shared/schemas/demo-agent.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
+import { DEFAULT_DISCLOSURE_LINE, toStringVariables } from "../_shared/web-call-variables.ts";
 
 /**
  * `/api-demo-agent` (BACKEND_SPEC §7.8, MASTER_SPEC §2 binding "review-
@@ -439,20 +440,6 @@ interface DemoTenantRow {
   disclosure_line: string | null;
   retell_agent_id: string | null;
   published_at: string | null;
-}
-
-const DEFAULT_DISCLOSURE_LINE =
-  "This call may be recorded, and you are speaking with an AI assistant.";
-
-/** Retell dynamic variables are strings only (create-web-call: "key value pairs of string"). */
-function toStringVariables(vars: Record<string, unknown>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(vars)) {
-    if (value === undefined || value === null) continue;
-    out[key] =
-      typeof value === "string" ? value : Array.isArray(value) ? value.join(", ") : String(value);
-  }
-  return out;
 }
 
 /**

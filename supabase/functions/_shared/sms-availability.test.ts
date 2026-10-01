@@ -187,7 +187,7 @@ describe("what the model is told", () => {
     expect(TEXTING_POLICY_OFF).toMatch(/NOT available/);
     expect(TEXTING_POLICY_OFF).toMatch(/Never offer to text/);
     expect(TEXTING_POLICY_OFF).toMatch(/do not call send_sms_confirmation or send_payment_link/);
-    expect(TEXTING_POLICY_OFF).toMatch(/read back the day, time and key details/);
+    expect(TEXTING_POLICY_OFF).toMatch(/say so in one sentence with the day and time/);
   });
 
   it("the ON policy only lets the agent say a text is coming after the tool confirms it", () => {

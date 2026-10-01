@@ -106,6 +106,7 @@ describe("compileTemplate — conversation_flow", () => {
     expect(global_prompt).toContain("{{language}}");
     expect(default_dynamic_variables).toEqual({
       caller_greeting: "",
+      caller_number: "",
       caller_name_on_file: "",
       caller_phone_on_file: "",
       caller_recent_context: expect.stringContaining("first-time caller"),

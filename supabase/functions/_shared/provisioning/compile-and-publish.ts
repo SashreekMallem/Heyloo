@@ -246,6 +246,24 @@ export type CompileAndCreateOutcome =
   | { ok: false; status: number; error: string };
 
 /**
+ * SPEED-1 (docs/BUILD_NOTES.md): call-length guards sent on every agent.
+ * RETELL-VERIFIED against docs.retellai.com/api-references/create-agent
+ * (2026-10-01): `end_call_after_silence_ms` (min 10000, default 600000 — a
+ * line left open in silence was billed for up to 10 minutes),
+ * `max_call_duration_ms` (60000..7200000, default 3600000),
+ * `reminder_max_count` (default 1; reminders fire after `reminder_trigger_ms`,
+ * default 10000, of caller silence after agent speech) and `voice_speed`
+ * (0.5..2, default 1). With these, a silent caller is nudged at about 10 s
+ * and 20 s and the call ends at 30 s.
+ */
+export const AGENT_CALL_PACING = {
+  end_call_after_silence_ms: 30_000,
+  max_call_duration_ms: 15 * 60_000,
+  reminder_max_count: 2,
+  voice_speed: 1.1,
+} as const;
+
+/**
  * Compiles the tenant's current template and creates a BRAND-NEW Retell
  * agent from it (new `agent_id`), upserting `agent_configs`. HARD-FAILS
  * (never calls Retell) when the compiled flow's first turn doesn't contain
@@ -297,6 +315,7 @@ export async function compileAndCreateAgent(
     response_engine: responseEngine,
     webhook_url: deps.eventsWebhookUrl,
     webhook_timeout_ms: 10000,
+    ...AGENT_CALL_PACING,
     // QA-HOT (docs/BUILD_NOTES.md): previously never sent at all — every
     // agent, regardless of the tenant's own `tenants.language_config`,
     // silently got Retell's `en-US` default (RETELL-VERIFIED,

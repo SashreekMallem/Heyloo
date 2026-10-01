@@ -149,6 +149,11 @@ describe("PARITY-1: api-provision vs api-admin-provision-test-tenant compile+cre
       response_engine: { type: "conversation-flow", conversation_flow_id: "flow_1" },
       webhook_url: EVENTS_WEBHOOK_URL,
       webhook_timeout_ms: 10000,
+      // SPEED-1: call-length guards on every agent.
+      end_call_after_silence_ms: 30_000,
+      max_call_duration_ms: 900_000,
+      reminder_max_count: 2,
+      voice_speed: 1.1,
       // QA-HOT: this fixture's `makeSql` has no row for the tenant's own
       // `language_config` lookup, so it degrades to the documented
       // `"en"` default -> `resolveRetellAgentLanguage("en")` -> `"en-US"`.

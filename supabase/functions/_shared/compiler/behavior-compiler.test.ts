@@ -36,8 +36,8 @@ function promptOf(flow: CompiledFlowRequest): string {
 }
 
 describe("AGENT_COMPILER_VERSION", () => {
-  it("is 3 (the portal flags agents published before the call-integrity rules)", () => {
-    expect(AGENT_COMPILER_VERSION).toBe(3);
+  it("is 4 (the portal flags agents published before the SPEED-1 pacing rules)", () => {
+    expect(AGENT_COMPILER_VERSION).toBe(4);
   });
 });
 

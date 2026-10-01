@@ -17,9 +17,9 @@ import { withCallOutcomeExtraction } from "../shared/extraction.js";
 import {
   CANCELLATION_POLICY_READOUT_FRAGMENT,
   CONSENT_ASK_FRAGMENT,
+  CONTACT_DETAILS,
   MULTI_ENTITY_FRAGMENT,
   WAITLIST_OFFER_FRAGMENT,
-  WARM_TRANSFER_FRAGMENT,
 } from "../shared/fragments.js";
 import {
   humanRequestGlobalIntent,
@@ -75,69 +75,42 @@ const rawStates: AgentState[] = [
     allowed_tools: [],
   },
   {
-    id: "collect_owner_phone",
-    name: "Collect owner + phone",
-    prompt_fragment:
-      "Ask for the owner's name, then their phone number, confirming each. Call " +
-      "lookup_customer with the number they're calling from — if it returns a known pet, " +
-      "confirm the pet's name back to the owner instead of asking their pet info from " +
-      "scratch in the next step." +
-      " If the caller is a recognized returning caller (a name or number is on file — see " +
-      "Caller history), confirm what's on file instead of asking for it again.",
-    allowed_tools: ["lookup_customer"],
-  },
-  {
-    id: "collect_pet_info",
-    name: "Collect pet info",
-    prompt_fragment:
-      "If lookup_customer already returned this pet's name, species, breed, and age, confirm " +
-      'them back ("still <pet name>, the <age> <breed>?", using only what lookup_customer ' +
-      "returned) instead of re-asking from scratch — otherwise ask for each one at a time. Cross-check species against {{species_treated}}.",
-    allowed_tools: [],
-  },
-  {
-    id: "new_or_existing",
-    name: "New vs existing patient",
-    prompt_fragment: "Ask whether this pet has been seen at this clinic before.",
-    allowed_tools: [],
-  },
-  {
     id: "triage_redflags",
     name: "Red-flag triage (FIRST, before any routine scheduling)",
     prompt_fragment:
-      "Before discussing anything routine, explicitly ask what's going on with the pet and " +
-      `listen for these red flags: ${RED_FLAG_LIST}. This triage happens BEFORE routine ` +
-      "symptom/scheduling discussion, every time, for every call — never skip it. If ANY " +
-      "red flag is present, do not continue this flow; move immediately to the emergency " +
-      "referral. Never attempt to diagnose or reassure — your only job here is to detect a " +
-      "red flag and route accordingly.",
-    allowed_tools: [],
-  },
-  {
-    id: "symptom_or_routine",
-    name: "Symptom vs routine",
-    prompt_fragment:
-      "No red flags were present. Ask whether this is for a specific symptom or a routine " +
-      "visit (wellness, vaccines, grooming, etc.) and note it for the appointment. Call " +
+      "Before anything routine, find out what's going on with the pet (skip the question if " +
+      `they already said) and listen for these red flags: ${RED_FLAG_LIST}. This triage ` +
+      "happens BEFORE any routine scheduling, every time, for every call — never skip it. If " +
+      "ANY red flag is present, stop and move immediately to the emergency referral; never " +
+      "diagnose or reassure. If there is none, note whether it's a specific symptom or a " +
+      "routine visit (wellness, vaccines, grooming, etc.) as the visit reason, then call " +
       "list_offerings ONCE and match it to the closest offering — pass its offering_id (never " +
-      "invented) into check_availability and create_booking next. Never call list_offerings " +
-      "again for the rest of this call — reuse the result you already have.",
+      "invented) into check_availability and create_booking later. Never call list_offerings " +
+      "again in this call.",
     allowed_tools: ["list_offerings"],
   },
   {
-    id: "check_time",
-    name: "Check availability",
+    id: "booking_details",
+    name: "Booking details",
     prompt_fragment:
-      "Ask what day/time works, then call check_availability. Offer the returned open " +
-      "slots; if none_available, follow the waitlist-offer rule.",
-    allowed_tools: ["check_availability", "join_waitlist"],
+      "Get what the booking still needs, taking whatever the caller already said: the " +
+      "owner's " +
+      CONTACT_DETAILS +
+      "; the pet's name and species, plus breed and age if they know them (if " +
+      'lookup_customer returned a pet on file, confirm it instead: "is this for <pet name ' +
+      "from lookup_customer>?\"); whether the pet has been seen here before; and when they'd " +
+      "like to come in. Call lookup_customer (no arguments) early to see what's on file. " +
+      "Cross-check species against {{species_treated}}. As soon as you know when they'd like " +
+      "to come, call check_availability and offer the open times it returns (if none, follow " +
+      "the waitlist rule).",
+    allowed_tools: ["lookup_customer", "check_availability", "join_waitlist"],
   },
   {
     id: "confirm_booking",
     name: "Confirm booking",
     prompt_fragment:
-      "Read back the pet's name, visit reason, and date/time, ask the consent question, " +
-      "state the cancellation policy, then create the booking — pass structured_payload " +
+      "Do the one read-back (pet's name, visit reason, day and time) with the consent " +
+      "question and the cancellation policy, then create the booking — pass structured_payload " +
       "with pet_name, species, breed, age_years, visit_reason, and symptom_or_routine from " +
       "what you gathered — and, if text messages are available, send the SMS confirmation.",
     allowed_tools: ["create_booking", "send_sms_confirmation"],
@@ -219,9 +192,10 @@ const rawStates: AgentState[] = [
       "emergency. This is still an active emergency, not a routine callback request: make " +
       "sure they know to go to {{emergency_referral_name}} right now rather than wait for " +
       "anyone, and directly answer any yes/no question they ask about whether to go (e.g. " +
-      "'should I rush to the emergency vet?' -> 'yes, go now'). " +
-      WARM_TRANSFER_FRAGMENT +
-      " Never tell the caller yourself that you are connecting them or that the clinic team " +
+      "'should I rush to the emergency vet?' -> 'yes, go now'). Every transfer to a human " +
+      "is a warm transfer: silently prepare a short context summary (the pet's emergency, " +
+      "who is calling, and what has already been discussed) so the clinic team never makes " +
+      "them repeat themselves. Never tell the caller yourself that you are connecting them or that the clinic team " +
       "is on the line — a real transfer announces itself. If no connection is possible, say " +
       "so honestly, restate the emergency referral, and take a message — never end the call " +
       "on a generic 'the team will call you back' alone while the caller is still asking " +
@@ -254,7 +228,7 @@ export const VETERINARY_TEMPLATE: AgentTemplate = {
   system_prompt: SYSTEM_PROMPT,
   states: rawStates.map(withCallOutcomeExtraction),
   transitions: [
-    { from: "greeting", to: "collect_owner_phone", on: { intent: "wants_to_book_or_ask" } },
+    { from: "greeting", to: "triage_redflags", on: { intent: "wants_to_book_or_ask" } },
     { from: "greeting", to: "manage_booking", on: { intent: "wants_to_reschedule_or_cancel" } },
     {
       from: "greeting",
@@ -262,20 +236,13 @@ export const VETERINARY_TEMPLATE: AgentTemplate = {
       on: { intent: "after_hours_or_general_message" },
     },
     {
-      from: "collect_owner_phone",
-      to: "collect_pet_info",
-      on: { intent: "owner_phone_confirmed" },
-    },
-    { from: "collect_pet_info", to: "new_or_existing", on: { intent: "pet_info_confirmed" } },
-    { from: "new_or_existing", to: "triage_redflags", on: { intent: "status_confirmed" } },
-    {
       from: "triage_redflags",
       to: "emergency_referral",
       on: { predicate: "red_flag_detected" },
     },
     {
       from: "triage_redflags",
-      to: "symptom_or_routine",
+      to: "booking_details",
       on: { predicate: "no_red_flag_detected" },
     },
     {
@@ -288,10 +255,9 @@ export const VETERINARY_TEMPLATE: AgentTemplate = {
       to: "emergency_take_message",
       on: { intent: "caller_declines_direct_transfer" },
     },
-    { from: "symptom_or_routine", to: "check_time", on: { intent: "symptom_confirmed" } },
-    { from: "check_time", to: "confirm_booking", on: { predicate: "slot_selected" } },
+    { from: "booking_details", to: "confirm_booking", on: { predicate: "slot_selected" } },
     {
-      from: "check_time",
+      from: "booking_details",
       to: "take_message_fallback",
       on: { predicate: "none_available_and_caller_declines_waitlist" },
     },

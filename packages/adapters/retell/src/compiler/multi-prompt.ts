@@ -54,7 +54,8 @@ const TAKE_MESSAGE_TOOL_NAME = "take_message";
 const END_CALL_INSTRUCTION =
   "\n\nWhen the caller's request has been fully handled and they have nothing further to " +
   "discuss (they say goodbye, thank you, that's all, or similar, or you have already clearly " +
-  "wrapped up the call), say a warm goodbye and then call the end_call tool to hang up. Never " +
+  "wrapped up the call), say a short goodbye in one sentence and then call the end_call tool " +
+  "to hang up. Never " +
   "just stop responding or repeat the same goodbye more than once — always end the call with " +
   "this tool once you've said goodbye.\n\n" +
   // CALL-8 (docs/BUILD_PLAN.md): mirrors the Deno compiler's identical fix

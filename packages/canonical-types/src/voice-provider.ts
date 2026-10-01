@@ -119,6 +119,11 @@ export const zAgentDynamicVariables = z.object({
   /** Same date, spoken form (e.g. "Sunday") — spoken/read-back-friendly
    * alongside `current_date`. */
   current_weekday: z.string().min(1),
+  /** "Monday=YYYY-MM-DD, Tuesday=YYYY-MM-DD, ..." for the next 7 days, so
+   * the model looks a weekday name up instead of counting days
+   * (`CURRENT_DATE_FRAGMENT`). Set by the backend's inbound variable
+   * builder (`supabase/functions/_shared/inbound-dynamic-variables.ts`). */
+  upcoming_weekday_dates: z.string().optional(),
   special_instructions: z.string(),
   manager_name: z.string().optional(),
   manager_phone: z.string().optional(),
@@ -144,6 +149,8 @@ export const zAgentDynamicVariables = z.object({
   is_manual_mode: z.boolean(),
   language: z.string().min(1),
   caller_recent_context: z.string().optional(),
+  /** The live caller ID (E.164), blank when unknown (web calls, withheld numbers). */
+  caller_number: z.string().optional(),
   /** Compiled-in constant; ALWAYS present (G1/G2) — never omitted, never tenant-editable. */
   disclosure_line: z.string().min(1),
 });

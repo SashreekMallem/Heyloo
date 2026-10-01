@@ -1,6 +1,7 @@
 import type { RetellFetch } from "../_shared/providers/retell.ts";
 import { createWebCall } from "../_shared/providers/retell.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
+import { resolveWebCallDynamicVariables } from "../_shared/web-call-variables.ts";
 
 /**
  * `api-admin-create-web-call` (CALL-5, docs/BUILD_PLAN.md — item 2 of this
@@ -26,6 +27,8 @@ export interface CreateWebCallDeps {
   retellFetch: RetellFetch;
   retellApiKey: string;
   logger: Logger;
+  /** Clock for the call's date/hours variables; defaults to the real time. */
+  now?: () => Date;
 }
 
 export type CreateWebCallResult =
@@ -59,11 +62,19 @@ export async function handleCreateWebCall(
     return { status: 404, body: { error: "agent_not_published" } };
   }
 
+  // A web call never runs `/voice-inbound`, so build the same per-call
+  // variables here (internal-secret-guarded route; tenant_id from the body).
+  const dynamicVariables = await resolveWebCallDynamicVariables({
+    sql,
+    logger: deps.logger,
+    now: deps.now?.() ?? new Date(),
+    tenantId,
+    fallbackDisclosureLine: row.disclosure_line,
+    logPrefix: "admin_create_web_call",
+  });
   const callResult = await createWebCall(deps.retellFetch, deps.retellApiKey, {
     agent_id: row.retell_agent_id,
-    ...(row.disclosure_line
-      ? { retell_llm_dynamic_variables: { disclosure_line: row.disclosure_line } }
-      : {}),
+    ...(dynamicVariables ? { retell_llm_dynamic_variables: dynamicVariables } : {}),
   });
   const callBody = callResult.body as { access_token?: string; call_id?: string };
   if (!callResult.ok || !callBody.access_token || !callBody.call_id) {

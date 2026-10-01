@@ -13,6 +13,7 @@ import { withCallOutcomeExtraction } from "../shared/extraction.js";
 import {
   CANCELLATION_POLICY_READOUT_FRAGMENT,
   CONSENT_ASK_FRAGMENT,
+  CONTACT_DETAILS,
   MULTI_ENTITY_FRAGMENT,
   WAITLIST_OFFER_FRAGMENT,
 } from "../shared/fragments.js";
@@ -79,14 +80,16 @@ export const GENERIC_TEMPLATE: AgentTemplate = {
       id: "intake",
       name: "Intake",
       prompt_fragment:
-        "Collect, one at a time: the caller's name · their phone number · the reason for the " +
-        "call. Confirm each one back as you go. If the caller is a recognized returning caller " +
-        "(a name or number is on file — see Caller history), confirm what's on file instead " +
-        "of asking for it again. If the business can book what they need, once " +
-        "a time is chosen, read back the name, reason, and date/time, ask the consent " +
-        "question, then call create_booking with structured_payload set to the reason you " +
-        "captured. Otherwise take a message with a clear callback window and let them know " +
-        "when to expect a call back.",
+        "Find out why they're calling, then get what's needed, taking whatever the caller " +
+        "already said: " +
+        CONTACT_DETAILS +
+        ", and the reason for the call. If the business can book what they need, ask when " +
+        "they'd like to come in, call check_availability and offer the open times it returns; " +
+        "once a time is chosen, do the one read-back (name, reason, day and time) with the " +
+        "consent question and the cancellation policy, then call create_booking with " +
+        "structured_payload set to the reason you captured. Otherwise take a message: read " +
+        "back the name and message, get a yes, call take_message, and only after it returns " +
+        "recorded:true tell them the team will follow up.",
       allowed_tools: [
         "check_availability",
         "create_booking",

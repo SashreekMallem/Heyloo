@@ -155,14 +155,18 @@ describe("vet: red-flag emergency triage is FIRST and the emergency escape reach
   const vet = TEMPLATE_DEFINITIONS.find((d) => d.key === "vet");
   if (!vet) throw new Error("vet template not registered");
 
-  it("declares a dedicated triage_redflags state before any routine symptom/scheduling state", () => {
+  it("declares a dedicated triage_redflags state before the scheduling state, and only triage leads to it", () => {
     const ids = vet.template.states.map((s) => s.id);
     const triageIndex = ids.indexOf("triage_redflags");
-    const routineIndex = ids.indexOf("symptom_or_routine");
-    const checkTimeIndex = ids.indexOf("check_time");
+    const schedulingIndex = ids.indexOf("booking_details");
     expect(triageIndex).toBeGreaterThanOrEqual(0);
-    expect(triageIndex).toBeLessThan(routineIndex);
-    expect(triageIndex).toBeLessThan(checkTimeIndex);
+    expect(triageIndex).toBeLessThan(schedulingIndex);
+    // SPEED-1: scheduling is reachable only once triage found no red flag.
+    const intoScheduling = vet.template.transitions.filter((t) => t.to === "booking_details");
+    expect(intoScheduling.map((t) => t.from)).toEqual(["triage_redflags"]);
+    expect(
+      vet.template.transitions.find((t) => t.from === "greeting" && t.to !== "manage_booking")?.to,
+    ).not.toBe("booking_details");
   });
 
   it("the emergency global intent's target_state never requires diagnosis language", () => {
@@ -240,9 +244,10 @@ describe("restaurant: create_order requires delivery_address for delivery, aller
     expect(names).toContain("create_order");
   });
 
-  it("has a state that explicitly asks about allergies", () => {
-    const allergyState = restaurant.template.states.find((s) => s.id === "collect_allergies");
-    expect(allergyState?.prompt_fragment.toLowerCase()).toContain("allerg");
+  it("the order step explicitly asks about allergies", () => {
+    const orderState = restaurant.template.states.find((s) => s.id === "collect_items");
+    expect(orderState?.prompt_fragment.toLowerCase()).toContain("allergies (ask");
+    expect(orderState?.prompt_fragment.toLowerCase()).toContain("never skip it");
   });
 });
 

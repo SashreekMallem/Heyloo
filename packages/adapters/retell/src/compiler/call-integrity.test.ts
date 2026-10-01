@@ -146,7 +146,9 @@ describe("edgeConditionText", () => {
   it("expands the ambiguous slugs and passes others through", () => {
     expect(edgeConditionText("wants_to_reschedule_or_cancel")).toMatch(/existing appointment/);
     expect(edgeConditionText("caller_wants_direct_transfer")).toMatch(/asks to be connected/);
-    expect(edgeConditionText("slot_selected")).toBe("slot_selected");
+    // SPEED-1: a merged details step's exit names everything that step gathers.
+    expect(edgeConditionText("slot_selected")).toMatch(/every other detail this step asks for/);
+    expect(edgeConditionText("wants_to_book_service")).toBe("wants_to_book_service");
   });
 });
 
