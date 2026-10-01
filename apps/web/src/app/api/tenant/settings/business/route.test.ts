@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fake, jsonRequest, MEMBER, OWNER } from "@/test/fake-supabase";
 
 vi.mock("@/lib/supabase/server", async () => {
@@ -210,5 +210,189 @@ describe("POST /api/tenant/settings/business", () => {
     fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
     await POST(jsonRequest(url, { name: "Renamed", timezone: "America/Chicago" }));
     expect(fake.callsTo("tenants", "select")).toHaveLength(1);
+  });
+});
+
+describe("POST /api/tenant/settings/business — address + delivery (DELIVERY-1)", () => {
+  const base = { name: "Taco Town", timezone: "America/Chicago" };
+  const restaurant = {
+    timezone: "America/Chicago",
+    vertical: "restaurant",
+    business_street: "400 N Greenville Ave",
+    business_city: "Richardson",
+    business_state: "TX",
+    business_zip: "75081",
+  };
+
+  function stubEdge(body: unknown, status = 200) {
+    const calls: Array<{ url: string; init?: RequestInit | undefined }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        return new Response(JSON.stringify(body), { status });
+      }),
+    );
+    return calls;
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("normalizes and saves the address, then locates it via the edge function with the owner's own token (no body)", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:select", { data: { ...restaurant, business_street: null }, error: null });
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    const edge = stubEdge({
+      matched_address: "500 MAIN ST, RICHARDSON, TX, 75081",
+      lat: 32.9,
+      lng: -96.7,
+    });
+    const res = await POST(
+      jsonRequest(url, {
+        ...base,
+        business_street: " 500  Main St ",
+        business_city: "Richardson",
+        business_state: "tx",
+        business_zip: "750811234",
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(fake.callsTo("tenants", "update")[0]?.payload).toEqual({
+      ...base,
+      business_street: "500 Main St",
+      business_city: "Richardson",
+      business_state: "TX",
+      business_zip: "75081-1234",
+    });
+    expect(edge).toHaveLength(1);
+    expect(edge[0]?.url).toMatch(/\/functions\/v1\/api-tenant-business-location$/);
+    expect(edge[0]?.init?.method).toBe("POST");
+    expect(edge[0]?.init?.body).toBeUndefined();
+    const headers = (edge[0]?.init?.headers ?? {}) as Record<string, string>;
+    expect(headers["authorization"]).toBe("Bearer jwt");
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      business_location: { matched_address: "500 MAIN ST, RICHARDSON, TX, 75081" },
+    });
+  });
+
+  it("restaurant: converts dollars to integer cents and miles to numbers", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:select", { data: restaurant, error: null });
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    stubEdge({});
+    const res = await POST(
+      jsonRequest(url, {
+        ...base,
+        delivery_radius_miles: "7.5",
+        delivery_fee_base: "$3",
+        delivery_fee_per_mile: "1.25",
+        delivery_fee_included_miles: "2",
+        delivery_min_order: "15.00",
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(fake.callsTo("tenants", "update")[0]?.payload).toEqual({
+      ...base,
+      delivery_radius_miles: 7.5,
+      delivery_fee_base_cents: 300,
+      delivery_fee_per_mile_cents: 125,
+      delivery_fee_included_miles: 2,
+      delivery_min_order_cents: 1500,
+    });
+    // The address did not change: no geocode.
+    expect(await res.json()).toMatchObject({ business_location: null });
+  });
+
+  it("restaurant: blank delivery fields clear them (null)", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:select", { data: restaurant, error: null });
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    await POST(
+      jsonRequest(url, {
+        ...base,
+        delivery_radius_miles: "",
+        delivery_fee_base: "",
+        delivery_min_order: null,
+      }),
+    );
+    expect(fake.callsTo("tenants", "update")[0]?.payload).toMatchObject({
+      delivery_radius_miles: null,
+      delivery_fee_base_cents: null,
+      delivery_min_order_cents: null,
+    });
+  });
+
+  it("ignores delivery fields for a non-restaurant tenant", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:select", { data: { ...restaurant, vertical: "auto" }, error: null });
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    await POST(jsonRequest(url, { ...base, delivery_fee_base: "3.00" }));
+    expect(fake.callsTo("tenants", "update")[0]?.payload).toEqual(base);
+  });
+
+  it("422s, without writing, on a negative fee, more than 2 decimals, a 500-mile radius, or a bad state/ZIP", async () => {
+    fake.signInAs(OWNER);
+    for (const extra of [
+      { delivery_fee_base: "-1" },
+      { delivery_fee_per_mile: "1.255" },
+      { delivery_radius_miles: "500" },
+      { delivery_min_order: "abc" },
+      { business_state: "Texas" },
+      { business_zip: "7508" },
+    ]) {
+      const res = await POST(jsonRequest(url, { ...base, ...extra }));
+      expect(res.status, JSON.stringify(extra)).toBe(422);
+    }
+    expect(fake.callsTo("tenants", "update")).toHaveLength(0);
+  });
+
+  it("an incomplete changed address is reported without calling the edge function", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:select", {
+      data: {
+        ...restaurant,
+        business_street: null,
+        business_city: null,
+        business_state: null,
+        business_zip: null,
+      },
+      error: null,
+    });
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    const edge = stubEdge({});
+    const res = await POST(jsonRequest(url, { ...base, business_street: "500 Main St" }));
+    expect(edge).toHaveLength(0);
+    expect(await res.json()).toMatchObject({
+      business_location: { error: "address_incomplete" },
+    });
+  });
+
+  it("a failing or unexpected edge answer is lookup_unavailable, never a failed save", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:select", {
+      data: { ...restaurant, business_street: "1 Old St" },
+      error: null,
+    });
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    stubEdge({ error: "forbidden" }, 403);
+    const res = await POST(jsonRequest(url, { ...base, business_street: "500 Main St" }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      business_location: { error: "lookup_unavailable" },
+    });
+  });
+
+  it("passes the edge function's not_found through", async () => {
+    fake.signInAs(OWNER);
+    fake.queue("tenants:select", {
+      data: { ...restaurant, business_street: "1 Old St" },
+      error: null,
+    });
+    fake.queue("tenants:update", { data: [{ id: "t1" }], error: null });
+    stubEdge({ error: "not_found" });
+    const res = await POST(jsonRequest(url, { ...base, business_street: "1 Nowhere Rd" }));
+    expect(await res.json()).toMatchObject({ business_location: { error: "not_found" } });
   });
 });

@@ -289,6 +289,14 @@ verify_jwt = true
 [functions.api-tenant-agent-publish]
 verify_jwt = true
 
+# api-tenant-business-location (DELIVERY-1, docs/BUILD_NOTES.md): the SAME
+# posture as api-tenant-agent-publish directly above — tenant-owner/admin
+# JWT-authenticated, tenant_id from the JWT's own app_metadata only, no
+# body — geocodes the CALLING tenant's own business address (US Census
+# Geocoder) right after the owner saves it in Agent -> Business.
+[functions.api-tenant-business-location]
+verify_jwt = true
+
 # api-team-invite (docs/audit/FIX_REQUESTS.md): tenant-owner JWT-
 # authenticated (verify_jwt = true, tenant_id + caller user id from the
 # JWT only) — additionally re-verifies the caller's own memberships.role

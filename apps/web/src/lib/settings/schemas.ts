@@ -1,6 +1,24 @@
 import { faqItemSchema, verticalDetailsSchema } from "@heyloo/canonical-types";
 import { z } from "zod";
 import {
+  zCityFormField,
+  zDollarsFormField,
+  zIncludedMilesFormField,
+  zMinOrderFormField,
+  zOptionalCity,
+  zOptionalFeeCents,
+  zOptionalIncludedMilesHundredths,
+  zOptionalMinOrderCents,
+  zOptionalRadiusHundredths,
+  zOptionalState,
+  zOptionalStreet,
+  zOptionalZip,
+  zRadiusFormField,
+  zStateFormField,
+  zStreetFormField,
+  zZipFormField,
+} from "./business-address";
+import {
   BUSINESS_PHONE_ERROR_MESSAGE,
   normalizeBusinessPhone,
   zBusinessPhoneFormField,
@@ -58,10 +76,24 @@ export const businessProfileSchema = z.object({
 });
 export type BusinessProfileInput = z.infer<typeof businessProfileSchema>;
 
-/** Agent → Business form: friendly phone / website strings, blank allowed. */
+/**
+ * Agent → Business form: friendly phone / website strings, blank allowed.
+ * DELIVERY-1: the street address, and (restaurants only; the page leaves them
+ * out of the request otherwise) the delivery radius in miles and the delivery
+ * charge in dollars.
+ */
 export const businessProfileFormSchema = businessProfileSchema.extend({
   business_phone: zBusinessPhoneFormField,
   website_url: zWebsiteFormField,
+  business_street: zStreetFormField,
+  business_city: zCityFormField,
+  business_state: zStateFormField,
+  business_zip: zZipFormField,
+  delivery_radius_miles: zRadiusFormField,
+  delivery_fee_base: zDollarsFormField,
+  delivery_fee_per_mile: zDollarsFormField,
+  delivery_fee_included_miles: zIncludedMilesFormField,
+  delivery_min_order: zMinOrderFormField,
 });
 export type BusinessProfileFormValues = z.infer<typeof businessProfileFormSchema>;
 
@@ -73,6 +105,17 @@ export type BusinessProfileFormValues = z.infer<typeof businessProfileFormSchema
 export const businessProfileRequestSchema = businessProfileSchema.extend({
   business_phone: zOptionalBusinessPhone,
   website_url: zOptionalWebsite,
+  // DELIVERY-1: same missing/blank/value rule. Money arrives in dollars and
+  // leaves in integer cents; miles leave in hundredths (the route divides).
+  business_street: zOptionalStreet,
+  business_city: zOptionalCity,
+  business_state: zOptionalState,
+  business_zip: zOptionalZip,
+  delivery_radius_miles: zOptionalRadiusHundredths,
+  delivery_fee_base: zOptionalFeeCents,
+  delivery_fee_per_mile: zOptionalFeeCents,
+  delivery_fee_included_miles: zOptionalIncludedMilesHundredths,
+  delivery_min_order: zOptionalMinOrderCents,
 });
 export type BusinessProfileRequest = z.output<typeof businessProfileRequestSchema>;
 

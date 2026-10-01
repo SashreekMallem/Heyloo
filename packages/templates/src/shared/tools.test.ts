@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   checkAvailabilityTool,
+  checkDeliveryAddressTool,
   createBookingTool,
   createOrderTool,
   joinWaitlistTool,
@@ -13,6 +14,18 @@ describe("checkAvailabilityTool", () => {
     const tool = checkAvailabilityTool();
     expect(tool.parameters.properties?.["room_type"]).toBeDefined();
     expect(tool.parameters.properties?.["resource_type"]).toBeDefined();
+  });
+});
+
+describe("checkDeliveryAddressTool (DELIVERY-1)", () => {
+  it("is read-only (scope none), requires only the street, and takes no tenant or radius argument", () => {
+    const tool = checkDeliveryAddressTool();
+    expect(tool.name).toBe("check_delivery_address");
+    expect(tool.authorization).toEqual({ scope: "none" });
+    expect(tool.parameters.required).toEqual(["street"]);
+    expect(Object.keys(tool.parameters.properties ?? {}).sort()).toEqual(
+      ["city", "state", "street", "unit", "zip"].sort(),
+    );
   });
 });
 

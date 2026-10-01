@@ -1,6 +1,7 @@
 import {
   zCancelBookingRequest,
   zCheckAvailabilityRequest,
+  zCheckDeliveryAddressRequest,
   zCreateBookingRequest,
   zCreateOrderRequest,
   zJoinWaitlistRequest,
@@ -15,6 +16,7 @@ import type { ZodObject } from "zod";
 import {
   CancelBookingArgsSchema,
   CheckAvailabilityArgsSchema,
+  CheckDeliveryAddressArgsSchema,
   CreateBookingArgsSchema,
   CreateOrderArgsSchema,
   JoinWaitlistArgsSchema,
@@ -76,7 +78,30 @@ const CASES: ParityCase[] = [
     canonical: zSendPaymentLinkRequest,
   },
   { name: "join_waitlist", runtime: JoinWaitlistArgsSchema, canonical: zJoinWaitlistRequest },
+  {
+    name: "check_delivery_address",
+    runtime: CheckDeliveryAddressArgsSchema,
+    canonical: zCheckDeliveryAddressRequest,
+  },
 ];
+
+describe("CheckDeliveryAddressArgsSchema (DELIVERY-1)", () => {
+  it("trims the street and drops blank optional parts", () => {
+    expect(
+      CheckDeliveryAddressArgsSchema.parse({
+        street: " 12 Elm St ",
+        city: "",
+        zip: "75081",
+        unit: " ",
+      }),
+    ).toEqual({ street: "12 Elm St", zip: "75081" });
+  });
+
+  it("rejects a missing or blank street", () => {
+    expect(CheckDeliveryAddressArgsSchema.safeParse({ city: "Richardson" }).success).toBe(false);
+    expect(CheckDeliveryAddressArgsSchema.safeParse({ street: "  " }).success).toBe(false);
+  });
+});
 
 describe("schema parity with packages/canonical-types/src/tools.ts (GAP_REGISTER.md §1.9)", () => {
   for (const { name, runtime, canonical } of CASES) {

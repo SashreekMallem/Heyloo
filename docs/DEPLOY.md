@@ -373,7 +373,7 @@ not fetched from a vendor dashboard.
 | `EMAIL_PROVIDER=microsoft_graph`, `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `EMAIL_FROM_ADDRESS` | Your Microsoft 365 mailbox over HTTPS, `docs/SETUP_EMAIL_MICROSOFT.md` (Entra app restricted to the one mailbox with Exchange RBAC for Applications) |
 | `SEND_EMAIL_HOOK_SECRET` | Not chosen by hand: `scripts/enable-auth-email-hook.ts --apply` generates it and sets it here and on the Auth config (`docs/SETUP_EMAIL_MICROSOFT.md` Step 4) |
 | `RESEND_API_KEY` / `RESEND_FROM_ADDRESS` | Alternative to SMTP: Resend dashboard, after domain verification (§1.7) |
-| `GEOCODE_API_KEY` | Whichever provider you pick (Geocodio or Google — still an open `VERIFY:`, `docs/VERIFY.md`) |
+| ~~`GEOCODE_API_KEY`~~ | No longer read (DELIVERY-1): delivery address checks use the keyless US Census Geocoder. Unset it if present |
 | `CRON_INVOKE_SECRET` | Generated — shared secret every `worker-*`/`job-*` function checks on its `x-cron-secret` header |
 | `PROVISION_INTERNAL_SECRET` | Generated |
 | `ADMIN_AAL2_FRESHNESS_MINUTES` | `15` (the built-in default; only override if you have a reason to) |

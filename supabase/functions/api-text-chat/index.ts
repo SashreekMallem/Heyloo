@@ -95,6 +95,8 @@ Deno.serve(async (req: Request) => {
       successUrl: PAYMENT_LINK_SUCCESS_URL,
       cancelUrl: PAYMENT_LINK_CANCEL_URL,
     },
+    // DELIVERY-1: keyless US Census Geocoder (fixed host).
+    censusFetch: fetch,
     turnTimeoutMs: HARD_ABORT_MS,
     widgetTokenSecret: WIDGET_TOKEN_SECRET,
   };

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { regenerateTenantAvailability } from "@/lib/settings/availability";
+import { isAddressComplete } from "@/lib/settings/business-address";
+import { type BusinessLocation, locateBusiness } from "@/lib/settings/business-location";
 import {
   checkNotHeylooNumber,
   HEYLOO_NUMBER_MESSAGE,
@@ -31,6 +33,13 @@ export const runtime = "nodejs";
  * the agent's transfer number along while it is still the default
  * (`lib/settings/business-phone.ts`). Both keys are optional in the body: a
  * client that omits them leaves the stored values alone.
+ *
+ * DELIVERY-1: also the business street address and, for a restaurant, the
+ * delivery radius (miles) and delivery charge (dollars in, integer cents
+ * stored). Same optional-key rule. A save that changed the address asks the
+ * `api-tenant-business-location` edge function to locate it right away, so
+ * the response says whether it was found (`business_location`). Delivery keys
+ * sent for a non-restaurant tenant are ignored.
  */
 export async function POST(request: Request) {
   const auth = await requireTenantWriter();
@@ -41,9 +50,24 @@ export async function POST(request: Request) {
 
   const { data: current } = await auth.supabase
     .from("tenants")
-    .select("timezone, business_phone")
+    .select(
+      "timezone, business_phone, vertical, business_street, business_city, business_state, business_zip",
+    )
     .eq("id", auth.tenantId)
     .maybeSingle();
+  const address = {
+    business_street: body.data.business_street,
+    business_city: body.data.business_city,
+    business_state: body.data.business_state,
+    business_zip: body.data.business_zip,
+  };
+  const addressPatch = Object.fromEntries(
+    Object.entries(address).filter(([, value]) => value !== undefined),
+  );
+  const addressChanged = Object.entries(addressPatch).some(
+    ([key, value]) => (current?.[key as keyof typeof address] ?? null) !== value,
+  );
+  const deliveryPatch = current?.vertical === "restaurant" ? deliveryColumns(body.data) : {};
   const timezoneChanged = current?.timezone !== timezone;
   const previousPhone = current?.business_phone ?? null;
 
@@ -84,6 +108,8 @@ export async function POST(request: Request) {
       timezone,
       ...(businessPhone !== undefined ? { business_phone: businessPhone } : {}),
       ...(websiteUrl !== undefined ? { website_url: websiteUrl } : {}),
+      ...addressPatch,
+      ...deliveryPatch,
     })
     .eq("id", auth.tenantId)
     .select("id");
@@ -101,10 +127,58 @@ export async function POST(request: Request) {
       : false;
   const availability = timezoneChanged ? await regenerateTenantAvailability(auth.tenantId) : null;
 
+  let businessLocation: BusinessLocation | null = null;
+  if (addressChanged) {
+    const saved = {
+      street:
+        address.business_street !== undefined ? address.business_street : current?.business_street,
+      city: address.business_city !== undefined ? address.business_city : current?.business_city,
+      state:
+        address.business_state !== undefined ? address.business_state : current?.business_state,
+      zip: address.business_zip !== undefined ? address.business_zip : current?.business_zip,
+    };
+    if (isAddressComplete(saved)) {
+      const {
+        data: { session },
+      } = await auth.supabase.auth.getSession();
+      businessLocation = session
+        ? await locateBusiness(session.access_token)
+        : { error: "lookup_unavailable" };
+    } else if (Object.values(saved).some((v) => (v ?? "").length > 0)) {
+      businessLocation = { error: "address_incomplete" };
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     timezone_changed: timezoneChanged,
     availability,
     transfer_number_updated: transferNumberUpdated,
+    business_location: businessLocation,
   });
+}
+
+/** DELIVERY-1: request fields -> `tenants` delivery columns (only the keys that were sent). */
+function deliveryColumns(data: {
+  delivery_radius_miles?: number | null | undefined;
+  delivery_fee_base?: number | null | undefined;
+  delivery_fee_per_mile?: number | null | undefined;
+  delivery_fee_included_miles?: number | null | undefined;
+  delivery_min_order?: number | null | undefined;
+}): Record<string, number | null> {
+  const miles = (hundredths: number | null) => (hundredths === null ? null : hundredths / 100);
+  const out: Record<string, number | null> = {};
+  if (data.delivery_radius_miles !== undefined) {
+    out["delivery_radius_miles"] = miles(data.delivery_radius_miles);
+  }
+  if (data.delivery_fee_base !== undefined) out["delivery_fee_base_cents"] = data.delivery_fee_base;
+  if (data.delivery_fee_per_mile !== undefined) {
+    out["delivery_fee_per_mile_cents"] = data.delivery_fee_per_mile;
+  }
+  if (data.delivery_fee_included_miles !== undefined) {
+    out["delivery_fee_included_miles"] = miles(data.delivery_fee_included_miles);
+  }
+  if (data.delivery_min_order !== undefined)
+    out["delivery_min_order_cents"] = data.delivery_min_order;
+  return out;
 }

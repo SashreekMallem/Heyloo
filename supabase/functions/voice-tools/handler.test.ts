@@ -9,6 +9,7 @@ import {
   CREATE_BOOKING_VERIFY_MS,
   countsAsBreakerFailure,
   DEFAULT_TOOL_BUDGET_MS,
+  DELIVERY_ADDRESS_TOOL_BUDGET_MS,
   dispatchTool,
   isKnownTool,
   resolveEnvelopeCallId,
@@ -55,6 +56,7 @@ describe("isKnownTool", () => {
       "send_payment_link",
       "join_waitlist",
       "list_offerings",
+      "check_delivery_address",
     ]) {
       expect(isKnownTool(name)).toBe(true);
     }
@@ -457,8 +459,20 @@ describe("toolBudget (HOTPATH)", () => {
     expect(countsAsBreakerFailure(undefined)).toBe(false);
   });
 
+  it("DELIVERY-1: the two delivery-address tools get room for one 1.5 s geocoder wait", () => {
+    for (const name of ["check_delivery_address", "create_order"]) {
+      expect(toolBudget(name)).toEqual({
+        budgetMs: DELIVERY_ADDRESS_TOOL_BUDGET_MS,
+        verifyMs: 0,
+        hardAbortMs: 3_500,
+      });
+    }
+  });
+
   it("every budget sits far inside Retell's default tool timeout", () => {
     for (const name of [
+      "check_delivery_address",
+      "create_order",
       "create_booking",
       "check_availability",
       "lookup_customer",
@@ -697,5 +711,86 @@ describe("F1: join_waitlist also reads naive times as the tenant's wall clock", 
     });
     expect(bound[0]).toContain("2026-10-01T18:00:00.000Z");
     expect(bound[0]).toContain("2026-10-01T23:00:00.000Z");
+  });
+});
+
+describe("dispatchTool — check_delivery_address (DELIVERY-1)", () => {
+  const REAL_CALL_ID = "call_30d9a235551f7b5bd80364cab4b";
+  const callRow = {
+    id: "cl1",
+    tenant_id: "t1",
+    caller_number: "+15551234567",
+    vertical: "restaurant",
+  };
+
+  it("routes to the tool with the resolved tenant and call, never a tenant from args", async () => {
+    const values: unknown[][] = [];
+    const base = makeDeps(callRow);
+    const sql = ((strings: TemplateStringsArray, ...v: unknown[]) => {
+      const text = strings.join(" ");
+      values.push(v);
+      if (text.includes("delivery_radius_miles")) {
+        return Promise.resolve([
+          {
+            business_street: "400 N Greenville Ave",
+            business_city: "Richardson",
+            business_state: "TX",
+            business_zip: "75081",
+            business_lat: 32.95,
+            business_lng: -96.73,
+            business_location_matched: "400 N GREENVILLE AVE, RICHARDSON, TX, 75081",
+            business_location_key: "400 n greenville ave|richardson|tx|75081",
+            business_located_at: null,
+            delivery_radius_miles: "5",
+            delivery_fee_base_cents: 0,
+            delivery_fee_per_mile_cents: null,
+            delivery_fee_included_miles: null,
+            delivery_min_order_cents: null,
+          },
+        ]);
+      }
+      return base.sql(strings, ...v);
+    }) as SqlClient;
+    const fetchImpl = async () =>
+      new Response(
+        JSON.stringify({
+          result: {
+            addressMatches: [
+              {
+                matchedAddress: "12 ELM ST, RICHARDSON, TX, 75081",
+                coordinates: { x: -96.73, y: 32.96 },
+                addressComponents: {},
+              },
+            ],
+          },
+        }),
+        { status: 200 },
+      );
+    const result = await dispatchTool(
+      { ...base, sql, census: { fetchImpl } },
+      REAL_CALL_ID,
+      "check_delivery_address",
+      { street: "12 Elm St", city: "Richardson", tenant_id: "evil" },
+    );
+    expect(result.result).toMatchObject({
+      status: "in_range",
+      matched_address: "12 ELM ST, RICHARDSON, TX, 75081",
+    });
+    expect(values.flat()).not.toContain("evil");
+    expect(values.flat()).toContain("t1");
+  });
+
+  it("answers lookup_unavailable (never an error) when no geocoder is wired", async () => {
+    const result = await dispatchTool(makeDeps(callRow), REAL_CALL_ID, "check_delivery_address", {
+      street: "12 Elm St",
+    });
+    expect(result.result).toMatchObject({ status: "lookup_unavailable" });
+  });
+
+  it("invalid arguments get the generic fallback", async () => {
+    const result = await dispatchTool(makeDeps(callRow), REAL_CALL_ID, "check_delivery_address", {
+      city: "Richardson",
+    });
+    expect(result.result).toMatchObject({ fallback: true });
   });
 });

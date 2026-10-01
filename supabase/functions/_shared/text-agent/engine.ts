@@ -1,4 +1,5 @@
 import { buildAgentSettingsVariables, resolveTextPersona } from "../agent-settings.ts";
+import type { CensusFetch } from "../providers/census-geocode.ts";
 import type { LlmClient, LlmMessage, LlmToolResult } from "../providers/llm/types.ts";
 import type { StripeFetch } from "../providers/stripe.ts";
 import { resolveTextAgentTexting } from "../sms-availability.ts";
@@ -56,6 +57,9 @@ export interface TextAgentDeps {
    * `verify_phone` and the waitlist notice may promise a text. Omitted or failing
    * = NO texting (fail closed). */
   smsAvailable?: (tenantId: string) => Promise<boolean>;
+  /** DELIVERY-1: US Census Geocoder transport, so a texted delivery order's
+   * address is verified like a called-in one. Omitted = recorded unverified. */
+  censusFetch?: CensusFetch;
   turnTimeoutMs?: number;
   now?: () => Date;
 }
@@ -365,6 +369,7 @@ export async function handleInboundText(
             vertical: tenantContext.vertical,
             appBaseUrl: deps.appBaseUrl,
             ...(deps.paymentLink ? { paymentLink: deps.paymentLink } : {}),
+            ...(deps.censusFetch ? { censusFetch: deps.censusFetch } : {}),
             smsAvailable: textingAvailable,
             manualMode: tenantContext.manualMode,
           },

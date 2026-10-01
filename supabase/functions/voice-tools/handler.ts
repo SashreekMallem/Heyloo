@@ -4,7 +4,7 @@ import {
   NO_CUSTOM_QUESTIONS_TEXT,
   resolveCustomQuestions,
 } from "../_shared/custom-questions.ts";
-import type { GeocodeFetch } from "../_shared/providers/geocode.ts";
+import type { CensusFetch } from "../_shared/providers/census-geocode.ts";
 import type { StripeFetch } from "../_shared/providers/stripe.ts";
 import {
   fallbackEnvelope,
@@ -17,6 +17,7 @@ import {
 import {
   CancelBookingArgsSchema,
   CheckAvailabilityArgsSchema,
+  CheckDeliveryAddressArgsSchema,
   CreateBookingArgsSchema,
   CreateOrderArgsSchema,
   JoinWaitlistArgsSchema,
@@ -48,6 +49,7 @@ import {
 } from "./manual-mode.ts";
 import { cancelBooking } from "./tools/cancel_booking.ts";
 import { checkAvailability } from "./tools/check_availability.ts";
+import { checkDeliveryAddressTool } from "./tools/check_delivery_address.ts";
 import {
   type CreateBookingResult,
   createBooking,
@@ -85,8 +87,12 @@ import { updateBooking } from "./tools/update_booking.ts";
  * Retell's. They are about how long a caller should wait in silence, not
  * about Retell giving up.
  *
- * - Every tool except create_booking keeps the historical 1.5 s hard abort
- *   (graceful fallback envelope).
+ * - Every tool except create_booking and the two delivery-address tools
+ *   keeps the historical 1.5 s hard abort (graceful fallback envelope).
+ * - check_delivery_address / create_order (DELIVERY-1): 3.5 s. Each may wait
+ *   up to 1.5 s on the US Census Geocoder (observed 0.27-0.55 s live) on top
+ *   of the context read and their own statements; the geocoder's own
+ *   AbortController timeout answers "could not verify" well before this.
  * - create_booking: 4 s to finish the write, then up to 1.5 s to read back
  *   what actually committed (`findCommittedBooking`). 1.5 s is deliberately
  *   longer than `index.ts`'s 1.2 s server-side `statement_timeout`, so the
@@ -100,6 +106,9 @@ import { updateBooking } from "./tools/update_booking.ts";
 export const DEFAULT_TOOL_BUDGET_MS = 1_500;
 export const CREATE_BOOKING_BUDGET_MS = 4_000;
 export const CREATE_BOOKING_VERIFY_MS = 1_500;
+export const DELIVERY_ADDRESS_TOOL_BUDGET_MS = 3_500;
+/** DELIVERY-1: per-request Census Geocoder timeout on the hot path. */
+export const CENSUS_TIMEOUT_MS = 1_500;
 const HARD_ABORT_MARGIN_MS = 500;
 
 export interface ToolBudget {
@@ -117,6 +126,13 @@ export function toolBudget(name: string): ToolBudget {
       budgetMs: CREATE_BOOKING_BUDGET_MS,
       verifyMs: CREATE_BOOKING_VERIFY_MS,
       hardAbortMs: CREATE_BOOKING_BUDGET_MS + CREATE_BOOKING_VERIFY_MS + HARD_ABORT_MARGIN_MS,
+    };
+  }
+  if (name === "check_delivery_address" || name === "create_order") {
+    return {
+      budgetMs: DELIVERY_ADDRESS_TOOL_BUDGET_MS,
+      verifyMs: 0,
+      hardAbortMs: DELIVERY_ADDRESS_TOOL_BUDGET_MS,
     };
   }
   return { budgetMs: DEFAULT_TOOL_BUDGET_MS, verifyMs: 0, hardAbortMs: DEFAULT_TOOL_BUDGET_MS };
@@ -173,11 +189,12 @@ export interface DispatchDeps {
   dentalIntake: {
     appBaseUrl: string;
   };
-  /** restaurant.md Finding B4 — undefined (no `GEOCODE_API_KEY`) leaves
-   * `create_order`'s delivery-address save a pure no-op, never a failure. */
-  geocode?: {
-    fetchImpl: GeocodeFetch;
-    apiKey: string;
+  /** DELIVERY-1: US Census Geocoder transport (keyless) for
+   * `check_delivery_address` and `create_order`'s inline address check.
+   * Undefined = addresses are recorded as unverified, never geocoded. */
+  census?: {
+    fetchImpl: CensusFetch;
+    timeoutMs?: number;
   };
   /** MSG-3: the messaging registry the text-promising tools (`send_sms_confirmation`,
    * `send_payment_link`, `join_waitlist`) consult to know whether the tenant can
@@ -223,6 +240,7 @@ const KNOWN_TOOLS = new Set([
   "send_payment_link",
   "join_waitlist",
   "list_offerings",
+  "check_delivery_address",
 ]);
 
 export function isKnownTool(name: string): boolean {
@@ -456,7 +474,8 @@ async function runTool(
   startedAt: number,
   call?: ToolCall,
 ): Promise<ToolResultEnvelope> {
-  const { sql, logger, geocode } = deps;
+  const { sql, logger, census } = deps;
+  const censusDeps = census ? { census: { timeoutMs: CENSUS_TIMEOUT_MS, ...census } } : {};
   // MSG-3: one indexed statement, only when a text-promising tool asks (at most
   // once per tool call), never on the other tools' path.
   let smsAvailability: Promise<boolean> | undefined;
@@ -667,7 +686,7 @@ async function runTool(
       if (!gated.ok) return gated.envelope;
       return toolEnvelope(
         await createOrder(sql, ctx, gated.args, logger, {
-          ...(geocode ? { geocode } : {}),
+          ...censusDeps,
           defer: deps.defer,
         }),
       );
@@ -692,6 +711,13 @@ async function runTool(
       });
       return toolEnvelope(
         await joinWaitlist(sql, ctx, { ...parsed.data, ...window }, { smsAvailable }),
+      );
+    }
+    case "check_delivery_address": {
+      const parsed = CheckDeliveryAddressArgsSchema.safeParse(rawArgs);
+      if (!parsed.success) return fallbackEnvelope();
+      return toolEnvelope(
+        await checkDeliveryAddressTool(sql, ctx, parsed.data, { logger, ...censusDeps }),
       );
     }
     case "list_offerings": {

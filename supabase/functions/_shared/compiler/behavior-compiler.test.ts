@@ -36,8 +36,8 @@ function promptOf(flow: CompiledFlowRequest): string {
 }
 
 describe("AGENT_COMPILER_VERSION", () => {
-  it("is 4 (the portal flags agents published before the SPEED-1 pacing rules)", () => {
-    expect(AGENT_COMPILER_VERSION).toBe(4);
+  it("is 5 (the portal flags agents published before the DELIVERY-1 restaurant address check)", () => {
+    expect(AGENT_COMPILER_VERSION).toBe(5);
   });
 });
 

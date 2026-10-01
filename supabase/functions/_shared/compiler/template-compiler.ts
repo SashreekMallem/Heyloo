@@ -214,8 +214,13 @@ function withCustomAnswersParameter(toolName: string, parameters: unknown): unkn
  *      keys), take_message on every booking-write node, message-state and
  *      no-transfer-fallback exit conditions that need a saved message, a
  *      leave-a-message global node, and descriptive edge conditions.
+ *  4 - SPEED-1: shorter calls (one details step, agent call pacing).
+ *  5 - DELIVERY-1: the restaurant template's check_delivery_address tool
+ *      (collect_items) and the delivery fee in the order read-back. Bumped so
+ *      every agent is republished once the restaurant agent_templates row
+ *      carries the new tool.
  */
-export const AGENT_COMPILER_VERSION = 4;
+export const AGENT_COMPILER_VERSION = 5;
 
 // ---------------------------------------------------------------------
 // Static opening line (DISCLOSE-1, docs/BUILD_NOTES.md)

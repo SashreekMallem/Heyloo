@@ -318,6 +318,37 @@ export function joinWaitlistTool(): CanonicalTool {
   };
 }
 
+/**
+ * DELIVERY-1 — locate a caller's NEW delivery address (US Census Geocoder,
+ * server-side) and check it against the restaurant's delivery radius while
+ * the caller is still on the line. Read-only for the caller's data, so
+ * `authorization: {scope: "none"}`; the tenant comes from the call, never an
+ * argument. `unit` is echoed back, never geocoded.
+ */
+export function checkDeliveryAddressTool(): CanonicalTool {
+  return {
+    name: "check_delivery_address",
+    description:
+      "Check a NEW delivery address as soon as the caller gives it: finds the address and " +
+      "whether it is inside the delivery area. Follow the message in the result.",
+    parameters: {
+      type: "object",
+      properties: {
+        street: {
+          type: "string",
+          description: "House number and street, e.g. 400 N Greenville Ave.",
+        },
+        city: { type: "string" },
+        state: { type: "string" },
+        zip: { type: "string" },
+        unit: { type: "string", description: "Apartment, suite or unit, if any." },
+      },
+      required: ["street"],
+    },
+    authorization: { scope: "none" },
+  };
+}
+
 /** MASTER_SPEC §3.0 — items are validated server-side against the tool-backed `offerings` catalog; never model-invented. */
 export function createOrderTool(): CanonicalTool {
   return {
@@ -325,7 +356,8 @@ export function createOrderTool(): CanonicalTool {
     description:
       "Create an order from items on the real menu/catalog only — never invent an item or " +
       "price. Each item's name must be its exact name as written in the menu. Delivery orders " +
-      "require a full delivery_address and are checked against the delivery radius.",
+      "require a full delivery_address and are checked against the delivery radius. The " +
+      "result's total_cents includes any delivery_fee_cents.",
     parameters: {
       type: "object",
       properties: {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createLogger } from "../../_shared/logger.ts";
 import type { SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
-import { createOrder } from "./create_order.ts";
+import { ADDRESS_UNVERIFIED_MESSAGE, createOrder } from "./create_order.ts";
 
 const logger = createLogger();
 const ctx: CallContext = {
@@ -140,32 +140,6 @@ describe("createOrder", () => {
     expect(pushMessage.entity_type).toBe("order");
   });
 
-  it("computes and returns delivery_fee_cents for a delivery order (GAP_REGISTER.md §4 Cluster D)", async () => {
-    const sql = makeStepSql([
-      { rows: [] }, // idempotency pre-check
-      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings lookup
-      { rows: [{ dynamic_variable_overrides: { delivery_fee_cents: 399 } }] }, // agent_configs overrides
-      { rows: [{ id: "customer_1" }] }, // customer upsert
-      { rows: [{ id: "order_1" }] }, // order insert
-      { rows: [{ id: "msg_1" }] }, // confirmation message insert
-      { rows: [] }, // enqueue messages_outbound
-      { rows: [] }, // enqueue adapter_push
-    ]);
-    // subtotal = 2000; tax = 0; delivery fee = 399; total = 2399
-    const result = await createOrder(
-      sql,
-      ctx,
-      { ...pickupArgs, fulfillment_type: "delivery", delivery_address: { street: "1 Main St" } },
-      logger,
-    );
-    expect(result).toEqual({
-      order_id: "order_1",
-      confirmed: true,
-      total_cents: 2399,
-      delivery_fee_cents: 399,
-    });
-  });
-
   it("never applies a delivery_fee_cents to a pickup/dine_in order", async () => {
     const sql = makeStepSql([
       { rows: [] },
@@ -223,9 +197,10 @@ describe("createOrder", () => {
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join(" ");
       if (text.includes("insert into public.orders")) {
-        // PUBLISH-1: `is_test` was appended as the new last bound value.
-        insertedAllergies = values.at(-3);
-        insertedInstructions = values.at(-2);
+        // PUBLISH-1 / DELIVERY-1: `is_test` then `address_verification`
+        // are the last two bound values.
+        insertedAllergies = values.at(-4);
+        insertedInstructions = values.at(-3);
         return Promise.resolve([{ id: "order_1" }]);
       }
       const step = steps[i];
@@ -316,416 +291,6 @@ describe("createOrder", () => {
     expect(wrote).toBe(true);
   });
 
-  it("declines a delivery order below the tenant's minimum, offering pickup", async () => {
-    const sql = makeStepSql([
-      { rows: [] },
-      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] },
-      { rows: [{ dynamic_variable_overrides: { min_order_cents: 5000 } }] },
-    ]);
-    const result = await createOrder(
-      sql,
-      ctx,
-      { ...pickupArgs, fulfillment_type: "delivery", delivery_address: { street: "1 Main St" } },
-      logger,
-    );
-    expect(result).toEqual({
-      confirmed: false,
-      reason: "below_minimum_order",
-      pickup_offered: true,
-    });
-  });
-
-  it("declines an out-of-radius delivery order when the caller has a saved address geocode", async () => {
-    const sql = makeStepSql([
-      { rows: [] }, // idempotency pre-check
-      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings lookup
-      {
-        rows: [
-          {
-            dynamic_variable_overrides: {
-              tenant_geocode: { lat: 40.7128, lng: -74.006 },
-              delivery_radius_m: 5000,
-            },
-          },
-        ],
-      }, // agent_configs overrides
-      { rows: [{ geocode: { x: -75.1652, y: 39.9526 } }] }, // customer_addresses lookup — far away (Philadelphia)
-    ]);
-    const result = await createOrder(
-      sql,
-      ctx,
-      { ...pickupArgs, fulfillment_type: "delivery", delivery_address: { street: "far away" } },
-      logger,
-    );
-    expect(result).toEqual({
-      confirmed: false,
-      reason: "out_of_delivery_radius",
-      pickup_offered: true,
-    });
-  });
-
-  it("CHANNELS-2 item 10: checks the radius against the CALLER-CHOSEN saved address (address_id), not blindly their default", async () => {
-    const sql = makeStepSql([
-      { rows: [] }, // idempotency pre-check
-      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings lookup
-      {
-        rows: [
-          {
-            dynamic_variable_overrides: {
-              tenant_geocode: { lat: 40.7128, lng: -74.006 }, // NYC
-              delivery_radius_m: 5000,
-            },
-          },
-        ],
-      }, // agent_configs overrides
-      {
-        rows: [
-          {
-            street: "99 Far Ave",
-            city: "Philadelphia",
-            state: "PA",
-            zip: "19019",
-            geocode: { x: -75.1652, y: 39.9526 }, // Philadelphia — well outside a 5km NYC radius
-          },
-        ],
-      }, // address_id resolution — the NON-default address the caller picked
-    ]);
-    const result = await createOrder(
-      sql,
-      ctx,
-      {
-        ...pickupArgs,
-        fulfillment_type: "delivery",
-        delivery_address: { address_id: "addr_non_default" },
-      },
-      logger,
-    );
-    // Would confirm (well within radius) if this had used the tenant's
-    // default address instead — proves the CHOSEN address's own geocode
-    // was actually used for the check.
-    expect(result).toEqual({
-      confirmed: false,
-      reason: "out_of_delivery_radius",
-      pickup_offered: true,
-    });
-  });
-
-  it("proceeds (with a logged warning) when a radius policy exists but the caller has no saved address geocode yet", async () => {
-    const warnings: unknown[] = [];
-    const spyLogger = {
-      ...logger,
-      warn: (msg: string, fields?: unknown) => warnings.push({ msg, fields }),
-    };
-    const sql = makeStepSql([
-      { rows: [] },
-      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] },
-      {
-        rows: [
-          {
-            dynamic_variable_overrides: {
-              tenant_geocode: { lat: 40.7128, lng: -74.006 },
-              delivery_radius_m: 5000,
-            },
-          },
-        ],
-      },
-      { rows: [] }, // customer_addresses lookup — no saved address
-      { rows: [{ id: "customer_1" }] },
-      { rows: [{ id: "order_1" }] },
-      { rows: [{ id: "msg_1" }] },
-      { rows: [] },
-      { rows: [] },
-    ]);
-    const result = await createOrder(
-      sql,
-      ctx,
-      { ...pickupArgs, fulfillment_type: "delivery", delivery_address: { street: "1 Main St" } },
-      spyLogger,
-    );
-    expect(warnings).toHaveLength(1);
-    expect(result).toMatchObject({ confirmed: true });
-  });
-
-  it("restaurant.md Finding B4: best-effort geocodes and upserts a new customer_addresses row after a confirmed delivery order", async () => {
-    let insertedAddress: unknown;
-    let unsetDefaultCalled = false;
-    const steps: Step[] = [
-      { rows: [] }, // idempotency pre-check
-      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings lookup
-      { rows: [{ dynamic_variable_overrides: {} }] }, // agent_configs overrides (no radius policy)
-      { rows: [{ id: "customer_1" }] }, // customer upsert
-      { rows: [{ id: "order_1" }] }, // order insert
-    ];
-    let i = 0;
-    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-      const text = strings.join(" ");
-      if (text.includes("lower(trim(street))")) {
-        return Promise.resolve([]); // no existing saved address for this customer/street
-      }
-      if (text.includes("set is_default = false")) {
-        unsetDefaultCalled = true;
-        return Promise.resolve([]);
-      }
-      if (
-        text.includes("select id from public.customer_addresses") &&
-        text.includes("is_default = true")
-      ) {
-        return Promise.resolve([]); // no existing default yet — this is the customer's first
-      }
-      if (text.includes("insert into public.customer_addresses")) {
-        insertedAddress = values;
-        return Promise.resolve([]);
-      }
-      if (text.includes("pgmq.send")) return Promise.resolve([]);
-      const step = steps[i];
-      i += 1;
-      return Promise.resolve(step?.rows ?? []);
-    }) as SqlClient;
-
-    const fetchImpl = (async () =>
-      new Response(JSON.stringify({ results: [{ location: { lat: 30.2672, lng: -97.7431 } }] }), {
-        status: 200,
-      })) as unknown as (input: string, init?: RequestInit) => Promise<Response>;
-
-    const result = await createOrder(
-      sql,
-      ctx,
-      {
-        ...pickupArgs,
-        fulfillment_type: "delivery",
-        delivery_address: { street: "123 Main St", city: "Austin", state: "TX", zip: "78701" },
-      },
-      logger,
-      { geocode: { fetchImpl, apiKey: "test_key" } },
-    );
-
-    expect(result).toMatchObject({ confirmed: true, order_id: "order_1" });
-    // this is the customer's first-ever saved address, so it becomes the
-    // default even with no explicit set_as_default — clearing beforehand
-    // is a harmless no-op since nothing was set yet.
-    expect(unsetDefaultCalled).toBe(true);
-    expect(insertedAddress).toContain("customer_1");
-    expect(insertedAddress).toContain("123 Main St");
-    expect(insertedAddress).toContain(true); // is_default
-  });
-
-  it("CHANNELS-2 item 10(d): a second delivery address does NOT steal the caller's existing default (regression for the prior unconditional-overwrite bug)", async () => {
-    let insertedAddress: unknown[] | undefined;
-    let defaultWasCleared = false;
-    const steps: Step[] = [
-      { rows: [] }, // idempotency pre-check
-      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings lookup
-      { rows: [{ dynamic_variable_overrides: {} }] }, // agent_configs overrides
-      { rows: [{ id: "customer_2" }] }, // customer upsert
-      { rows: [{ id: "order_2" }] }, // order insert
-    ];
-    let i = 0;
-    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-      const text = strings.join(" ");
-      if (text.includes("lower(trim(street))")) {
-        return Promise.resolve([]); // different street — no match, a new address
-      }
-      if (text.includes("set is_default = false")) {
-        defaultWasCleared = true;
-        return Promise.resolve([]);
-      }
-      if (
-        text.includes("select id from public.customer_addresses") &&
-        text.includes("is_default = true")
-      ) {
-        // this customer ALREADY has a default address from a prior order.
-        return Promise.resolve([{ id: "addr_existing_default" }]);
-      }
-      if (text.includes("insert into public.customer_addresses")) {
-        insertedAddress = values;
-        return Promise.resolve([]);
-      }
-      if (text.includes("pgmq.send")) return Promise.resolve([]);
-      const step = steps[i];
-      i += 1;
-      return Promise.resolve(step?.rows ?? []);
-    }) as SqlClient;
-
-    const fetchImpl = (async () =>
-      new Response(JSON.stringify({ results: [{ location: { lat: 30.2672, lng: -97.7431 } }] }), {
-        status: 200,
-      })) as unknown as (input: string, init?: RequestInit) => Promise<Response>;
-
-    const result = await createOrder(
-      sql,
-      ctx,
-      {
-        ...pickupArgs,
-        fulfillment_type: "delivery",
-        // a NEW address, different from the existing default, and no
-        // set_as_default — must be saved as an additional entry only.
-        delivery_address: { street: "99 New St", city: "Austin", state: "TX", zip: "78701" },
-      },
-      logger,
-      { geocode: { fetchImpl, apiKey: "test_key" } },
-    );
-
-    expect(result).toMatchObject({ confirmed: true, order_id: "order_2" });
-    expect(defaultWasCleared).toBe(false);
-    expect(insertedAddress).toContain("99 New St");
-    expect(insertedAddress).toContain(false); // is_default — never stole the existing default
-  });
-
-  it("never attempts a geocode/address save when no geocode dep is wired (GEOCODE_API_KEY unset)", async () => {
-    let addressTableTouched = false;
-    const steps: Step[] = [
-      { rows: [] },
-      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] },
-      { rows: [{ dynamic_variable_overrides: {} }] },
-      { rows: [{ id: "customer_1" }] },
-      { rows: [{ id: "order_1" }] },
-      { rows: [{ id: "msg_1" }] },
-      { rows: [] },
-      { rows: [] },
-    ];
-    let i = 0;
-    const sql = ((strings: TemplateStringsArray) => {
-      const text = strings.join(" ");
-      if (text.includes("customer_addresses")) addressTableTouched = true;
-      const step = steps[i];
-      i += 1;
-      return Promise.resolve(step?.rows ?? []);
-    }) as SqlClient;
-
-    const result = await createOrder(
-      sql,
-      ctx,
-      { ...pickupArgs, fulfillment_type: "delivery", delivery_address: { street: "1 Main St" } },
-      logger,
-    );
-    expect(result).toMatchObject({ confirmed: true });
-    expect(addressTableTouched).toBe(false);
-  });
-
-  it("restaurant.md Finding B4: full write -> read -> radius-check loop — a repeat caller's address saved on order 1 lets order 2's radius check actually evaluate instead of always skipping", async () => {
-    const addresses: {
-      id: string;
-      customer_id: string;
-      street: string;
-      geocode: { x: number; y: number };
-      is_default: boolean;
-    }[] = [];
-    let nextAddressId = 1;
-    const warnings: unknown[] = [];
-    const spyLogger = {
-      ...logger,
-      warn: (msg: string, fields?: unknown) => warnings.push({ msg, fields }),
-    };
-
-    function makeLoopSql(orderSteps: Step[]): SqlClient {
-      let i = 0;
-      return ((strings: TemplateStringsArray, ...values: unknown[]) => {
-        const text = strings.join(" ");
-        if (text.includes("ca.geocode")) {
-          // create_order's own delivery-radius-check read.
-          const match = addresses.find((a) => a.customer_id === "customer_1");
-          return Promise.resolve(match ? [{ geocode: match.geocode }] : []);
-        }
-        if (text.includes("lower(trim(street))")) {
-          const match = addresses.find(
-            (a) =>
-              a.customer_id === values[1] &&
-              a.street.toLowerCase() === String(values[2]).toLowerCase(),
-          );
-          return Promise.resolve(match ? [{ id: match.id, is_default: match.is_default }] : []);
-        }
-        if (text.includes("set is_default = false")) {
-          for (const a of addresses) a.is_default = false;
-          return Promise.resolve([]);
-        }
-        if (
-          text.includes("select id from public.customer_addresses") &&
-          text.includes("is_default = true")
-        ) {
-          const match = addresses.find((a) => a.customer_id === values[1] && a.is_default);
-          return Promise.resolve(match ? [{ id: match.id }] : []);
-        }
-        if (text.includes("insert into public.customer_addresses")) {
-          const id = `addr_${nextAddressId}`;
-          nextAddressId += 1;
-          addresses.push({
-            id,
-            customer_id: values[1] as string,
-            street: values[2] as string,
-            geocode: { x: -97.7431, y: 30.2672 },
-            is_default: values[values.length - 1] === true,
-          });
-          return Promise.resolve([]);
-        }
-        if (text.includes("pgmq.send")) return Promise.resolve([]);
-        const step = orderSteps[i];
-        i += 1;
-        return Promise.resolve(step?.rows ?? []);
-      }) as SqlClient;
-    }
-
-    const fetchImpl = (async () =>
-      new Response(JSON.stringify({ results: [{ location: { lat: 30.2672, lng: -97.7431 } }] }), {
-        status: 200,
-      })) as unknown as (input: string, init?: RequestInit) => Promise<Response>;
-    const geocodeDeps = { geocode: { fetchImpl, apiKey: "test_key" } };
-    const deliveryAddress = { street: "123 Main St", city: "Austin", state: "TX", zip: "78701" };
-    const overridesWithRadius = {
-      dynamic_variable_overrides: {
-        tenant_geocode: { lat: 30.2672, lng: -97.7431 }, // same point -> well within any radius
-        delivery_radius_m: 5000,
-      },
-    };
-
-    // Order 1: first-time caller, no saved address yet — radius check skips
-    // with a logged warning (pre-existing behavior), then the new address
-    // write path saves the spoken address for next time.
-    const sql1 = makeLoopSql([
-      { rows: [] }, // idempotency pre-check
-      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] }, // offerings
-      { rows: [overridesWithRadius] }, // agent_configs overrides
-      { rows: [{ id: "customer_1" }] }, // customer upsert
-      { rows: [{ id: "order_1" }] }, // order insert
-    ]);
-    const ctx1: CallContext = { ...ctx, retellCallId: "call_1" };
-    const result1 = await createOrder(
-      sql1,
-      ctx1,
-      { ...pickupArgs, fulfillment_type: "delivery", delivery_address: deliveryAddress },
-      spyLogger,
-      geocodeDeps,
-    );
-    expect(result1).toMatchObject({ confirmed: true });
-    expect(warnings).toHaveLength(1);
-    expect((warnings[0] as { msg: string }).msg).toBe(
-      "create_order_radius_check_skipped_no_caller_geocode",
-    );
-    expect(addresses).toHaveLength(1);
-
-    // Order 2: same caller, now HAS a saved geocode from order 1 — the
-    // radius check finds it and actually evaluates (no second skip
-    // warning), and since it's the same point, the order is confirmed.
-    const sql2 = makeLoopSql([
-      { rows: [] },
-      { rows: [{ id: "off_1", name: "Burger", price_cents: 1000 }] },
-      { rows: [overridesWithRadius] },
-      { rows: [{ id: "customer_1" }] },
-      { rows: [{ id: "order_2" }] },
-    ]);
-    const ctx2: CallContext = { ...ctx, retellCallId: "call_2" };
-    const result2 = await createOrder(
-      sql2,
-      ctx2,
-      { ...pickupArgs, fulfillment_type: "delivery", delivery_address: deliveryAddress },
-      spyLogger,
-      geocodeDeps,
-    );
-    expect(result2).toMatchObject({ confirmed: true, order_id: "order_2" });
-    // still exactly one warning total — order 2 never hit the
-    // "skipped_no_caller_geocode" branch this time.
-    expect(warnings).toHaveLength(1);
-  });
-
   it("returns confirmed:false/slot equivalent on a unique_violation race on the idempotency key, never throwing", async () => {
     const sql = makeStepSql([
       { rows: [] }, // idempotency pre-check
@@ -764,5 +329,379 @@ describe("item_not_found hands the agent the real menu names", () => {
       item_name: "Chicken Biryani",
       menu_items: ["Hyderabadi Chicken Dum Biryani", "Mutton Haleem"],
     });
+  });
+});
+
+describe("createOrder delivery (DELIVERY-1)", () => {
+  // 400 N Greenville Ave, Richardson TX; NEAR is ~3 mi north, FAR ~20 mi.
+  const BUSINESS = { lat: 32.953692217245, lng: -96.728621302589 };
+  const NEAR = { lat: BUSINESS.lat + 0.0435, lng: BUSINESS.lng };
+  const FAR = { lat: BUSINESS.lat + 0.29, lng: BUSINESS.lng };
+
+  function settingsRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      business_street: "400 N Greenville Ave",
+      business_city: "Richardson",
+      business_state: "TX",
+      business_zip: "75081",
+      business_lat: BUSINESS.lat,
+      business_lng: BUSINESS.lng,
+      business_location_matched: "400 N GREENVILLE AVE, RICHARDSON, TX, 75081",
+      business_location_key: "400 n greenville ave|richardson|tx|75081",
+      business_located_at: "2026-10-01T00:00:00Z",
+      delivery_radius_miles: "5.00",
+      delivery_fee_base_cents: 300,
+      delivery_fee_per_mile_cents: 100,
+      delivery_fee_included_miles: "2.00",
+      delivery_min_order_cents: null,
+      legacy_radius_m: null,
+      legacy_fee_cents: null,
+      legacy_min_order_cents: null,
+      ...overrides,
+    };
+  }
+
+  interface World {
+    settings?: Record<string, unknown>;
+    overrides?: Record<string, unknown>;
+    checks?: Record<string, unknown>[];
+    savedAddress?: Record<string, unknown> | null;
+    existingDefault?: boolean;
+  }
+
+  function makeWorld(world: World = {}) {
+    const calls: { text: string; values: unknown[] }[] = [];
+    const captured: {
+      orderInsert?: unknown[];
+      checkInsert?: unknown[];
+      addressInsert?: unknown[];
+      checkLookup?: unknown[];
+    } = {};
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join("?");
+      calls.push({ text, values });
+      if (text.includes("insert into public.orders")) {
+        captured.orderInsert = values;
+        return Promise.resolve([{ id: "order_1" }]);
+      }
+      if (text.includes("from public.orders")) return Promise.resolve([]);
+      if (text.includes("from public.offerings")) {
+        return Promise.resolve([{ id: "off_1", name: "Burger", price_cents: 1000 }]);
+      }
+      if (text.includes("select dynamic_variable_overrides from public.agent_configs")) {
+        return Promise.resolve([{ dynamic_variable_overrides: world.overrides ?? {} }]);
+      }
+      if (text.includes("delivery_radius_miles")) {
+        return Promise.resolve(world.settings === undefined ? [settingsRow()] : [world.settings]);
+      }
+      if (text.includes("insert into public.delivery_address_checks")) {
+        captured.checkInsert = values;
+        return Promise.resolve([{ id: "chk_new" }]);
+      }
+      if (text.includes("from public.delivery_address_checks")) {
+        captured.checkLookup = values;
+        return Promise.resolve(world.checks ?? []);
+      }
+      if (text.includes("ca.id =")) {
+        return Promise.resolve(world.savedAddress ? [world.savedAddress] : []);
+      }
+      if (text.includes("insert into public.customers")) {
+        return Promise.resolve([{ id: "customer_1" }]);
+      }
+      if (text.includes("lower(trim(street))")) return Promise.resolve([]);
+      if (
+        text.includes("select id from public.customer_addresses") &&
+        text.includes("is_default")
+      ) {
+        return Promise.resolve(world.existingDefault ? [{ id: "addr_default" }] : []);
+      }
+      if (text.includes("insert into public.customer_addresses")) {
+        captured.addressInsert = values;
+        return Promise.resolve([]);
+      }
+      if (text.includes("insert into public.messages_outbound")) {
+        return Promise.resolve([{ id: "msg_1" }]);
+      }
+      return Promise.resolve([]);
+    }) as SqlClient;
+    return { sql, calls, captured };
+  }
+
+  function censusAnswering(point: { lat: number; lng: number } | null) {
+    const requested: string[] = [];
+    const fetchImpl = async (url: string) => {
+      requested.push(new URL(url).searchParams.get("address") ?? "");
+      return new Response(
+        JSON.stringify({
+          result: {
+            addressMatches: point
+              ? [
+                  {
+                    matchedAddress: "12 ELM ST, RICHARDSON, TX, 75081",
+                    coordinates: { x: point.lng, y: point.lat },
+                    addressComponents: { city: "RICHARDSON", state: "TX", zip: "75081" },
+                  },
+                ]
+              : [],
+          },
+        }),
+        { status: 200 },
+      );
+    };
+    return { fetchImpl, requested };
+  }
+
+  const deliveryArgs = {
+    ...pickupArgs,
+    fulfillment_type: "delivery" as const,
+    delivery_address: { street: "12 Elm St", city: "Richardson", state: "TX", zip: "75081" },
+  };
+
+  function checkRow(
+    status: string,
+    point: { lat: number; lng: number } | null,
+    miles: string | null,
+  ) {
+    return {
+      status,
+      input_address: "12 Elm St, Richardson, TX 75081",
+      matched_address: point ? "12 ELM ST, RICHARDSON, TX, 75081" : null,
+      street: point ? "12 ELM ST" : null,
+      lat: point?.lat ?? null,
+      lng: point?.lng ?? null,
+      distance_miles: miles,
+    };
+  }
+
+  it("reuses this call's in_range check: distance-based fee, verified, located address saved, no geocode", async () => {
+    const { sql, captured } = makeWorld({ checks: [checkRow("in_range", NEAR, "3.01")] });
+    const census = censusAnswering(NEAR);
+    const result = await createOrder(sql, ctx, deliveryArgs, logger, { census });
+    // subtotal 2000; fee 300 + ceil(100 * 1.01) = 401
+    expect(result).toEqual({
+      order_id: "order_1",
+      confirmed: true,
+      total_cents: 2401,
+      delivery_fee_cents: 401,
+    });
+    expect(census.requested).toHaveLength(0);
+    expect(captured.checkLookup).toEqual(expect.arrayContaining(["tenant_1", "call_1"]));
+    expect(captured.orderInsert).toContain(401);
+    expect(captured.orderInsert?.at(-1)).toBe("in_range");
+    expect(captured.addressInsert).toContain("12 Elm St");
+    expect(captured.addressInsert).toContain(NEAR.lng);
+    expect(captured.addressInsert).toContain(NEAR.lat);
+  });
+
+  it("declines with a pickup offer when this call's check was out_of_range, writing nothing", async () => {
+    const { sql, captured } = makeWorld({ checks: [checkRow("out_of_range", FAR, "20.04")] });
+    const result = await createOrder(sql, ctx, deliveryArgs, logger, {
+      census: censusAnswering(FAR),
+    });
+    expect(result).toEqual({
+      confirmed: false,
+      reason: "out_of_delivery_radius",
+      pickup_offered: true,
+    });
+    expect(captured.orderInsert).toBeUndefined();
+  });
+
+  it("checks inline (and records the check) when the agent skipped check_delivery_address", async () => {
+    const { sql, captured } = makeWorld();
+    const census = censusAnswering(NEAR);
+    const result = await createOrder(sql, ctx, deliveryArgs, logger, { census });
+    expect(census.requested).toEqual(["12 Elm St, Richardson, TX 75081"]);
+    expect(captured.checkInsert?.slice(0, 4)).toEqual([
+      "tenant_1",
+      "call_1",
+      "12 Elm St, Richardson, TX 75081",
+      "in_range",
+    ]);
+    expect(result).toMatchObject({ confirmed: true, delivery_fee_cents: 401 });
+    expect(result).not.toHaveProperty("address_verified");
+  });
+
+  it("an inline out-of-range answer declines the order", async () => {
+    const { sql, captured } = makeWorld();
+    const result = await createOrder(sql, ctx, deliveryArgs, logger, {
+      census: censusAnswering(FAR),
+    });
+    expect(result).toMatchObject({ confirmed: false, reason: "out_of_delivery_radius" });
+    expect(captured.orderInsert).toBeUndefined();
+  });
+
+  it("not_found: the order is still placed, marked unverified, base fee only, address not saved", async () => {
+    const { sql, captured } = makeWorld();
+    const result = await createOrder(sql, ctx, deliveryArgs, logger, {
+      census: censusAnswering(null),
+    });
+    expect(result).toEqual({
+      order_id: "order_1",
+      confirmed: true,
+      total_cents: 2300,
+      delivery_fee_cents: 300,
+      address_verified: false,
+      message: ADDRESS_UNVERIFIED_MESSAGE,
+    });
+    expect(captured.orderInsert?.at(-1)).toBe("not_found");
+    expect(captured.addressInsert).toBeUndefined();
+  });
+
+  it("a geocoder timeout never blocks the order (lookup_unavailable, within the timeout)", async () => {
+    const { sql, captured } = makeWorld();
+    const hanging = (_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    const started = Date.now();
+    const result = await createOrder(sql, ctx, deliveryArgs, logger, {
+      census: { fetchImpl: hanging, timeoutMs: 20 },
+    });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(result).toMatchObject({ confirmed: true, address_verified: false });
+    expect(captured.orderInsert?.at(-1)).toBe("lookup_unavailable");
+  });
+
+  it("without a geocoder and no prior check: unverified (lookup_unavailable), never geocoded", async () => {
+    const { sql, captured } = makeWorld();
+    const result = await createOrder(sql, ctx, deliveryArgs, logger);
+    expect(result).toMatchObject({ confirmed: true, address_verified: false });
+    expect(captured.orderInsert?.at(-1)).toBe("lookup_unavailable");
+    expect(captured.checkInsert).toBeUndefined();
+  });
+
+  it("no_radius_set: placed, unverified, fee still priced by the known distance", async () => {
+    const { sql, captured } = makeWorld({
+      settings: settingsRow({ delivery_radius_miles: null }),
+      checks: [checkRow("no_radius_set", FAR, "20.04")],
+    });
+    const result = await createOrder(sql, ctx, deliveryArgs, logger);
+    // 300 + ceil(100 * 18.04)
+    expect(result).toMatchObject({
+      confirmed: true,
+      delivery_fee_cents: 2104,
+      address_verified: false,
+    });
+    expect(captured.orderInsert?.at(-1)).toBe("no_radius_set");
+  });
+
+  it("declines below the delivery minimum with the amounts and a pickup offer", async () => {
+    const { sql, captured } = makeWorld({
+      settings: settingsRow({ delivery_min_order_cents: 2500 }),
+      checks: [checkRow("in_range", NEAR, "3.01")],
+    });
+    const result = await createOrder(sql, ctx, deliveryArgs, logger);
+    expect(result).toMatchObject({
+      confirmed: false,
+      reason: "below_delivery_minimum",
+      delivery_minimum_cents: 2500,
+      subtotal_cents: 2000,
+      pickup_offered: true,
+    });
+    expect((result as { message: string }).message).toContain("$25.00");
+    expect(captured.orderInsert).toBeUndefined();
+  });
+
+  it("a pickup order never reads delivery settings or applies the delivery minimum", async () => {
+    const { sql, calls } = makeWorld({
+      settings: settingsRow({ delivery_min_order_cents: 99_999 }),
+    });
+    const result = await createOrder(sql, ctx, pickupArgs, logger);
+    expect(result).toEqual({ order_id: "order_1", confirmed: true, total_cents: 2000 });
+    expect(calls.some((c) => c.text.includes("delivery_radius_miles"))).toBe(false);
+  });
+
+  it("falls back to the legacy overrides (flat fee, minimum) when the new columns are unset", async () => {
+    const legacy = settingsRow({
+      delivery_fee_base_cents: null,
+      delivery_fee_per_mile_cents: null,
+      delivery_fee_included_miles: null,
+      legacy_fee_cents: 399,
+      legacy_min_order_cents: 5000,
+    });
+    const below = makeWorld({ settings: legacy, checks: [checkRow("in_range", NEAR, "3.01")] });
+    expect(await createOrder(below.sql, ctx, deliveryArgs, logger)).toMatchObject({
+      reason: "below_delivery_minimum",
+      delivery_minimum_cents: 5000,
+    });
+
+    const ok = makeWorld({
+      settings: { ...legacy, legacy_min_order_cents: null },
+      checks: [checkRow("in_range", NEAR, "3.01")],
+    });
+    expect(await createOrder(ok.sql, ctx, deliveryArgs, logger)).toMatchObject({
+      confirmed: true,
+      delivery_fee_cents: 399,
+      total_cents: 2399,
+    });
+  });
+
+  it("CHANNELS-2 item 10: a saved address_id is checked by ITS geocode against the business location + radius", async () => {
+    const { sql, captured } = makeWorld({
+      savedAddress: {
+        street: "99 Far Ave",
+        city: "Plano",
+        state: "TX",
+        zip: "75023",
+        geocode: { x: FAR.lng, y: FAR.lat },
+      },
+    });
+    const census = censusAnswering(NEAR);
+    const result = await createOrder(
+      sql,
+      ctx,
+      { ...pickupArgs, fulfillment_type: "delivery", delivery_address: { address_id: "addr_far" } },
+      logger,
+      { census },
+    );
+    expect(result).toEqual({
+      confirmed: false,
+      reason: "out_of_delivery_radius",
+      pickup_offered: true,
+    });
+    // The saved geocode was used; neither address was geocoded.
+    expect(census.requested).toHaveLength(0);
+    expect(captured.orderInsert).toBeUndefined();
+  });
+
+  it("a nearby saved address is in range and priced by its distance", async () => {
+    const { sql, captured } = makeWorld({
+      savedAddress: {
+        street: "12 Elm St",
+        city: "Richardson",
+        state: "TX",
+        zip: "75081",
+        geocode: { x: NEAR.lng, y: NEAR.lat },
+      },
+    });
+    const result = await createOrder(
+      sql,
+      ctx,
+      {
+        ...pickupArgs,
+        fulfillment_type: "delivery",
+        delivery_address: { address_id: "addr_near" },
+      },
+      logger,
+    );
+    expect(result).toMatchObject({ confirmed: true, delivery_fee_cents: 401 });
+    expect(captured.orderInsert?.at(-1)).toBe("in_range");
+  });
+
+  it("restaurant.md Finding B4: a first located address becomes the customer's default", async () => {
+    const { sql, captured } = makeWorld({ checks: [checkRow("in_range", NEAR, "3.01")] });
+    await createOrder(sql, ctx, deliveryArgs, logger);
+    expect(captured.addressInsert).toContain("customer_1");
+    expect(captured.addressInsert?.at(-1)).toBe(true);
+  });
+
+  it("CHANNELS-2 item 10(d): a second address does NOT steal the caller's existing default", async () => {
+    const { sql, calls, captured } = makeWorld({
+      checks: [checkRow("in_range", NEAR, "3.01")],
+      existingDefault: true,
+    });
+    await createOrder(sql, ctx, deliveryArgs, logger);
+    expect(calls.some((c) => c.text.includes("set is_default = false"))).toBe(false);
+    expect(captured.addressInsert?.at(-1)).toBe(false);
   });
 });

@@ -353,16 +353,75 @@ export const zCreateOrderResult = z.discriminatedUnion("confirmed", [
      * pickup/dine_in. */
     delivery_fee_cents: zCents.optional(),
     total_cents: zCents,
+    /** DELIVERY-1: false when a delivery address could not be verified (the
+     * order is still placed; the restaurant confirms the address). */
+    address_verified: z.boolean().optional(),
+    message: z.string().min(1).optional(),
   }),
   z.object({
     // Out-of-radius delivery -> polite decline with a pickup offer (§3.0).
     confirmed: z.literal(false),
-    reason: z.enum(["out_of_delivery_radius", "below_minimum_order", "item_not_found"]),
+    reason: z.enum([
+      "out_of_delivery_radius",
+      "below_minimum_order",
+      /** DELIVERY-1: the subtotal is under the restaurant's delivery minimum
+       * (`tenants.delivery_min_order_cents`); the agent offers to add items or
+       * switch to pickup. */
+      "below_delivery_minimum",
+      "item_not_found",
+    ]),
     pickup_offered: z.boolean().optional(),
     min_order_cents: zCents.optional(),
+    /** DELIVERY-1 (below_delivery_minimum): the minimum and the current subtotal. */
+    delivery_minimum_cents: zCents.optional(),
+    subtotal_cents: zCents.optional(),
+    message: z.string().min(1).optional(),
   }),
 ]);
 export type CreateOrderResult = z.infer<typeof zCreateOrderResult>;
+
+// ---------------------------------------------------------------------------
+// DELIVERY-1 check_delivery_address (restaurant delivery)
+// ---------------------------------------------------------------------------
+
+/** Called as soon as the caller gives a NEW delivery address: is it real, and
+ * within the delivery radius? `unit` (apartment/suite) is passed through,
+ * never geocoded. */
+export const zCheckDeliveryAddressRequest = z.object({
+  street: z.string().min(1),
+  city: z.string().min(1).optional(),
+  state: z.string().min(1).optional(),
+  zip: z.string().min(1).optional(),
+  unit: z.string().min(1).optional(),
+});
+export type CheckDeliveryAddressRequest = z.infer<typeof zCheckDeliveryAddressRequest>;
+
+export const DELIVERY_CHECK_STATUSES = [
+  "in_range",
+  "out_of_range",
+  "not_found",
+  "no_business_location",
+  "no_radius_set",
+  "lookup_unavailable",
+] as const;
+export type DeliveryCheckStatus = (typeof DELIVERY_CHECK_STATUSES)[number];
+
+export const zCheckDeliveryAddressResult = z.object({
+  status: z.enum(DELIVERY_CHECK_STATUSES),
+  /** The address as the US Census Geocoder matched it (read back to confirm). */
+  matched_address: z.string().min(1).optional(),
+  unit: z.string().min(1).optional(),
+  /** Straight-line miles from the business. */
+  distance_miles: z.number().nonnegative().optional(),
+  radius_miles: z.number().positive().optional(),
+  /** in_range only: the delivery fee for this distance. */
+  delivery_fee_cents: zCents.optional(),
+  /** The delivery order minimum, when the restaurant set one. */
+  delivery_minimum_cents: zCents.optional(),
+  /** A short instruction for the agent. */
+  message: z.string().min(1),
+});
+export type CheckDeliveryAddressResult = z.infer<typeof zCheckDeliveryAddressResult>;
 
 // ---------------------------------------------------------------------------
 // MASTER_SPEC §3.2 send_payment_link (phone payments)
@@ -417,6 +476,7 @@ export const TOOL_REQUEST_SCHEMAS = {
   create_order: zCreateOrderRequest,
   send_payment_link: zSendPaymentLinkRequest,
   join_waitlist: zJoinWaitlistRequest,
+  check_delivery_address: zCheckDeliveryAddressRequest,
 } as const;
 
 export type ToolName = keyof typeof TOOL_REQUEST_SCHEMAS;

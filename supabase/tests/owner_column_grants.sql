@@ -138,6 +138,15 @@ select pg_temp.sec2_check(
     "owner_test_phone": "+15555550100",
     "business_phone": "+15555550101",
     "website_url": "https://example.com",
+    "business_street": "400 N Greenville Ave",
+    "business_city": "Richardson",
+    "business_state": "TX",
+    "business_zip": "75081",
+    "delivery_radius_miles": 5,
+    "delivery_fee_base_cents": 300,
+    "delivery_fee_per_mile_cents": 100,
+    "delivery_fee_included_miles": 2,
+    "delivery_min_order_cents": 1500,
     "manual_mode": false,
     "manual_mode_enabled_at": null,
     "voice_reminders_enabled": true,
@@ -154,6 +163,44 @@ select pg_temp.sec2_check(
     "booking_min_notice_minutes": 30,
     "booking_horizon_days": 21
   }'::jsonb);
+
+-- DELIVERY-1: the owner-editable delivery columns are range-checked by the
+-- database itself, whatever the client: a 500-mile radius or a negative fee
+-- is rejected (23514 check_violation), not stored.
+do $$
+declare
+  v_probe text;
+begin
+  perform set_config('request.jwt.claims',
+    '{"sub":"5ec20000-0000-4000-8000-000000000001","role":"authenticated","app_metadata":{"tenant_id":"5ec20000-0000-4000-8000-0000000000a1","role":"owner"}}', true);
+  set local role authenticated;
+  foreach v_probe in array array[
+    'delivery_radius_miles = 500',
+    'delivery_fee_base_cents = -1',
+    'delivery_fee_per_mile_cents = -1',
+    'delivery_fee_included_miles = -1',
+    'delivery_min_order_cents = -1',
+    'business_state = ''Texas''',
+    'business_zip = ''7508'''
+  ] loop
+    begin
+      execute format('update public.tenants set %s where id = %L', v_probe,
+        '5ec20000-0000-4000-8000-0000000000a1');
+      raise exception 'DELIVERY-1 FAIL: owner stored an out-of-range value (%)', v_probe
+        using errcode = 'P0001';
+    exception when check_violation then
+      null; -- expected
+    end;
+  end loop;
+  reset role;
+end $$;
+
+-- DELIVERY-1: delivery_address_checks is read-only for tenant members (the
+-- voice tools write it with the secret key).
+select pg_temp.sec2_expect_denied(
+  $q$insert into public.delivery_address_checks (tenant_id, input_address, status) values ('5ec20000-0000-4000-8000-0000000000a1', '1 Main St', 'in_range')$q$,
+  '{"sub":"5ec20000-0000-4000-8000-000000000001","role":"authenticated","app_metadata":{"tenant_id":"5ec20000-0000-4000-8000-0000000000a1","role":"owner"}}',
+  'INSERT into delivery_address_checks');
 
 select pg_temp.sec2_expect_denied(
   $q$insert into public.tenants (name, slug, vertical) values ('x', 'sec2-x', 'generic')$q$,

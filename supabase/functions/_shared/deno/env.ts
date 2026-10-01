@@ -151,6 +151,5 @@ export const ENV_VAR_NAMES = {
   telnyxPublicKey: "TELNYX_PUBLIC_KEY",
   telnyxMessagingProfileId: "TELNYX_MESSAGING_PROFILE_ID",
   webhooksSmsBaseUrl: "WEBHOOKS_SMS_BASE_URL",
-  geocodeApiKey: "GEOCODE_API_KEY",
   adminSessionAal2WindowMinutes: "ADMIN_AAL2_FRESHNESS_MINUTES",
 } as const;

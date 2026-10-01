@@ -17,6 +17,7 @@ import { toast } from "sonner";
 import { Link, useRouter } from "@/i18n/navigation";
 import { paymentLinkResentToast } from "@/lib/messaging/texting-copy";
 import { useTextingOn } from "@/lib/messaging/use-texting-on";
+import { addressVerificationNote } from "@/lib/orders/address-verification";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
 export interface OrderDetailData {
@@ -39,6 +40,9 @@ export interface OrderDetailData {
   deliveryFeeCents: number;
   allergies: string[];
   specialInstructions: string | null;
+  /** DELIVERY-1: `orders.address_verification` — "in_range" = verified; any
+   * other value = the AI could not verify the delivery address. */
+  addressVerification?: string | null;
   customerName: string | null;
   customerPhone: string | null;
   paymentLinks: {
@@ -169,6 +173,13 @@ export function OrderDetailClient({ order }: { order: OrderDetailData }) {
                 .join(", ")}
             </p>
           )}
+          {order.fulfillmentType === "delivery" &&
+            addressVerificationNote(order.addressVerification) && (
+              <p>
+                <Badge variant="warning">Address not verified</Badge>{" "}
+                <span className="ml-1">{addressVerificationNote(order.addressVerification)}</span>
+              </p>
+            )}
 
           {order.allergies.length > 0 && (
             <p>

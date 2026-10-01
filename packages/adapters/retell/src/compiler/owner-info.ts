@@ -21,10 +21,11 @@ import { CALL_INTEGRITY_INSTRUCTIONS } from "./call-integrity.js";
  * the call-integrity rules block (`call-integrity.ts`), compile-time tool guidance
  * (time offsets, take_message partial intake, SMS template keys), take_message on every
  * booking-write node, message-state and fallback exit conditions, a leave-a-message
- * global node, and descriptive edge conditions.
+ * global node, and descriptive edge conditions. 4 - SPEED-1: shorter calls. 5 - DELIVERY-1:
+ * the restaurant check_delivery_address tool and the delivery fee in the order read-back.
  */
 /** Compiler-output version stamped on `agent_configs.compiled_with_version`; bump with the Deno constant. */
-export const AGENT_COMPILER_VERSION = 4;
+export const AGENT_COMPILER_VERSION = 5;
 
 export const OWNER_INFO_INSTRUCTIONS =
   "Business settings for this call. Booking status right now: {{booking_mode_text}} " +

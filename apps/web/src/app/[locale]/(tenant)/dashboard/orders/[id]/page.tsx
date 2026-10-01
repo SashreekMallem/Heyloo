@@ -16,7 +16,7 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
     // yet on the hand-maintained `OrderRow` type (docs/audit/FIX_REQUESTS.md)
     // — cast the whole row immediately so every field below is typed.
     .select(
-      "id, created_at, status, items, fulfillment_type, delivery_address, subtotal_cents, tax_cents, tip_cents, total_cents, customer_id, allergies, special_instructions, delivery_fee_cents",
+      "id, created_at, status, items, fulfillment_type, delivery_address, subtotal_cents, tax_cents, tip_cents, total_cents, customer_id, allergies, special_instructions, delivery_fee_cents, address_verification",
     )
     .eq("tenant_id", tenant.id)
     .eq("id", id)
@@ -42,6 +42,7 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
     allergies: string[] | null;
     special_instructions: string | null;
     delivery_fee_cents: number | null;
+    address_verification: string | null;
   } | null;
   if (!order) notFound();
 
@@ -75,6 +76,7 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
     deliveryFeeCents: order.delivery_fee_cents ?? 0,
     allergies: order.allergies ?? [],
     specialInstructions: order.special_instructions,
+    addressVerification: order.address_verification ?? null,
     customerName: customer?.name ?? null,
     customerPhone: customer?.phone_e164 ?? null,
     paymentLinks: (paymentLinks ?? []).map((p) => ({

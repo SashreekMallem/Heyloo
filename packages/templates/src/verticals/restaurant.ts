@@ -37,6 +37,7 @@ import { buildSystemPrompt } from "../shared/system-prompt.js";
 import {
   cancelBookingTool,
   checkAvailabilityTool,
+  checkDeliveryAddressTool,
   createBookingTool,
   createOrderTool,
   joinWaitlistTool,
@@ -75,8 +76,8 @@ const FULL_READBACK_FRAGMENT =
   "Before closing out an order, make sure you have the caller's name and a callback number " +
   "(per the Caller ID rule: normally just confirm the number they're calling from) — " +
   "create_order needs both. Then, in the one read-back, say every item with its quantity " +
-  "and modifiers, pickup or delivery (and the address if delivery) and the total, and get " +
-  "an explicit yes before calling create_order.";
+  "and modifiers, pickup or delivery (for delivery, the address and the delivery fee) and " +
+  "the total, and get an explicit yes before calling create_order.";
 
 const SYSTEM_PROMPT = buildSystemPrompt(
   "You are the phone assistant for a restaurant. Find out right away whether the caller wants " +
@@ -142,10 +143,11 @@ export const RESTAURANT_TEMPLATE: AgentTemplate = {
         ". For delivery, resolve the address per the saved-address rule (call lookup_customer " +
         "with no arguments to see saved addresses): if they pick a saved one, pass its " +
         "address_id on create_order and don't re-ask the street; a new address goes in as " +
-        "street/city/state/zip. If create_order later declines the order as " +
-        "out_of_delivery_radius, apologize and offer pickup instead — never argue about the " +
-        "radius or offer a discount for it.",
-      allowed_tools: ["lookup_customer"],
+        "street/city/state/zip. As soon as the caller gives a new address, call " +
+        "check_delivery_address and follow its message: read the matched address back in a " +
+        "few words; too far means offer pickup; not found means ask once more, then continue. " +
+        "Never argue about the distance or offer a discount for it.",
+      allowed_tools: ["lookup_customer", "check_delivery_address"],
     },
     {
       id: "confirm_order",
@@ -154,7 +156,9 @@ export const RESTAURANT_TEMPLATE: AgentTemplate = {
         "Follow the full-read-back rule, ask the consent question, then call create_order — " +
         "pass whatever the caller said about allergies as the allergies argument (an empty " +
         "list if they said none) and any other special instructions as special_instructions, " +
-        "so the kitchen sees them, not just the transcript. If the order requires prepayment, " +
+        "so the kitchen sees them, not just the transcript. If it declines as " +
+        "out_of_delivery_radius, offer pickup; if below_delivery_minimum, offer to add items " +
+        "or switch to pickup. If the order requires prepayment, " +
         "send a payment link if text messages are available (otherwise say someone from the " +
         "team will follow up about payment); if text messages are available, also send the " +
         "SMS confirmation.",
@@ -207,6 +211,7 @@ export const RESTAURANT_TEMPLATE: AgentTemplate = {
     updateBookingTool(),
     cancelBookingTool(),
     createOrderTool(),
+    checkDeliveryAddressTool(),
     joinWaitlistTool(),
     lookupCustomerTool(),
     takeMessageTool("restaurant"),

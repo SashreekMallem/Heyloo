@@ -298,3 +298,17 @@ export const JoinWaitlistArgsSchema = z
     notes: z.string().optional(),
   })
   .passthrough();
+
+/** DELIVERY-1 — check_delivery_address: locate a caller's NEW delivery
+ * address and check it against the restaurant's delivery radius. `unit`
+ * (apartment/suite) is passed through, never geocoded. Blank optional parts
+ * are dropped rather than failing the whole check. */
+export const CheckDeliveryAddressArgsSchema = z
+  .object({
+    street: z.string().trim().min(1).max(200),
+    city: blankAsAbsent(1),
+    state: blankAsAbsent(1),
+    zip: blankAsAbsent(1),
+    unit: blankAsAbsent(1),
+  })
+  .passthrough();

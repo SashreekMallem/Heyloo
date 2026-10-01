@@ -28,8 +28,16 @@ import { useMemo, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 import { Link } from "@/i18n/navigation";
+import {
+  centsToDollarsInput,
+  milesToInput,
+  normalizeState,
+  normalizeZip,
+} from "@/lib/settings/business-address";
 import { normalizeBusinessPhone, normalizeWebsiteUrl } from "@/lib/settings/business-contact";
+import type { BusinessLocation } from "@/lib/settings/business-location";
 import { applyIssues, saveErrorMessage, sendJson } from "@/lib/settings/client";
+import { deliveryFeeExample } from "@/lib/settings/delivery-fee";
 import { formatPhoneDisplay } from "@/lib/settings/format";
 import { type BusinessProfileFormValues, businessProfileFormSchema } from "@/lib/settings/schemas";
 import { allTimezones, COMMON_TIMEZONES, currentTimeIn } from "@/lib/settings/timezone";
@@ -42,6 +50,55 @@ interface BusinessRow {
   retention_days: number;
   business_phone: string | null;
   website_url: string | null;
+  vertical?: string | null;
+  business_street?: string | null;
+  business_city?: string | null;
+  business_state?: string | null;
+  business_zip?: string | null;
+  business_lat?: number | null;
+  business_lng?: number | null;
+  business_location_matched?: string | null;
+  delivery_radius_miles?: number | null;
+  delivery_fee_base_cents?: number | null;
+  delivery_fee_per_mile_cents?: number | null;
+  delivery_fee_included_miles?: number | null;
+  delivery_min_order_cents?: number | null;
+}
+
+const BUSINESS_COLUMNS =
+  "name, timezone, retention_days, business_phone, website_url, vertical, " +
+  "business_street, business_city, business_state, business_zip, business_lat, business_lng, " +
+  "business_location_matched, delivery_radius_miles, delivery_fee_base_cents, " +
+  "delivery_fee_per_mile_cents, delivery_fee_included_miles, delivery_min_order_cents";
+
+const DELIVERY_FIELDS = [
+  "delivery_radius_miles",
+  "delivery_fee_base",
+  "delivery_fee_per_mile",
+  "delivery_fee_included_miles",
+  "delivery_min_order",
+] as const;
+
+function LocationStatus({ location }: { location: BusinessLocation | null }) {
+  if (!location) return null;
+  if ("lat" in location) {
+    return (
+      <p className="text-sm text-muted-foreground" role="status">
+        Located: {location.matched_address ?? "address found"}
+      </p>
+    );
+  }
+  const text =
+    location.error === "not_found"
+      ? "We couldn't find this address — check it."
+      : location.error === "address_incomplete"
+        ? "Add the street and either the ZIP code or the city and state so we can find it."
+        : "We couldn't check this address right now. We'll try again on the next delivery call.";
+  return (
+    <p className="text-sm text-destructive" role="alert">
+      {text}
+    </p>
+  );
 }
 
 /**
@@ -63,10 +120,10 @@ export default function BusinessTabPage() {
     queryFn: async (): Promise<BusinessRow | null> => {
       const { data } = await supabaseBrowserClient
         .from("tenants")
-        .select("name, timezone, retention_days, business_phone, website_url")
+        .select(BUSINESS_COLUMNS)
         .eq("id", tenantId as string)
         .maybeSingle();
-      return data ?? null;
+      return (data as BusinessRow | null) ?? null;
     },
     enabled: !!tenantId,
   });
@@ -85,7 +142,33 @@ function BusinessForm({ tenantId, row }: { tenantId: string; row: BusinessRow })
       timezone: row.timezone,
       business_phone: row.business_phone ? formatPhoneDisplay(row.business_phone) : "",
       website_url: row.website_url ?? "",
+      business_street: row.business_street ?? "",
+      business_city: row.business_city ?? "",
+      business_state: row.business_state ?? "",
+      business_zip: row.business_zip ?? "",
+      delivery_radius_miles: milesToInput(row.delivery_radius_miles),
+      delivery_fee_base: centsToDollarsInput(row.delivery_fee_base_cents),
+      delivery_fee_per_mile: centsToDollarsInput(row.delivery_fee_per_mile_cents),
+      delivery_fee_included_miles: milesToInput(row.delivery_fee_included_miles),
+      delivery_min_order: centsToDollarsInput(row.delivery_min_order_cents),
     },
+  });
+  const isRestaurant = row.vertical === "restaurant";
+  const [location, setLocation] = useState<BusinessLocation | null>(
+    typeof row.business_lat === "number" && typeof row.business_lng === "number"
+      ? {
+          matched_address: row.business_location_matched ?? null,
+          lat: row.business_lat,
+          lng: row.business_lng,
+        }
+      : null,
+  );
+  const deliveryValues = useWatch({ control: form.control, name: [...DELIVERY_FIELDS] });
+  const feeExample = deliveryFeeExample({
+    delivery_radius_miles: deliveryValues[0],
+    delivery_fee_base: deliveryValues[1],
+    delivery_fee_per_mile: deliveryValues[2],
+    delivery_fee_included_miles: deliveryValues[3],
   });
   const isCommon = COMMON_TIMEZONES.some((z) => z.value === row.timezone);
   // The ~400-zone list renders only on request (a native <select> handles
@@ -101,14 +184,21 @@ function BusinessForm({ tenantId, row }: { tenantId: string; row: BusinessRow })
   const localTime = currentTimeIn(timezone);
 
   async function onSubmit(values: BusinessProfileFormValues) {
+    const body: Record<string, unknown> = { ...values };
+    // Delivery settings exist for restaurants only.
+    if (!isRestaurant) for (const field of DELIVERY_FIELDS) delete body[field];
     const result = await sendJson<{
       timezone_changed: boolean;
       availability: { resources: number; failed: number } | null;
-    }>("/api/tenant/settings/business", values);
+      business_location?: BusinessLocation | null;
+    }>("/api/tenant/settings/business", body);
     if (!result.ok) {
       applyIssues(result.issues, form.setError);
       toast.error(saveErrorMessage(result));
       return;
+    }
+    if (result.body?.business_location !== undefined && result.body.business_location !== null) {
+      setLocation(result.body.business_location);
     }
     const rebuildFailed = (result.body?.availability?.failed ?? 0) > 0;
     toast.success(
@@ -206,6 +296,169 @@ function BusinessForm({ tenantId, row }: { tenantId: string; row: BusinessRow })
                   )}
                 />
               </div>
+              <fieldset className="space-y-3">
+                <legend className="text-sm font-medium">Business address</legend>
+                <FormField
+                  control={form.control}
+                  name="business_street"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Street address</FormLabel>
+                      <FormControl>
+                        <Input
+                          autoComplete="address-line1"
+                          placeholder="400 N Greenville Ave"
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <div className="grid gap-4 sm:grid-cols-[2fr_1fr_1fr]">
+                  <FormField
+                    control={form.control}
+                    name="business_city"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>City</FormLabel>
+                        <FormControl>
+                          <Input autoComplete="address-level2" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="business_state"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>State</FormLabel>
+                        <FormControl>
+                          <Input
+                            autoComplete="address-level1"
+                            maxLength={2}
+                            placeholder="TX"
+                            {...field}
+                            onBlur={() => {
+                              field.onBlur();
+                              const state = normalizeState(field.value);
+                              if (state) field.onChange(state);
+                            }}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="business_zip"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>ZIP code</FormLabel>
+                        <FormControl>
+                          <Input
+                            autoComplete="postal-code"
+                            inputMode="numeric"
+                            placeholder="75081"
+                            {...field}
+                            onBlur={() => {
+                              field.onBlur();
+                              const zip = normalizeZip(field.value);
+                              if (zip) field.onChange(zip);
+                            }}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+                <LocationStatus location={location} />
+              </fieldset>
+              {isRestaurant && (
+                <fieldset className="space-y-3">
+                  <legend className="text-sm font-medium">Delivery</legend>
+                  <p className="text-sm text-muted-foreground">
+                    Your AI checks each delivery address against this range (straight-line miles
+                    from your address) and tells the caller the delivery fee.
+                  </p>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <FormField
+                      control={form.control}
+                      name="delivery_radius_miles"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Delivery radius (miles)</FormLabel>
+                          <FormControl>
+                            <Input inputMode="decimal" placeholder="5" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="delivery_min_order"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Minimum order for delivery ($)</FormLabel>
+                          <FormControl>
+                            <Input inputMode="decimal" placeholder="15.00" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="delivery_fee_base"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Base delivery fee ($)</FormLabel>
+                          <FormControl>
+                            <Input inputMode="decimal" placeholder="3.00" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="delivery_fee_included_miles"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Miles included in base fee</FormLabel>
+                          <FormControl>
+                            <Input inputMode="decimal" placeholder="2" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="delivery_fee_per_mile"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Fee per extra mile ($)</FormLabel>
+                          <FormControl>
+                            <Input inputMode="decimal" placeholder="1.00" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                  {feeExample && (
+                    <p className="text-sm text-muted-foreground" data-testid="delivery-fee-example">
+                      {feeExample}
+                    </p>
+                  )}
+                </fieldset>
+              )}
               <FormField
                 control={form.control}
                 name="timezone"

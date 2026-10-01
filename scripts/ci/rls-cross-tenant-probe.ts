@@ -384,6 +384,18 @@ function tenantScopedTables(): TenantScopedTable[] {
       tenantColumn: "tenant_id",
       row: (t) => ({ tenant_id: t, legal_name: "RLS Probe LLC", business_type: "llc" }),
     },
+    {
+      // DELIVERY-1 (20261001130000_delivery_address_verification.sql):
+      // tenant-readable, service-role-written delivery address checks.
+      table: "delivery_address_checks",
+      tenantColumn: "tenant_id",
+      row: (t, u) => ({
+        tenant_id: t,
+        provider_call_id: `probe-${u}`,
+        input_address: "1 Probe St",
+        status: "not_found",
+      }),
+    },
   ];
 }
 

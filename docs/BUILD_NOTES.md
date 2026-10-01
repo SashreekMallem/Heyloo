@@ -9554,3 +9554,66 @@ change; real tenants first. It runs the owner button's own code (`handlePublishA
 `agent_configs.auto_republish_attempted_at` claims a tenant for 6 hours (no overlap, failures
 retried later, never hammered); `auto_republish_error` keeps the last failure. The portal shows
 "Updating automatically" with an "Update now" button for these reasons instead of "Changes pending".
+
+## DELIVERY-1 — delivery address verification, delivery radius and distance-based fee (2026-10-01)
+
+A caller's delivery address is now located while they are on the line and checked against the
+restaurant's own address and delivery radius; the delivery charge is distance-based.
+
+- **Migration `20261001130000_delivery_address_verification.sql`.** `tenants`: owner-editable
+  `business_street/city/state/zip`, `delivery_radius_miles` (0 < r <= 100),
+  `delivery_fee_base_cents`, `delivery_fee_per_mile_cents`, `delivery_fee_included_miles`,
+  `delivery_min_order_cents` (all >= 0), granted to `authenticated` and added to both owner
+  allow-lists (`supabase/tests/owner_column_grants.sql`, `scripts/ci/owner-privilege-escalation-probe.ts`,
+  with rejected-value probes). System-only (not granted): `business_lat/lng`,
+  `business_location_matched`, `business_location_key` (the normalized address that was
+  geocoded, so an edit is detected), `business_located_at`. New `delivery_address_checks` (RLS,
+  tenant-member SELECT, service-role writes only; in the RLS cross-tenant probe).
+  `orders.address_verification` holds the check outcome for a delivery order.
+- **Geocoder.** Keyless US Census Geocoder (`_shared/providers/census-geocode.ts`, Zod at the
+  boundary, 1.5 s AbortController, never throws). Geocodio (`providers/geocode.ts`,
+  `GEOCODE_API_KEY`) is removed. docs/VERIFY.md DELIVERY-1.
+- **`_shared/delivery-distance.ts`.** `loadDeliverySettings` (one read), `ensureBusinessLocation` /
+  `resolveBusinessLocation` (cached by address key; a stale location is never used; a not-found
+  business address is retried after 24 h or on an owner save), `checkDeliveryAddress` (caller +
+  business geocoded in parallel; statuses in_range / out_of_range / not_found /
+  no_business_location / no_radius_set / lookup_unavailable; records a check row, best-effort),
+  `findRecentDeliveryCheck`. Fee formula in `_shared/delivery-fee.ts`:
+  `base + ceil(per_mile * max(0, miles - included))`, integer cents, distance in hundredths of a
+  mile; base only when the distance is unknown. The portal mirrors it
+  (`apps/web/src/lib/settings/delivery-fee.ts`) with a parity test that imports the edge file.
+- **Voice tool `check_delivery_address`** (canonical schema + Deno mirror + dispatcher + template
+  tool, scope none). Result `{status, matched_address?, distance_miles?, radius_miles?,
+  delivery_fee_cents? (in_range), delivery_minimum_cents?, unit?, message}`; the message tells the
+  agent what to say (read back, "Delivery is $X.XX", offer pickup, one retry). Restaurant
+  `collect_items` may call it; the read-back now includes the delivery fee.
+- **`create_order` (delivery).** Reuses this call's latest check for the same street (a unit
+  appended to the street still matches), else checks inline (1.5 s). out_of_range ->
+  `out_of_delivery_radius`; subtotal under the delivery minimum -> new `below_delivery_minimum`
+  (with `delivery_minimum_cents`, `subtotal_cents`, message; replaces `below_minimum_order`, kept in
+  the canonical enum for compatibility). Anything unverified still places the order with
+  `orders.address_verification` set and `address_verified: false` + a message for the agent; the
+  order page shows "Address not verified". A saved address (`address_id`) is checked by its stored
+  geocode against the business location + `delivery_radius_miles` (was
+  `dynamic_variable_overrides.tenant_geocode/delivery_radius_m`). The located caller address is
+  saved to `customer_addresses` with the Census location.
+- **Decision: legacy overrides.** The new tenant columns win. `dynamic_variable_overrides`
+  `delivery_radius_m`, `delivery_fee_cents` (flat fee) and `min_order_cents` are still read as a
+  fallback only where the matching new columns are unset, because Agent -> Vertical details still
+  edits them. `tenant_geocode` is no longer read. Follow-up: retire the three delivery fields on
+  the Vertical details page now that Business owns them.
+- **Hot-path budget.** `check_delivery_address` and `create_order` get a 3.5 s hard abort (was
+  1.5 s for create_order): up to one 1.5 s geocoder wait plus context and statements.
+- **Text agent.** `create_order` from SMS/web chat runs the same inline check (`censusFetch`
+  wired in `api-text-chat` and the SMS webhook deps).
+- **Portal.** Agent -> Business: street/city/state/ZIP for every tenant; for restaurants a Delivery
+  group (radius, base fee, per-mile fee, included miles, minimum order; dollars in, cents stored,
+  negatives and 3+ decimals rejected) with a live "A 5-mile delivery costs $6.00" line. A save that
+  changed the address calls the new `api-tenant-business-location` edge function (verify_jwt true,
+  tenant + owner/admin role from the JWT, no body) with the owner's token and shows "Located: ..."
+  or "We couldn't find this address — check it".
+- **`AGENT_COMPILER_VERSION` 5** (both compilers + portal). Rollout order matters: SPEED-1's
+  auto-republish rebuilds every agent compiled below 5 from the `agent_templates` rows, so update
+  the restaurant `agent_templates` row from the regenerated seed copy (tools + states +
+  system_prompt) BEFORE deploying the version bump, or restaurant agents get republished at
+  version 5 without the new tool and are not republished again.

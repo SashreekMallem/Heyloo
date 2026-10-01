@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  DELIVERY_CHECK_STATUSES,
   TOOL_NAMES,
   TOOL_REQUEST_SCHEMAS,
   zCancelBookingRequest,
   zCheckAvailabilityRequest,
   zCheckAvailabilityResult,
+  zCheckDeliveryAddressRequest,
+  zCheckDeliveryAddressResult,
   zCreateBookingRequest,
   zCreateBookingResult,
   zCreateOrderRequest,
@@ -416,7 +419,65 @@ describe("tool registry", () => {
         "create_order",
         "send_payment_link",
         "join_waitlist",
+        "check_delivery_address",
       ]),
     );
+  });
+});
+
+describe("check_delivery_address (DELIVERY-1)", () => {
+  it("requires a street; city/state/zip/unit are optional", () => {
+    expect(zCheckDeliveryAddressRequest.parse({ street: "12 Elm St" })).toEqual({
+      street: "12 Elm St",
+    });
+    expect(
+      zCheckDeliveryAddressRequest.parse({
+        street: "12 Elm St",
+        city: "Richardson",
+        state: "TX",
+        zip: "75081",
+        unit: "Apt 4",
+      }),
+    ).toBeTruthy();
+    expect(() => zCheckDeliveryAddressRequest.parse({ city: "Richardson" })).toThrow();
+    expect(() => zCheckDeliveryAddressRequest.parse({ street: "" })).toThrow();
+  });
+
+  it("result carries a status from the fixed set, a message, and integer-cent fees", () => {
+    expect(
+      zCheckDeliveryAddressResult.parse({
+        status: "in_range",
+        matched_address: "12 ELM ST, RICHARDSON, TX, 75081",
+        distance_miles: 3.01,
+        radius_miles: 5,
+        delivery_fee_cents: 402,
+        delivery_minimum_cents: 1500,
+        message: "Read the matched address back to confirm.",
+      }),
+    ).toBeTruthy();
+    for (const status of DELIVERY_CHECK_STATUSES) {
+      expect(zCheckDeliveryAddressResult.parse({ status, message: "x" })).toBeTruthy();
+    }
+    expect(() => zCheckDeliveryAddressResult.parse({ status: "maybe", message: "x" })).toThrow();
+    expect(() =>
+      zCheckDeliveryAddressResult.parse({
+        status: "in_range",
+        message: "x",
+        delivery_fee_cents: 4.5,
+      }),
+    ).toThrow();
+  });
+
+  it("create_order can decline below the delivery minimum with the amounts", () => {
+    expect(
+      zCreateOrderResult.parse({
+        confirmed: false,
+        reason: "below_delivery_minimum",
+        delivery_minimum_cents: 2000,
+        subtotal_cents: 1500,
+        pickup_offered: true,
+        message: "Offer to add items or switch to pickup.",
+      }),
+    ).toBeTruthy();
   });
 });

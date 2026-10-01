@@ -1,12 +1,10 @@
 // Cross-function-folder import — the same established pattern as
 // worker-tick importing worker-adapter-push: the auto-republish runs the
 // exact code the owner's "Publish changes" button runs.
-import {
-  handlePublishAgent,
-  type PublishAgentDeps,
-} from "../api-tenant-agent-publish/handler.ts";
+
 import { AGENT_COMPILER_VERSION } from "../_shared/compiler/template-compiler.ts";
 import type { SqlClient } from "../_shared/types.ts";
+import { handlePublishAgent, type PublishAgentDeps } from "../api-tenant-agent-publish/handler.ts";
 
 /**
  * SPEED-1 (docs/BUILD_NOTES.md): owners no longer have to press "Publish

@@ -45,6 +45,8 @@ export function buildTextEngineDeps(logger: Logger): TextAgentDeps | undefined {
       successUrl: optionalEnv("PAYMENT_LINK_SUCCESS_URL") ?? "https://heyloo.app/pay/success",
       cancelUrl: optionalEnv("PAYMENT_LINK_CANCEL_URL") ?? "https://heyloo.app/pay/cancelled",
     },
+    // DELIVERY-1: keyless US Census Geocoder (fixed host).
+    censusFetch: fetch,
   };
 }
 

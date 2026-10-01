@@ -275,6 +275,15 @@ async function main(): Promise<void> {
       owner_test_phone: "+15555550100",
       business_phone: "+15555550101",
       website_url: "https://example.com",
+      business_street: "400 N Greenville Ave",
+      business_city: "Richardson",
+      business_state: "TX",
+      business_zip: "75081",
+      delivery_radius_miles: 5,
+      delivery_fee_base_cents: 300,
+      delivery_fee_per_mile_cents: 100,
+      delivery_fee_included_miles: 2,
+      delivery_min_order_cents: 1500,
       manual_mode: false,
       manual_mode_enabled_at: null,
       voice_reminders_enabled: true,
@@ -300,6 +309,21 @@ async function main(): Promise<void> {
     `/rest/v1/tenants?id=eq.${tenantId}`,
     "PATCH",
     { business_phone: "12345" },
+    ownerToken,
+  );
+  // DELIVERY-1: the delivery radius and fees are range-checked by the database.
+  await expectRejected(
+    "owner PATCH of tenants.delivery_radius_miles to 500 (max 100)",
+    `/rest/v1/tenants?id=eq.${tenantId}`,
+    "PATCH",
+    { delivery_radius_miles: 500 },
+    ownerToken,
+  );
+  await expectRejected(
+    "owner PATCH of tenants.delivery_fee_base_cents to a negative value",
+    `/rest/v1/tenants?id=eq.${tenantId}`,
+    "PATCH",
+    { delivery_fee_base_cents: -1 },
     ownerToken,
   );
   // SEC-2 review: an unknown zone would abort fn_cron_usage_rollup for every

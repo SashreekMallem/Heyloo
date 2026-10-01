@@ -77,6 +77,26 @@ export type TenantRow = {
   // Heyloo number); website_url: http(s), optional.
   business_phone: Nullable<string>;
   website_url: Nullable<string>;
+  // 20261001130000_delivery_address_verification.sql (DELIVERY-1).
+  // Owner-editable: the business street address and (restaurants) the
+  // delivery radius and distance-based delivery charge, integer cents.
+  business_street: Nullable<string>;
+  business_city: Nullable<string>;
+  business_state: Nullable<string>;
+  business_zip: Nullable<string>;
+  /** numeric(5,2): PostgREST returns it as a JSON number. */
+  delivery_radius_miles: Nullable<number>;
+  delivery_fee_base_cents: Nullable<number>;
+  delivery_fee_per_mile_cents: Nullable<number>;
+  delivery_fee_included_miles: Nullable<number>;
+  delivery_min_order_cents: Nullable<number>;
+  // System-only (never granted to authenticated): the geocoded location of
+  // the business address, written by the edge functions.
+  business_lat: Nullable<number>;
+  business_lng: Nullable<number>;
+  business_location_matched: Nullable<string>;
+  business_location_key: Nullable<string>;
+  business_located_at: Nullable<string>;
   created_at: string;
   updated_at: string;
 };
@@ -347,6 +367,12 @@ export type OrderRow = {
    * `BookingRow.is_test` (CALL-6). Excluded from the tenant dashboard
    * orders list and the header notification bell by default. */
   is_test: boolean;
+  /** DELIVERY-1: the delivery address check's outcome (in_range = verified;
+   * anything else = the restaurant should confirm the address). Null for
+   * pickup/dine-in and older orders. */
+  address_verification: Nullable<
+    "in_range" | "not_found" | "no_business_location" | "no_radius_set" | "lookup_unavailable"
+  >;
   created_at: string;
   updated_at: string;
 };

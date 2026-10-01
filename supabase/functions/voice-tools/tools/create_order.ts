@@ -1,16 +1,25 @@
 import type { z } from "zod";
 import { enqueueAdapterPush } from "../../_shared/adapter-push.ts";
-import { isWithinRadius } from "../../_shared/geo.ts";
+import {
+  checkDeliveryAddress,
+  type DeliveryCheckStatus,
+  findRecentDeliveryCheck,
+  haversineMiles,
+  loadDeliverySettings,
+  resolveBusinessLocation,
+  roundMiles,
+} from "../../_shared/delivery-distance.ts";
+import { computeDeliveryFeeCents } from "../../_shared/delivery-fee.ts";
 import { orderIdempotencyKey } from "../../_shared/idempotency.ts";
 import { normalizeE164 } from "../../_shared/phone.ts";
-import type { GeocodeFetch } from "../../_shared/providers/geocode.ts";
-import { geocodeAddress } from "../../_shared/providers/geocode.ts";
+import type { CensusFetch } from "../../_shared/providers/census-geocode.ts";
 import { enqueue, QUEUE_NAMES } from "../../_shared/queue.ts";
 import type { CreateOrderArgsSchema } from "../../_shared/schemas/voice-tools.ts";
 import type { Logger, SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
 import { MANUAL_MODE_ORDER_MESSAGE } from "../manual-mode.ts";
 import { raiseOwnerAlert } from "../owner-alert-runner.ts";
+import { dollars } from "./check_delivery_address.ts";
 
 type Args = z.infer<typeof CreateOrderArgsSchema>;
 
@@ -21,21 +30,40 @@ interface OfferingRow {
 }
 
 export type CreateOrderResult =
-  | { order_id: string; confirmed: true; total_cents: number; delivery_fee_cents?: number }
+  | {
+      order_id: string;
+      confirmed: true;
+      total_cents: number;
+      delivery_fee_cents?: number;
+      /** DELIVERY-1: present (false) only when a delivery address could not be verified. */
+      address_verified?: false;
+      message?: string;
+    }
   | {
       confirmed: false;
       reason:
         | "item_not_found"
         | "out_of_delivery_radius"
-        | "below_minimum_order"
+        | "below_delivery_minimum"
         | "invalid_phone"
         | "manual_mode";
       item_name?: string;
       /** item_not_found: the menu's real item names, so the agent can pick the one the caller meant. */
       menu_items?: string[];
       pickup_offered?: boolean;
+      /** below_delivery_minimum: the restaurant's delivery minimum and this order's subtotal. */
+      delivery_minimum_cents?: number;
+      subtotal_cents?: number;
       message?: string;
     };
+
+/** DELIVERY-1: told to the agent with a confirmed order whose address was not verified. */
+export const ADDRESS_UNVERIFIED_MESSAGE =
+  "Order placed, but the delivery address could not be verified: tell the caller the " +
+  "restaurant will confirm the address.";
+
+/** DELIVERY-1: the inline address check's geocoder timeout when the agent skipped check_delivery_address. */
+export const INLINE_CHECK_TIMEOUT_MS = 1_500;
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -49,33 +77,25 @@ function isPgError(err: unknown, code: string): boolean {
 /**
  * MASTER_SPEC §3.0 `create_order` tool (mirrors `create_booking`'s
  * idempotent-insert shape). Items are validated against `offerings` — a
- * tool-backed catalog, never model-invented pricing. Delivery orders
- * require a delivery-radius check: the caller's geocode comes from their
- * saved `customer_addresses.geocode` (T1's `20260907130400_customers.sql` —
- * a native Postgres `point`, precomputed at address-save time), so the
- * check runs for a REPEAT delivery customer with a saved default address;
- * a first-time caller has no saved address yet (this tool never geocodes
- * a freshly-spoken address live — that's a separate settings-time/address-
- * save-time concern, MASTER_SPEC §3.1) and the check is skipped with a
- * logged warning rather than blocking the order or fabricating a decision.
- * The tenant's own geocode + radius/minimum-order policy is read from
- * `agent_configs.dynamic_variable_overrides` (`tenant_geocode`,
- * `delivery_radius_m`, `min_order_cents` — the latter two confirmed
- * against T1's `20260907130300_agent_templates.sql` comment; `tenant_geocode`
- * itself is this file's own reasonable placement, VERIFY.md, since neither
- * spec pins a column for it and no dedicated tenant-geocode column exists
- * in T1's schema).
+ * tool-backed catalog, never model-invented pricing.
  *
- * restaurant.md Finding B4 fix: a confirmed delivery order best-effort
- * upserts the spoken `delivery_address` onto `customer_addresses`
- * (geocoded via `deps.geocode`, VERIFY-12) so a REPEAT caller's next order
- * actually has a saved geocode for the radius check above to use, and so
- * `lookup_customer` has a real saved address to surface (restaurant.ts's
- * "confirm it back instead of asking from scratch" instruction). Entirely
- * optional/non-blocking: when `deps.geocode` isn't wired (no
- * `GEOCODE_API_KEY`) or the geocode fails, the order still completes
- * exactly as before — this is a save-for-next-time enhancement, never a
- * condition of the current order succeeding.
+ * DELIVERY-1 (docs/BUILD_NOTES.md): a delivery order's address is verified
+ * against the restaurant's location and radius (`verifyDelivery` below):
+ * a NEW address reuses this call's `check_delivery_address` result for the
+ * same street, else is checked inline (US Census Geocoder, 1.5 s timeout);
+ * a SAVED address (`address_id`) uses its stored geocode. Out of range ->
+ * declined with a pickup offer. Below `tenants.delivery_min_order_cents` ->
+ * `below_delivery_minimum`. The delivery fee is distance-based
+ * (`_shared/delivery-fee.ts`). An address that could not be verified (not
+ * found, geocoder down, business not located, no radius set) never blocks
+ * the order: it is written with `orders.address_verification` set to that
+ * status so the owner confirms it, and the agent is told to say so.
+ *
+ * restaurant.md Finding B4: a confirmed delivery order best-effort upserts
+ * a freshly spoken address onto `customer_addresses` with the check's
+ * location as its geocode, so a REPEAT caller's next order (and
+ * `lookup_customer`) has a saved, located address. Only located addresses
+ * are saved; a failure there never fails the order.
  *
  * PUBLISH-1 (docs/BUILD_NOTES.md): `is_test` mirrors `ctx.isTestCall`
  * directly, the SAME pattern `create_booking.ts` already established for
@@ -90,7 +110,10 @@ export async function createOrder(
   args: Args,
   logger: Logger,
   deps?: {
-    geocode?: { fetchImpl: GeocodeFetch; apiKey: string };
+    /** DELIVERY-1: Census Geocoder transport for the inline address check.
+     * Absent = a new address that was not checked this call is recorded as
+     * unverified (`lookup_unavailable`), never geocoded. */
+    census?: { fetchImpl: CensusFetch; timeoutMs?: number } | undefined;
     /** VOICE-ALERTS-1: post-response scheduling for the owner alert. */
     defer?: ((label: string, task: () => Promise<void>) => void) | undefined;
   },
@@ -212,13 +235,11 @@ export async function createOrder(
   // CHANNELS-2 item 10: when the caller picked one of SEVERAL saved
   // addresses (`lookup_customer`'s bounded, labeled list), the model sends
   // that row's id instead of re-speaking street/city/state/zip — resolve
-  // it here, server-side, to the real saved fields/geocode. Deliberately
-  // scoped by phone (not `customerId`, which doesn't exist yet — the
-  // `customers` upsert runs later) the same way the pre-existing radius-
-  // check query below already is, so this never needs to reorder the
-  // customer-creation step to run early.
+  // it here, server-side, to the real saved fields/geocode. Scoped by phone
+  // (the `customers` upsert runs later). A stale/foreign address_id keeps
+  // the id with no resolved fields — never an invented address.
   let resolvedDeliveryAddress: typeof args.delivery_address = args.delivery_address;
-  let resolvedGeocode: { x: number; y: number } | null = null;
+  let savedGeocode: { x: number; y: number } | null = null;
   if (args.fulfillment_type === "delivery" && args.delivery_address?.address_id) {
     const savedRows = await sql<{
       street: string;
@@ -244,80 +265,47 @@ export async function createOrder(
         ...(saved.zip ? { zip: saved.zip } : {}),
         ...(args.delivery_address.set_as_default ? { set_as_default: true } : {}),
       };
-      resolvedGeocode = saved.geocode;
+      savedGeocode = saved.geocode;
     }
-    // A stale/foreign address_id (deleted, or belongs to a different
-    // caller) simply falls through with the id kept but no resolved
-    // fields — never invents an address, and the radius check below
-    // degrades to its existing "no caller geocode" skip-with-warning path.
   }
 
+  // DELIVERY-1: verify the delivery address, enforce the radius and the
+  // delivery minimum, and price the delivery by distance, all from the
+  // tenant's own columns (`loadDeliverySettings`, which falls back to the
+  // older dynamic_variable_overrides keys only where those are unset).
+  let delivery: DeliveryOutcome | null = null;
   if (args.fulfillment_type === "delivery") {
-    const minOrderCents =
-      typeof overrides["min_order_cents"] === "number" ? overrides["min_order_cents"] : 0;
-    if (subtotalCents < minOrderCents) {
-      return { confirmed: false, reason: "below_minimum_order", pickup_offered: true };
+    delivery = await verifyDelivery(sql, ctx, logger, {
+      address: resolvedDeliveryAddress,
+      savedGeocode,
+      census: deps?.census,
+    });
+    if (delivery.status === "out_of_range") {
+      return { confirmed: false, reason: "out_of_delivery_radius", pickup_offered: true };
     }
-
-    const tenantGeocode = overrides["tenant_geocode"] as { lat?: number; lng?: number } | undefined;
-    const radiusMeters =
-      typeof overrides["delivery_radius_m"] === "number"
-        ? overrides["delivery_radius_m"]
-        : undefined;
-
-    if (
-      tenantGeocode?.lat !== undefined &&
-      tenantGeocode.lng !== undefined &&
-      radiusMeters !== undefined
-    ) {
-      // `customer_addresses.geocode` is a native `point` — postgres.js
-      // returns it as `{x, y}` (x=lng, y=lat) per the Postgres point wire
-      // format. Prefer the address the caller actually CHOSE (resolved
-      // above) over always defaulting to their saved default — a repeat
-      // caller with multiple addresses picking a non-default one must be
-      // checked against THAT address's radius, not their default's.
-      const callerGeocode =
-        resolvedGeocode ??
-        (
-          await sql<{ geocode: { x: number; y: number } | null }>`
-        select ca.geocode
-        from public.customer_addresses ca
-        join public.customers c on c.id = ca.customer_id
-        where c.tenant_id = ${ctx.tenantId} and c.phone_e164 = ${phone} and ca.geocode is not null
-        order by ca.is_default desc, ca.created_at desc
-        limit 1
-      `
-        )[0]?.geocode;
-
-      if (callerGeocode) {
-        const within = isWithinRadius(
-          { lat: tenantGeocode.lat, lng: tenantGeocode.lng },
-          { lat: callerGeocode.y, lng: callerGeocode.x },
-          radiusMeters,
-        );
-        if (!within) {
-          return { confirmed: false, reason: "out_of_delivery_radius", pickup_offered: true };
-        }
-      } else {
-        logger.warn("create_order_radius_check_skipped_no_caller_geocode", {
-          call_id: ctx.retellCallId,
-          tenant_id: ctx.tenantId,
-        });
-      }
+    const minimum = delivery.minOrderCents;
+    if (minimum !== null && minimum > 0 && subtotalCents < minimum) {
+      return {
+        confirmed: false,
+        reason: "below_delivery_minimum",
+        delivery_minimum_cents: minimum,
+        subtotal_cents: subtotalCents,
+        pickup_offered: true,
+        message:
+          `Delivery orders need at least ${dollars(minimum)} of food; this order is ` +
+          `${dollars(subtotalCents)}. Offer to add items, or switch to pickup.`,
+      };
     }
   }
 
   const taxRateBps = typeof overrides["tax_rate_bps"] === "number" ? overrides["tax_rate_bps"] : 0;
   const taxCents = Math.round((subtotalCents * taxRateBps) / 10_000);
-  // GAP_REGISTER.md §4 Cluster D — delivery-fee enforcement from the
-  // tenant's own per-vertical config, read directly from `agent_configs.
-  // dynamic_variable_overrides` (mirrors the existing `min_order_cents`/
-  // `delivery_radius_m`/`tax_rate_bps` reads above) — 0 for pickup/dine_in
-  // and for a tenant with no configured fee.
-  const deliveryFeeCents =
-    args.fulfillment_type === "delivery" && typeof overrides["delivery_fee_cents"] === "number"
-      ? overrides["delivery_fee_cents"]
-      : 0;
+  // DELIVERY-1: base + ceil(per_mile * max(0, miles - included)) from the
+  // tenant's delivery-fee columns (`_shared/delivery-fee.ts`); base only when
+  // the distance is unknown. 0 for pickup/dine_in and an unset policy.
+  const deliveryFeeCents = delivery?.deliveryFeeCents ?? 0;
+  const addressVerification = delivery?.status ?? null;
+  const addressVerified = addressVerification === null || addressVerification === "in_range";
   const totalCents = subtotalCents + taxCents + deliveryFeeCents;
 
   const customerRows = await sql<{ id: string }>`
@@ -344,13 +332,13 @@ export async function createOrder(
       insert into public.orders (
         tenant_id, customer_id, items, fulfillment_type, delivery_address,
         subtotal_cents, tax_cents, delivery_fee_cents, total_cents, source_call_id, idempotency_key,
-        allergies, special_instructions, is_test
+        allergies, special_instructions, is_test, address_verification
       ) values (
         ${ctx.tenantId}, ${customerId}, ${priced}::jsonb, ${args.fulfillment_type},
         ${resolvedDeliveryAddress ?? null}::jsonb,
         ${subtotalCents}, ${taxCents}, ${deliveryFeeCents}, ${totalCents}, ${ctx.callLogId}, ${idempotencyKey},
         ${args.allergies && args.allergies.length > 0 ? args.allergies : null},
-        ${args.special_instructions ?? null}, ${ctx.isTestCall}
+        ${args.special_instructions ?? null}, ${ctx.isTestCall}, ${addressVerification}
       )
       returning id
     `;
@@ -421,7 +409,7 @@ export async function createOrder(
       if (setAsDefault) {
         await markAddressDefault(sql, ctx, customerId, addressId);
       }
-    } else if (deps?.geocode) {
+    } else if (delivery?.location) {
       const street = args.delivery_address?.street;
       if (street) {
         // CHANNELS-2 item 10(d): a freshly spoken address is always saved
@@ -442,7 +430,7 @@ export async function createOrder(
             state: args.delivery_address?.state,
             zip: args.delivery_address?.zip,
           },
-          deps.geocode,
+          delivery.location,
           setAsDefault,
         );
       }
@@ -494,7 +482,131 @@ export async function createOrder(
     confirmed: true,
     total_cents: totalCents,
     ...(deliveryFeeCents > 0 ? { delivery_fee_cents: deliveryFeeCents } : {}),
+    ...(addressVerified ? {} : { address_verified: false, message: ADDRESS_UNVERIFIED_MESSAGE }),
   };
+}
+
+/** DELIVERY-1: what `verifyDelivery` decided for a delivery order. */
+interface DeliveryOutcome {
+  /** Never `out_of_range` on a written order (that declines the order instead). */
+  status: DeliveryCheckStatus;
+  distanceMiles: number | null;
+  deliveryFeeCents: number;
+  minOrderCents: number | null;
+  /** The caller's address location, when known (saved onto customer_addresses). */
+  location: { lat: number; lng: number } | null;
+}
+
+const NO_GEOCODER: CensusFetch = () => Promise.reject(new Error("no_geocoder_configured"));
+
+/**
+ * DELIVERY-1: classify a delivery order's address. One settings read, plus:
+ *  - a SAVED address (`address_id`) with a stored geocode: distance from the
+ *    business's cached (or freshly geocoded) location — no caller geocode;
+ *  - otherwise (a new address, or a saved one with no geocode): this call's
+ *    latest `delivery_address_checks` row for the same street, else an inline
+ *    `checkDeliveryAddress` (only when a geocoder is wired).
+ * The delivery fee uses the distance when known, the base fee otherwise.
+ */
+async function verifyDelivery(
+  sql: SqlClient,
+  ctx: CallContext,
+  logger: Logger,
+  input: {
+    address: Args["delivery_address"];
+    savedGeocode: { x: number; y: number } | null;
+    census: { fetchImpl: CensusFetch; timeoutMs?: number } | undefined;
+  },
+): Promise<DeliveryOutcome> {
+  let settings: Awaited<ReturnType<typeof loadDeliverySettings>> = null;
+  try {
+    settings = await loadDeliverySettings(sql, ctx.tenantId);
+  } catch (err) {
+    logger.warn("create_order_delivery_settings_read_failed", {
+      tenant_id: ctx.tenantId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  const fee = settings?.fee ?? { baseCents: null, perMileCents: null, includedMiles: null };
+  const minOrderCents = settings?.minOrderCents ?? null;
+  const outcome = (
+    status: DeliveryCheckStatus,
+    distanceMiles: number | null,
+    location: { lat: number; lng: number } | null,
+  ): DeliveryOutcome => ({
+    status,
+    distanceMiles,
+    deliveryFeeCents: computeDeliveryFeeCents(fee, distanceMiles),
+    minOrderCents,
+    location,
+  });
+  const geocoderDeps = {
+    fetchImpl: input.census?.fetchImpl ?? NO_GEOCODER,
+    timeoutMs: input.census?.timeoutMs ?? INLINE_CHECK_TIMEOUT_MS,
+    logger,
+  };
+
+  // A saved address with a stored geocode: postgres.js returns a `point` as
+  // {x: lng, y: lat}.
+  if (input.savedGeocode) {
+    const caller = { lat: input.savedGeocode.y, lng: input.savedGeocode.x };
+    if (!settings) return outcome("no_business_location", null, caller);
+    const business = await resolveBusinessLocation(sql, settings, geocoderDeps);
+    if (!business.ok) return outcome("no_business_location", null, caller);
+    const distance = roundMiles(haversineMiles(business.location, caller));
+    if (settings.radiusMiles === null) return outcome("no_radius_set", distance, caller);
+    return outcome(
+      distance <= settings.radiusMiles ? "in_range" : "out_of_range",
+      distance,
+      caller,
+    );
+  }
+
+  const street = input.address?.street;
+  if (!street) {
+    // A stale/foreign address_id with nothing to check.
+    logger.warn("create_order_delivery_address_unresolved", {
+      call_id: ctx.retellCallId,
+      tenant_id: ctx.tenantId,
+    });
+    return outcome("not_found", null, null);
+  }
+
+  try {
+    const prior = await findRecentDeliveryCheck(sql, ctx.tenantId, ctx.retellCallId, street);
+    if (prior) {
+      const location =
+        prior.lat !== null && prior.lng !== null ? { lat: prior.lat, lng: prior.lng } : null;
+      return outcome(prior.status, prior.distanceMiles, location);
+    }
+  } catch (err) {
+    logger.warn("create_order_delivery_check_read_failed", {
+      tenant_id: ctx.tenantId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  if (!input.census) {
+    logger.warn("create_order_delivery_address_not_checked", {
+      call_id: ctx.retellCallId,
+      tenant_id: ctx.tenantId,
+    });
+    return outcome("lookup_unavailable", null, null);
+  }
+  const check = await checkDeliveryAddress(
+    sql,
+    { tenantId: ctx.tenantId, providerCallId: ctx.retellCallId },
+    {
+      street,
+      city: input.address?.city,
+      state: input.address?.state,
+      zip: input.address?.zip,
+    },
+    { ...geocoderDeps, settings },
+  );
+  const location =
+    check.lat !== null && check.lng !== null ? { lat: check.lat, lng: check.lng } : null;
+  return outcome(check.status, check.distanceMiles, location);
 }
 
 /** "2x Burger, 1x Fries" for an owner alert, capped so an SMS stays short. */
@@ -540,7 +652,8 @@ async function markAddressDefault(
  * explicitly said to make this their new default. Otherwise an existing
  * default is left completely untouched (this function used to
  * unconditionally clear and steal it on every single delivery order — a
- * real bug this fixes). Wrapped so a geocode-provider or DB hiccup here
+ * real bug this fixes). The location comes from the address check (DELIVERY-1).
+ * Wrapped so a DB hiccup here
  * never fails the order that's already been confirmed and inserted above.
  */
 async function saveDeliveryAddress(
@@ -554,20 +667,10 @@ async function saveDeliveryAddress(
     state?: string | undefined;
     zip?: string | undefined;
   },
-  geocode: { fetchImpl: GeocodeFetch; apiKey: string },
+  point: { lat: number; lng: number },
   setAsDefault: boolean,
 ): Promise<void> {
   try {
-    const geocoded = await geocodeAddress(geocode.fetchImpl, geocode.apiKey, address);
-    if (!geocoded.ok || !geocoded.point) {
-      logger.warn("create_order_geocode_failed", {
-        call_id: ctx.retellCallId,
-        tenant_id: ctx.tenantId,
-        status: geocoded.status,
-      });
-      return;
-    }
-
     const existing = await sql<{ id: string; is_default: boolean }>`
       select id, is_default from public.customer_addresses
       where tenant_id = ${ctx.tenantId} and customer_id = ${customerId}
@@ -601,7 +704,7 @@ async function saveDeliveryAddress(
         set city = ${address.city ?? null},
             state = ${address.state ?? null},
             zip = ${address.zip ?? null},
-            geocode = point(${geocoded.point.lng}, ${geocoded.point.lat}),
+            geocode = point(${point.lng}, ${point.lat}),
             is_default = ${shouldBeDefault}
         where id = ${existing[0].id}
       `;
@@ -612,7 +715,7 @@ async function saveDeliveryAddress(
         ) values (
           ${ctx.tenantId}, ${customerId}, ${address.street},
           ${address.city ?? null}, ${address.state ?? null}, ${address.zip ?? null},
-          point(${geocoded.point.lng}, ${geocoded.point.lat}), ${shouldBeDefault}
+          point(${point.lng}, ${point.lat}), ${shouldBeDefault}
         )
       `;
     }

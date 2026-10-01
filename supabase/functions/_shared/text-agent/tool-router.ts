@@ -10,6 +10,7 @@ import { sendPaymentLink } from "../../voice-tools/tools/send_payment_link.ts";
 import { takeMessage } from "../../voice-tools/tools/take_message.ts";
 import { updateBooking } from "../../voice-tools/tools/update_booking.ts";
 import { normalizeE164 } from "../phone.ts";
+import type { CensusFetch } from "../providers/census-geocode.ts";
 import type { StripeFetch } from "../providers/stripe.ts";
 import { enqueue, QUEUE_NAMES } from "../queue.ts";
 import {
@@ -108,6 +109,9 @@ export interface TextToolRouterDeps {
    * `send_payment_link` and the waitlist's text notice: when false the model is
    * told so via the tool_result instead of silently failing or promising a text. */
   smsAvailable: boolean;
+  /** DELIVERY-1: Census Geocoder transport for `create_order`'s inline
+   * delivery-address check. Omitted = a delivery address is recorded unverified. */
+  censusFetch?: CensusFetch;
   /** `tenants.manual_mode` (VOICE-ALERTS-1 review): the same tool-level
    * refusal the voice dispatcher applies — create_booking/create_order/
    * update_booking/cancel_booking answer `reason: "manual_mode"`. */
@@ -354,7 +358,11 @@ export async function dispatchTextTool(
         if (!parsed.success)
           return { resultText: jsonResult({ error: "invalid_args" }), isError: true };
         return {
-          resultText: jsonResult(await createOrder(sql, ctx, parsed.data, logger)),
+          resultText: jsonResult(
+            await createOrder(sql, ctx, parsed.data, logger, {
+              ...(deps.censusFetch ? { census: { fetchImpl: deps.censusFetch } } : {}),
+            }),
+          ),
           isError: false,
         };
       }
