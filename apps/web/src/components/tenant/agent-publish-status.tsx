@@ -5,7 +5,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 import type { PublishStatusResponse } from "@/app/api/tenant/agent/publish-status/route";
-import { PUBLISH_REASON_TEXT, publishStatusQueryKey } from "@/lib/settings/publish-status";
+import {
+  isAutoPublishing,
+  PUBLISH_REASON_TEXT,
+  publishStatusQueryKey,
+} from "@/lib/settings/publish-status";
 import { formatInTimezone } from "@/lib/settings/timezone";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
 
@@ -65,13 +69,21 @@ export function AgentPublishStatus() {
 
   const status = query.data;
   const reasonText = status?.pending
-    ? status.reasons.map((reason) => PUBLISH_REASON_TEXT[reason]).join(" ")
+    ? [...new Set(status.reasons.map((reason) => PUBLISH_REASON_TEXT[reason]))].join(" ")
     : null;
+  // SPEED-1: platform updates and language changes publish themselves
+  // (job-agent-auto-republish); the button stays for owners who want it now.
+  const autoPublishing = status?.pending === true && isAutoPublishing(status.reasons);
 
   return (
     <div className="flex max-w-xl flex-col items-start gap-1 sm:items-end">
       <div className="flex flex-wrap items-center gap-3">
-        {status?.pending && <Badge variant="warning">Changes pending</Badge>}
+        {status?.pending &&
+          (autoPublishing ? (
+            <Badge variant="secondary">Updating automatically</Badge>
+          ) : (
+            <Badge variant="warning">Changes pending</Badge>
+          ))}
         {status === undefined || status === null ? null : status.publishedAt ? (
           <span className="text-xs text-muted-foreground">
             Last published {formatInTimezone(status.publishedAt, status.timezone)}
@@ -80,7 +92,7 @@ export function AgentPublishStatus() {
           <span className="text-xs text-muted-foreground">Never published</span>
         )}
         <Button onClick={publish} disabled={publishing || query.isLoading} size="sm">
-          {publishing ? "Publishing…" : "Publish changes"}
+          {publishing ? "Publishing…" : autoPublishing ? "Update now" : "Publish changes"}
         </Button>
       </div>
       {reasonText && <p className="text-xs text-muted-foreground sm:text-right">{reasonText}</p>}

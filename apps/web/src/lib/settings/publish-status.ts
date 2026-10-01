@@ -65,12 +65,28 @@ export interface PublishStatus {
 
 export const PUBLISH_REASON_TEXT: Record<PublishReason, string> = {
   never_published: "Your agent hasn't been published yet.",
-  language_changed: "You changed the call language — publish to switch your agent over.",
+  language_changed:
+    "You changed the call language — your agent is switching over automatically within a few minutes.",
   platform_update:
-    "Your agent was published before recent improvements — publish once so your live settings (like the transfer number and language) reach every call.",
+    "We're updating your agent with our latest improvements automatically — this takes a few minutes.",
   compiler_outdated:
-    "Your agent was published before recent improvements — publish once so it picks up the newest settings support (FAQ answers, special instructions, call routing, custom questions and more).",
+    "We're updating your agent with our latest improvements automatically — this takes a few minutes.",
 };
+
+/**
+ * SPEED-1: reasons `job-agent-auto-republish` resolves on its own within
+ * minutes — the owner never has to press anything for these.
+ */
+export const AUTO_PUBLISH_REASONS: ReadonlySet<PublishReason> = new Set([
+  "language_changed",
+  "platform_update",
+  "compiler_outdated",
+]);
+
+/** True when every pending reason is one the platform publishes automatically. */
+export function isAutoPublishing(reasons: readonly PublishReason[]): boolean {
+  return reasons.length > 0 && reasons.every((reason) => AUTO_PUBLISH_REASONS.has(reason));
+}
 
 /** The language-change stamp written by the Language tab (absent on older rows). */
 export function languageChangedAt(languageConfig: unknown): string | null {

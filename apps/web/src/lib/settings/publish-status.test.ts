@@ -5,6 +5,7 @@ import {
   agentAsksCustomQuestions,
   CURRENT_AGENT_COMPILER_VERSION,
   computePublishStatus,
+  isAutoPublishing,
   languageChangedAt,
   PUBLISH_REASON_TEXT,
   publishStatusQueryKey,
@@ -170,7 +171,9 @@ describe("SETTINGS-2: compiler-version stamp", () => {
     const status = computePublishStatus({ ...base, compiledWithVersion: null });
     expect(status.pending).toBe(true);
     expect(status.reasons).toEqual(["compiler_outdated"]);
-    expect(PUBLISH_REASON_TEXT.compiler_outdated).toMatch(/published before recent improvements/);
+    // SPEED-1: published automatically by job-agent-auto-republish.
+    expect(PUBLISH_REASON_TEXT.compiler_outdated).toMatch(/automatically/);
+    expect(isAutoPublishing(status.reasons)).toBe(true);
   });
 
   it("flags an agent compiled with an older compiler version", () => {
@@ -218,7 +221,7 @@ describe("SETTINGS-2: compiler-version stamp", () => {
     const status = computePublishStatus({ ...base, compiledWithVersion: 1 });
     expect(status.pending).toBe(true);
     expect(status.reasons).toEqual(["compiler_outdated"]);
-    expect(PUBLISH_REASON_TEXT.compiler_outdated).toMatch(/custom questions/);
+    expect(PUBLISH_REASON_TEXT.compiler_outdated).toMatch(/updating your agent/);
     const publishedAt = base.publishedAt;
     expect(agentAsksCustomQuestions({ publishedAt, compiledWithVersion: 1 })).toBe(false);
     expect(agentAsksCustomQuestions({ publishedAt, compiledWithVersion: null })).toBe(false);

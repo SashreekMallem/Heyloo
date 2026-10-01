@@ -88,8 +88,10 @@ describe("AgentPublishStatus (PUBLISH-1, SETTINGS-1)", () => {
       reasons: ["language_changed"],
     });
     renderStatus();
-    expect(await screen.findByText("Changes pending")).toBeInTheDocument();
+    // SPEED-1: a language change publishes itself; the owner is told, not asked.
+    expect(await screen.findByText("Updating automatically")).toBeInTheDocument();
     expect(screen.getByText(/changed the call language/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Update now" })).toBeInTheDocument();
   });
 
   it("publishes on click, shows a success toast, and clears the pending badge on refetch", async () => {
@@ -102,10 +104,12 @@ describe("AgentPublishStatus (PUBLISH-1, SETTINGS-1)", () => {
       }),
     );
     renderStatus();
-    await screen.findByText("Changes pending");
-    await userEvent.click(screen.getByRole("button", { name: "Publish changes" }));
+    await screen.findByText("Updating automatically");
+    await userEvent.click(screen.getByRole("button", { name: "Update now" }));
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
-    await waitFor(() => expect(screen.queryByText("Changes pending")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByText("Updating automatically")).not.toBeInTheDocument(),
+    );
   });
 
   it("shows an error toast and keeps the pending badge when the publish call fails", async () => {
@@ -117,10 +121,10 @@ describe("AgentPublishStatus (PUBLISH-1, SETTINGS-1)", () => {
       }),
     );
     renderStatus();
-    await screen.findByText("Changes pending");
-    await userEvent.click(screen.getByRole("button", { name: "Publish changes" }));
+    await screen.findByText("Updating automatically");
+    await userEvent.click(screen.getByRole("button", { name: "Update now" }));
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
-    expect(screen.getByText("Changes pending")).toBeInTheDocument();
+    expect(screen.getByText("Updating automatically")).toBeInTheDocument();
   });
 
   it("renders nothing but the button when the status route fails", async () => {

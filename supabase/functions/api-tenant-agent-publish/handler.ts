@@ -56,11 +56,20 @@ export type PublishAgentResult =
   // `api-provision`'s own `RepublishResult` convention exactly.
   | { status: number; body: { error: string } };
 
+export interface PublishAgentOptions {
+  /** Delete the previous Retell agent once the new one is live (the owner
+   * button's behaviour). SPEED-1 auto-republish passes false so every
+   * superseded agent stays available for rollback. */
+  deleteSuperseded?: boolean;
+}
+
 export async function handlePublishAgent(
   sql: SqlClient,
   tenantId: string,
   deps: PublishAgentDeps,
+  options: PublishAgentOptions = {},
 ): Promise<PublishAgentResult> {
+  const deleteSuperseded = options.deleteSuperseded ?? true;
   const tenantRows = await sql<{ vertical: Vertical }>`
     select vertical from public.tenants where id = ${tenantId} and deleted_at is null
   `;
@@ -106,7 +115,7 @@ export async function handlePublishAgent(
   // agent on file before its old one is ever deleted. Best-effort — a
   // failed delete never fails this publish (the tenant's number and
   // `agent_configs` row already point at the new agent by this point).
-  if (supersededAgentId && supersededAgentId !== published.agentId) {
+  if (deleteSuperseded && supersededAgentId && supersededAgentId !== published.agentId) {
     const deleted = await deleteAgent(deps.retellFetch, deps.retellApiKey, supersededAgentId);
     if (!deleted.ok) {
       deps.logger.warn("tenant_agent_publish_cleanup_superseded_agent_failed", {

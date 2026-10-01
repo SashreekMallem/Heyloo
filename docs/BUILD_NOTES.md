@@ -9543,3 +9543,14 @@ Restore point first: docs/ROLLBACK_2026-10-01.md (code at b6fac4b, DB snapshots 
   column. New system_prompt fingerprints: auto a1233bd8, dental b9941acc, generic fafdd7fe,
   legal c7fd77ea, motel 9e72e2b5, real_estate 47ceffe7, restaurant 067b5f88, vet 73a80377.
   The previous rows are in `ops_backup.agent_templates_20261001`.
+
+## SPEED-1 — automatic agent republish (2026-10-01)
+
+Owners no longer have to press "Publish changes" for our upgrades. `job-agent-auto-republish`
+(pg_cron every 5 minutes, x-cron-secret) rebuilds up to 4 active tenants per run whose agent was
+compiled with an older `AGENT_COMPILER_VERSION`, or published before the owner's last call-language
+change; real tenants first. It runs the owner button's own code (`handlePublishAgent`) with
+`deleteSuperseded: false`, so every previous Retell agent is kept for rollback.
+`agent_configs.auto_republish_attempted_at` claims a tenant for 6 hours (no overlap, failures
+retried later, never hammered); `auto_republish_error` keeps the last failure. The portal shows
+"Updating automatically" with an "Update now" button for these reasons instead of "Changes pending".

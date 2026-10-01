@@ -216,6 +216,10 @@ verify_jwt = false
 # x-cron-secret auth boundary as every other job-* function below.
 [functions.job-lead-callback-retry]
 verify_jwt = false
+# job-agent-auto-republish (SPEED-1): rebuilds outdated tenant agents every 5
+# minutes — same x-cron-secret auth boundary as every other job-* function.
+[functions.job-agent-auto-republish]
+verify_jwt = false
 # job-agent-regression (NIGHTLY-1): nightly Retell batch-test regression
 # sweep over every test-* tenant — same x-cron-secret auth boundary as
 # every other job-* function above.

@@ -152,6 +152,31 @@ describe("handlePublishAgent (PUBLISH-1)", () => {
     expect(deleteCalls[0]).toContain("agent_old");
   });
 
+  it("SPEED-1: deleteSuperseded false keeps the old agent (auto-republish rollback)", async () => {
+    const { sql } = makeSql(
+      baseFixtures({
+        "select retell_agent_id from public.agent_configs": [{ retell_agent_id: "agent_old" }],
+      }),
+    );
+    const deleteCalls: string[] = [];
+    const deps = makeDeps({
+      retellFetch: ((url: string, init?: RequestInit) => {
+        if (init?.method === "DELETE") deleteCalls.push(url);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ agent_id: "agent_new", conversation_flow_id: "flow_new", version: 1 }),
+            { status: 200 },
+          ),
+        );
+      }) as never,
+    });
+
+    const result = await handlePublishAgent(sql, "tenant_1", deps, { deleteSuperseded: false });
+
+    expect(result.status).toBe(200);
+    expect(deleteCalls).toHaveLength(0);
+  });
+
   it("a failed cleanup delete never fails the publish itself (best-effort)", async () => {
     const { sql } = makeSql(
       baseFixtures({
