@@ -83,6 +83,11 @@ interface TenantScopedTable {
   tenantColumn: string;
   /** Row body to insert for a given tenant id, via the service-role client. */
   row: (tenantId: string, unique: string) => Record<string, unknown>;
+  /** PostgREST `select` for the probe (default `*`). A table whose secret
+   * column is not granted to `authenticated` (column-level SELECT) rejects
+   * `select=*` outright, which would make the probe pass without ever
+   * testing RLS — such tables name their readable columns here. */
+  select?: string;
 }
 
 function env(name: string, ...fallbacks: string[]): string {
@@ -396,6 +401,32 @@ function tenantScopedTables(): TenantScopedTable[] {
         status: "not_found",
       }),
     },
+    {
+      // OUTBOUND-1 (20261009120000_outbound_webhooks.sql): tenant-readable,
+      // service-role-written webhook destinations. `signing_secret_id` is
+      // not granted to authenticated, so the probe selects the readable
+      // columns (a `select=*` would be refused and prove nothing).
+      // `signing_secret_id` has no FK (it is a Vault id): any uuid seeds.
+      // Seeded before bookings/orders below, so those inserts also fan out
+      // real outbound_events/outbound_deliveries rows through the triggers.
+      table: "outbound_destinations",
+      tenantColumn: "tenant_id",
+      select: "id,tenant_id,name,url,enabled",
+      row: (t, u) => ({
+        tenant_id: t,
+        name: `Probe ${u}`,
+        url: `https://probe-${u}.example/hook`,
+        signing_secret_id: globalThis.crypto.randomUUID(),
+      }),
+    },
+    {
+      // OUTBOUND-1: tenant-readable, service-role-written outbound events.
+      // outbound_deliveries depends on a destination + event (composite
+      // FKs) so it is seeded/probed separately in seedTenant()/main().
+      table: "outbound_events",
+      tenantColumn: "tenant_id",
+      row: (t) => ({ tenant_id: t, event_type: "test.ping", entity_type: "test" }),
+    },
   ];
 }
 
@@ -466,6 +497,19 @@ async function seedTenant(tenant: TenantFixture): Promise<WriteProbeFixture> {
       conversation_id: conversationId,
       author: "ai",
       body: "probe",
+    });
+  }
+
+  // OUTBOUND-1: outbound_deliveries needs a destination and an event of the
+  // same tenant (composite FKs), both seeded above via tenantScopedTables().
+  const destinationId = await fetchOneId("outbound_destinations", tenant.tenantId);
+  const outboundEventId = await fetchOneId("outbound_events", tenant.tenantId);
+  if (destinationId && outboundEventId) {
+    await serviceInsert("outbound_deliveries", {
+      tenant_id: tenant.tenantId,
+      destination_id: destinationId,
+      event_id: outboundEventId,
+      status: "failed",
     });
   }
 
@@ -545,7 +589,7 @@ async function probeAsUser(
   table: TenantScopedTable,
 ): Promise<string | null> {
   const { status, json } = await restRequest(
-    `/rest/v1/${table.table}?${table.tenantColumn}=eq.${victim.tenantId}&select=*`,
+    `/rest/v1/${table.table}?${table.tenantColumn}=eq.${victim.tenantId}&select=${table.select ?? "*"}`,
     { apikey: PUBLISHABLE_KEY, bearer: user.accessToken },
   );
   if (status >= 300) {
@@ -850,6 +894,18 @@ async function main(): Promise<void> {
   const bReadsAMsgs = await probeAsUser(tenantB, tenantA, textMessagesTable);
   if (bReadsAMsgs) failures.push(bReadsAMsgs);
 
+  // OUTBOUND-1: outbound_deliveries (dependent on outbound_destinations +
+  // outbound_events, seeded separately in seedTenant() above).
+  const outboundDeliveriesTable: TenantScopedTable = {
+    table: "outbound_deliveries",
+    tenantColumn: "tenant_id",
+    row: () => ({}),
+  };
+  const aReadsBDeliveries = await probeAsUser(tenantA, tenantB, outboundDeliveriesTable);
+  if (aReadsBDeliveries) failures.push(aReadsBDeliveries);
+  const bReadsADeliveries = await probeAsUser(tenantB, tenantA, outboundDeliveriesTable);
+  if (bReadsADeliveries) failures.push(bReadsADeliveries);
+
   // DB_AUDIT.md DB-H1 — write-path WITH CHECK ownership guards on
   // bookings/orders (see writeProbeCases()/probeWriteRejected() above).
   const writeCases = writeProbeCases();
@@ -894,7 +950,7 @@ async function main(): Promise<void> {
 
   console.log(
     `\nRLS cross-tenant probe PASSED — ${tables.length + 1} tables checked both directions ` +
-      `(+ text_conversation_messages, a dependent table checked separately), ` +
+      `(+ text_conversation_messages and outbound_deliveries, dependent tables checked separately), ` +
       `${ADMIN_ONLY_VIEWS.length} admin-only views checked as anon + authenticated, ` +
       `${writeCases.length} DB-H1 write-path cases checked both directions, 0 rows leaked, ` +
       `0 cross-tenant writes accepted, impersonation read-only/edit-enabled boundary enforced.`,

@@ -35,6 +35,7 @@ export type TemplateKey =
   | "owner_urgent_call"
   | "owner_missed_transfer"
   | "owner_line_ready"
+  | "owner_webhook_failing"
   | "sms_reply"
   | "text_agent_reply";
 
@@ -138,6 +139,17 @@ export function renderTemplate(
       return {
         subject: "Your Heyloo AI receptionist is live",
         body: `Your Heyloo AI receptionist is set up${line ? ` on ${line}` : ""}. Forward your business calls to it to start answering them; the setup guide in your dashboard walks you through it.`,
+      };
+    }
+    // OUTBOUND-1: an outbound webhook delivery gave up after its last retry,
+    // or the destination was turned off because the receiving app answered
+    // 410 Gone (_shared/outbound/delivery.ts, at most once per destination
+    // per 24 h). `destination_name` is the owner's own label for it.
+    case "owner_webhook_failing": {
+      const destination = str("destination_name", "your connected app");
+      return {
+        subject: `Heyloo couldn't reach ${destination}`,
+        body: `Heyloo couldn't send ${str("event_label", "an update")} to ${destination}.${payload["disabled"] === true ? " It was turned off because the receiving app said the address is gone." : ""} Check Integrations in your dashboard.`,
       };
     }
     case "owner_missed_transfer": {

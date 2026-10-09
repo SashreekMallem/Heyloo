@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isEzyVetApiUrl } from "../_shared/providers/ezyvet.ts";
 
 /**
  * `/api-adapter-connect` request (BACKEND_SPEC §7.6/task item 3 — "OAuth
@@ -41,12 +42,14 @@ export const AdapterConnectRequestSchema = z.union([
   z.object({
     action: z.literal("paste_key"),
     provider: z.literal("ezyvet"),
-    // SSRF-1: https only (the ezyVet client secret is sent to this host); private
-    // targets are additionally blocked by the safe fetch behind `deps.fetchImpl`.
-    base_url: z
-      .string()
-      .url()
-      .refine((u) => /^https:\/\//i.test(u), { message: "base_url must be https" }),
+    // SSRF-1 + CONNECT-SAFE-1: one of ezyVet's two documented API hosts only
+    // (our partner client secret would be sent to this host). The handler
+    // refuses this action outright for now (409 provider_unavailable); the
+    // shape stays validated so any other host is rejected as 400
+    // invalid_request first.
+    base_url: z.string().url().refine(isEzyVetApiUrl, {
+      message: "base_url must be https://api.ezyvet.com or https://api.trial.ezyvet.com",
+    }),
   }),
   z.object({
     action: z.literal("disconnect"),

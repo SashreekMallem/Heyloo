@@ -68,6 +68,28 @@ async function sign(key: Uint8Array<ArrayBuffer>, content: string): Promise<stri
   return toBase64(await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(content)));
 }
 
+/**
+ * OUTBOUND-1: the sender side of the same scheme, for webhooks Heyloo sends
+ * (`_shared/outbound/delivery.ts`). Signs `${id}.${timestamp}.${body}` with
+ * the base64-decoded secret (`whsec_<base64>`, `v1,whsec_<base64>` or raw
+ * base64, as `parseWebhookSecrets` reads it) and returns the header value
+ * `v1,<base64 signature>`. `body` must be the exact string sent. Throws when
+ * the secret is unusable: a webhook is never sent unsigned.
+ */
+export async function signStandardWebhook(params: {
+  secret: string;
+  id: string;
+  timestampSeconds: number;
+  body: string;
+}): Promise<string> {
+  const key = parseWebhookSecrets(params.secret)[0];
+  if (!key || params.secret.includes("|")) throw new Error("standard_webhook_bad_secret");
+  if (!Number.isInteger(params.timestampSeconds) || params.timestampSeconds < 0) {
+    throw new Error("standard_webhook_bad_timestamp");
+  }
+  return `v1,${await sign(key, `${params.id}.${params.timestampSeconds}.${params.body}`)}`;
+}
+
 export async function verifyStandardWebhook(params: {
   rawBody: string;
   header: (name: string) => string | null;

@@ -87,6 +87,58 @@ describe("GET /api/tenant/integrations", () => {
     expect(shopmonkey?.last_error).toBe("revoked");
   });
 
+  it("CONNECT-SAFE-1: a disconnected row with a failure reason reads as error (Needs reconnect)", async () => {
+    mockSession = ownerSession();
+    fromResult = {
+      data: [
+        {
+          provider: "square",
+          status: "disconnected",
+          last_refreshed_at: "2026-09-01T00:00:00Z",
+          last_error: "square 401 on booking push",
+        },
+        {
+          provider: "google_calendar",
+          status: "disconnected",
+          last_refreshed_at: null,
+          last_error: "tenant-initiated disconnect",
+        },
+        {
+          provider: "shopmonkey",
+          status: "disconnected",
+          last_refreshed_at: null,
+          last_error: null,
+        },
+      ],
+      error: null,
+    };
+    const res = await GET();
+    const body = (await res.json()) as { integrations: { provider: string; status: string }[] };
+    const statusOf = (p: string) => body.integrations.find((i) => i.provider === p)?.status;
+    expect(statusOf("square")).toBe("error");
+    // The owner's own disconnect is not a failure.
+    expect(statusOf("google_calendar")).toBe("disconnected");
+    expect(statusOf("shopmonkey")).toBe("disconnected");
+    expect(statusOf("ezyvet")).toBe("disconnected");
+  });
+
+  it("CONNECT-SAFE-1: marks every adapter unavailable (coming soon), connected or not", async () => {
+    mockSession = ownerSession();
+    fromResult = {
+      data: [
+        { provider: "square", status: "connected", last_refreshed_at: null, last_error: null },
+      ],
+      error: null,
+    };
+    const res = await GET();
+    const body = (await res.json()) as {
+      integrations: { provider: string; status: string; available: boolean }[];
+    };
+    expect(body.integrations.every((i) => i.available === false)).toBe(true);
+    // A connected row stays connected (and so stays disconnectable on the page).
+    expect(body.integrations.find((i) => i.provider === "square")?.status).toBe("connected");
+  });
+
   it("marks can_manage false for a member role", async () => {
     mockSession = ownerSession({ role: "member" });
     fromResult = { data: [], error: null };

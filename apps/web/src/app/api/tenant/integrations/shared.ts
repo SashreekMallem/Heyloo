@@ -30,6 +30,48 @@ export function isPasteKeyProvider(
   return (PASTE_KEY_PROVIDERS as readonly string[]).includes(provider);
 }
 
+/**
+ * CONNECT-SAFE-1: providers whose sync is not proven end to end, so a new
+ * connection is not offered (the connect route answers 409
+ * `provider_coming_soon`). Square pushes silently do nothing (the OAuth
+ * callback never stores the `locationId` they need); none of the four has
+ * run against a live account (docs/VERIFY.md T7); ezyVet's connect sent our
+ * partner secret to a tenant-typed host. An EXISTING connection stays
+ * visible and can still be disconnected. Remove a provider once it works.
+ */
+export const COMING_SOON_PROVIDERS: ReadonlySet<AdapterProvider> = new Set<AdapterProvider>([
+  "square",
+  "google_calendar",
+  "shopmonkey",
+  "ezyvet",
+]);
+
+export function isComingSoon(provider: string): boolean {
+  return (COMING_SOON_PROVIDERS as ReadonlySet<string>).has(provider);
+}
+
+/** What `api-adapter-connect` writes to `last_error` when the owner disconnects on purpose. */
+export const TENANT_DISCONNECT_SENTINEL = "tenant-initiated disconnect";
+
+export type ConnectionDisplayStatus = "connected" | "disconnected" | "error";
+
+/**
+ * CONNECT-SAFE-1: no writer ever sets `status = 'error'`; a revoked or failing
+ * connection is written as `disconnected` plus a `last_error` reason (worker
+ * refresh failures, the POS `auth_revoked` webhook). Shown as "Needs
+ * reconnect" so the owner learns sync stopped. The owner's own disconnect
+ * carries the sentinel reason and stays a plain "Not connected".
+ */
+export function connectionDisplayStatus(
+  row: { status: string; last_error: string | null } | undefined,
+): ConnectionDisplayStatus {
+  if (!row) return "disconnected";
+  if (row.status === "connected") return "connected";
+  if (row.status === "error") return "error";
+  if (row.last_error && row.last_error !== TENANT_DISCONNECT_SENTINEL) return "error";
+  return "disconnected";
+}
+
 /** Same popup-postMessage contract every OAuth-connect popup in this app
  * uses (`airtable/shared.ts`'s `popupResultHtml`, kept function-local here
  * for the same reason `session.ts` does) — a distinct `source` tag

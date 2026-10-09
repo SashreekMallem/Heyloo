@@ -1,16 +1,27 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerComponentClient } from "@/lib/supabase/server";
 import { requireIntegrationsSession } from "./session";
-import { ADAPTER_DISPLAY_NAMES, ADAPTER_PROVIDERS, untypedTable } from "./shared";
+import {
+  ADAPTER_DISPLAY_NAMES,
+  ADAPTER_PROVIDERS,
+  type ConnectionDisplayStatus,
+  connectionDisplayStatus,
+  isComingSoon,
+  untypedTable,
+} from "./shared";
 
 export const runtime = "nodejs";
 
 export interface IntegrationStatus {
   provider: string;
   display_name: string;
-  status: "connected" | "disconnected" | "error";
+  /** `error` = "Needs reconnect": disconnected for a reason other than the owner's own disconnect (CONNECT-SAFE-1). */
+  status: ConnectionDisplayStatus;
   last_refreshed_at: string | null;
+  /** Internal reason text (e.g. "square 401 on booking push"); the page shows friendly copy instead. */
   last_error: string | null;
+  /** False while the provider is "Coming soon": a new connection is refused (CONNECT-SAFE-1). */
+  available: boolean;
   can_manage: boolean;
 }
 
@@ -61,9 +72,10 @@ export async function GET() {
     return {
       provider,
       display_name: ADAPTER_DISPLAY_NAMES[provider],
-      status: (row?.status as IntegrationStatus["status"]) ?? "disconnected",
+      status: connectionDisplayStatus(row),
       last_refreshed_at: row?.last_refreshed_at ?? null,
       last_error: row?.last_error ?? null,
+      available: !isComingSoon(provider),
       can_manage: session.canManage,
     };
   });

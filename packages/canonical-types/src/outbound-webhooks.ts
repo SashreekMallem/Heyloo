@@ -1,0 +1,305 @@
+/**
+ * OUTBOUND-1 — outbound webhooks: the public payload contract (v1) Heyloo
+ * POSTs to a business's own apps (Zapier, Make, n8n, any HTTPS endpoint)
+ * when a booking, order or taken message happens, and the request body of
+ * the `api-tenant-webhooks` edge function that manages destinations.
+ *
+ * Delivery follows the Standard Webhooks spec
+ * (github.com/standard-webhooks/standard-webhooks, spec/standard-webhooks.md):
+ * headers `webhook-id` (constant across retries), `webhook-timestamp` (Unix
+ * seconds, per attempt) and `webhook-signature` (`v1,<base64 HMAC-SHA256>` of
+ * `id.timestamp.body`, keyed by the base64-decoded `whsec_` secret). The body
+ * is `{ type, timestamp, business, data }`.
+ *
+ * Money is integer cents, phones are E.164, timestamps are ISO-8601 with an
+ * explicit offset (CLAUDE.md Rule 2). The Deno edge runtime cannot import
+ * this package, so `supabase/functions/_shared/schemas/outbound-webhooks.ts`
+ * mirrors it; `outbound-webhooks.test.ts` there diffs the two.
+ */
+
+import { z } from "zod";
+import { CURRENCY, zCents, zE164, zIsoTimestamp } from "./primitives.js";
+import { FULFILLMENT_TYPES } from "./tools.js";
+
+// ---------------------------------------------------------------------------
+// Event types, statuses, limits
+// ---------------------------------------------------------------------------
+
+/** Events a destination can subscribe to (`outbound_destinations.event_types`). */
+export const OUTBOUND_EVENT_TYPES = [
+  "booking.created",
+  "booking.updated",
+  "booking.cancelled",
+  "order.created",
+  "order.updated",
+  "order.cancelled",
+  "message.taken",
+] as const;
+export type OutboundEventType = (typeof OUTBOUND_EVENT_TYPES)[number];
+export const zOutboundEventType = z.enum(OUTBOUND_EVENT_TYPES);
+
+/** Sent only by "Send test"; never subscribable. */
+export const OUTBOUND_TEST_EVENT_TYPE = "test.ping" as const;
+
+/** Every `outbound_events.event_type` value (the subscribable ones + the test ping). */
+export const OUTBOUND_ALL_EVENT_TYPES = [
+  ...OUTBOUND_EVENT_TYPES,
+  OUTBOUND_TEST_EVENT_TYPE,
+] as const;
+export type OutboundAnyEventType = (typeof OUTBOUND_ALL_EVENT_TYPES)[number];
+
+/** `outbound_events.entity_type`. */
+export const OUTBOUND_ENTITY_TYPES = ["booking", "order", "call_log", "test"] as const;
+export type OutboundEntityType = (typeof OUTBOUND_ENTITY_TYPES)[number];
+
+/** `outbound_deliveries.status`. */
+export const OUTBOUND_DELIVERY_STATUSES = [
+  "pending",
+  "sending",
+  "retrying",
+  "delivered",
+  "failed",
+  "cancelled",
+] as const;
+export type OutboundDeliveryStatus = (typeof OUTBOUND_DELIVERY_STATUSES)[number];
+
+/** `outbound_destinations.disabled_reason` (null while enabled). */
+export const OUTBOUND_DISABLED_REASONS = ["owner", "gone_410"] as const;
+export type OutboundDisabledReason = (typeof OUTBOUND_DISABLED_REASONS)[number];
+
+export const OUTBOUND_MAX_DESTINATIONS = 5;
+export const OUTBOUND_DESTINATION_NAME_MAX = 80;
+export const OUTBOUND_URL_MAX = 2048;
+
+/** Owner-facing labels (event checkboxes, delivery log). */
+export const OUTBOUND_EVENT_LABELS: Record<OutboundAnyEventType, string> = {
+  "booking.created": "New booking",
+  "booking.updated": "Booking changed",
+  "booking.cancelled": "Booking cancelled",
+  "order.created": "New order",
+  "order.updated": "Order status changed",
+  "order.cancelled": "Order cancelled",
+  "message.taken": "Message taken",
+  "test.ping": "Test event",
+};
+
+/** `bookings.status` (20260907130600_booking_core.sql). */
+export const OUTBOUND_BOOKING_STATUSES = [
+  "scheduled",
+  "confirmed",
+  "checked_in",
+  "completed",
+  "no_show",
+  "cancelled",
+  "rescheduled",
+] as const;
+
+/** `orders.status` (20260907130600_booking_core.sql). */
+export const OUTBOUND_ORDER_STATUSES = [
+  "received",
+  "confirmed",
+  "preparing",
+  "ready",
+  "completed",
+  "cancelled",
+] as const;
+
+export const OUTBOUND_TEST_MESSAGE = "This is a test event from Heyloo." as const;
+
+// ---------------------------------------------------------------------------
+// Payload v1
+// ---------------------------------------------------------------------------
+
+export const zOutboundBusiness = z.object({
+  id: z.uuid(),
+  name: z.string(),
+});
+
+export const zOutboundCustomer = z.object({
+  name: z.string().nullable(),
+  phone: zE164.nullable(),
+  email: z.string().nullable(),
+});
+
+export const zOutboundBookingData = z.object({
+  id: z.uuid(),
+  status: z.enum(OUTBOUND_BOOKING_STATUSES),
+  start_at: zIsoTimestamp,
+  end_at: zIsoTimestamp,
+  /** IANA zone of the business (`tenants.timezone`), for rendering start/end locally. */
+  timezone: z.string().min(1),
+  /** The booked service (`offerings.name`), when one was chosen. */
+  service: z.string().nullable(),
+  /** The staff member / room / table (`resources.name`). */
+  resource: z.string().nullable(),
+  party_size: z.number().int().nullable(),
+  notes: z.string().nullable(),
+  cancel_reason: z.string().nullable(),
+  customer: zOutboundCustomer,
+  source_call_id: z.uuid().nullable(),
+  created_at: zIsoTimestamp,
+  dashboard_url: z.url(),
+});
+export type OutboundBookingData = z.infer<typeof zOutboundBookingData>;
+
+export const zOutboundOrderItem = z.object({
+  name: z.string(),
+  qty: z.number().int().positive(),
+  unit_price_cents: zCents.nullable(),
+  modifiers: z.array(z.string()),
+});
+
+export const zOutboundDeliveryAddress = z.object({
+  street: z.string().nullable(),
+  city: z.string().nullable(),
+  state: z.string().nullable(),
+  zip: z.string().nullable(),
+});
+
+export const zOutboundOrderData = z.object({
+  id: z.uuid(),
+  status: z.enum(OUTBOUND_ORDER_STATUSES),
+  fulfillment_type: z.enum(FULFILLMENT_TYPES),
+  items: z.array(zOutboundOrderItem),
+  subtotal_cents: zCents,
+  tax_cents: zCents,
+  tip_cents: zCents,
+  delivery_fee_cents: zCents,
+  total_cents: zCents,
+  currency: z.literal(CURRENCY),
+  allergies: z.array(z.string()),
+  special_instructions: z.string().nullable(),
+  delivery_address: zOutboundDeliveryAddress.nullable(),
+  customer: zOutboundCustomer,
+  source_call_id: z.uuid().nullable(),
+  created_at: zIsoTimestamp,
+  dashboard_url: z.url(),
+});
+export type OutboundOrderData = z.infer<typeof zOutboundOrderData>;
+
+export const zOutboundMessageCaller = z.object({
+  name: z.string().nullable(),
+  phone: zE164.nullable(),
+});
+
+export const zOutboundMessageData = z.object({
+  /** The call this message was taken on (`call_logs.id`). */
+  id: z.uuid(),
+  caller: zOutboundMessageCaller,
+  message: z.string().min(1),
+  callback_window: z.string().nullable(),
+  created_at: zIsoTimestamp,
+  dashboard_url: z.url(),
+});
+export type OutboundMessageData = z.infer<typeof zOutboundMessageData>;
+
+export const zOutboundTestData = z.object({
+  message: z.literal(OUTBOUND_TEST_MESSAGE),
+});
+
+const envelope = {
+  timestamp: zIsoTimestamp,
+  business: zOutboundBusiness,
+};
+
+export const zOutboundBookingEvent = z.object({
+  type: z.enum(["booking.created", "booking.updated", "booking.cancelled"]),
+  ...envelope,
+  data: zOutboundBookingData,
+});
+
+export const zOutboundOrderEvent = z.object({
+  type: z.enum(["order.created", "order.updated", "order.cancelled"]),
+  ...envelope,
+  data: zOutboundOrderData,
+});
+
+export const zOutboundMessageEvent = z.object({
+  type: z.literal("message.taken"),
+  ...envelope,
+  data: zOutboundMessageData,
+});
+
+export const zOutboundTestEvent = z.object({
+  type: z.literal(OUTBOUND_TEST_EVENT_TYPE),
+  ...envelope,
+  data: zOutboundTestData,
+});
+
+/** The JSON body of every outbound webhook request (contract v1). */
+export const zOutboundWebhookPayload = z.union([
+  zOutboundBookingEvent,
+  zOutboundOrderEvent,
+  zOutboundMessageEvent,
+  zOutboundTestEvent,
+]);
+export type OutboundWebhookPayload = z.infer<typeof zOutboundWebhookPayload>;
+
+// ---------------------------------------------------------------------------
+// `api-tenant-webhooks` request body
+// ---------------------------------------------------------------------------
+
+export const zOutboundDestinationName = z
+  .string()
+  .trim()
+  .min(1, "Give this destination a name")
+  .max(OUTBOUND_DESTINATION_NAME_MAX, `Use ${OUTBOUND_DESTINATION_NAME_MAX} characters or fewer`);
+
+/**
+ * Mirrors the table CHECK `outbound_destinations_url_chk`
+ * (`url ~ '^https://\S+$' and char_length(url) <= 2048`).
+ */
+export const OUTBOUND_URL_PATTERN = /^https:\/\/\S+$/;
+
+/**
+ * Shape only: whether the host is public is checked server-side
+ * (safe-fetch). The value is normalized to the WHATWG URL `href` (lowercase
+ * scheme and host, default port dropped, spaces and non-ASCII
+ * percent-encoded), then re-checked against the table's CHECK, so anything
+ * accepted here is stored as-is: `HTTPS://Example.com/a b` becomes
+ * `https://example.com/a%20b` instead of failing that CHECK with a 500.
+ */
+export const zOutboundDestinationUrl = z
+  .string()
+  .trim()
+  .max(OUTBOUND_URL_MAX, "That web address is too long")
+  .pipe(
+    z.url({
+      protocol: /^https$/,
+      normalize: true,
+      error: "Enter a web address that starts with https://",
+    }),
+  )
+  .pipe(
+    z
+      .string()
+      .max(OUTBOUND_URL_MAX, "That web address is too long")
+      .regex(OUTBOUND_URL_PATTERN, "Enter a web address that starts with https://"),
+  );
+
+export const zOutboundEventTypeList = z
+  .array(zOutboundEventType)
+  .min(1, "Pick at least one event")
+  .refine((list) => new Set(list).size === list.length, "Each event can be picked once");
+
+export const zTenantWebhooksRequest = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("create"),
+    name: zOutboundDestinationName,
+    url: zOutboundDestinationUrl,
+    event_types: zOutboundEventTypeList.optional(),
+  }),
+  z.object({
+    action: z.literal("update"),
+    id: z.uuid(),
+    name: zOutboundDestinationName.optional(),
+    url: zOutboundDestinationUrl.optional(),
+    event_types: zOutboundEventTypeList.optional(),
+    enabled: z.boolean().optional(),
+  }),
+  z.object({ action: z.literal("delete"), id: z.uuid() }),
+  z.object({ action: z.literal("rotate_secret"), id: z.uuid() }),
+  z.object({ action: z.literal("send_test"), id: z.uuid() }),
+  z.object({ action: z.literal("retry"), delivery_id: z.uuid() }),
+]);
+export type TenantWebhooksRequest = z.infer<typeof zTenantWebhooksRequest>;

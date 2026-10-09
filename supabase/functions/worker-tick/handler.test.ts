@@ -11,6 +11,18 @@ import { notConfigured, runWorkerTick } from "./handler.ts";
 
 const fakeSql = (() => Promise.resolve([])) as unknown as SqlClient;
 
+const NO_WEBHOOKS = {
+  claimed: 0,
+  delivered: 0,
+  retrying: 0,
+  failed: 0,
+  cancelled: 0,
+  errors: 0,
+  abandoned: 0,
+  rounds: 1,
+  backlog: 0,
+};
+
 function makeDeps(overrides: Partial<WorkerTickDeps> = {}): WorkerTickDeps {
   return {
     outbound: {} as WorkerTickDeps["outbound"],
@@ -22,6 +34,7 @@ function makeDeps(overrides: Partial<WorkerTickDeps> = {}): WorkerTickDeps {
       deps: {} as never,
       logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } as never,
     },
+    outboundWebhooks: {} as WorkerTickDeps["outboundWebhooks"],
     ...overrides,
   };
 }
@@ -42,6 +55,7 @@ describe("runWorkerTick", () => {
         retry_delay_seconds: 60,
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 3, dead_lettered: 0, batch_size: 3 }),
+      outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
     };
 
     const result = await runWorkerTick(fakeSql, makeDeps(), runners);
@@ -69,6 +83,7 @@ describe("runWorkerTick", () => {
         retry_delay_seconds: 60,
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
+      outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
     };
 
     const result = await runWorkerTick(fakeSql, makeDeps(), runners);
@@ -91,6 +106,7 @@ describe("runWorkerTick", () => {
         retry_delay_seconds: 60,
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
+      outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
     };
 
     const result = await runWorkerTick(fakeSql, makeDeps({ perWorkerTimeoutMs: 20 }), runners);
@@ -116,6 +132,7 @@ describe("runWorkerTick", () => {
         retry_delay_seconds: 60,
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
+      outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
     };
 
     const result = await runWorkerTick(fakeSql, makeDeps(), runners);
@@ -133,6 +150,7 @@ describe("runWorkerTick", () => {
         retry_delay_seconds: 60,
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
+      outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
     };
 
     const result = await runWorkerTick(
@@ -161,6 +179,7 @@ describe("runWorkerTick", () => {
       outbound: vi.fn(),
       recordingFetch: vi.fn(),
       adapterPush: vi.fn(),
+      outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
     };
 
     const result = await runWorkerTick(
@@ -169,6 +188,7 @@ describe("runWorkerTick", () => {
         outbound: notConfigured(["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]),
         recordingFetch: notConfigured(["RETELL_API_KEY"]),
         adapterPush: notConfigured(["ADAPTER_TOKEN_ENCRYPTION_KEY"]),
+        outboundWebhooks: notConfigured(["APP_BASE_URL"]),
       },
       runners,
     );
@@ -186,9 +206,75 @@ describe("runWorkerTick", () => {
       status: "skipped",
       missing: ["ADAPTER_TOKEN_ENCRYPTION_KEY"],
     });
+    expect(result.outbound_webhooks).toEqual({ status: "skipped", missing: ["APP_BASE_URL"] });
     expect(runners.outbound).not.toHaveBeenCalled();
     expect(runners.recordingFetch).not.toHaveBeenCalled();
     expect(runners.adapterPush).not.toHaveBeenCalled();
+    expect(runners.outboundWebhooks).not.toHaveBeenCalled();
+  });
+
+  it("OUTBOUND-1: runs the outbound_webhooks leg with its deps and reports its counts", async () => {
+    const webhookDeps = makeDeps().outboundWebhooks;
+    const counts = {
+      claimed: 3,
+      delivered: 2,
+      retrying: 1,
+      failed: 0,
+      cancelled: 0,
+      errors: 0,
+      abandoned: 1,
+      rounds: 1,
+      backlog: 0,
+    };
+    const runners: WorkerTickRunners = {
+      outbound: vi.fn().mockResolvedValue({ processed: 0, dead_lettered: 0, batch_size: 0 }),
+      recordingFetch: vi.fn().mockResolvedValue({
+        stored: 0,
+        retried: 0,
+        dead_lettered: 0,
+        batch_size: 0,
+        retry_delay_seconds: 60,
+      }),
+      adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
+      outboundWebhooks: vi.fn().mockResolvedValue(counts),
+    };
+
+    const result = await runWorkerTick(
+      fakeSql,
+      makeDeps({ outboundWebhooks: webhookDeps }),
+      runners,
+    );
+
+    expect(result.outbound_webhooks).toEqual({ status: "ok", result: counts });
+    expect(runners.outboundWebhooks).toHaveBeenCalledWith(fakeSql, webhookDeps);
+  });
+
+  it("OUTBOUND-1: a failing or slow outbound_webhooks leg never affects the other legs", async () => {
+    const runners: WorkerTickRunners = {
+      outbound: vi.fn().mockResolvedValue({ processed: 1, dead_lettered: 0, batch_size: 1 }),
+      recordingFetch: vi.fn().mockResolvedValue({
+        stored: 0,
+        retried: 0,
+        dead_lettered: 0,
+        batch_size: 0,
+        retry_delay_seconds: 60,
+      }),
+      adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
+      outboundWebhooks: vi.fn().mockRejectedValue(new Error("claim_failed")),
+    };
+    const failed = await runWorkerTick(fakeSql, makeDeps(), runners);
+    expect(failed.outbound_webhooks).toEqual({ status: "error", error: "claim_failed" });
+    expect(failed.messages_outbound.status).toBe("ok");
+
+    const slow = await runWorkerTick(fakeSql, makeDeps({ perWorkerTimeoutMs: 20 }), {
+      ...runners,
+      outboundWebhooks: vi.fn().mockReturnValue(delay(NO_WEBHOOKS, 200)),
+    });
+    expect(slow.outbound_webhooks).toEqual({
+      status: "timeout",
+      error: "worker_tick_timeout:outbound_webhooks",
+    });
+    expect(slow.adapter_push.status).toBe("ok");
   });
 
   // OPS-8 deliverable 3: every tick's response reports per-queue backlog so
@@ -220,6 +306,7 @@ describe("runWorkerTick", () => {
         retry_delay_seconds: 60,
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
+      outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
     };
 
     const result = await runWorkerTick(sql, makeDeps(), runners);
@@ -243,6 +330,7 @@ describe("runWorkerTick", () => {
         retry_delay_seconds: 60,
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
+      outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
     };
 
     const result = await runWorkerTick(sql, makeDeps(), runners);
@@ -270,6 +358,7 @@ describe("runWorkerTick", () => {
         retry_delay_seconds: 60,
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
+      outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
     };
 
     const result = await runWorkerTick(

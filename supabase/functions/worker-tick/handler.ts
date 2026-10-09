@@ -1,3 +1,8 @@
+import type {
+  RunWebhookDeliveryResult,
+  WebhookDeliveryDeps,
+} from "../_shared/outbound/delivery.ts";
+import { runWebhookDeliveryWorker } from "../_shared/outbound/delivery.ts";
 import { metricsAll, type QueueMetricsRow } from "../_shared/queue.ts";
 import { withTimeout } from "../_shared/timeout.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
@@ -113,6 +118,11 @@ export interface WorkerTickDeps {
   outbound: OutboundDeps | NotConfiguredLeg;
   recordingFetch: { deps: RecordingFetchDeps; logger: Logger } | NotConfiguredLeg;
   adapterPush: { deps: AdapterPushDeps; logger: Logger } | NotConfiguredLeg;
+  /** OUTBOUND-1: signed outbound webhook deliveries (`_shared/outbound/
+   * delivery.ts`). Needs no secret of its own (the signing secrets live in
+   * Vault), so index.ts always configures it; the NotConfigured shape is
+   * kept for symmetry with the other legs. */
+  outboundWebhooks: WebhookDeliveryDeps | NotConfiguredLeg;
   /** Hard per-worker deadline (ms). Defaults to 12s so three workers run
    * concurrently comfortably inside the 15s `net.http_post`
    * `timeout_milliseconds` budget the calling cron job uses. */
@@ -135,12 +145,17 @@ export interface WorkerTickRunners {
     logger: Logger,
     deps: AdapterPushDeps,
   ) => Promise<RunAdapterPushWorkerResult>;
+  outboundWebhooks: (
+    sql: SqlClient,
+    deps: WebhookDeliveryDeps,
+  ) => Promise<RunWebhookDeliveryResult>;
 }
 
 export const DEFAULT_WORKER_TICK_RUNNERS: WorkerTickRunners = {
   outbound: runOutboundWorker,
   recordingFetch: runRecordingFetchWorker,
   adapterPush: runAdapterPushWorker,
+  outboundWebhooks: runWebhookDeliveryWorker,
 };
 
 export type WorkerOutcome<T> =
@@ -160,6 +175,7 @@ export interface WorkerTickResult {
   messages_outbound: WorkerOutcome<RunOutboundWorkerResult>;
   recording_fetch: WorkerOutcome<RunRecordingFetchWorkerResult>;
   adapter_push: WorkerOutcome<RunAdapterPushWorkerResult>;
+  outbound_webhooks: WorkerOutcome<RunWebhookDeliveryResult>;
   /** Every queue's `pgmq.metrics_all()` row (OPS-8, deliverable 3) — so the
    * nightly regression and admin pages can see backlog/DLQ depth straight
    * from this response, without a separate DB read. Empty (never throws
@@ -233,7 +249,13 @@ export async function runWorkerTick(
   const timeoutMs = deps.perWorkerTimeoutMs ?? DEFAULT_PER_WORKER_TIMEOUT_MS;
   const startedAt = Date.now();
 
-  const [messagesOutbound, recordingFetchOutcome, adapterPushOutcome, queues] = await Promise.all([
+  const [
+    messagesOutbound,
+    recordingFetchOutcome,
+    adapterPushOutcome,
+    outboundWebhooksOutcome,
+    queues,
+  ] = await Promise.all([
     runOutboundLeg(sql, deps.outbound, (d) => runners.outbound(sql, d), timeoutMs),
     runLeg(
       deps.recordingFetch,
@@ -247,6 +269,12 @@ export async function runWorkerTick(
       timeoutMs,
       "adapter_push",
     ),
+    runLeg(
+      deps.outboundWebhooks,
+      (d) => runners.outboundWebhooks(sql, d),
+      timeoutMs,
+      "outbound_webhooks",
+    ),
     metricsAll(sql).catch(() => []),
   ]);
 
@@ -254,6 +282,7 @@ export async function runWorkerTick(
     messages_outbound: messagesOutbound,
     recording_fetch: recordingFetchOutcome,
     adapter_push: adapterPushOutcome,
+    outbound_webhooks: outboundWebhooksOutcome,
     queues,
     duration_ms: Date.now() - startedAt,
   };

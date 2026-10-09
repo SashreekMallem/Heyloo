@@ -1,5 +1,4 @@
 import { checkEncryptionKey, encryptSecret } from "../_shared/crypto.ts";
-import { refreshEzyVetToken } from "../_shared/providers/ezyvet.ts";
 import { validateShopmonkeyApiKey } from "../_shared/providers/shopmonkey.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import type { AdapterConnectRequest } from "./schema.ts";
@@ -9,7 +8,8 @@ import { signOAuthState, verifyOAuthState } from "./state.ts";
 /**
  * `/api-adapter-connect` (BACKEND_SPEC §7.6, task item 3): tenant-facing
  * connect flow for the four T7 adapters — OAuth initiate/callback for
- * Square/Google Calendar, paste-key validation for Shopmonkey/ezyVet.
+ * Square/Google Calendar, paste-key validation for Shopmonkey. ezyVet
+ * paste-key is refused (CONNECT-SAFE-1); its disconnect still works.
  * Writes/updates a single `adapter_connections` row per tenant+provider
  * (unique constraint, so a reconnect is an upsert, never a duplicate row —
  * "reauthorize-updates-not-duplicates", the salvaged UX rule SYSTEM_DESIGN
@@ -26,7 +26,6 @@ export interface AdapterConnectDeps {
   stateSecret?: string | undefined;
   square?: { clientId: string; clientSecret: string; redirectUri: string } | undefined;
   googleCalendar?: { clientId: string; clientSecret: string; redirectUri: string } | undefined;
-  ezyvet?: { clientId: string; clientSecret: string; partnerId: string } | undefined;
   // DB-H2: AES-256-GCM key `access_token`/`refresh_token` are encrypted
   // with before ever reaching `adapter_connections` — see `_shared/crypto.ts`.
   tokenEncryptionKey?: string | undefined;
@@ -248,50 +247,32 @@ export async function handleAdapterConnect(
     }
 
     case "paste_key": {
+      // CONNECT-SAFE-1: ezyVet is not connectable. Its client-credentials
+      // mint sends OUR partner client_secret to the tenant-supplied base URL
+      // (docs/VERIFY.md SSRF-1), and the per-practice authorization flow is
+      // unconfirmed, so it is refused before any secret or network call. The
+      // dashboard lists ezyVet as "Coming soon"; disconnect still works.
+      if (req.provider === "ezyvet") {
+        deps.logger.warn("adapter_connect_provider_unavailable", { provider: req.provider });
+        return { ok: false, status: 409, error: "provider_unavailable" };
+      }
       const tokenEncryptionKey = deps.tokenEncryptionKey;
       if (!tokenEncryptionKey || checkEncryptionKey(tokenEncryptionKey) !== null) {
         return notConfigured(deps, req.provider);
       }
-      if (req.provider === "shopmonkey") {
-        const validated = await validateShopmonkeyApiKey(deps.fetchImpl, req.api_key);
-        if (!validated.ok) {
-          return { ok: false, status: 401, error: "shopmonkey_api_key_invalid" };
-        }
-        await upsertConnection(sql, {
-          tenantId,
-          provider: "shopmonkey",
-          authMode: "api_key",
-          accessToken: req.api_key,
-          connectedBy: userId,
-          tokenEncryptionKey,
-        });
-        return { ok: true, status: 200, body: { connected: true, provider: "shopmonkey" } };
+      const validated = await validateShopmonkeyApiKey(deps.fetchImpl, req.api_key);
+      if (!validated.ok) {
+        return { ok: false, status: 401, error: "shopmonkey_api_key_invalid" };
       }
-
-      // ezyvet: no per-tenant secret from the tenant — our own partner
-      // client-credentials mint a token scoped to whichever practice
-      // database granted us access at `base_url`; success here IS the
-      // proof the practice completed the partner-authorization step on
-      // their end (API_AND_FLOWS.md A.6).
-      if (!deps.ezyvet) return notConfigured(deps, req.provider);
-      const refreshed = await refreshEzyVetToken(deps.fetchImpl, req.base_url, deps.ezyvet);
-      if (!refreshed.ok) {
-        return { ok: false, status: 401, error: "ezyvet_practice_not_authorized" };
-      }
-      const body = refreshed.body as { access_token: string; expires_in?: number };
       await upsertConnection(sql, {
         tenantId,
-        provider: "ezyvet",
-        authMode: "oauth2_client_credentials",
-        accessToken: body.access_token,
-        expiresAt: body.expires_in
-          ? new Date(Date.now() + body.expires_in * 1000).toISOString()
-          : undefined,
-        metadata: { baseUrl: req.base_url },
+        provider: "shopmonkey",
+        authMode: "api_key",
+        accessToken: req.api_key,
         connectedBy: userId,
         tokenEncryptionKey,
       });
-      return { ok: true, status: 200, body: { connected: true, provider: "ezyvet" } };
+      return { ok: true, status: 200, body: { connected: true, provider: "shopmonkey" } };
     }
 
     case "disconnect": {

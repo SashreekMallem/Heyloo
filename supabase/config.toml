@@ -297,6 +297,14 @@ verify_jwt = true
 [functions.api-tenant-business-location]
 verify_jwt = true
 
+# api-tenant-webhooks (OUTBOUND-1, docs/BUILD_NOTES.md): the SAME posture as
+# api-tenant-business-location directly above — tenant-owner/admin
+# JWT-authenticated, tenant_id from the JWT's own app_metadata only — manages
+# the CALLING tenant's own outbound webhook destinations (create / update /
+# delete / rotate_secret / send_test / retry).
+[functions.api-tenant-webhooks]
+verify_jwt = true
+
 # api-team-invite (docs/audit/FIX_REQUESTS.md): tenant-owner JWT-
 # authenticated (verify_jwt = true, tenant_id + caller user id from the
 # JWT only) — additionally re-verifies the caller's own memberships.role

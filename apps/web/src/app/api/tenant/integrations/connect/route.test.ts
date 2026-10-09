@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 let mockSession: { user: { app_metadata: Record<string, unknown> }; access_token: string } | null =
   null;
@@ -23,7 +23,24 @@ vi.mock("@/lib/edge-functions", () => ({
   callEdgeFunction: (...args: unknown[]) => mockCallEdgeFunction(...args),
 }));
 
+// CONNECT-SAFE-1: every adapter is "Coming soon" today. The proxy tests below
+// pretend none is, so the forwarding path stays covered for when one returns.
+let comingSoonOverride: ReadonlySet<string> | null = null;
+vi.mock("../shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../shared")>();
+  return {
+    ...actual,
+    isComingSoon: (provider: string) =>
+      comingSoonOverride ? comingSoonOverride.has(provider) : actual.isComingSoon(provider),
+  };
+});
+
 const { POST } = await import("./route");
+
+beforeEach(() => {
+  comingSoonOverride = null;
+  mockCallEdgeFunction = vi.fn();
+});
 
 function req(body: unknown) {
   return new Request("http://localhost/api/tenant/integrations/connect", {
@@ -66,7 +83,25 @@ describe("POST /api/tenant/integrations/connect", () => {
     expect(res.status).toBe(400);
   });
 
+  it.each(["square", "google_calendar", "shopmonkey", "ezyvet"])(
+    "CONNECT-SAFE-1: 409s a coming-soon provider (%s) without calling the edge function",
+    async (provider) => {
+      mockSession = ownerSession();
+      const res = await POST(req({ provider, api_key: "k", base_url: "https://api.ezyvet.com" }));
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: "provider_coming_soon" });
+      expect(mockCallEdgeFunction).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still 403s a member before the coming-soon check", async () => {
+    mockSession = ownerSession({ role: "member" });
+    const res = await POST(req({ provider: "ezyvet" }));
+    expect(res.status).toBe(403);
+  });
+
   it("proxies an OAuth provider as action:initiate and returns the authorize_url", async () => {
+    comingSoonOverride = new Set();
     mockSession = ownerSession();
     mockCallEdgeFunction = vi.fn(async () => ({
       status: 200,
@@ -88,12 +123,14 @@ describe("POST /api/tenant/integrations/connect", () => {
   });
 
   it("400s a shopmonkey paste-key request missing api_key", async () => {
+    comingSoonOverride = new Set();
     mockSession = ownerSession();
     const res = await POST(req({ provider: "shopmonkey" }));
     expect(res.status).toBe(400);
   });
 
   it("proxies a shopmonkey paste-key connect with the api_key", async () => {
+    comingSoonOverride = new Set();
     mockSession = ownerSession();
     mockCallEdgeFunction = vi.fn(async () => ({
       status: 200,
@@ -109,13 +146,17 @@ describe("POST /api/tenant/integrations/connect", () => {
     );
   });
 
-  it("400s an ezyvet paste-key request missing base_url", async () => {
+  it("never forwards an ezyVet base_url, even once ezyVet leaves coming-soon", async () => {
+    comingSoonOverride = new Set();
     mockSession = ownerSession();
-    const res = await POST(req({ provider: "ezyvet" }));
+    const res = await POST(req({ provider: "ezyvet", base_url: "https://evil.example.com" }));
     expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "unknown_provider" });
+    expect(mockCallEdgeFunction).not.toHaveBeenCalled();
   });
 
   it("passes through the edge function's error status/body on failure", async () => {
+    comingSoonOverride = new Set();
     mockSession = ownerSession();
     mockCallEdgeFunction = vi.fn(async () => ({
       status: 401,

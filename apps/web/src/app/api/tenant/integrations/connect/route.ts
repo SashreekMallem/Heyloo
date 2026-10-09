@@ -1,14 +1,13 @@
 import { NextResponse } from "next/server";
 import { callEdgeFunction } from "@/lib/edge-functions";
 import { requireIntegrationsSession } from "../session";
-import { isOAuthProvider, isPasteKeyProvider } from "../shared";
+import { isComingSoon, isOAuthProvider } from "../shared";
 
 export const runtime = "nodejs";
 
 interface ConnectRequestBody {
   provider?: string;
   api_key?: string;
-  base_url?: string;
 }
 
 interface AdapterConnectFunctionResponse {
@@ -22,10 +21,15 @@ interface AdapterConnectFunctionResponse {
  * `api-adapter-connect` edge function (BACKEND_SPEC §7.6), never faking a
  * connection client-side. For an OAuth provider (`square`/
  * `google_calendar`) this calls `action: "initiate"` and hands back
- * `authorize_url` for the dashboard to open in a popup; for a paste-key
- * provider (`shopmonkey`/`ezyvet`) the tenant's pasted credential is
- * validated immediately via `action: "paste_key"` — there is no separate
- * initiate step for these (api-adapter-connect/schema.ts).
+ * `authorize_url` for the dashboard to open in a popup; for Shopmonkey the
+ * tenant's pasted API key is validated immediately via `action: "paste_key"`
+ * — there is no separate initiate step (api-adapter-connect/schema.ts).
+ *
+ * CONNECT-SAFE-1: a "Coming soon" provider (`COMING_SOON_PROVIDERS`) answers
+ * 409 `provider_coming_soon` before anything is forwarded. ezyVet is never
+ * forwarded at all: `api-adapter-connect` refuses its paste-key (409
+ * `provider_unavailable`), since that flow sent our partner secret to a
+ * tenant-typed host.
  *
  * Every identity-bearing field (tenant_id, role) is resolved server-side
  * from the caller's own session/JWT (`requireIntegrationsSession`), never
@@ -49,15 +53,16 @@ export async function POST(request: Request) {
   const provider = body.provider;
   if (!provider) return NextResponse.json({ error: "missing_provider" }, { status: 400 });
 
+  if (isComingSoon(provider)) {
+    return NextResponse.json({ error: "provider_coming_soon" }, { status: 409 });
+  }
+
   let edgeBody: Record<string, unknown>;
   if (isOAuthProvider(provider)) {
     edgeBody = { action: "initiate", provider };
-  } else if (isPasteKeyProvider(provider) && provider === "shopmonkey") {
+  } else if (provider === "shopmonkey") {
     if (!body.api_key) return NextResponse.json({ error: "missing_api_key" }, { status: 400 });
     edgeBody = { action: "paste_key", provider, api_key: body.api_key };
-  } else if (isPasteKeyProvider(provider) && provider === "ezyvet") {
-    if (!body.base_url) return NextResponse.json({ error: "missing_base_url" }, { status: 400 });
-    edgeBody = { action: "paste_key", provider, base_url: body.base_url };
   } else {
     return NextResponse.json({ error: "unknown_provider" }, { status: 400 });
   }

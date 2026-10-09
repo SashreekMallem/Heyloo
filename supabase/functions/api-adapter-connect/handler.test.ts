@@ -51,7 +51,6 @@ const BASE_DEPS: AdapterConnectDeps = {
     clientSecret: "g_secret",
     redirectUri: "https://example.com/cb",
   },
-  ezyvet: { clientId: "e_client", clientSecret: "e_secret", partnerId: "partner_1" },
   tokenEncryptionKey: TEST_TOKEN_ENCRYPTION_KEY,
   logger: createLogger(),
 };
@@ -138,17 +137,6 @@ describe("QA-1 BE-04: unset provider secrets degrade to 503 not_configured, per 
       expect(result).toEqual({ ok: false, status: 503, error: "not_configured" });
     }
     expect(fetched).toBe(0);
-  });
-
-  it("ezyvet paste_key without the partner secrets answers 503 (shopmonkey needs none of them)", async () => {
-    const sql = makeSql({ membership: OWNER_MEMBERSHIP });
-    const result = await handleAdapterConnect(
-      sql,
-      "user_1",
-      { action: "paste_key", provider: "ezyvet", base_url: "https://api.ezyvet.example" },
-      { ...NO_SECRETS, tokenEncryptionKey: TEST_TOKEN_ENCRYPTION_KEY },
-    );
-    expect(result).toEqual({ ok: false, status: 503, error: "not_configured" });
   });
 
   it("disconnect needs no provider secret at all", async () => {
@@ -336,47 +324,84 @@ describe("handleAdapterConnect: paste_key", () => {
     expect(result).toEqual({ ok: false, status: 401, error: "shopmonkey_api_key_invalid" });
     expect(called).toBe(false);
   });
+});
 
-  it("confirms ezyVet practice authorization via a live client-credentials mint before storing the connection", async () => {
-    let captured: unknown[] = [];
-    const sql = makeSql({ membership: OWNER_MEMBERSHIP, captureUpsert: (v) => (captured = v) });
+describe("handleAdapterConnect: ezyVet is refused (CONNECT-SAFE-1)", () => {
+  it("answers 409 provider_unavailable for an ezyVet paste_key without fetching or storing anything", async () => {
+    let fetched = 0;
+    let stored = false;
+    const sql = makeSql({
+      membership: OWNER_MEMBERSHIP,
+      captureUpsert: () => {
+        stored = true;
+      },
+    });
     const deps: AdapterConnectDeps = {
       ...BASE_DEPS,
-      fetchImpl: (async () =>
-        jsonResponse({ access_token: "token", expires_in: 43200 })) as unknown as typeof fetch,
+      fetchImpl: (async () => {
+        fetched += 1;
+        return jsonResponse({ access_token: "token", expires_in: 43200 });
+      }) as unknown as typeof fetch,
     };
     const result = await handleAdapterConnect(
       sql,
       "user_1",
-      { action: "paste_key", provider: "ezyvet", base_url: "https://clinic.ezyvet.com/api/v1" },
+      { action: "paste_key", provider: "ezyvet", base_url: "https://api.ezyvet.com/v1" },
       deps,
+    );
+    expect(result).toEqual({ ok: false, status: 409, error: "provider_unavailable" });
+    expect(fetched).toBe(0);
+    expect(stored).toBe(false);
+  });
+
+  it("refuses it even when no secrets are configured (no 503 that would invite a retry)", async () => {
+    const sql = makeSql({ membership: OWNER_MEMBERSHIP });
+    const result = await handleAdapterConnect(
+      sql,
+      "user_1",
+      { action: "paste_key", provider: "ezyvet", base_url: "https://api.ezyvet.com/v1" },
+      { fetchImpl: BASE_DEPS.fetchImpl, nonce: () => "n", logger: createLogger() },
+    );
+    expect(result).toEqual({ ok: false, status: 409, error: "provider_unavailable" });
+  });
+
+  it("still authorizes first: a non-owner gets 403", async () => {
+    const sql = makeSql({ membership: null });
+    const result = await handleAdapterConnect(
+      sql,
+      "user_1",
+      { action: "paste_key", provider: "ezyvet", base_url: "https://api.ezyvet.com/v1" },
+      BASE_DEPS,
+    );
+    expect(result).toEqual({ ok: false, status: 403, error: "not_a_tenant_owner_or_admin" });
+  });
+
+  it("rejects a non-ezyVet base_url as invalid_request before anything else", async () => {
+    const sql = makeSql({ membership: OWNER_MEMBERSHIP });
+    const result = await handleAdapterConnect(
+      sql,
+      "user_1",
+      { action: "paste_key", provider: "ezyvet", base_url: "https://evil.example.com" },
+      BASE_DEPS,
+    );
+    expect(result).toEqual({ ok: false, status: 400, error: "invalid_request" });
+  });
+
+  it("an existing ezyVet connection can still be disconnected", async () => {
+    let captured: unknown[] = [];
+    const sql = makeSql({ membership: OWNER_MEMBERSHIP, captureDisconnect: (v) => (captured = v) });
+    const result = await handleAdapterConnect(
+      sql,
+      "user_1",
+      { action: "disconnect", provider: "ezyvet" },
+      BASE_DEPS,
     );
     expect(result).toEqual({
       ok: true,
       status: 200,
-      body: { connected: true, provider: "ezyvet" },
+      body: { disconnected: true, provider: "ezyvet" },
     });
-    expect(captured).not.toContain("token");
-    const storedAccessToken = captured.find(
-      (v) => typeof v === "string" && v.startsWith("v1:"),
-    ) as string;
-    expect(await decryptSecret(storedAccessToken, TEST_TOKEN_ENCRYPTION_KEY)).toBe("token");
-  });
-
-  it("rejects when the practice has not authorized our partner_id for that database", async () => {
-    const sql = makeSql({ membership: OWNER_MEMBERSHIP });
-    const deps: AdapterConnectDeps = {
-      ...BASE_DEPS,
-      fetchImpl: (async () =>
-        jsonResponse({ error: "invalid_client" }, 401)) as unknown as typeof fetch,
-    };
-    const result = await handleAdapterConnect(
-      sql,
-      "user_1",
-      { action: "paste_key", provider: "ezyvet", base_url: "https://clinic.ezyvet.com/api/v1" },
-      deps,
-    );
-    expect(result).toEqual({ ok: false, status: 401, error: "ezyvet_practice_not_authorized" });
+    expect(captured).toEqual(["tenant_1", "ezyvet"]);
   });
 });
 

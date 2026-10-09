@@ -145,6 +145,33 @@ describe("renderTemplate", () => {
     ).toBe("This week: 2 calls answered, 1 bookings captured.");
   });
 
+  it("OUTBOUND-1: owner_webhook_failing names the event and the destination", () => {
+    expect(
+      renderTemplate("owner_webhook_failing", {
+        destination_name: "Kitchen Zap",
+        event_label: "a new order",
+      }),
+    ).toEqual({
+      subject: "Heyloo couldn't reach Kitchen Zap",
+      body: "Heyloo couldn't send a new order to Kitchen Zap. Check Integrations in your dashboard.",
+    });
+  });
+
+  it("OUTBOUND-1: owner_webhook_failing says when the destination was turned off", () => {
+    expect(
+      renderTemplate("owner_webhook_failing", {
+        destination_name: "Make",
+        event_label: "a booking update",
+        disabled: true,
+      }).body,
+    ).toBe(
+      "Heyloo couldn't send a booking update to Make. It was turned off because the receiving app said the address is gone. Check Integrations in your dashboard.",
+    );
+    expect(renderTemplate("owner_webhook_failing", {}).body).toBe(
+      "Heyloo couldn't send an update to your connected app. Check Integrations in your dashboard.",
+    );
+  });
+
   it("returns an empty body for an unknown template key rather than throwing", () => {
     expect(() => renderTemplate("not_a_real_template", {})).not.toThrow();
     expect(renderTemplate("not_a_real_template", {}).body).toBe("");

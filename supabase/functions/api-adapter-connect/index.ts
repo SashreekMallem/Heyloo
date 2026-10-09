@@ -25,10 +25,10 @@ function decodeSub(authHeader: string | null): string | null {
   }
 }
 
-// SSRF-1: adapter hosts are public HTTPS APIs, and ezyVet's base URL is
-// tenant-supplied (`adapter_connections.metadata.baseUrl`), so every adapter call
-// goes through the SSRF-safe fetch (public targets only, 3 redirects max,
-// 5 MB / 15 s caps). See _shared/safe-fetch.ts.
+// SSRF-1: adapter hosts are public HTTPS APIs; every adapter call goes through
+// the SSRF-safe fetch (public targets only, 3 redirects max, 5 MB / 15 s caps).
+// See _shared/safe-fetch.ts. (ezyVet's tenant-supplied base URL is no longer
+// accepted here at all: CONNECT-SAFE-1, handler.ts.)
 const ADAPTER_FETCH = makeSafeFetch({
   allowedContentTypes: JSON_API_CONTENT_TYPES,
   timeoutMs: 15_000,
@@ -62,11 +62,6 @@ function buildDeps(): AdapterConnectDeps {
       clientId: "GOOGLE_CALENDAR_CLIENT_ID",
       clientSecret: "GOOGLE_CALENDAR_CLIENT_SECRET",
       redirectUri: "GOOGLE_CALENDAR_OAUTH_REDIRECT_URI",
-    }),
-    ezyvet: envGroup({
-      clientId: "EZYVET_CLIENT_ID",
-      clientSecret: "EZYVET_CLIENT_SECRET",
-      partnerId: "EZYVET_PARTNER_ID",
     }),
     tokenEncryptionKey: optionalEnv("ADAPTER_TOKEN_ENCRYPTION_KEY") || undefined,
     logger,

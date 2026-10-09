@@ -860,6 +860,79 @@ export type MessagingBusinessProfileRow = {
   updated_at: string;
 };
 
+/** OUTBOUND-1 (20261009120000_outbound_webhooks.sql): one of a tenant's
+ * outbound webhook endpoints (max 5). Written only by the
+ * `api-tenant-webhooks` edge function and the delivery worker; tenant
+ * members read their own rows via RLS. */
+export type OutboundDestinationRow = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  /** Always `https://...` (DB check), at most 2048 chars. */
+  url: string;
+  event_types: (
+    | "booking.created"
+    | "booking.updated"
+    | "booking.cancelled"
+    | "order.created"
+    | "order.updated"
+    | "order.cancelled"
+    | "message.taken"
+  )[];
+  enabled: boolean;
+  /** Supabase Vault id of the signing secret. NOT selectable by
+   * `authenticated` (column grant): select the other columns explicitly,
+   * never `select("*")`, from a tenant session. */
+  signing_secret_id: string;
+  disabled_reason: Nullable<"owner" | "gone_410">;
+  consecutive_failures: number;
+  last_success_at: Nullable<string>;
+  last_failure_at: Nullable<string>;
+  /** Short owner-safe text ("HTTP 500", "Timed out after 5s"). */
+  last_error: Nullable<string>;
+  last_alerted_at: Nullable<string>;
+  created_at: string;
+  updated_at: string;
+};
+
+/** OUTBOUND-1: one business event to deliver (fan-out in outbound_deliveries). */
+export type OutboundEventRow = {
+  id: string;
+  tenant_id: string;
+  event_type:
+    | "booking.created"
+    | "booking.updated"
+    | "booking.cancelled"
+    | "order.created"
+    | "order.updated"
+    | "order.cancelled"
+    | "message.taken"
+    | "test.ping";
+  entity_type: "booking" | "order" | "call_log" | "test";
+  entity_id: Nullable<string>;
+  occurred_at: string;
+  /** The JSON body sent (contract v1); null until the first attempt builds it. */
+  payload: Nullable<Record<string, unknown>>;
+  created_at: string;
+};
+
+/** OUTBOUND-1: delivery state of one event to one destination. */
+export type OutboundDeliveryRow = {
+  id: string;
+  tenant_id: string;
+  destination_id: string;
+  event_id: string;
+  status: "pending" | "sending" | "retrying" | "delivered" | "failed" | "cancelled";
+  attempt_count: number;
+  next_attempt_at: string;
+  locked_until: Nullable<string>;
+  last_status_code: Nullable<number>;
+  last_error: Nullable<string>;
+  delivered_at: Nullable<string>;
+  created_at: string;
+  updated_at: string;
+};
+
 /** Structural helper: every column is optional on insert (DB defaults fill the rest) except the ones a caller must always supply — good enough for this app's insert call sites without a second hand-transcribed shape per table. */
 export type InsertOf<Row> = { [K in keyof Row]?: Row[K] };
 export type UpdateOf<Row> = { [K in keyof Row]?: Row[K] };
@@ -926,6 +999,9 @@ export type Database = {
       airtable_sync_state: Tbl<AirtableSyncStateRow>;
       messaging_senders: Tbl<MessagingSenderRow>;
       messaging_business_profiles: Tbl<MessagingBusinessProfileRow>;
+      outbound_destinations: Tbl<OutboundDestinationRow>;
+      outbound_events: Tbl<OutboundEventRow>;
+      outbound_deliveries: Tbl<OutboundDeliveryRow>;
     };
     Views: {
       v_tenant_margin: { Row: Record<string, unknown>; Relationships: [] };

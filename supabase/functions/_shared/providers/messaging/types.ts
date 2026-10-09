@@ -135,6 +135,9 @@ export const OWNER_ALERT_KINDS = [
   "urgent_call",
   "missed_transfer",
   "line_ready",
+  // OUTBOUND-1: an outbound webhook delivery gave up, or a destination was
+  // turned off because the receiving app answered 410 Gone.
+  "webhook_failing",
 ] as const;
 export type OwnerAlertKind = (typeof OWNER_ALERT_KINDS)[number];
 

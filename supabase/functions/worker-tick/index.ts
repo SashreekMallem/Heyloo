@@ -27,6 +27,7 @@ import {
   requireEnv,
 } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
+import type { WebhookDeliveryDeps } from "../_shared/outbound/delivery.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import {
   JSON_API_CONTENT_TYPES,
@@ -139,6 +140,16 @@ const RECORDING_FETCH_DEPS: RecordingFetchDeps = {
   fetchRecordingBytes,
 };
 
+// --- outbound_webhooks leg (OUTBOUND-1) — no secret of its own: each
+// destination's signing secret is read from Vault per delivery. The engine
+// sends ONLY through `safeFetch` (public https hosts, DNS answers checked,
+// no redirects, 5 s); `fetch` here is the transport under that check. ---
+const OUTBOUND_WEBHOOK_DEPS: WebhookDeliveryDeps = {
+  appBaseUrl: optionalEnv("APP_BASE_URL") ?? "https://heyloo.app",
+  logger,
+  transport: fetch,
+};
+
 Deno.serve(async (req: Request) => {
   const provided = req.headers.get("x-cron-secret");
   if (!provided || !timingSafeEqual(provided, CRON_SECRET)) {
@@ -161,12 +172,14 @@ Deno.serve(async (req: Request) => {
       ADAPTER_PUSH_MISSING.length > 0
         ? notConfigured(ADAPTER_PUSH_MISSING)
         : { deps: ADAPTER_PUSH_DEPS, logger },
+    outboundWebhooks: OUTBOUND_WEBHOOK_DEPS,
   });
 
   for (const [leg, outcome] of [
     ["messages_outbound", result.messages_outbound],
     ["recording_fetch", result.recording_fetch],
     ["adapter_push", result.adapter_push],
+    ["outbound_webhooks", result.outbound_webhooks],
   ] as const) {
     if (outcome.status === "skipped") {
       logger.warn("worker_tick_leg_skipped_not_configured", { leg, missing: outcome.missing });

@@ -20,9 +20,9 @@ import type {
   IntegrationStatus,
   IntegrationsListResponse,
 } from "@/app/api/tenant/integrations/route";
+import { isOAuthProvider } from "@/app/api/tenant/integrations/shared";
+import { WebhooksCard } from "@/components/tenant/webhooks-card";
 import { useCurrentTenantId } from "@/lib/tenant/tenant-context";
-
-const OAUTH_PROVIDERS = new Set(["square", "google_calendar"]);
 
 const STATUS_META: Record<
   IntegrationStatus["status"],
@@ -30,17 +30,41 @@ const STATUS_META: Record<
 > = {
   disconnected: { label: "Not connected", variant: "outline" },
   connected: { label: "Connected", variant: "success" },
-  error: { label: "Needs reauthorization", variant: "destructive" },
+  error: { label: "Needs reconnect", variant: "destructive" },
 };
 
+/** Owner-facing status line. Never the raw `last_error` (internal strings like "square 401 on booking push"). */
+function statusText(integration: IntegrationStatus, comingSoon: boolean): string {
+  if (integration.status === "connected") {
+    return integration.last_refreshed_at
+      ? `Last refreshed ${new Date(integration.last_refreshed_at).toLocaleString()}`
+      : "Connected.";
+  }
+  if (integration.status === "error") {
+    return comingSoon
+      ? `${integration.display_name} stopped accepting Heyloo's connection, so syncing has stopped. Reconnecting will be possible once this integration is available again.`
+      : `${integration.display_name} stopped accepting Heyloo's connection, so syncing has stopped. Reconnect to resume.`;
+  }
+  return comingSoon
+    ? "Coming soon. Until then, send bookings and orders to any app with webhooks above."
+    : "Not connected yet.";
+}
+
 /**
- * Tenant-facing adapter Integrations page (E2E_FLOWS_AUDIT Flow 9/10 gap —
+ * Tenant-facing Integrations page (E2E_FLOWS_AUDIT Flow 9/10 gap —
  * "no 'Connect <adapter>' UI in the tenant dashboard at all"; nav entry
  * already wired in `tenant-shell-client.tsx`, this file fills the route).
- * Lists the four two-way sync adapters `api-adapter-connect` supports
- * (Square, Google Calendar, Shopmonkey, ezyVet) with real connect/
- * reconnect/disconnect actions, live status, last-refreshed time, and any
- * revocation error — never a decorative control (CLAUDE.md).
+ *
+ * OUTBOUND-1: the Webhooks card at the top sends every booking, order and
+ * taken message to Zapier/Make/n8n/any HTTPS endpoint.
+ *
+ * Below it, the four two-way sync adapters `api-adapter-connect` supports
+ * (Square, Google Calendar, Shopmonkey, ezyVet) with live status and
+ * last-refreshed time. CONNECT-SAFE-1: a provider the API marks
+ * `available: false` reads "Coming soon" with a disabled Connect (the
+ * connect route refuses it too); an existing connection stays visible and
+ * can still be disconnected. A connection that broke reads "Needs
+ * reconnect" with friendly copy, never the raw stored reason.
  *
  * Airtable is a separate one-way delivery integration with its own page
  * (`/dashboard/delivery`) and isn't duplicated here.
@@ -109,14 +133,10 @@ export default function IntegrationsPage() {
     if (!pasteValue.trim()) return;
     setPending(provider);
     try {
-      const payload =
-        provider === "ezyvet"
-          ? { provider, base_url: pasteValue.trim() }
-          : { provider, api_key: pasteValue.trim() };
       const res = await fetch("/api/tenant/integrations/connect", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ provider, api_key: pasteValue.trim() }),
       });
       if (res.ok) {
         toast.success("Connected");
@@ -128,8 +148,8 @@ export default function IntegrationsPage() {
         toast.error(
           body.error === "shopmonkey_api_key_invalid"
             ? "That API key wasn't accepted by Shopmonkey."
-            : body.error === "ezyvet_practice_not_authorized"
-              ? "This practice hasn't authorized Heyloo yet in ezyVet."
+            : body.error === "provider_coming_soon"
+              ? "This integration isn't available yet."
               : "Couldn't connect — please check the details and try again.",
         );
       }
@@ -161,9 +181,12 @@ export default function IntegrationsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Integrations"
-        description="Connect the systems you already use so bookings and orders sync automatically."
+        description="Send bookings, orders and messages to the apps you already use."
       />
 
+      {tenantId && <WebhooksCard tenantId={tenantId} />}
+
+      <h2 className="text-base font-medium">Sync with your booking or POS system</h2>
       <DataState
         query={query}
         empty={{
@@ -185,23 +208,34 @@ export default function IntegrationsPage() {
         render={(data) => (
           <div className="grid gap-4 sm:grid-cols-2">
             {data.integrations.map((integration) => {
-              const meta = STATUS_META[integration.status];
-              const isOAuth = OAUTH_PROVIDERS.has(integration.provider);
+              const meta = STATUS_META[integration.status] ?? STATUS_META.disconnected;
+              const isOAuth = isOAuthProvider(integration.provider);
               const isPending = pending === integration.provider;
+              // A response without the field (older API, preview fixture) is available.
+              const comingSoon = integration.available === false;
+              const showComingSoonBadge = comingSoon && integration.status === "disconnected";
               return (
-                <Card key={integration.provider}>
+                <Card
+                  key={integration.provider}
+                  role="group"
+                  aria-labelledby={`integration-${integration.provider}-title`}
+                >
                   <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
-                    <CardTitle className="text-base">{integration.display_name}</CardTitle>
-                    <Badge variant={meta.variant}>{meta.label}</Badge>
+                    <CardTitle
+                      id={`integration-${integration.provider}-title`}
+                      className="text-base"
+                    >
+                      {integration.display_name}
+                    </CardTitle>
+                    {showComingSoonBadge ? (
+                      <Badge variant="secondary">Coming soon</Badge>
+                    ) : (
+                      <Badge variant={meta.variant}>{meta.label}</Badge>
+                    )}
                   </CardHeader>
                   <CardContent className="space-y-3">
                     <p className="text-xs text-muted-foreground">
-                      {integration.status === "connected" && integration.last_refreshed_at
-                        ? `Last refreshed ${new Date(integration.last_refreshed_at).toLocaleString()}`
-                        : integration.status === "error"
-                          ? (integration.last_error ??
-                            "The provider revoked access — reconnect to resume syncing.")
-                          : "Not connected yet."}
+                      {statusText(integration, comingSoon)}
                     </p>
 
                     {!integration.can_manage ? (
@@ -217,6 +251,10 @@ export default function IntegrationsPage() {
                       >
                         Disconnect
                       </Button>
+                    ) : comingSoon ? (
+                      <Button size="sm" disabled>
+                        Connect
+                      </Button>
                     ) : isOAuth ? (
                       <Button
                         size="sm"
@@ -227,18 +265,12 @@ export default function IntegrationsPage() {
                       </Button>
                     ) : pasteKeyOpenFor === integration.provider ? (
                       <div className="space-y-2">
-                        <Label htmlFor={`paste-${integration.provider}`}>
-                          {integration.provider === "ezyvet" ? "Practice base URL" : "API key"}
-                        </Label>
+                        <Label htmlFor={`paste-${integration.provider}`}>API key</Label>
                         <Input
                           id={`paste-${integration.provider}`}
                           value={pasteValue}
                           onChange={(e) => setPasteValue(e.target.value)}
-                          placeholder={
-                            integration.provider === "ezyvet"
-                              ? "https://your-practice.ezyvet.com"
-                              : "sk_..."
-                          }
+                          placeholder="sk_..."
                         />
                         <div className="flex gap-2">
                           <Button
@@ -268,7 +300,7 @@ export default function IntegrationsPage() {
                           setPasteValue("");
                         }}
                       >
-                        Connect
+                        {integration.status === "error" ? "Reconnect" : "Connect"}
                       </Button>
                     )}
                   </CardContent>

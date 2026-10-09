@@ -84,9 +84,10 @@ describe("owner alert templates", () => {
         message_text: "Call me",
         summary: "Brakes failing",
         phone_e164: "+15551230000",
+        destination_name: "Zapier",
       });
       expect(rendered.subject, template).toBeTruthy();
-      expect(rendered.body, template).toMatch(/Jordan|\+15551230000/);
+      expect(rendered.body, template).toMatch(/Jordan|\+15551230000|Zapier/);
     }
     expect(isOwnerAlertTemplate("booking_confirmation")).toBe(false);
   });
