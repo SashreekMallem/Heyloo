@@ -3297,3 +3297,54 @@ Code: `supabase/functions/_shared/providers/census-geocode.ts` (Zod-validated at
 - **House number.** `fromAddress`/`toAddress` are the TIGER address range of the matched segment, not the caller's house number, so the stored street line is taken from `matchedAddress` (before its first comma).
 - **Not documented:** rate limits, uptime, and latency. Observed 0.27-0.55 s. The hot path waits at most 1.5 s per request (AbortController) and answers "could not verify" after that. VERIFY under real call volume (tool_health for `check_delivery_address`/`create_order`), and that requests from the Supabase edge network are not throttled or blocked.
 - US addresses only; a PO box or a brand-new subdivision may not match (the order is still placed, marked unverified).
+
+## OUTBOUND-1 (2026-10-09) — outbound webhooks (Supabase Vault, Standard Webhooks, Edge Runtime)
+
+- **Vault.** Verified against supabase.com/docs/guides/database/vault and the live catalog:
+  - `vault.create_secret(new_secret, new_name, new_description, new_key_id)` returns uuid.
+  - `vault.update_secret(secret_id, …)` returns void.
+  - `postgres` holds EXECUTE on both and SELECT/DELETE on `vault.secrets` / `vault.decrypted_secrets`.
+  - VERIFY after deploy: the worker-tick logs show `fn_outbound_secret_read` succeeding over `SUPABASE_DB_URL`.
+- **Signing.** The vector is from standard-webhooks `libraries/python/tests/test_webhooks.py`
+  (`test_sign_function`) and matches.
+  - Delivery rules (3xx = failure, 410 = disable, Retry-After) are from `spec/standard-webhooks.md`.
+  - The 5 s timeout departs from the spec's 15–30 s.
+- **Edge Runtime, confirm on the deployed function:**
+  - `fetch(…, {redirect:"manual"})` returns the raw 3xx.
+  - `Deno.resolveDns` is available (safe-fetch DNS check active).
+  - The `user-agent` header is honored.
+  - The WHATWG URL normalization (`z.url({normalize:true})`, zod 4.5.4) gives the same href as Node.
+- **Alert window release** compares `timestamptz::text`. Re-check it if a deploy ever sets a
+  per-connection DateStyle or TimeZone.
+- **CI.** The RLS cross-tenant probe now seeds the three outbound tables. It has not been run locally
+  (no `supabase start`), so confirm the CI run is green.
+- **Zapier copy.** "Webhooks by Zapier" Catch Hook is a premium app needing a paid plan. The minimum tier
+  conflicts between sources (Starter vs Professional); confirm against https://zapier.com/pricing before
+  final launch copy.
+
+## LIVE-1 (2026-10-09) — live screen device behavior
+
+- **Printing** (`apps/web/src/lib/live/print.ts`): hidden `srcdoc` iframe → `contentWindow.print()`, with
+  a popup fallback.
+  - Not verified on devices. Test on iPad Safari 16.4+, Android Chrome and desktop Chrome with
+    `--kiosk-printing`: the ticket must print (not the page, not blank).
+  - Watch for CSP report-only `frame-src` reports. https://bugs.webkit.org/show_bug.cgi?id=235066
+- **80mm:** `@page { size: 80mm auto }` is ignored before iOS Safari 18.2, so the body is capped at
+  `max-width: 80mm`. Confirm on the target thermal printer.
+- **Audio:** the AudioContext is resumed on the Start tap (https://developer.chrome.com/blog/autoplay).
+  Confirm iPadOS keeps playing after idle/background, and that the ringer switch mutes it.
+- **Wake lock:** `navigator.wakeLock.request('screen')`, re-requested on visibilitychange. Confirm in an
+  iPad browser tab; Home Screen web apps on iOS 16.4–18.4 are reported broken (WebKit 254545).
+
+## CONNECT-SAFE-1 (2026-10-09) — ezyVet API host (updates the SSRF-1 "ezyVet base URL" item)
+
+- **Host.** developers.ezyvet.com (fetched 2026-10-09) lists the servers `https://api.ezyvet.com`
+  (production) and `https://api.trial.ezyvet.com` (trial). The token URL is
+  `https://api.ezyvet.com/v1/oauth/access_token`.
+  - CONFIRMED: the API is not per-practice-subdomain. The partner-secret mint and connect schema now
+    accept only those two hosts.
+- **Before re-enabling ezyVet:**
+  1. The token request takes `partner_id, client_id, client_secret, grant_type, scope` (+ optional
+     `site_uid`). client_id/client_secret come from the clinic, so the connect model needs a redesign.
+  2. Token TTL conflict (12 h vs 14 days): read `expires_in` live.
+  3. Worker ADAPTER_FETCH must not follow redirects for the token mint.

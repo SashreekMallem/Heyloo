@@ -9617,3 +9617,101 @@ restaurant's own address and delivery radius; the delivery charge is distance-ba
   the restaurant `agent_templates` row from the regenerated seed copy (tools + states +
   system_prompt) BEFORE deploying the version bump, or restaurant agents get republished at
   version 5 without the new tool and are not republished again.
+
+## OUTBOUND-1 — signed webhooks for bookings, orders and taken messages (2026-10-09)
+
+Why: the direct connectors (Square, Shopmonkey, ezyVet, Google Calendar) have never been connected by a
+real tenant and several cannot work as built (CONNECT-SAFE-1 below). One vertical-agnostic pipeline lets
+any business receive every real booking/order/message in Zapier, Make, n8n or any HTTPS endpoint;
+deep connectors can become destinations of the same pipeline later.
+
+- **Migration `20261009120000_outbound_webhooks.sql`:** `outbound_destinations`, `outbound_events`,
+  `outbound_deliveries`.
+  - Access: tenant-only SELECT (RLS), service-role writes only. `signing_secret_id` is not granted to
+    `authenticated` (column grants). Composite tenant FKs. Max 5 destinations per tenant (edge check +
+    trigger with an advisory lock).
+  - Signing secrets (`whsec_…`) live in Supabase Vault. They go through service-role-only helpers
+    limited to `outbound_webhook_*` names, and the Vault row is deleted with the destination.
+  - Enqueue: AFTER triggers `trg_outbound_{bookings,orders,call_logs}` → `fn_outbound_enqueue`
+    (transactional outbox).
+    - Test rows are skipped, and a motel deposit hold is not a real booking until it becomes one.
+    - Tenants with no destination pay one indexed check.
+    - An enqueue error is a WARNING and never fails the business write.
+  - 30-day retention added to `fn_cron_internal_retention_sweep`.
+- **Delivery:** the `outbound_webhooks` leg of worker-tick (no new cron).
+  - Claims: skip-locked claim rounds of 10 within a 5.5 s budget, a 2-minute lease, and lease-checked
+    outcome writes. Crash recovery respects the 8-attempt cap.
+  - Sending: Standard Webhooks headers/signature via `safeFetch` (https only, public hosts, no redirects,
+    5 s), judged on status only.
+  - Retries: 1m/5m/30m/2h/5h/10h/24h ±10% jitter, 8 attempts. Retry-After is honored as a minimum (cap 24 h).
+    A 410 turns the destination off (`gone_410`).
+  - The payload is built once and re-sent byte-identically.
+  - Owner alert `webhook_failing` (SMS template `owner_webhook_failing`), at most once per destination per 24 h.
+- **Payload contract v1:** `{type, timestamp, business, data}`. Zod lives in
+  `packages/canonical-types/src/outbound-webhooks.ts`, with a Deno mirror in `_shared/schemas` and a
+  parity test.
+- **Owner API:** edge function `api-tenant-webhooks` (verify_jwt=true; owner/admin from JWT; read-only
+  impersonation refused): create / update / delete / rotate_secret / send_test (in-request, same engine) / retry.
+  - Next proxy `POST /api/tenant/webhooks` applies the same role rule before forwarding.
+    `GET /api/tenant/webhooks` returns `{can_manage, reason}`.
+- **Portal:** a "Send bookings & orders to any app" card at the top of Integrations. It has destinations
+  (enable switch, health, Send test, Rotate, Delete), a show-once secret, and Recent deliveries
+  (last 50, Retry).
+- **Decisions:** 5 s per-attempt timeout (the spec suggests 15–30 s; receivers dedupe on `webhook-id`).
+  Test pings are one attempt and never alert. Rotation has no dual-secret grace period.
+- **Gaps:** no per-tenant fairness in claim order. No preview fixtures for the outbound tables.
+  setup-progress "Connect an integration" only counts `adapter_connections` (consider counting
+  `outbound_destinations`).
+
+## LIVE-1 — live screen / kitchen mode for every vertical (2026-10-09)
+
+- **Route:** `/dashboard/live` renders full screen (`isLiveScreenPath` in TenantShellClient). Auth,
+  realtime, the impersonation banner and Manual Mode stay.
+  - Nav: OPERATE → Live screen. Preview mirror at `/preview/dashboard/live`.
+- **Start overlay:** one tap resumes the WebAudio context, requests a screen wake lock (re-requested on
+  visibilitychange) and goes fullscreen where allowed.
+- **Orders** (restaurants, or any tenant with orders in 24 h): New / In progress / Ready columns.
+  - Buttons Confirm → Start → Ready → Done via the existing `PATCH /api/tenant/orders/[id]`.
+    Status changes are optimistic, a failure rolls back only that order, and in-flight statuses survive
+    refetches.
+  - Allergies are shown prominently, plus a Print button.
+- **Bookings and Messages feeds:** "New" until acknowledged with "Got it". Acks are per device
+  (localStorage, 48 h).
+- **Chime** (`pendingAlerts`): every order still `received` rings, including ones waiting at load, at
+  Start and then every 10 s.
+  - Bookings/messages ring only if they arrived after the screen opened. A booking counts only if it was
+    created in the last 24 h, so the midnight window and reschedules don't ring.
+  - Arrivals are found by id diff against a 15 s poll fallback plus realtime invalidation.
+- **Printing:** 80mm ticket HTML (everything escaped, allergies boxed) via a hidden `srcdoc` iframe with a
+  popup fallback.
+  - Optional auto-print of new orders. It is silent only with desktop Chrome `--kiosk-printing`.
+- **Gap:** the existing `ready` transition on the order route always texts "ready for pickup!", even for
+  delivery orders.
+- **Fix:** preview order/booking fixtures now carry `is_test: false` (the Orders/Bookings previews were empty).
+
+## CONNECT-SAFE-1 — connector safety cleanup (2026-10-09)
+
+Production evidence (2026-10-09): `adapter_connections` has never had a row; no push ever reached a
+provider; all four connectors were only tested against mocks.
+
+- `COMING_SOON_PROVIDERS` = square, google_calendar, shopmonkey, ezyvet (`api/tenant/integrations/shared.ts`).
+  Connected rows stay visible and disconnectable. The Next connect route returns 409
+  `provider_coming_soon`. Remove a provider from the set only once it works end to end against a real account.
+  - Why each one is held back:
+    - Square: no `metadata.locationId` is ever stored and the scopes are too narrow, so every push no-ops.
+    - Google: the watch channel and poller never run, and the webhook can't match.
+    - Shopmonkey: duplicates on retry, and cancel creates an appointment.
+    - ezyVet: requires a commercial partner certification (4–8 months, 5 beta sites) and had a secret leak.
+- **Status:** disconnected + `last_error` (except the sentinel `tenant-initiated disconnect`) → "error",
+  shown as "Needs reconnect" with friendly text. The raw `last_error` is never rendered.
+- **ezyVet:** paste_key is refused (409 `provider_unavailable`) before any secret or network use.
+  - `refreshEzyVetToken` (partner client_secret) only accepts `api.ezyvet.com` / `api.trial.ezyvet.com`
+    (exact hosts per developers.ezyvet.com).
+  - Data calls refuse any non-ezyvet.com host. The connect schema refine accepts only those two hosts.
+- **Before re-enabling ezyVet:**
+  1. Give ezyVet calls `makeSafeFetch({…, maxRedirects: 0})` in worker-adapter-push/worker-tick
+     (ADAPTER_FETCH follows 3 redirects today).
+  2. Move the `clinic.ezyvet.com` test fixtures to `api.ezyvet.com/v1`, then use the strict host rule
+     for data calls too.
+  3. Redesign the connect model against developers.ezyvet.com (clinic-issued client credentials, site_uid).
+- **Open:** Airtable (Delivery page) has the same disconnected+last_error display gap.
