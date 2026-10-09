@@ -287,3 +287,91 @@ describe("TenantShellClient — navigation (QA-1)", () => {
     expect(screen.getByRole("button", { name: "Account menu" })).toBeInTheDocument();
   });
 });
+
+describe("TenantShellClient — live screen (LIVE-1)", () => {
+  it("lists 'Live screen' in the Operate nav", () => {
+    useImpersonationBanner.mockReturnValue(null);
+    renderShell();
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    expect(within(nav).getByRole("link", { name: "Live screen" })).toHaveAttribute(
+      "href",
+      "/dashboard/live",
+    );
+  });
+
+  it.each(["/dashboard/live", "/preview/dashboard/live"])(
+    "renders %s full screen: no sidebar, top bar or tab bar",
+    (path) => {
+      useImpersonationBanner.mockReturnValue(null);
+      pathname.current = path;
+      renderShell();
+      expect(screen.getByText("dashboard content")).toBeInTheDocument();
+      expect(screen.queryByRole("navigation", { name: "Main" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Account menu" })).not.toBeInTheDocument();
+    },
+  );
+
+  it("keeps the shell on look-alike paths", () => {
+    useImpersonationBanner.mockReturnValue(null);
+    pathname.current = "/dashboard/livestock";
+    renderShell();
+    expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument();
+  });
+
+  it("still shows the impersonation banner on the full-screen live screen", () => {
+    useImpersonationBanner.mockReturnValue({
+      tenantId: "t1",
+      tenantName: "Acme",
+      adminEmail: "admin@heyloo.ai",
+      expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+      editMode: false,
+      onEnd: vi.fn(),
+      onToggleEdit: vi.fn(),
+    });
+    pathname.current = "/dashboard/live";
+    renderShell();
+    expect(screen.getByRole("button", { name: /End impersonation/i })).toBeInTheDocument();
+    expect(screen.getByText("dashboard content")).toBeInTheDocument();
+  });
+
+  it("still shows the Manual Mode banner on the full-screen live screen", () => {
+    useImpersonationBanner.mockReturnValue(null);
+    pathname.current = "/dashboard/live";
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <TenantShellClient
+          tenantId="t1"
+          tenantName="Acme"
+          manualMode={true}
+          manualModeSince="2026-10-09T15:00:00Z"
+        >
+          <p>dashboard content</p>
+        </TenantShellClient>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Manual Mode is on")).toBeInTheDocument();
+    expect(screen.getByText("dashboard content")).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Main" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the tenant context for the live screen", () => {
+    useImpersonationBanner.mockReturnValue(null);
+    pathname.current = "/dashboard/live";
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <TenantShellClient
+          tenantId="t1"
+          tenantName="Acme"
+          manualMode={false}
+          manualModeSince={null}
+          canWrite={false}
+          isOwner={false}
+        >
+          <RoleProbe />
+        </TenantShellClient>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("write:false owner:false")).toBeInTheDocument();
+  });
+});

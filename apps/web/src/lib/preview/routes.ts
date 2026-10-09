@@ -382,6 +382,13 @@ export const PREVIEW_ROUTES: PreviewRoute[] = [
     source: "apps/web/src/app/[locale]/(tenant)/dashboard/integrations/page.tsx",
   },
   {
+    url: "/preview/dashboard/live",
+    href: "/preview/dashboard/live",
+    area: "Tenant dashboard",
+    label: "Live screen",
+    source: "apps/web/src/app/[locale]/(tenant)/dashboard/live/page.tsx",
+  },
+  {
     url: "/preview/dashboard/messages",
     href: "/preview/dashboard/messages",
     area: "Tenant dashboard",

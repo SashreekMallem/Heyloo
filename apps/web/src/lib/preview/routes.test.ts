@@ -44,6 +44,15 @@ describe("PREVIEW_ROUTES — every registered route resolves a mirror component"
     expect(PREVIEW_ROUTES.length).toBeGreaterThan(50);
   });
 
+  it("registers the live screen mirror (LIVE-1)", () => {
+    expect(PREVIEW_ROUTES).toContainEqual(
+      expect.objectContaining({
+        url: "/preview/dashboard/live",
+        source: "apps/web/src/app/[locale]/(tenant)/dashboard/live/page.tsx",
+      }),
+    );
+  });
+
   it("has no duplicate urls or hrefs", () => {
     const urls = PREVIEW_ROUTES.map((r) => r.url);
     const hrefs = PREVIEW_ROUTES.map((r) => r.href);

@@ -17,7 +17,7 @@ import {
 } from "@heyloo/ui";
 import { NotificationCenter } from "@heyloo/ui/notification";
 import { useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal } from "lucide-react";
+import { MonitorPlay, MoreHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
 import { SidebarAccount, UserMenu } from "@/components/shell/user-menu";
 import { Link, usePathname, useRouter } from "@/i18n/navigation";
@@ -27,6 +27,7 @@ import {
   useTenantNotifications,
 } from "@/lib/hooks/use-tenant-notifications";
 import { useImpersonationBanner } from "@/lib/impersonation/use-impersonation-banner";
+import { isLiveScreenPath, LIVE_SCREEN_HREF } from "@/lib/live/paths";
 import { useTenantRealtimeStatus } from "@/lib/realtime/tenant-realtime-provider";
 import { isReferralAttributionLive } from "@/lib/referrals/attribution";
 import { TenantIdProvider } from "@/lib/tenant/tenant-context";
@@ -37,6 +38,8 @@ const OPERATE_SECTION: NavSection = {
     // `exact`: "/dashboard" prefixes every other route, so without it Overview
     // stayed highlighted on every page (QA-1 F-01).
     { label: "Overview", href: "/dashboard", icon: NAV_ICONS.overview, exact: true },
+    // LIVE-1: full-screen counter / kitchen view (no shell, see below).
+    { label: "Live screen", href: LIVE_SCREEN_HREF, icon: MonitorPlay },
     { label: "Calls", href: "/dashboard/calls", icon: NAV_ICONS.calls },
     { label: "Bookings", href: "/dashboard/bookings", icon: NAV_ICONS.bookings },
     { label: "Customers", href: "/dashboard/customers", icon: NAV_ICONS.customers },
@@ -150,6 +153,35 @@ export function TenantShellClient({
   const pathname = usePathname();
   const impersonation = useImpersonationBanner(tenantId);
 
+  const impersonationBanner = impersonation && (
+    <ImpersonationBanner
+      tenantName={tenantName}
+      adminEmail={impersonation.adminEmail}
+      expiresAt={impersonation.expiresAt}
+      editMode={impersonation.editMode}
+      onEnd={impersonation.onEnd}
+      onToggleEdit={impersonation.onToggleEdit}
+    />
+  );
+
+  const manualModeBanner = manualMode && manualModeSince && (
+    <ManualModeBanner since={manualModeSince} />
+  );
+
+  // LIVE-1: the live screen is full screen — no sidebar, top bar or tab bar.
+  // The (tenant) layout's auth guard and realtime provider still wrap it;
+  // the impersonation and Manual Mode banners still show (a counter screen
+  // must say when the AI isn't taking bookings).
+  if (isLiveScreenPath(pathname)) {
+    return (
+      <TenantIdProvider tenantId={tenantId} canWrite={canWrite} isOwner={isOwner}>
+        {impersonationBanner}
+        {manualModeBanner}
+        {children}
+      </TenantIdProvider>
+    );
+  }
+
   return (
     <TenantIdProvider tenantId={tenantId} canWrite={canWrite} isOwner={isOwner}>
       <AppShell
@@ -173,19 +205,10 @@ export function TenantShellClient({
           </TopBar>
         }
         banner={
-          impersonation || (manualMode && manualModeSince) ? (
+          impersonationBanner || manualModeBanner ? (
             <>
-              {impersonation && (
-                <ImpersonationBanner
-                  tenantName={tenantName}
-                  adminEmail={impersonation.adminEmail}
-                  expiresAt={impersonation.expiresAt}
-                  editMode={impersonation.editMode}
-                  onEnd={impersonation.onEnd}
-                  onToggleEdit={impersonation.onToggleEdit}
-                />
-              )}
-              {manualMode && manualModeSince && <ManualModeBanner since={manualModeSince} />}
+              {impersonationBanner}
+              {manualModeBanner}
             </>
           ) : null
         }

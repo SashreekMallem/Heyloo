@@ -170,50 +170,81 @@ export const TABLE_FIXTURES: Record<string, Record<string, unknown>[]> = {
     };
   }),
 
-  call_logs: Array.from({ length: 8 }, (_, i) => ({
-    id: `call-${i + 1}`,
-    tenant_id: PREVIEW_TENANT_ID,
-    classification: CALL_CLASSES[i % CALL_CLASSES.length],
-    // Real calls/[id]/page.tsx maps `t.speaker` (not `t.role`) into the
-    // turns it hands to `TranscriptViewer` — keep this key in sync with
-    // that shape (round-3 tenant design review, blocker: a `role` key here
-    // left every synthesized turn's `speaker` undefined and crashed
-    // `turn.speaker.toLowerCase()`).
-    transcript: [
-      {
-        speaker: "agent",
-        text: "Thanks for calling Golden Fork Bistro — this call may be recorded. How can I help?",
-        ts: 0,
+  call_logs: [
+    ...Array.from({ length: 8 }, (_, i) => ({
+      id: `call-${i + 1}`,
+      tenant_id: PREVIEW_TENANT_ID,
+      classification: CALL_CLASSES[i % CALL_CLASSES.length],
+      // Real calls/[id]/page.tsx maps `t.speaker` (not `t.role`) into the
+      // turns it hands to `TranscriptViewer` — keep this key in sync with
+      // that shape (round-3 tenant design review, blocker: a `role` key here
+      // left every synthesized turn's `speaker` undefined and crashed
+      // `turn.speaker.toLowerCase()`).
+      transcript: [
+        {
+          speaker: "agent",
+          text: "Thanks for calling Golden Fork Bistro — this call may be recorded. How can I help?",
+          ts: 0,
+        },
+        { speaker: "caller", text: "Hi, I'd like a table for four tonight around 7.", ts: 4 },
+        { speaker: "agent", text: "I can do 7:15 for four — would that work?", ts: 9 },
+        { speaker: "caller", text: "Perfect, thank you.", ts: 14 },
+      ],
+      state_trace: [
+        { state: "greeting", enteredAt: daysAgoIso(i, 9) },
+        { state: "collect_party_size", enteredAt: daysAgoIso(i, 9) },
+        { state: "book", enteredAt: daysAgoIso(i, 9) },
+      ],
+      recording_url: null,
+      stereo_recording_url: null,
+      duration_seconds: 48 + i * 17,
+      ended_at: daysAgoIso(i),
+      structured_booking_payload: { party_size: 2 + (i % 5), time: "19:15" },
+      urgency_flag: i === 5,
+      call_summary: "Booked a table for tonight.",
+      sentiment: i % 3 === 0 ? "positive" : "neutral",
+      follow_up_needed: i % 4 === 0,
+      legal_advice_given: false,
+      extracted_entities: { name: CUSTOMER_NAMES[i % CUSTOMER_NAMES.length] },
+      message_text: null,
+      outcome: "booked",
+      customer_phone: `+1512555${String(1000 + i).padStart(4, "0")}`,
+      // Real column tenant/customers/[id]/page.tsx joins recent calls on
+      // (`.eq("caller_number", customer.phone_e164)`) — kept identical to
+      // `customer_phone` above so that join actually resolves rows in preview.
+      caller_number: `+1512555${String(1000 + i).padStart(4, "0")}`,
+      started_at: daysAgoIso(i),
+    })),
+    // LIVE-1: a taken message (non-empty `message_text`, real call) so the
+    // live screen's Messages feed has something to show.
+    {
+      id: "call-message-1",
+      tenant_id: PREVIEW_TENANT_ID,
+      classification: "after_hours_message",
+      is_test_call: false,
+      message_text: "Calling about a large party this Saturday. Can someone call me back?",
+      structured_booking_payload: {
+        caller_name: "Grace Kim",
+        caller_phone: "+15125551004",
+        callback_window: "after 3 PM",
       },
-      { speaker: "caller", text: "Hi, I'd like a table for four tonight around 7.", ts: 4 },
-      { speaker: "agent", text: "I can do 7:15 for four — would that work?", ts: 9 },
-      { speaker: "caller", text: "Perfect, thank you.", ts: 14 },
-    ],
-    state_trace: [
-      { state: "greeting", enteredAt: daysAgoIso(i, 9) },
-      { state: "collect_party_size", enteredAt: daysAgoIso(i, 9) },
-      { state: "book", enteredAt: daysAgoIso(i, 9) },
-    ],
-    recording_url: null,
-    stereo_recording_url: null,
-    duration_seconds: 48 + i * 17,
-    ended_at: daysAgoIso(i),
-    structured_booking_payload: { party_size: 2 + (i % 5), time: "19:15" },
-    urgency_flag: i === 5,
-    call_summary: "Booked a table for tonight.",
-    sentiment: i % 3 === 0 ? "positive" : "neutral",
-    follow_up_needed: i % 4 === 0,
-    legal_advice_given: false,
-    extracted_entities: { name: CUSTOMER_NAMES[i % CUSTOMER_NAMES.length] },
-    message_text: null,
-    outcome: "booked",
-    customer_phone: `+1512555${String(1000 + i).padStart(4, "0")}`,
-    // Real column tenant/customers/[id]/page.tsx joins recent calls on
-    // (`.eq("caller_number", customer.phone_e164)`) — kept identical to
-    // `customer_phone` above so that join actually resolves rows in preview.
-    caller_number: `+1512555${String(1000 + i).padStart(4, "0")}`,
-    started_at: daysAgoIso(i),
-  })),
+      caller_number: "+15125551004",
+      transcript: [],
+      state_trace: [],
+      recording_url: null,
+      stereo_recording_url: null,
+      duration_seconds: 64,
+      call_summary: "Left a message about a large party.",
+      outcome: "message_taken",
+      urgency_flag: false,
+      follow_up_needed: true,
+      legal_advice_given: false,
+      extracted_entities: { name: "Grace Kim" },
+      created_at: new Date(Date.now() - 40 * 60_000).toISOString(),
+      started_at: new Date(Date.now() - 40 * 60_000).toISOString(),
+      ended_at: new Date(Date.now() - 39 * 60_000).toISOString(),
+    },
+  ],
 
   customers: CUSTOMER_NAMES.map((name, i) => ({
     id: `customer-${i + 1}`,
@@ -248,6 +279,14 @@ export const TABLE_FIXTURES: Record<string, Record<string, unknown>[]> = {
     structured_payload: { occasion: i % 2 === 0 ? "birthday" : null, seating: "booth" },
     quoted_rate_cents: null,
     identity_verified_by: i % 2 === 0 ? "phone_match" : null,
+    // LIVE-1: the live screen (and the bookings list) filter on
+    // `is_test = false` and read `created_at` / `hold_expires_at` / `notes`;
+    // left unset, the mock synthesized a hold timestamp and a placeholder
+    // note, and the `is_test` filter dropped every row.
+    is_test: false,
+    created_at: new Date(Date.now() - (i + 1) * 4 * 3_600_000).toISOString(),
+    hold_expires_at: null,
+    notes: null,
   })),
 
   payment_links: [
@@ -500,6 +539,10 @@ export const TABLE_FIXTURES: Record<string, Record<string, unknown>[]> = {
       allergies: i === 1 ? ["peanuts"] : [],
       special_instructions: i === 2 ? "Please knock, don't ring the bell." : null,
       created_at: daysAgoIso(i),
+      // Real column the orders list and the live screen filter on
+      // (`.eq("is_test", false)`); left unset, the mock's eq filter dropped
+      // every order and both previews were empty (LIVE-1).
+      is_test: false,
     };
   }),
 
@@ -785,6 +828,7 @@ export const API_FIXTURES: Record<string, unknown> = {
         last_refreshed_at: daysAgoIso(0, 7),
         last_error: null,
         can_manage: true,
+        available: false,
       },
       {
         provider: "google_calendar",
@@ -793,6 +837,7 @@ export const API_FIXTURES: Record<string, unknown> = {
         last_refreshed_at: daysAgoIso(1, 8),
         last_error: null,
         can_manage: true,
+        available: false,
       },
       {
         provider: "shopmonkey",
@@ -801,6 +846,7 @@ export const API_FIXTURES: Record<string, unknown> = {
         last_refreshed_at: daysAgoIso(5, 11),
         last_error: "Access token expired — reconnect required.",
         can_manage: true,
+        available: false,
       },
       {
         provider: "ezyvet",
@@ -809,6 +855,7 @@ export const API_FIXTURES: Record<string, unknown> = {
         last_refreshed_at: null,
         last_error: null,
         can_manage: true,
+        available: false,
       },
     ],
   },
