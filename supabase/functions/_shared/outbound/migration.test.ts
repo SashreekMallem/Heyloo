@@ -11,10 +11,15 @@ const sql = readFileSync(
   "utf8",
 );
 
-function fn(name: string): string {
-  const start = sql.indexOf(`create or replace function public.${name}(`);
+const retentionSql = readFileSync(
+  new URL("../../../migrations/20261009120100_outbound_events_retention.sql", import.meta.url),
+  "utf8",
+);
+
+function fn(name: string, source: string = sql): string {
+  const start = source.indexOf(`create or replace function public.${name}(`);
   expect(start, name).toBeGreaterThan(-1);
-  return sql.slice(start, sql.indexOf("$$;", start));
+  return source.slice(start, source.indexOf("$$;", start));
 }
 
 describe("20261009120000_outbound_webhooks.sql", () => {
@@ -113,8 +118,8 @@ describe("20261009120000_outbound_webhooks.sql", () => {
     );
   });
 
-  it("keeps the existing retention deletes when adding the outbound one", () => {
-    const sweep = fn("fn_cron_internal_retention_sweep");
+  it("keeps the existing retention deletes when adding the outbound one (20261009120100)", () => {
+    const sweep = fn("fn_cron_internal_retention_sweep", retentionSql);
     expect(sweep).toContain(
       "delete from public.webhook_events where created_at < now() - interval '90 days';",
     );
