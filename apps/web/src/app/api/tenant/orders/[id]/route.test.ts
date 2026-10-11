@@ -1,9 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
+/** Every row passed to `.insert()` (READY-1 checks the order_ready payload). */
+const insertedRows: unknown[] = [];
+
 function chain(result: unknown) {
   const obj: Record<string, unknown> = {};
   for (const method of ["select", "eq", "maybeSingle", "update", "insert"]) {
-    obj[method] = vi.fn(() => obj);
+    obj[method] = vi.fn((arg?: unknown) => {
+      if (method === "insert") insertedRows.push(arg);
+      return obj;
+    });
   }
   // biome-ignore lint/suspicious/noThenProperty: intentional thenable mock of a Supabase query-builder chain.
   (obj as { then: unknown }).then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
@@ -169,4 +175,37 @@ describe("PATCH /api/tenant/orders/[id]", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, sms_queued: false });
   });
+
+  it.each([
+    ["delivery", { fulfillment_type: "delivery" }],
+    ["pickup", { fulfillment_type: "pickup" }],
+    ["dine_in", { fulfillment_type: "dine_in" }],
+  ])(
+    "READY-1: the order_ready text carries the order's fulfillment type (%s)",
+    async (type, payload) => {
+      insertedRows.length = 0;
+      serverQueue = {
+        orders: [
+          {
+            data: { id: "o1", status: "preparing", customer_id: "c1", fulfillment_type: type },
+            error: null,
+          },
+          { error: null },
+        ],
+      };
+      serviceQueue = {
+        customers: [{ data: { phone_e164: "+15551234567", sms_opt_out: false }, error: null }],
+        messages_outbound: [{ data: { id: "msg1" }, error: null }],
+      };
+      rpcMock = vi.fn(async () => ({ data: null, error: null }));
+      mockGetUser = async () => ({ data: { user: mockUser } });
+      const res = await PATCH(patchRequest({ status: "ready" }), {
+        params: Promise.resolve({ id: "o1" }),
+      });
+      expect(await res.json()).toEqual({ ok: true, sms_queued: true });
+      expect(insertedRows).toEqual([
+        expect.objectContaining({ template_key: "order_ready", payload, related_order_id: "o1" }),
+      ]);
+    },
+  );
 });

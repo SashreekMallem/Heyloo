@@ -30,6 +30,11 @@ interface Invoice {
   status: string;
 }
 
+/** A $0 invoice (the one Stripe issues when a free trial starts) charged nothing: say so. */
+function invoiceTotal(totalCents: number): string {
+  return totalCents === 0 ? `${formatCentsUSD(0)} (no charge)` : formatCentsUSD(totalCents);
+}
+
 const columns: ColumnDef<Invoice, unknown>[] = [
   {
     accessorKey: "period_start",
@@ -39,7 +44,7 @@ const columns: ColumnDef<Invoice, unknown>[] = [
   {
     accessorKey: "total_cents",
     header: "Total",
-    cell: ({ row }) => formatCentsUSD(row.original.total_cents),
+    cell: ({ row }) => invoiceTotal(row.original.total_cents),
   },
   {
     accessorKey: "status",
@@ -49,6 +54,96 @@ const columns: ColumnDef<Invoice, unknown>[] = [
 ];
 
 const SUPPORT_MAILTO = "mailto:support@heyloo.com?subject=Billing%20help";
+
+/** TRIAL-1: the tenant's free trial as the billing page explains it. */
+interface FreeTrialInfo {
+  /** The scheduled end while it runs, the actual end once over. */
+  endsAt: string;
+  endedReason: "time" | "minutes" | "canceled" | null;
+  minutesCap: number | null;
+  minutesUsed: number;
+  timezone: string | null | undefined;
+  /** The owner canceled during the trial: it ends with the trial, unpaid. */
+  cancelScheduled?: boolean;
+}
+
+function formatTrialDate(iso: string, timezone: string | null | undefined): string {
+  const options: Intl.DateTimeFormatOptions = { month: "long", day: "numeric", year: "numeric" };
+  try {
+    return new Intl.DateTimeFormat("en-US", { ...options, timeZone: timezone ?? undefined }).format(
+      new Date(iso),
+    );
+  } catch {
+    return new Intl.DateTimeFormat("en-US", options).format(new Date(iso));
+  }
+}
+
+function freeTrialIsRunning(trial: FreeTrialInfo | null, now: Date = new Date()): boolean {
+  return !!trial && trial.endedReason === null && Date.parse(trial.endsAt) > now.getTime();
+}
+
+/** Why the meter shows fewer minutes than were answered this month. */
+function trialMinutesNote(minutes: number): string {
+  if (minutes <= 0) return "";
+  const whole = Math.round(minutes);
+  if (whole < 1) return " Free-trial minutes this month aren't counted here.";
+  return ` The ${whole} free-trial ${whole === 1 ? "minute" : "minutes"} this month ${whole === 1 ? "isn't" : "aren't"} counted here.`;
+}
+
+/** `YYYY-MM-DD` of an instant in the tenant's time zone (the browser's when
+ * unknown), comparable with `localMonthStart`. */
+function localDateOf(iso: string, timeZone: string | null | undefined): string {
+  const options: Intl.DateTimeFormatOptions = { year: "numeric", month: "2-digit", day: "2-digit" };
+  try {
+    return new Intl.DateTimeFormat("en-CA", { ...options, timeZone: timeZone ?? undefined }).format(
+      new Date(iso),
+    );
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", options).format(new Date(iso));
+  }
+}
+
+/** What the owner is told about their free trial, in plain words. */
+export function freeTrialSummary(
+  trial: FreeTrialInfo,
+  options: { canManageBilling: boolean; now?: Date },
+): string {
+  const now = options.now ?? new Date();
+  const date = formatTrialDate(trial.endsAt, trial.timezone);
+  const cap = trial.minutesCap;
+  if (trial.cancelScheduled && (trial.endedReason === null || trial.endedReason === "canceled")) {
+    // The owner canceled in the billing portal: the subscription ends with the
+    // trial and the plan is never charged (the minutes cap never ends such a
+    // trial early).
+    return freeTrialIsRunning(trial, now)
+      ? `You canceled during your free trial, so your subscription ends when the trial ends on ${date}` +
+          `${cap ? ` (${Math.min(Math.floor(trial.minutesUsed), cap)} of ${cap} trial minutes used)` : ""}. ` +
+          "You won't be charged, and calls are answered until then."
+      : "Your subscription was canceled during the free trial, so your plan was never charged.";
+  }
+  if (freeTrialIsRunning(trial, now)) {
+    return (
+      `Your free trial ends on ${date}` +
+      (cap
+        ? ` or when your AI receptionist has answered ${cap} minutes of calls, whichever comes first`
+        : "") +
+      `. ${cap ? `${Math.min(Math.floor(trial.minutesUsed), cap)} of ${cap} minutes used so far. ` : ""}` +
+      "Then your plan starts and the monthly plan price is charged to your card on file. " +
+      "Calls are never cut off. " +
+      (options.canManageBilling
+        ? "To cancel before you're charged, use Manage payment method below."
+        : "Your account owner can cancel before you're charged.")
+    );
+  }
+  switch (trial.endedReason) {
+    case "minutes":
+      return `Your free trial ended early because its ${cap ?? "trial"} call minutes were used, so your plan has started. Minutes used during the trial are never billed as overage.`;
+    case "canceled":
+      return "Your subscription was canceled during the free trial, so your plan was never charged.";
+    default:
+      return `Your free trial ended on ${date} and your plan started. Minutes used during the trial are never billed as overage.`;
+  }
+}
 
 /** What to tell the owner when the billing portal could not be opened (edge-function error codes). */
 export function portalErrorMessage(code: string | undefined): string {
@@ -76,18 +171,55 @@ export default function BillingPage() {
       // the tenant's time zone, not the browser's (BILL-12).
       const { data: tenantRow } = await supabaseBrowserClient
         .from("tenants")
-        .select("usage_hard_cap_minutes, timezone")
+        .select(
+          "usage_hard_cap_minutes, timezone, trial_ends_at, trial_minutes_cap, trial_ended_reason, trial_cancel_scheduled",
+        )
         .eq("id", tenantId as string)
         .maybeSingle();
-      const [{ data }, planRes] = await Promise.all([
+      const trialEndsAt = tenantRow?.trial_ends_at ?? null;
+      const periodStart = localMonthStart(tenantRow?.timezone);
+      const [{ data }, planRes, trialUsage] = await Promise.all([
         supabaseBrowserClient
           .from("usage_daily")
           .select("billable_minutes, text_messages_out")
           .eq("tenant_id", tenantId as string)
-          .gte("date", localMonthStart(tenantRow?.timezone)),
+          .gte("date", periodStart),
         fetch("/api/platform-settings/tenant-plan"),
+        // TRIAL-1: trial minutes are billable usage before the trial's end (the
+        // minutes cap's own rule); only read for a tenant that had a trial.
+        trialEndsAt
+          ? supabaseBrowserClient
+              .from("usage_events")
+              .select("minutes, occurred_at")
+              .eq("tenant_id", tenantId as string)
+              .eq("is_billable", true)
+              .lt("occurred_at", trialEndsAt)
+          : Promise.resolve({ data: [] as { minutes: number; occurred_at: string }[] }),
       ]);
-      const used = (data ?? []).reduce((sum, r) => sum + (Number(r.billable_minutes ?? 0) || 0), 0);
+      const trialRows = trialUsage.data ?? [];
+      const trial: FreeTrialInfo | null = trialEndsAt
+        ? {
+            endsAt: trialEndsAt,
+            endedReason: tenantRow?.trial_ended_reason ?? null,
+            minutesCap: tenantRow?.trial_minutes_cap ?? null,
+            minutesUsed: trialRows.reduce((sum, r) => sum + (Number(r.minutes) || 0), 0),
+            timezone: tenantRow?.timezone,
+            cancelScheduled: tenantRow?.trial_cancel_scheduled === true,
+          }
+        : null;
+      const totalUsed = (data ?? []).reduce(
+        (sum, r) => sum + (Number(r.billable_minutes ?? 0) || 0),
+        0,
+      );
+      // Trial minutes never count against the plan (job-billing-cycle bills
+      // only usage from the trial's end): the meter shows what the plan pays
+      // for, so a trial that ended mid-month never shows phantom overage.
+      const trialMinutesThisPeriod = trialRows
+        .filter(
+          (r) => r.occurred_at && localDateOf(r.occurred_at, tenantRow?.timezone) >= periodStart,
+        )
+        .reduce((sum, r) => sum + (Number(r.minutes) || 0), 0);
+      const used = Math.max(0, totalUsed - trialMinutesThisPeriod);
       // BACKEND_SPEC.md §13.3 — same "AI-generated text replies, SMS + web
       // chat combined" total the Website Widget Install page's own usage
       // tile shows; billed against the plan's included_text_conversations
@@ -100,12 +232,14 @@ export default function BillingPage() {
       const plan = planRes.ok ? ((await planRes.json()) as TenantPlanResponse) : null;
       return {
         used,
+        trialMinutesThisPeriod,
         included: plan?.included_minutes ?? 0,
         alertThresholds: plan?.usage_alert_thresholds ?? { warn_pct: 0.8, critical_pct: 1.0 },
         hardCapMinutes: tenantRow?.usage_hard_cap_minutes ?? null,
         textMessagesUsed,
         includedTextConversations: plan?.included_text_conversations ?? 200,
         textConversationOverageCents: plan?.text_conversation_overage_cents ?? 5,
+        trial,
       };
     },
     enabled: !!tenantId,
@@ -154,6 +288,19 @@ export default function BillingPage() {
     <div className="space-y-6">
       <PageHeader title="Billing" description="Usage, payment method, and invoices." />
 
+      {usageQuery.data?.trial && (
+        <Card data-testid="free-trial-card">
+          <CardHeader>
+            <CardTitle className="text-base">Free trial</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm">
+              {freeTrialSummary(usageQuery.data.trial, { canManageBilling })}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
       <DataState
         query={usageQuery}
         empty={{ title: "No usage data yet" }}
@@ -170,6 +317,10 @@ export default function BillingPage() {
               />
               <p className="text-xs text-muted-foreground">
                 Test calls from your registered cell don&apos;t count toward usage.
+                {freeTrialIsRunning(usage.trial)
+                  ? " Minutes used during your free trial are never billed as overage."
+                  : ""}
+                {trialMinutesNote(usage.trialMinutesThisPeriod)}
               </p>
               <div className="space-y-2 border-t border-border pt-4 text-sm">
                 <div className="flex items-center justify-between">
@@ -272,7 +423,7 @@ export default function BillingPage() {
               <p>
                 {row.period_start} – {row.period_end}
               </p>
-              <p className="font-medium">{formatCentsUSD(row.total_cents)}</p>
+              <p className="font-medium">{invoiceTotal(row.total_cents)}</p>
               <StatusBadge variant="invoice" value={row.status} className="mt-1" />
             </div>
           )}

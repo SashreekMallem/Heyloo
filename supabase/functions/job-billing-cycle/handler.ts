@@ -74,6 +74,9 @@ interface TenantBillingRow {
   pending_text_reported?: boolean;
   pending_overage_minutes?: number | string | null;
   pending_text_overage_cents?: number | null;
+  /** TRIAL-1: when the tenant's free trial ended (Unix seconds; Postgres
+   * bigint arrives as a string), null without a trial. */
+  trial_ended_unix?: number | string | null;
 }
 
 export function previousCalendarMonth(now: Date): { periodStart: string; periodEnd: string } {
@@ -96,6 +99,14 @@ export async function findTenantsForBilling(
   // period (BILL-7): `usage_daily` lags the rollup and used to bucket by UTC date,
   // so the last local day of the month was missing from a US tenant's invoice.
   // `is_billable` already excludes test calls. Rounded to 6 decimals (BILL-12).
+  //
+  // TRIAL-1 (docs/BUILD_NOTES.md): free-trial usage is never billed as overage.
+  // Voice minutes before `trial_ends_at` (the actual end once the trial is
+  // over) are left out; text replies are counted from the day AFTER the trial
+  // ended (usage_daily has local-day buckets only, so the day the trial ended
+  // is not billed). A tenant whose trial was still running at the end of the
+  // period, or who canceled during the trial, has nothing to bill for it and is
+  // skipped (Stripe's own $0 trial invoice is the record).
   return sql<TenantBillingRow>`
     select
       t.id as tenant_id,
@@ -110,10 +121,12 @@ export async function findTenantsForBilling(
         where ue.tenant_id = t.id and ue.is_billable
           and ue.occurred_at >= (${periodStart}::date::timestamp at time zone t.timezone)
           and ue.occurred_at < (${periodEnd}::date::timestamp at time zone t.timezone)
+          and (t.trial_ends_at is null or ue.occurred_at >= t.trial_ends_at)
       ), 0) as billable_minutes,
       coalesce((
         select sum(ud.text_messages_out) from public.usage_daily ud
         where ud.tenant_id = t.id and ud.date >= ${periodStart}::date and ud.date < ${periodEnd}::date
+          and (t.trial_ends_at is null or ud.date > (t.trial_ends_at at time zone t.timezone)::date)
       ), 0)::int as text_messages_out,
       coalesce((pc.value->>'included_text_conversations')::numeric, 0)::int as included_text_conversations,
       coalesce((pc.value->>'text_conversation_overage_cents')::numeric, 0)::int as text_overage_cents_per_message,
@@ -127,7 +140,8 @@ export async function findTenantsForBilling(
       (li.meter_reported_at is not null) as pending_meter_reported,
       (li.text_overage_item_id is not null) as pending_text_reported,
       li.overage_minutes as pending_overage_minutes,
-      li.text_overage_cents as pending_text_overage_cents
+      li.text_overage_cents as pending_text_overage_cents,
+      floor(extract(epoch from t.trial_ends_at))::bigint as trial_ended_unix
     from public.tenants t
     join public.platform_settings pc on pc.key = 'price_card_' || t.vertical
     left join public.billing_invoices li
@@ -144,8 +158,29 @@ export async function findTenantsForBilling(
         t.status in ('active', 'past_due')
         or (t.status = 'canceled' and t.canceled_at >= ${periodStart}::date)
       )
+      and t.trial_ended_reason is distinct from 'canceled'
+      and (
+        t.trial_ends_at is null
+        or t.trial_ends_at < (${periodEnd}::date::timestamp at time zone t.timezone)
+      )
       and (li.id is null or li.stripe_report_pending)
   `;
+}
+
+/** What one invocation runs: the daily billing cycle (pg_cron `0 1 * * *`, no
+ * query) or TRIAL-1's hourly free-trial minutes-cap safety net
+ * (`?task=trial_caps`, migration 20261011120100). Anything else is the
+ * billing cycle, as before. */
+export type BillingJobTask = "billing_cycle" | "trial_caps";
+
+export function billingJobTask(requestUrl: string): BillingJobTask {
+  try {
+    return new URL(requestUrl).searchParams.get("task") === "trial_caps"
+      ? "trial_caps"
+      : "billing_cycle";
+  } catch {
+    return "billing_cycle";
+  }
 }
 
 /**
@@ -201,6 +236,25 @@ export function computeInvoiceAmounts(row: InvoiceAmountInputs): InvoiceAmounts 
  * inside Stripe's 35-day window for every daily retry until the next period. */
 function periodEndTimestamp(periodEnd: string): number {
   return Math.floor(Date.parse(`${periodEnd}T00:00:00Z`) / 1000) - 1;
+}
+
+/**
+ * The overage meter event's timestamp: the period's last second (UTC), except
+ * for a free trial that ended after it, inside the tenant's local period
+ * (e.g. Oct 31, 8 pm in Los Angeles = Nov 1, 03:00 UTC). Stripe does not bill
+ * usage stamped during a trial, so the event is stamped one second after the
+ * trial ended instead: every minute in it is post-trial (the selection only
+ * counts usage at or after `trial_ends_at`), and that moment has passed by the
+ * time there is overage to report, so it is never in the future.
+ */
+export function meterEventTimestamp(
+  periodEnd: string,
+  trialEndedUnix: number | string | null | undefined,
+): number {
+  const end = periodEndTimestamp(periodEnd);
+  const trialEnded =
+    trialEndedUnix === null || trialEndedUnix === undefined ? Number.NaN : Number(trialEndedUnix);
+  return Number.isFinite(trialEnded) && trialEnded >= end ? Math.floor(trialEnded) + 1 : end;
 }
 
 async function raiseReportAlert(
@@ -306,7 +360,7 @@ export async function billOneTenant(
       stripeCustomerId: row.stripe_customer_id as string,
       value: overageMinutes,
       identifier: `${row.tenant_id}:${periodStart}:${periodEnd}`,
-      timestamp: periodEndTimestamp(periodEnd),
+      timestamp: meterEventTimestamp(periodEnd, row.trial_ended_unix),
     });
     if (meterResult.ok) {
       await sql`update public.billing_invoices set meter_reported_at = now() where id = ${invoiceId}`;

@@ -225,6 +225,7 @@ describe("routeAdminRequest — tenants group", () => {
     // MRR = the plan's base fee (billing tenant), not paid-invoices-so-far.
     expect(body.metrics).toEqual({
       mrr_cents: 29900,
+      mrr_excluded: null,
       list_price_cents: 29900,
       margin_pct: 75,
       minutes_used: 340,
@@ -240,6 +241,7 @@ describe("routeAdminRequest — tenants group", () => {
     const body = result.body as { metrics: { mrr_cents: number; margin_pct: number } };
     expect(body.metrics).toEqual({
       mrr_cents: null,
+      mrr_excluded: "no_subscription",
       list_price_cents: 0,
       margin_pct: null,
       minutes_used: 0,

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { createLogger } from "../_shared/logger.ts";
 import type { SqlClient } from "../_shared/types.ts";
-import { billOneTenant, computeInvoiceAmounts, findTenantsForBilling } from "./handler.ts";
+import {
+  billingJobTask,
+  billOneTenant,
+  computeInvoiceAmounts,
+  findTenantsForBilling,
+  meterEventTimestamp,
+} from "./handler.ts";
 
 // BEHAVIOR-billing regression tests (BILL-1, 2, 4, 7, 10, 12).
 
@@ -265,5 +271,86 @@ describe("BILL-7 / BILL-10: which usage and which tenants the job selects", () =
     // test-* QA tenants are not is_test: a tenant with no Stripe customer is never billed.
     expect(text).toContain("t.stripe_customer_id is not null");
     expect(text).toContain("t.status = 'canceled' and t.canceled_at >=");
+  });
+});
+
+describe("TRIAL-1: free-trial usage is never billed", () => {
+  async function selectionText(): Promise<string> {
+    const calls: string[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      calls.push(strings.join(" "));
+      return Promise.resolve([]);
+    }) as SqlClient;
+    await findTenantsForBilling(sql, "2026-10-01", "2026-11-01");
+    return calls[0] ?? "";
+  }
+
+  it("leaves voice minutes before the trial's end out of the billable sum", async () => {
+    const text = await selectionText();
+    expect(text).toContain("and (t.trial_ends_at is null or ue.occurred_at >= t.trial_ends_at)");
+  });
+
+  it("counts text replies only from the day after the trial ended", async () => {
+    const text = await selectionText();
+    expect(text).toContain(
+      "(t.trial_ends_at is null or ud.date > (t.trial_ends_at at time zone t.timezone)::date)",
+    );
+  });
+
+  it("skips a tenant canceled during its trial, and one whose trial ran past the period end", async () => {
+    const text = await selectionText();
+    expect(text).toContain("t.trial_ended_reason is distinct from 'canceled'");
+    expect(text).toContain("t.trial_ends_at < (");
+  });
+});
+
+describe("TRIAL-1: the overage meter event is never stamped inside the trial", () => {
+  const octEnd = Date.parse("2026-11-01T00:00:00Z") / 1000 - 1;
+
+  it("keeps the period's last second without a trial, or when the trial ended earlier", () => {
+    expect(meterEventTimestamp("2026-11-01", null)).toBe(octEnd);
+    expect(meterEventTimestamp("2026-11-01", Date.parse("2026-10-05T14:00:00Z") / 1000)).toBe(
+      octEnd,
+    );
+  });
+
+  it("stamps one second after a trial that ended after the UTC period end (late on the local last day)", () => {
+    // Oct 31, 8 pm in Los Angeles = Nov 1, 03:00 UTC (inside the local October)
+    const trialEnded = Date.parse("2026-11-01T03:00:00Z") / 1000;
+    expect(meterEventTimestamp("2026-11-01", String(trialEnded))).toBe(trialEnded + 1);
+  });
+
+  it("selects the trial end and sends that stamp to Stripe", async () => {
+    const calls: string[] = [];
+    const selectSql = ((strings: TemplateStringsArray) => {
+      calls.push(strings.join(" "));
+      return Promise.resolve([]);
+    }) as SqlClient;
+    await findTenantsForBilling(selectSql, "2026-10-01", "2026-11-01");
+    expect(calls[0]).toContain("extract(epoch from t.trial_ends_at))::bigint as trial_ended_unix");
+
+    const trialEnded = Date.parse("2026-11-01T03:00:00Z") / 1000;
+    const { sql } = recordingSql();
+    const { requests, stripeFetch } = recordingStripe();
+    await billOneTenant(
+      sql,
+      { ...auto, billable_minutes: 350, trial_ended_unix: String(trialEnded) },
+      "2026-10-01",
+      "2026-11-01",
+      deps(stripeFetch),
+    );
+    const meter = requests.find((r) => r.url.endsWith("/billing/meter_events"));
+    expect(meter?.body.get("timestamp")).toBe(String(trialEnded + 1));
+  });
+});
+
+describe("TRIAL-1: job task routing", () => {
+  it.each([
+    ["https://x.supabase.co/functions/v1/job-billing-cycle", "billing_cycle"],
+    ["https://x.supabase.co/functions/v1/job-billing-cycle?task=trial_caps", "trial_caps"],
+    ["https://x.supabase.co/functions/v1/job-billing-cycle?task=other", "billing_cycle"],
+    ["not a url", "billing_cycle"],
+  ])("%s -> %s", (url, task) => {
+    expect(billingJobTask(url)).toBe(task);
   });
 });

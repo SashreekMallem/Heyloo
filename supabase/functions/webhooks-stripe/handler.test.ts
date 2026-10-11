@@ -67,8 +67,34 @@ describe("processStripeEvent", () => {
     // activation update then sets).
     expect(updates[0]?.text).toContain("set vertical =");
     expect(updates[0]?.text).toContain("stripe_subscription_id is null");
-    expect(updates[0]?.values).toEqual(["dental", "t1"]);
+    expect(updates[0]?.values).toEqual(["dental", "t1", "sub_1"]);
     expect(updates[1]?.text).toContain("set status = 'active'");
+  });
+
+  it("BILL-6 + TRIAL-1: still re-syncs when this session's own subscription was linked first", async () => {
+    // customer.subscription.created (TRIAL-1) or an early invoice.paid can link
+    // the subscription before checkout.session.completed: that is still "before
+    // the first subscription" for this tenant, and provisioning has not started.
+    const { sql, calls } = makeSql();
+    await processStripeEvent(
+      sql,
+      {
+        id: "evt_v3",
+        type: "checkout.session.completed",
+        data: {
+          object: {
+            id: "cs_v3",
+            customer: "cus_1",
+            subscription: "sub_1",
+            metadata: { tenant_id: "t1", vertical: "dental" },
+          },
+        },
+      },
+      logger,
+    );
+    const resync = calls.find((c) => c.text.includes("set vertical ="));
+    expect(resync?.text).toContain("stripe_subscription_id is null or stripe_subscription_id =");
+    expect(resync?.values).toEqual(["dental", "t1", "sub_1"]);
   });
 
   it("BILL-6: an unknown metadata vertical never reaches the tenants CHECK constraint", async () => {

@@ -10,6 +10,8 @@
  * (egress-blocked in this build) before go-live.
  */
 
+import { z } from "zod";
+
 const STRIPE_BASE_URL = "https://api.stripe.com/v1";
 const STRIPE_API_VERSION = "2025-08-27.basil"; // VERIFY.md: confirm current pinned version at build time.
 
@@ -46,7 +48,7 @@ async function stripeRequest(
   method: "GET" | "POST",
   path: string,
   params?: Record<string, unknown>,
-  options?: { idempotencyKey?: string },
+  options?: { idempotencyKey?: string; timeoutMs?: number },
 ): Promise<{ ok: boolean; status: number; body: unknown }> {
   const query =
     method === "GET" && params ? `?${new URLSearchParams(flattenStripeParams(params))}` : "";
@@ -65,6 +67,8 @@ async function stripeRequest(
     ...(method === "POST" && params
       ? { body: new URLSearchParams(flattenStripeParams(params)).toString() }
       : {}),
+    // Opt-in: a background caller that must not hang on Stripe (TRIAL-1 cap).
+    ...(options?.timeoutMs ? { signal: AbortSignal.timeout(options.timeoutMs) } : {}),
   });
   const body = await res.json().catch(() => undefined);
   return { ok: res.ok, status: res.status, body };
@@ -93,6 +97,16 @@ async function stripeRequest(
  * rather than a small fixed catalog worth provisioning through
  * `scripts/setup-stripe.ts`.
  */
+/**
+ * TRIAL-1 (docs.stripe.com/api/checkout/sessions/create and
+ * /billing/subscriptions/trials/free-trials, fetched 2026-10-11):
+ * `subscription_data.trial_period_days` is an integer "at least 1"; a trial
+ * "must be 730 days (2 years) or less". `payment_method_collection` defaults
+ * to `always`; only `if_required` skips the card when nothing is due today.
+ * One-time line items alongside a trial are still charged at signup.
+ */
+const STRIPE_MAX_TRIAL_PERIOD_DAYS = 730;
+
 export interface OneTimeCheckoutLineItem {
   productName: string;
   amountCents: number;
@@ -113,8 +127,17 @@ export async function createSubscriptionCheckoutSession(
      * this signup (the common case: no extra charge beyond the recurring
      * subscription). */
     oneTimeLineItems?: OneTimeCheckoutLineItem[];
+    /** TRIAL-1: free-trial length in whole days (1-730). Omitted = no trial. */
+    trialPeriodDays?: number;
   },
 ) {
+  const trialDays = params.trialPeriodDays;
+  if (
+    trialDays !== undefined &&
+    (!Number.isInteger(trialDays) || trialDays < 1 || trialDays > STRIPE_MAX_TRIAL_PERIOD_DAYS)
+  ) {
+    throw new RangeError("trialPeriodDays must be a whole number of days from 1 to 730");
+  }
   const oneTimeItems = (params.oneTimeLineItems ?? []).map((item) => ({
     price_data: {
       currency: "usd",
@@ -135,7 +158,14 @@ export async function createSubscriptionCheckoutSession(
       { price: params.meteredPriceId },
       ...oneTimeItems,
     ],
-    subscription_data: { metadata: params.metadata },
+    subscription_data: {
+      metadata: params.metadata,
+      ...(trialDays !== undefined ? { trial_period_days: trialDays } : {}),
+    },
+    // TRIAL-1: a card is always collected, also for a trial session whose
+    // amount due today is $0 (`always` is Stripe's default; stated so the
+    // "card required" rule does not depend on it).
+    ...(trialDays !== undefined ? { payment_method_collection: "always" } : {}),
     metadata: params.metadata,
   });
 }
@@ -371,4 +401,139 @@ export async function createBillingPortalSession(
     return_url: params.returnUrl,
     ...(params.configurationId ? { configuration: params.configurationId } : {}),
   });
+}
+
+/**
+ * The slice of a Stripe Subscription the free-trial cap needs
+ * (docs.stripe.com/api/subscriptions/object, fetched 2026-10-11): `status` is
+ * one of incomplete | incomplete_expired | trialing | active | past_due |
+ * canceled | unpaid | paused; `trial_end` is a nullable Unix timestamp
+ * ("If the subscription has a trial, the end of that trial");
+ * `cancel_at_period_end` (boolean, "will cancel at the end of the current
+ * billing period", which during a trial is the trial end) and `cancel_at`
+ * (nullable timestamp, "a date in the future at which the subscription will
+ * automatically get canceled") say whether the owner already canceled.
+ * Validated at the boundary (CLAUDE.md Rule 1): an unexpected body is a
+ * failure, never a guess. `cancel_at_period_end` is required: if it is not
+ * known whether a cancellation is pending, the cap must not end the trial.
+ */
+const SubscriptionTrialStateSchema = z.object({
+  id: z.string().min(1),
+  status: z.enum([
+    "incomplete",
+    "incomplete_expired",
+    "trialing",
+    "active",
+    "past_due",
+    "canceled",
+    "unpaid",
+    "paused",
+  ]),
+  trial_end: z.number().int().positive().nullable().optional(),
+  cancel_at_period_end: z.boolean(),
+  cancel_at: z.number().int().positive().nullable().optional(),
+});
+
+export interface SubscriptionTrialState {
+  id: string;
+  status: z.infer<typeof SubscriptionTrialStateSchema>["status"];
+  /** Unix seconds, or null when the subscription has no trial. */
+  trialEnd: number | null;
+  cancelAtPeriodEnd: boolean;
+  /** Unix seconds of a scheduled cancellation, null when none. */
+  cancelAt: number | null;
+}
+
+export type SubscriptionTrialResult =
+  | { ok: true; subscription: SubscriptionTrialState }
+  | { ok: false; status: number; error: string };
+
+function toTrialResult(res: {
+  ok: boolean;
+  status: number;
+  body: unknown;
+}): SubscriptionTrialResult {
+  if (!res.ok) {
+    const message = (res.body as { error?: { code?: unknown; type?: unknown } } | undefined)?.error;
+    const code = typeof message?.code === "string" ? message.code : undefined;
+    const type = typeof message?.type === "string" ? message.type : undefined;
+    return { ok: false, status: res.status, error: code ?? type ?? "stripe_error" };
+  }
+  const parsed = SubscriptionTrialStateSchema.safeParse(res.body);
+  if (!parsed.success) return { ok: false, status: res.status, error: "unexpected_response" };
+  return {
+    ok: true,
+    subscription: {
+      id: parsed.data.id,
+      status: parsed.data.status,
+      trialEnd: parsed.data.trial_end ?? null,
+      cancelAtPeriodEnd: parsed.data.cancel_at_period_end,
+      cancelAt: parsed.data.cancel_at ?? null,
+    },
+  };
+}
+
+/** Both trial calls run in a background task (voice-events after the webhook
+ * ack, the hourly job): bounded so a hung Stripe request cannot hold it. */
+const STRIPE_TRIAL_CALL_TIMEOUT_MS = 8_000;
+
+/** A request that never got an HTTP answer (timeout, network) is a failure
+ * with status 0, so the caller's failure path (alert, retry) handles it. */
+async function trialRequest(
+  run: () => Promise<{ ok: boolean; status: number; body: unknown }>,
+): Promise<SubscriptionTrialResult> {
+  try {
+    return toTrialResult(await run());
+  } catch (err) {
+    // AbortSignal.timeout rejects with a DOMException named "TimeoutError".
+    const name = (err as { name?: unknown } | null)?.name;
+    const timedOut = name === "TimeoutError" || name === "AbortError";
+    return { ok: false, status: 0, error: timedOut ? "timeout" : "network_error" };
+  }
+}
+
+/** GET /v1/subscriptions/{id} (docs.stripe.com/api/subscriptions/retrieve). */
+export async function retrieveSubscriptionTrialState(
+  fetchImpl: StripeFetch,
+  secretKey: string,
+  subscriptionId: string,
+): Promise<SubscriptionTrialResult> {
+  return trialRequest(() =>
+    stripeRequest(
+      fetchImpl,
+      secretKey,
+      "GET",
+      `/subscriptions/${encodeURIComponent(subscriptionId)}`,
+      undefined,
+      { timeoutMs: STRIPE_TRIAL_CALL_TIMEOUT_MS },
+    ),
+  );
+}
+
+/**
+ * POST /v1/subscriptions/{id} with `trial_end=now` — "The special value `now`
+ * can be provided to end the customer's trial immediately" (docs.stripe.com/
+ * api/subscriptions/update and /billing/subscriptions/trials/free-trials "To
+ * end a trial early ... setting the trial_end value to ... now", fetched
+ * 2026-10-11). Ending a trial resets the billing cycle anchor to now and
+ * charges the plan immediately. The caller must first confirm the
+ * subscription is still `trialing`: on a subscription that is not, `trial_end`
+ * would move its billing cycle instead.
+ */
+export async function endSubscriptionTrialNow(
+  fetchImpl: StripeFetch,
+  secretKey: string,
+  subscriptionId: string,
+  options: { idempotencyKey: string },
+): Promise<SubscriptionTrialResult> {
+  return trialRequest(() =>
+    stripeRequest(
+      fetchImpl,
+      secretKey,
+      "POST",
+      `/subscriptions/${encodeURIComponent(subscriptionId)}`,
+      { trial_end: "now" },
+      { idempotencyKey: options.idempotencyKey, timeoutMs: STRIPE_TRIAL_CALL_TIMEOUT_MS },
+    ),
+  );
 }

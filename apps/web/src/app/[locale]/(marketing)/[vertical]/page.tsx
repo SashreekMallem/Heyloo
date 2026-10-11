@@ -13,6 +13,7 @@ import {
   VERTICAL_CONTENT,
 } from "@/content/marketing/verticals";
 import { Link } from "@/i18n/navigation";
+import { FREE_TRIAL_DAYS, FREE_TRIAL_MINUTES } from "@/lib/marketing/signup-steps";
 
 export function generateStaticParams() {
   return VERTICAL_CONTENT.map((v) => ({ vertical: v.slug }));
@@ -57,7 +58,7 @@ export default async function VerticalPage({
               Try a live demo
             </Link>
             <Link className="btn btn-s" href={`/signup?vertical=${content.slug}`} prefetch={false}>
-              Get started
+              Start free trial
             </Link>
           </div>
         </Container>
@@ -146,12 +147,17 @@ export default async function VerticalPage({
           <p className="mt-1 text-body font-medium">
             Plans start at $299/mo — see your real price at signup.
           </p>
+          <p className="mt-1 text-small text-muted-foreground">
+            Start with a {FREE_TRIAL_DAYS}-day free trial: {FREE_TRIAL_DAYS} days or{" "}
+            {FREE_TRIAL_MINUTES} call minutes, whichever comes first. Card required; cancel before
+            it ends and you won&apos;t pay for the plan.
+          </p>
           <div className="ctas mt-8 justify-center">
             <Link className="btn btn-p" href={`/demo?vertical=${content.slug}`} prefetch={false}>
               Try a live demo
             </Link>
             <Link className="btn btn-s" href={`/signup?vertical=${content.slug}`} prefetch={false}>
-              Get started
+              Start free trial
             </Link>
           </div>
         </Container>

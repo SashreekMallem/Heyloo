@@ -6,8 +6,9 @@ import { Link } from "@/i18n/navigation";
 import { checkoutErrorMessage, startCheckout } from "@/lib/signup/start-checkout";
 
 /**
- * `/signup/resume` for a confirmed customer: starts Stripe Checkout straight
- * away with the plan they picked before leaving to confirm their email.
+ * `/signup/resume` for a confirmed customer: starts Stripe Checkout (where the
+ * card that starts the TRIAL-1 free trial is added) straight away with the
+ * plan they picked before leaving to confirm their email.
  * A failure shows the reason and a retry button rather than a blank screen.
  */
 export function ResumeCheckoutClient({
@@ -66,7 +67,7 @@ export function ResumeCheckoutClient({
         </div>
       ) : (
         <p className="text-small text-muted-foreground" role="status">
-          Taking you to secure payment for {businessName}…
+          Taking you to start your free trial for {businessName}…
         </p>
       )}
     </div>

@@ -65,5 +65,9 @@ Deno.serve(async (req: Request) => {
   });
 
   if (!result.ok) return jsonResponse({ error: result.error }, { status: result.status });
-  return jsonResponse({ tenant_id: result.tenant_id, checkout_url: result.checkout_url });
+  return jsonResponse({
+    tenant_id: result.tenant_id,
+    checkout_url: result.checkout_url,
+    free_trial: result.free_trial,
+  });
 });

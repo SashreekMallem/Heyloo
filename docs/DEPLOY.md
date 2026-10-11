@@ -171,10 +171,19 @@ weeks and should not be the last thing blocking launch.
    `/api-checkout` call (it 500s with `stripe_not_configured` otherwise).
 5. Register the webhook endpoint: Developers → Webhooks → Add endpoint,
    URL `https://<project-ref>.supabase.co/functions/v1/webhooks-stripe`,
-   events: at minimum `checkout.session.completed`,
-   `customer.subscription.updated`, `invoice.paid`,
-   `invoice.payment_failed`. Copy the signing secret into
-   `STRIPE_WEBHOOK_SIGNING_SECRET`.
+   events (every type `webhooks-stripe/handler.ts` handles; select each one,
+   since some Stripe event types are only created when an endpoint lists
+   them): `checkout.session.completed`, `customer.subscription.created`,
+   `customer.subscription.updated`, `customer.subscription.deleted`,
+   `customer.subscription.trial_will_end`, `customer.subscription.paused`,
+   `customer.subscription.resumed`, `invoice.paid`,
+   `invoice.payment_failed`, `charge.succeeded`, `charge.refunded`,
+   `charge.dispute.created`. Copy the signing secret into
+   `STRIPE_WEBHOOK_SIGNING_SECRET`. TRIAL-1: `customer.subscription.created`
+   starts the free trial (stores its end and minutes cap) and
+   `trial_will_end` sends the owner's "your trial ends on ..." email;
+   Settings → Billing → Subscriptions → "Trial ending events" sets how many
+   days ahead Stripe sends it (default 3).
 6. Set `CHECKOUT_SUCCESS_URL`/`CHECKOUT_CANCEL_URL` to real
    `https://<your-domain>/signup/...` paths once the domain is live.
 7. Confirm the pinned `STRIPE_API_VERSION` your integration targets

@@ -372,6 +372,71 @@ describe("handleCallEnded", () => {
     await handleCallEnded(sql, { call_id: "call_1" }, logger);
     expect(calls.some((c) => c.text.includes("insert into public.usage_events"))).toBe(false);
   });
+
+  describe("TRIAL-1 post-call trial-cap hook", () => {
+    const CALL: RetellCallObject = {
+      call_id: "call_1",
+      start_timestamp: 1_700_000_000_000,
+      end_timestamp: 1_700_000_120_000,
+    };
+
+    it("runs after the billable usage row is written, with the call's tenant", async () => {
+      const { sql, calls } = makeRecordingSql({
+        "update public.call_logs": [{ id: "cl1", tenant_id: "t1", is_test_call: false }],
+      });
+      const seen: { tenantId: string; usageWritten: boolean }[] = [];
+      await handleCallEnded(sql, CALL, logger, {
+        onBillableUsage: async (tenantId) => {
+          seen.push({
+            tenantId,
+            usageWritten: calls.some((c) => c.text.includes("insert into public.usage_events")),
+          });
+        },
+      });
+      expect(seen).toEqual([{ tenantId: "t1", usageWritten: true }]);
+    });
+
+    it("is not run for a test call (its minutes are not billable)", async () => {
+      const { sql } = makeRecordingSql({
+        "update public.call_logs": [{ id: "cl1", tenant_id: "t1", is_test_call: true }],
+      });
+      let ran = false;
+      await handleCallEnded(sql, CALL, logger, {
+        onBillableUsage: async () => {
+          ran = true;
+        },
+      });
+      expect(ran).toBe(false);
+    });
+
+    it("is not run for a zero-length or unmeasurable call", async () => {
+      const { sql } = makeRecordingSql({
+        "update public.call_logs": [{ id: "cl1", tenant_id: "t1", is_test_call: false }],
+      });
+      let runs = 0;
+      const hooks = {
+        onBillableUsage: async () => {
+          runs += 1;
+        },
+      };
+      await handleCallEnded(sql, { ...CALL, end_timestamp: CALL.start_timestamp }, logger, hooks);
+      await handleCallEnded(sql, { call_id: "call_2" }, logger, hooks);
+      expect(runs).toBe(0);
+    });
+
+    it("a failing hook never fails the call's event processing", async () => {
+      const { sql } = makeRecordingSql({
+        "update public.call_logs": [{ id: "cl1", tenant_id: "t1", is_test_call: false }],
+      });
+      await expect(
+        handleCallEnded(sql, CALL, logger, {
+          onBillableUsage: async () => {
+            throw new Error("stripe down");
+          },
+        }),
+      ).resolves.toBeUndefined();
+    });
+  });
 });
 
 describe("handleCallAnalyzed", () => {

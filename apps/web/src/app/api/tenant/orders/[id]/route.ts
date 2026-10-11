@@ -49,7 +49,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
   const { data: order, error: fetchError } = await supabase
     .from("orders")
-    .select("id, status, customer_id")
+    .select("id, status, customer_id, fulfillment_type")
     .eq("id", id)
     .eq("tenant_id", claims.tenant_id)
     .maybeSingle();
@@ -78,7 +78,9 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
           channel: "sms",
           recipient: customer.phone_e164,
           template_key: "order_ready",
-          payload: {},
+          // READY-1: the text says "on its way" for a delivery order and
+          // "ready for pickup" otherwise (_shared/templates.ts order_ready).
+          payload: { fulfillment_type: order.fulfillment_type },
           related_order_id: id,
         })
         .select("id")

@@ -1,6 +1,7 @@
 import type { OneTimeCheckoutLineItem, StripeFetch } from "../_shared/providers/stripe.ts";
 import { createSubscriptionCheckoutSession } from "../_shared/providers/stripe.ts";
 import { CheckoutRequestSchema } from "../_shared/schemas/checkout.ts";
+import { hasHadFreeTrial, loadFreeTrialSettings } from "../_shared/trial/config.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import { attributeReferral } from "./referral.ts";
 
@@ -37,7 +38,8 @@ export interface CheckoutDeps {
 }
 
 export type CheckoutResult =
-  | { ok: true; tenant_id: string; checkout_url: string }
+  /** `free_trial`: whether this Checkout starts the free trial (TRIAL-1). */
+  | { ok: true; tenant_id: string; checkout_url: string; free_trial: boolean }
   | { ok: false; status: number; error: string };
 
 function slugify(name: string): string {
@@ -164,8 +166,19 @@ export async function handleCheckout(
   // never throws, so it cannot fail the checkout).
   await attributeReferral(sql, { tenantId, userId, referralCode: referral_code }, deps.logger);
 
+  // TRIAL-1 (docs/BUILD_NOTES.md): a 7-day / 100-minute free trial, card
+  // required, once per business (`hasHadFreeTrial`). While it applies the
+  // one-time setup fee is waived, so "nothing is charged for 7 days" is true;
+  // white-glove onboarding, which the owner picks explicitly, is still charged
+  // at signup (Stripe charges one-time items upfront even during a trial), and
+  // the signup copy says so. Without a trial, checkout is exactly as before.
+  const trialSettings = await loadFreeTrialSettings(sql);
+  const freeTrial =
+    trialSettings.enabled &&
+    !(await hasHadFreeTrial(sql, { userId, email, businessPhone: business_phone ?? null }));
+
   const oneTimeLineItems: OneTimeCheckoutLineItem[] = [];
-  if (fees?.setup_fee_enabled && (fees.setup_fee_cents ?? 0) > 0) {
+  if (!freeTrial && fees?.setup_fee_enabled && (fees.setup_fee_cents ?? 0) > 0) {
     oneTimeLineItems.push({
       productName: "One-time setup fee",
       amountCents: fees.setup_fee_cents as number,
@@ -184,8 +197,19 @@ export async function handleCheckout(
     meteredPriceId: priceCard.stripe_meter_price_id,
     successUrl: deps.successUrl,
     cancelUrl: deps.cancelUrl,
-    metadata: { tenant_id: tenantId, vertical, user_id: userId },
+    // `trial_minutes`/`trial_days` ride on the session's and the subscription's
+    // metadata: webhooks-stripe stores the cap (and, from the session, a
+    // provisional end) as soon as either event arrives.
+    metadata: {
+      tenant_id: tenantId,
+      vertical,
+      user_id: userId,
+      ...(freeTrial
+        ? { trial_minutes: String(trialSettings.minutes), trial_days: String(trialSettings.days) }
+        : {}),
+    },
     ...(oneTimeLineItems.length > 0 ? { oneTimeLineItems } : {}),
+    ...(freeTrial ? { trialPeriodDays: trialSettings.days } : {}),
   });
 
   const body = session.body as { id?: string; url?: string };
@@ -197,5 +221,5 @@ export async function handleCheckout(
     return { ok: false, status: 502, error: "checkout_session_create_failed" };
   }
 
-  return { ok: true, tenant_id: tenantId, checkout_url: body.url };
+  return { ok: true, tenant_id: tenantId, checkout_url: body.url, free_trial: freeTrial };
 }

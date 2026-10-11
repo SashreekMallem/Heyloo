@@ -221,10 +221,21 @@ export function hasNoRecording(
   return disconnectionReason !== undefined && NO_RECORDING_REASONS.has(disconnectionReason);
 }
 
+/**
+ * Optional side effects after a call's usage is recorded, wired by the Deno
+ * `index.ts`. TRIAL-1: `onBillableUsage` checks the free-trial minutes cap
+ * (`_shared/trial/cap.ts`); it runs in this background task, after the webhook
+ * was acknowledged, and never affects the call.
+ */
+export interface VoiceEventHooks {
+  onBillableUsage?: (tenantId: string) => Promise<unknown>;
+}
+
 export async function handleCallEnded(
   sql: SqlClient,
   call: RetellCallObject,
   logger: Logger,
+  hooks: VoiceEventHooks = {},
 ): Promise<void> {
   const endedAt = isoFromUnixSeconds(call.end_timestamp) ?? new Date().toISOString();
   const durationSeconds =
@@ -326,6 +337,16 @@ export async function handleCallEnded(
       insert into public.usage_events (tenant_id, call_id, minutes, occurred_at, is_billable)
       values (${callRow.tenant_id}, ${callRow.id}, ${durationSeconds / 60}, ${endedAt}, ${!callRow.is_test_call})
     `;
+    if (!callRow.is_test_call && durationSeconds > 0 && hooks.onBillableUsage) {
+      try {
+        await hooks.onBillableUsage(callRow.tenant_id);
+      } catch (err) {
+        logger.error("voice_events_billable_usage_hook_failed", {
+          call_id: call.call_id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   }
 }
 
@@ -701,12 +722,13 @@ export async function processVoiceEvent(
   sql: SqlClient,
   event: VoiceEventRequest,
   logger: Logger,
+  hooks: VoiceEventHooks = {},
 ): Promise<void> {
   switch (event.event) {
     case "call_started":
       return handleCallStarted(sql, event.call, logger);
     case "call_ended":
-      return handleCallEnded(sql, event.call, logger);
+      return handleCallEnded(sql, event.call, logger, hooks);
     case "call_analyzed":
       return handleCallAnalyzed(sql, event.call, logger);
   }

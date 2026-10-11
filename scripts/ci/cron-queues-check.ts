@@ -126,6 +126,11 @@ const EXPECTED_CRON_JOBS: readonly string[] = [
   "job-pgnet-worker-restart",
   "job-agent-regression",
   "job-realtime-keepalive",
+  // SPEED-1 (20261001120000_agent_auto_republish.sql) and TRIAL-1's hourly
+  // free-trial minutes-cap sweep (20261011120100_free_trial.sql, which calls
+  // job-billing-cycle?task=trial_caps).
+  "job-agent-auto-republish",
+  "job-billing-cycle-trial-caps",
 ];
 
 /** BACKEND_SPEC §9's 4 queues + their DLQ companions (DB-B3). */
@@ -163,6 +168,12 @@ const EXPECTED_QUEUES: readonly string[] = [
  * This was a CI-script gap only; the live project's `worker-tick` job
  * (scheduled when `20260920163500` first applied there, Vault secrets
  * already present) was never affected.
+ *
+ * `20261001120000_agent_auto_republish.sql` (SPEED-1) and
+ * `20261011120100_free_trial.sql` (TRIAL-1) are Vault-gated the same way and
+ * idempotent end to end (`add column if not exists`, guarded constraints,
+ * `create ... if not exists`, `on conflict do nothing`, `create or replace`),
+ * so re-running them here is safe.
  */
 const CRON_MIGRATIONS: readonly string[] = [
   "supabase/migrations/20260910093000_queues_and_scheduled_jobs.sql",
@@ -171,6 +182,8 @@ const CRON_MIGRATIONS: readonly string[] = [
   "supabase/migrations/20260920163500_worker_tick_cron.sql",
   "supabase/migrations/20260921120100_agent_regression_cron_schedule.sql",
   "supabase/migrations/20260930210600_qa2_backend_realtime_and_audit_types.sql",
+  "supabase/migrations/20261001120000_agent_auto_republish.sql",
+  "supabase/migrations/20261011120100_free_trial.sql",
 ];
 
 function main(): void {

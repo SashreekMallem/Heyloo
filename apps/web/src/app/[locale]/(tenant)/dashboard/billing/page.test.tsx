@@ -6,7 +6,7 @@ import { TenantIdProvider } from "@/lib/tenant/tenant-context";
 
 function chain(result: unknown) {
   const obj: Record<string, unknown> = {};
-  for (const method of ["select", "eq", "neq", "gte", "order", "limit", "maybeSingle"]) {
+  for (const method of ["select", "eq", "neq", "gte", "lt", "order", "limit", "maybeSingle"]) {
     obj[method] = vi.fn(() => obj);
   }
   // biome-ignore lint/suspicious/noThenProperty: intentional thenable mock of a Supabase query-builder chain.
@@ -20,16 +20,24 @@ vi.mock("sonner", () => ({ toast: { error: toastError } }));
 
 let invoicesChain: Record<string, ReturnType<typeof vi.fn>> | null = null;
 let usageDailyRows: { billable_minutes: number | null; text_messages_out?: number | null }[] = [];
+let tenantRow: Record<string, unknown> = { usage_hard_cap_minutes: null };
+let usageEventRows: { minutes: number; occurred_at?: string }[] = [];
+let invoiceRows: Record<string, unknown>[] = [];
+let usageEventsChain: Record<string, ReturnType<typeof vi.fn>> | null = null;
 
 vi.mock("@/lib/supabase/browser", () => ({
   supabaseBrowserClient: {
     from: vi.fn((table: string) => {
       if (table === "usage_daily") return chain({ data: usageDailyRows, error: null });
       if (table === "tenants") {
-        return chain({ data: { usage_hard_cap_minutes: null }, error: null });
+        return chain({ data: tenantRow, error: null });
+      }
+      if (table === "usage_events") {
+        usageEventsChain = chain({ data: usageEventRows, error: null }) as typeof usageEventsChain;
+        return usageEventsChain;
       }
       if (table === "billing_invoices") {
-        invoicesChain = chain({ data: [], error: null }) as typeof invoicesChain;
+        invoicesChain = chain({ data: invoiceRows, error: null }) as typeof invoicesChain;
         return invoicesChain;
       }
       return chain({ data: null, error: null });
@@ -37,7 +45,7 @@ vi.mock("@/lib/supabase/browser", () => ({
   },
 }));
 
-import BillingPage from "./page";
+import BillingPage, { freeTrialSummary } from "./page";
 
 function renderPage() {
   const client = new QueryClient();
@@ -286,5 +294,192 @@ describe("BillingPage owner-only actions (QA-1 AUTH-15)", () => {
     );
     expect(screen.queryByRole("button", { name: "Manage payment method" })).not.toBeInTheDocument();
     expect(screen.getByText("Usage this period")).toBeInTheDocument();
+  });
+});
+
+describe("BillingPage free trial (TRIAL-1)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    tenantRow = { usage_hard_cap_minutes: null };
+    usageEventRows = [];
+    invoiceRows = [];
+    usageEventsChain = null;
+  });
+
+  function stubPlan() {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ included_minutes: 300 })),
+    );
+  }
+
+  it("explains a running trial: end date or minutes cap, minutes used, what is charged after", async () => {
+    vi.useFakeTimers({ now: new Date("2026-10-11T12:00:00Z"), toFake: ["Date"] });
+    tenantRow = {
+      usage_hard_cap_minutes: null,
+      timezone: "America/Chicago",
+      trial_ends_at: "2026-10-16T15:00:00Z",
+      trial_minutes_cap: 100,
+      trial_ended_reason: null,
+    };
+    usageEventRows = [{ minutes: 20.4 }, { minutes: 21.9 }];
+    stubPlan();
+    renderPage();
+    const card = await screen.findByTestId("free-trial-card");
+    expect(card).toHaveTextContent(
+      "Your free trial ends on October 16, 2026 or when your AI receptionist has answered 100 minutes of calls, whichever comes first. 42 of 100 minutes used so far.",
+    );
+    expect(card).toHaveTextContent("the monthly plan price is charged to your card on file");
+    expect(card).toHaveTextContent("Calls are never cut off.");
+    expect(card).toHaveTextContent("use Manage payment method below");
+    expect(
+      await screen.findByText(/minutes used during your free trial are never billed as overage/i),
+    ).toBeInTheDocument();
+    // trial minutes = billable usage before the trial's end
+    expect(usageEventsChain?.["eq"]).toHaveBeenCalledWith("is_billable", true);
+    expect(usageEventsChain?.["lt"]).toHaveBeenCalledWith("occurred_at", "2026-10-16T15:00:00Z");
+  });
+
+  it("never shows trial minutes as plan usage or overage after a trial that ended mid-month", async () => {
+    vi.useFakeTimers({ now: new Date("2026-10-20T12:00:00Z"), toFake: ["Date"] });
+    tenantRow = {
+      usage_hard_cap_minutes: null,
+      timezone: "America/Chicago",
+      trial_ends_at: "2026-10-05T15:00:00Z",
+      trial_minutes_cap: 100,
+      trial_ended_reason: "minutes",
+    };
+    // 100 trial minutes (two in October, one on Sep 30 local time) + 260 after
+    usageEventRows = [
+      { minutes: 30, occurred_at: "2026-10-01T04:30:00Z" }, // Sep 30, 11:30 pm Chicago
+      { minutes: 40, occurred_at: "2026-10-02T15:00:00Z" },
+      { minutes: 30, occurred_at: "2026-10-04T15:00:00Z" },
+    ];
+    usageDailyRows = [{ billable_minutes: 70 }, { billable_minutes: 260 }];
+    stubPlan();
+    renderPage();
+    // 330 in usage_daily this month - 70 trial minutes = 260, under the 300 included
+    expect(await screen.findByText("260 of 300 minutes used")).toBeInTheDocument();
+    expect(screen.queryByText(/min overage/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/The 70 free-trial minutes this month aren't counted here\./),
+    ).toBeInTheDocument();
+  });
+
+  it("tells an owner who canceled during the trial that nothing will be charged", async () => {
+    vi.useFakeTimers({ now: new Date("2026-10-11T12:00:00Z"), toFake: ["Date"] });
+    tenantRow = {
+      usage_hard_cap_minutes: null,
+      timezone: "America/Chicago",
+      trial_ends_at: "2026-10-16T15:00:00Z",
+      trial_minutes_cap: 100,
+      trial_ended_reason: null,
+      trial_cancel_scheduled: true,
+    };
+    usageEventRows = [{ minutes: 42, occurred_at: "2026-10-10T15:00:00Z" }];
+    stubPlan();
+    renderPage();
+    const card = await screen.findByTestId("free-trial-card");
+    expect(card).toHaveTextContent(
+      "You canceled during your free trial, so your subscription ends when the trial ends on October 16, 2026 (42 of 100 trial minutes used). You won't be charged, and calls are answered until then.",
+    );
+    expect(card).not.toHaveTextContent("charged to your card");
+  });
+
+  it("shows no trial card and reads no trial usage for a tenant that never had a trial", async () => {
+    stubPlan();
+    renderPage();
+    await screen.findByText("Usage this period");
+    expect(screen.queryByTestId("free-trial-card")).not.toBeInTheDocument();
+    expect(usageEventsChain).toBeNull();
+  });
+
+  it("labels a $0 invoice as no charge", async () => {
+    invoiceRows = [
+      {
+        id: "i1",
+        period_start: "2026-10-01",
+        period_end: "2026-10-08",
+        total_cents: 0,
+        status: "paid",
+      },
+      {
+        id: "i2",
+        period_start: "2026-10-08",
+        period_end: "2026-11-08",
+        total_cents: 29900,
+        status: "paid",
+      },
+    ];
+    stubPlan();
+    renderPage();
+    expect((await screen.findAllByText("$0.00 (no charge)")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("$299.00").length).toBeGreaterThan(0);
+  });
+});
+
+describe("freeTrialSummary (TRIAL-1)", () => {
+  const base = {
+    endsAt: "2026-10-16T15:00:00Z",
+    endedReason: null,
+    minutesCap: 100,
+    minutesUsed: 12,
+    timezone: "UTC",
+  } as const;
+  const now = new Date("2026-10-11T12:00:00Z");
+
+  it("tells a member the owner can cancel", () => {
+    expect(freeTrialSummary(base, { canManageBilling: false, now })).toContain(
+      "Your account owner can cancel before you're charged.",
+    );
+  });
+
+  it("never shows more minutes used than the cap", () => {
+    expect(
+      freeTrialSummary({ ...base, minutesUsed: 140 }, { canManageBilling: true, now }),
+    ).toContain("100 of 100 minutes used so far.");
+  });
+
+  it("explains each way the trial can end", () => {
+    expect(
+      freeTrialSummary({ ...base, endedReason: "minutes" }, { canManageBilling: true, now }),
+    ).toBe(
+      "Your free trial ended early because its 100 call minutes were used, so your plan has started. Minutes used during the trial are never billed as overage.",
+    );
+    expect(
+      freeTrialSummary({ ...base, endedReason: "time" }, { canManageBilling: true, now }),
+    ).toBe(
+      "Your free trial ended on October 16, 2026 and your plan started. Minutes used during the trial are never billed as overage.",
+    );
+    expect(
+      freeTrialSummary({ ...base, endedReason: "canceled" }, { canManageBilling: true, now }),
+    ).toBe("Your subscription was canceled during the free trial, so your plan was never charged.");
+  });
+
+  it("a canceled-during-trial owner is never told the plan starts or was charged", () => {
+    const canceled = { ...base, cancelScheduled: true };
+    expect(freeTrialSummary(canceled, { canManageBilling: true, now })).toContain(
+      "You won't be charged",
+    );
+    expect(
+      freeTrialSummary(canceled, {
+        canManageBilling: true,
+        now: new Date("2026-10-17T00:00:00Z"),
+      }),
+    ).toBe("Your subscription was canceled during the free trial, so your plan was never charged.");
+  });
+
+  it("treats a trial past its end as over even before the end is recorded", () => {
+    expect(
+      freeTrialSummary(base, { canManageBilling: true, now: new Date("2026-10-17T00:00:00Z") }),
+    ).toContain("ended on October 16, 2026");
+  });
+
+  it("omits the minutes part when the cap is unknown", () => {
+    const text = freeTrialSummary({ ...base, minutesCap: null }, { canManageBilling: true, now });
+    expect(text).toContain("Your free trial ends on October 16, 2026. Then your plan starts");
+    expect(text).not.toContain("minutes used so far");
   });
 });

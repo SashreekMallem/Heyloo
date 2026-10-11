@@ -212,3 +212,64 @@ export function chargeSucceeded(
 /** What `GET /v1/balance_transactions/txn_...` returns for the charge above:
  * 2.9% + 30c of $299.00 = 897c fee (integer cents), net = amount - fee. */
 export const BALANCE_TXN = { feeCents: 897, netCents: 29_900 - 897, currency: "usd" };
+
+/**
+ * TRIAL-1: a Subscription event as Stripe sends it (docs.stripe.com/api/
+ * subscriptions/object, fetched 2026-10-11): `trial_start`/`trial_end` are
+ * nullable unix seconds, `metadata` is the `subscription_data.metadata`
+ * api-checkout set (tenant_id, vertical, user_id, trial_minutes).
+ */
+export function subscriptionEvent(
+  type:
+    | "customer.subscription.created"
+    | "customer.subscription.updated"
+    | "customer.subscription.deleted"
+    | "customer.subscription.trial_will_end"
+    | "customer.subscription.paused"
+    | "customer.subscription.resumed",
+  overrides: {
+    eventId?: string;
+    status?: string;
+    trialEnd?: number | null;
+    customer?: string | null;
+    tenantId?: string | null;
+    trialMinutes?: string | null;
+    endedAt?: number | null;
+    cancelAtPeriodEnd?: boolean;
+    cancelAt?: number | null;
+  } = {},
+): StripeEvent {
+  const trialEnd = overrides.trialEnd === undefined ? T0 + 7 * 86_400 : overrides.trialEnd;
+  const tenantId = overrides.tenantId === undefined ? TENANT_ID : overrides.tenantId;
+  const trialMinutes = overrides.trialMinutes === undefined ? "100" : overrides.trialMinutes;
+  return {
+    id: overrides.eventId ?? `evt_${type.replace(/\W/g, "_")}`,
+    type,
+    livemode: false,
+    data: {
+      object: {
+        id: SUBSCRIPTION_ID,
+        object: "subscription",
+        customer: overrides.customer === undefined ? CUSTOMER_ID : overrides.customer,
+        status: overrides.status ?? "trialing",
+        trial_start: trialEnd === null ? null : T0,
+        trial_end: trialEnd,
+        billing_cycle_anchor: trialEnd ?? T0,
+        cancel_at_period_end: overrides.cancelAtPeriodEnd ?? false,
+        cancel_at: overrides.cancelAt ?? null,
+        canceled_at: null,
+        ended_at: overrides.endedAt ?? null,
+        created: T0,
+        start_date: T0,
+        items: { object: "list", data: [], has_more: false, total_count: 0 },
+        metadata: {
+          ...(tenantId ? { tenant_id: tenantId } : {}),
+          vertical: "auto",
+          user_id: "user_1",
+          ...(trialMinutes ? { trial_minutes: trialMinutes } : {}),
+        },
+        trial_settings: { end_behavior: { missing_payment_method: "create_invoice" } },
+      },
+    },
+  };
+}

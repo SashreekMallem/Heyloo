@@ -5,7 +5,13 @@ import { getSql } from "../_shared/deno/db.ts";
 import { optionalEnv, requireEnv } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
-import { billOneTenant, findTenantsForBilling, previousCalendarMonth } from "./handler.ts";
+import { runTrialCapSweep } from "../_shared/trial/cap.ts";
+import {
+  billingJobTask,
+  billOneTenant,
+  findTenantsForBilling,
+  previousCalendarMonth,
+} from "./handler.ts";
 
 const logger = createLogger({ fn: "job-billing-cycle" });
 const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
@@ -19,11 +25,27 @@ const CRON_SECRET = requireEnv("CRON_INVOKE_SECRET");
 // per tenant (see handler.ts `billOneTenant`'s own not-configured branch).
 const STRIPE_SECRET_KEY = optionalEnv("STRIPE_SECRET_KEY");
 const STRIPE_METER_EVENT_NAME = optionalEnv("STRIPE_METER_EVENT_NAME");
+// TRIAL-1: linked from the "your trial minutes are used" owner email.
+const BILLING_PAGE_URL = optionalEnv("BILLING_PORTAL_RETURN_URL");
 
 Deno.serve(async (req: Request) => {
   const provided = req.headers.get("x-cron-secret");
   if (!provided || !timingSafeEqual(provided, CRON_SECRET)) {
     return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+
+  if (billingJobTask(req.url) === "trial_caps") {
+    // TRIAL-1 hourly safety net: ends free trials that reached their minutes
+    // cap (voice-events normally does it right after the call) and stamps
+    // trials that ran their days. Never blocks calls.
+    const result = await runTrialCapSweep(getSql(), {
+      stripeFetch: fetch,
+      stripeSecretKey: STRIPE_SECRET_KEY,
+      billingPageUrl: BILLING_PAGE_URL,
+      logger,
+    });
+    logger.info("job_billing_cycle_trial_caps_complete", { ...result });
+    return jsonResponse({ task: "trial_caps", ...result });
   }
 
   const missingStripe = [

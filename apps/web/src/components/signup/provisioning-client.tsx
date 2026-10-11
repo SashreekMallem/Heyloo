@@ -11,8 +11,9 @@ import { supabaseBrowserClient } from "@/lib/supabase/browser";
 // (SIGNUP-1: the number purchase is now a single Retell-native step, not a
 // separate Twilio-purchase + Retell-import pair — docs/BUILD_NOTES.md
 // SIGNUP-1 entry).
+// `tenant_finalize`'s label depends on the free trial (`finalizeLabel`).
 const STEP_ORDER: { key: string; label: string }[] = [
-  { key: "tenant_finalize", label: "Payment confirmed" },
+  { key: "tenant_finalize", label: "Card added" },
   { key: "agent_compile", label: "AI agent compiled" },
   { key: "retell_number_provision", label: "Phone number provisioned" },
   { key: "billing_wiring", label: "Billing connected" },
@@ -24,29 +25,66 @@ interface RunRow {
   status: "pending" | "in_progress" | "succeeded" | "failed";
 }
 
+interface ProvisioningPoll {
+  runs: RunRow[];
+  /** `tenants.trial_ends_at` is set; null = not known (the read failed). */
+  trialStarted: boolean | null;
+}
+
 function useProvisioningRuns(tenantId: string) {
   return useQuery({
     queryKey: ["tenant", tenantId, "provisioning_runs"],
-    queryFn: async () => {
+    queryFn: async ({ client, queryKey }): Promise<ProvisioningPoll> => {
       const { data } = await supabaseBrowserClient
         .from("provisioning_runs")
         .select("step, status")
         .eq("tenant_id", tenantId);
-      return (data ?? []) as RunRow[];
+      // TRIAL-1: read AFTER the runs. webhooks-stripe stores a trial
+      // Checkout's `trial_ends_at` before it starts provisioning, so when this
+      // poll sees `tenant_finalize` succeeded, the trial is visible here too.
+      const { data: tenant, error } = await supabaseBrowserClient
+        .from("tenants")
+        .select("trial_ends_at")
+        .eq("id", tenantId)
+        .maybeSingle();
+      // A failed read says nothing about the trial: keep what the last poll
+      // knew (`trial_ends_at` is never cleared once set), else unknown —
+      // never "no trial", which would show "Payment confirmed".
+      const trialStarted = error
+        ? (client.getQueryData<ProvisioningPoll>(queryKey)?.trialStarted ?? null)
+        : tenant?.trial_ends_at != null;
+      return { runs: (data ?? []) as RunRow[], trialStarted };
     },
     refetchInterval: 2500,
   });
 }
 
+/**
+ * With the free trial nothing is charged at signup, so "Payment confirmed"
+ * would be untrue. A business that already had its one trial pays at signup:
+ * the step succeeded with no trial recorded. Until either is known (or when
+ * the trial read failed), the neutral STEP_ORDER label.
+ */
+function finalizeLabel(trialStarted: boolean | null, finalized: boolean): string | null {
+  if (trialStarted === true) return "Card added — trial started";
+  if (trialStarted === false && finalized) return "Payment confirmed";
+  return null;
+}
+
 function Inner({ tenantId }: { tenantId: string }) {
   const router = useRouter();
-  const { data: runs } = useProvisioningRuns(tenantId);
+  const { data } = useProvisioningRuns(tenantId);
+  const runs = data?.runs;
   const [startedAt] = useState(() => Date.now());
   const [timedOut, setTimedOut] = useState(false);
 
   const steps: ProvisioningStep[] = STEP_ORDER.map(({ key, label }) => {
-    const run = runs?.find((r) => r.step === key);
-    return { key, label, status: run?.status ?? "pending" };
+    const status = runs?.find((r) => r.step === key)?.status ?? "pending";
+    const shown =
+      key === "tenant_finalize"
+        ? (finalizeLabel(data?.trialStarted ?? null, status === "succeeded") ?? label)
+        : label;
+    return { key, label: shown, status };
   });
 
   const failed = steps.find((s) => s.status === "failed");

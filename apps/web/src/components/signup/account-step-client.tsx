@@ -21,7 +21,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { Link } from "@/i18n/navigation";
-import { SIGNUP_STEPS } from "@/lib/marketing/signup-steps";
+import { FREE_TRIAL_DAYS, FREE_TRIAL_TERMS, SIGNUP_STEPS } from "@/lib/marketing/signup-steps";
 import {
   isObfuscatedExistingUser,
   type MappedSignUpError,
@@ -36,6 +36,20 @@ const RESUME_PATH = "/signup/resume";
 
 function confirmRedirectUrl(): string {
   return `${window.location.origin}/auth/confirm?next=${encodeURIComponent(RESUME_PATH)}`;
+}
+
+/** TRIAL-1 disclosure next to the button that leads to Stripe Checkout. */
+function TrialTerms({ whiteGlove }: { whiteGlove: boolean }) {
+  return (
+    <p className="text-xs text-muted-foreground" data-testid="trial-terms">
+      {FREE_TRIAL_TERMS}{" "}
+      {whiteGlove
+        ? "White-glove onboarding, which you added, is charged today."
+        : "Nothing is charged today."}{" "}
+      If this business already had a free trial, the next page shows your first charge before you
+      pay.
+    </p>
+  );
 }
 
 export function AccountStepClient({
@@ -164,7 +178,8 @@ export function AccountStepClient({
         <h1 className="font-display text-h2 font-semibold">Check your email</h1>
         <p className="text-small text-muted-foreground">
           We sent a confirmation link to <strong>{awaitingEmail}</strong>. Open it and we&apos;ll
-          take you straight to payment, with your business details already filled in.
+          take you straight to starting your free trial, with your business details already filled
+          in.
         </p>
         <div className="space-y-2">
           <Button type="button" variant="outline" onClick={onResend}>
@@ -185,9 +200,10 @@ export function AccountStepClient({
     return (
       <div className="mx-auto max-w-md space-y-8">
         <div className="space-y-1.5 text-center">
-          <h1 className="font-display text-h2 font-semibold">Continue to payment</h1>
+          <h1 className="font-display text-h2 font-semibold">Start your free trial</h1>
           <p className="text-small text-muted-foreground">
-            You&apos;re signed in as {continueEmail}. Your account is ready; only payment is left.
+            You&apos;re signed in as {continueEmail}. Your account is ready; add a card on the next
+            page to start your {FREE_TRIAL_DAYS}-day free trial.
           </p>
         </div>
         <WizardStepper steps={SIGNUP_STEPS} current={2} completed={[0, 1]} />
@@ -197,8 +213,9 @@ export function AccountStepClient({
           </p>
         )}
         <Button size="lg" className="w-full" loading={submitting} onClick={onContinueSignedIn}>
-          Continue to payment
+          Start free trial
         </Button>
+        <TrialTerms whiteGlove={whiteGlove} />
       </div>
     );
   }
@@ -208,7 +225,7 @@ export function AccountStepClient({
       <div className="space-y-1.5 text-center">
         <h1 className="font-display text-h2 font-semibold">Create your account</h1>
         <p className="text-small text-muted-foreground">
-          You&apos;ll set up payment on the next step.
+          Next you&apos;ll add a card to start your {FREE_TRIAL_DAYS}-day free trial.
         </p>
       </div>
       <WizardStepper steps={SIGNUP_STEPS} current={2} completed={[0, 1]} />
@@ -304,8 +321,9 @@ export function AccountStepClient({
               </p>
             )}
           <Button type="submit" size="lg" className="w-full" loading={submitting}>
-            Create account & continue
+            Create account & start free trial
           </Button>
+          <TrialTerms whiteGlove={whiteGlove} />
         </form>
       </Form>
     </div>

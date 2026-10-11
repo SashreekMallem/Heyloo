@@ -124,7 +124,7 @@ describe("AccountStepClient — signup errors and email confirmation (SIGNUP-BIL
     render(<AccountStepClient annual={false} whiteGlove={false} draft={draft} />);
     await fillAndSubmit();
     expect(await screen.findByText(/joe@joesgarage.com/)).toBeInTheDocument();
-    expect(screen.getByText(/take you straight to payment/i)).toBeInTheDocument();
+    expect(screen.getByText(/take you straight to starting your free trial/i)).toBeInTheDocument();
 
     await userEvent.setup().click(screen.getByRole("button", { name: /resend/i }));
     await waitFor(() => expect(resend).toHaveBeenCalled());
@@ -163,7 +163,7 @@ describe("AccountStepClient — signup errors and email confirmation (SIGNUP-BIL
       />,
     );
     expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
-    await userEvent.setup().click(screen.getByRole("button", { name: /continue to payment/i }));
+    await userEvent.setup().click(screen.getByRole("button", { name: /^start free trial$/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(signUp).not.toHaveBeenCalled();
     expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't start the payment step/i);
@@ -186,11 +186,39 @@ describe("AccountStepClient — signup errors and email confirmation (SIGNUP-BIL
     expect(screen.queryByText(/couldn't create your account/i)).not.toBeInTheDocument();
     // The form is gone; the retry button is enabled and does not re-run signUp.
     expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
-    const retry = screen.getByRole("button", { name: /continue to payment/i });
+    const retry = screen.getByRole("button", { name: /^start free trial$/i });
     expect(retry).toBeEnabled();
     await userEvent.setup().click(retry);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(signUp).toHaveBeenCalledTimes(1);
+  });
+
+  it("TRIAL-1: says the next step starts the free trial and spells out its terms", () => {
+    render(<AccountStepClient annual={false} whiteGlove={false} draft={draft} />);
+    expect(screen.getByText(/add a card to start your 7-day free trial/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /create account & start free trial/i }),
+    ).toBeInTheDocument();
+    const terms = screen.getByTestId("trial-terms");
+    expect(terms).toHaveTextContent(/7 days or 100 call minutes, whichever comes first/i);
+    expect(terms).toHaveTextContent(/a card is required/i);
+    expect(terms).toHaveTextContent(/one free trial per business/i);
+    expect(terms).toHaveTextContent(/nothing is charged today/i);
+  });
+
+  it("TRIAL-1: says white-glove onboarding is charged today when the owner added it", () => {
+    render(
+      <AccountStepClient
+        annual={false}
+        whiteGlove={true}
+        draft={draft}
+        signedInEmail="joe@joesgarage.com"
+      />,
+    );
+    expect(screen.getByRole("heading", { name: /start your free trial/i })).toBeInTheDocument();
+    const terms = screen.getByTestId("trial-terms");
+    expect(terms).toHaveTextContent(/white-glove onboarding, which you added, is charged today/i);
+    expect(terms).not.toHaveTextContent(/nothing is charged today/i);
   });
 
   it("F-12: name, email and password carry autocomplete tokens; the Terms checkbox is labelled and the link opens in a new tab", () => {

@@ -26,10 +26,11 @@ export async function requireTenantSession(nextPath: string) {
   const claims = await claimsFromSupabaseClient(supabase);
   if (!claims.tenant_id) redirect(NO_ACCESS_PATH);
 
+  // TRIAL-1: the trial columns feed the (tenant) layout's free-trial banner.
   const { data: tenant } = await supabase
     .from("tenants")
     .select(
-      "id, name, status, vertical, business_hours, branding, manual_mode, manual_mode_enabled_at",
+      "id, name, status, vertical, business_hours, branding, manual_mode, manual_mode_enabled_at, trial_ends_at, trial_minutes_cap, trial_ended_reason, trial_cancel_scheduled",
     )
     .eq("id", claims.tenant_id)
     .maybeSingle();

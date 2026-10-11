@@ -89,6 +89,7 @@ describe("handleCheckout", () => {
       ok: true,
       tenant_id: "tenant-1",
       checkout_url: "https://checkout.stripe.com/cs_1",
+      free_trial: true,
     });
     const tenantInsert = calls.find((c) => c.text.includes("insert into public.tenants"));
     expect(tenantInsert?.values).toContain("joe-s-auto-abcd1234");
@@ -106,6 +107,7 @@ describe("handleCheckout", () => {
       ok: true,
       tenant_id: "existing-tenant",
       checkout_url: "https://checkout.stripe.com/cs_1",
+      free_trial: true,
     });
     expect(calls.some((c) => c.text.includes("insert into public.tenants"))).toBe(false);
     expect(calls.some((c) => c.text.includes("insert into public.memberships"))).toBe(false);
@@ -238,6 +240,8 @@ describe("handleCheckout", () => {
       return indices.size;
     }
 
+    // These cover checkout WITHOUT a free trial (this business already had
+    // one); the trial's fee waiver is covered in the TRIAL-1 block below.
     async function runCheckout(
       fees: Record<string, unknown> | undefined,
       body: Record<string, unknown> = VALID_BODY,
@@ -248,6 +252,7 @@ describe("handleCheckout", () => {
         "platform_settings:fees_auto": fees ? [{ value: fees }] : [],
         "from public.tenants t": [],
         "insert into public.tenants": [{ id: "tenant-1" }],
+        "as had_trial": [{ had_trial: true }],
       });
       await handleCheckout(
         sql,
@@ -373,6 +378,7 @@ describe("handleCheckout", () => {
         ok: true,
         tenant_id: "tenant-1",
         checkout_url: "https://checkout.stripe.com/cs_1",
+        free_trial: true,
       });
     });
 
@@ -389,6 +395,121 @@ describe("handleCheckout", () => {
         makeDeps(),
       );
       expect(result.ok).toBe(true);
+    });
+  });
+  describe("free trial (TRIAL-1)", () => {
+    const FEES = {
+      setup_fee_enabled: true,
+      setup_fee_cents: 15000,
+      white_glove_enabled: true,
+      white_glove_fee_cents: 50000,
+    };
+
+    async function run(
+      opts: { hadTrial?: boolean; trialSetting?: unknown; body?: Record<string, unknown> } = {},
+    ) {
+      let capturedBody = "";
+      const { sql, calls } = makeSql({
+        "platform_settings:price_card_auto": [{ value: PRICE_CARD }],
+        "platform_settings:fees_auto": [{ value: FEES }],
+        ...(opts.trialSetting === undefined
+          ? {}
+          : { "platform_settings:free_trial": [{ value: opts.trialSetting }] }),
+        "from public.tenants t": [],
+        "insert into public.tenants": [{ id: "tenant-1" }],
+        "as had_trial": [{ had_trial: opts.hadTrial ?? false }],
+      });
+      const result = await handleCheckout(
+        sql,
+        "user-1",
+        opts.body ?? VALID_BODY,
+        makeDeps({
+          stripeFetch: (async (_url: string, init?: RequestInit) => {
+            capturedBody = (init?.body as string) ?? "";
+            return new Response(
+              JSON.stringify({ id: "cs_1", url: "https://checkout.stripe.com/cs_1" }),
+              { status: 200 },
+            );
+          }) as never,
+        }),
+      );
+      return { result, params: new URLSearchParams(capturedBody), calls };
+    }
+
+    function unitAmounts(params: URLSearchParams): number[] {
+      return [...params.entries()]
+        .filter(([key]) => key.endsWith("[price_data][unit_amount]"))
+        .map(([, value]) => Number(value));
+    }
+
+    it("starts a 7-day trial with the card required and the 100-minute cap in the subscription metadata", async () => {
+      const { result, params } = await run();
+      expect(result).toMatchObject({ ok: true, free_trial: true });
+      expect(params.get("subscription_data[trial_period_days]")).toBe("7");
+      expect(params.get("payment_method_collection")).toBe("always");
+      expect(params.get("subscription_data[metadata][trial_minutes]")).toBe("100");
+      expect(params.get("subscription_data[metadata][trial_days]")).toBe("7");
+      expect(params.get("subscription_data[metadata][tenant_id]")).toBe("tenant-1");
+      // the session carries them too: checkout.session.completed records the
+      // trial even if customer.subscription.created is late
+      expect(params.get("metadata[trial_minutes]")).toBe("100");
+      expect(params.get("metadata[trial_days]")).toBe("7");
+    });
+
+    it("waives the setup fee during the trial, so nothing is charged today", async () => {
+      const { params } = await run();
+      expect(unitAmounts(params)).not.toContain(15000);
+      expect(unitAmounts(params)).toEqual([]);
+    });
+
+    it("still charges white-glove onboarding at signup when the owner picked it", async () => {
+      const { params } = await run({ body: { ...VALID_BODY, white_glove: true } });
+      expect(unitAmounts(params)).toEqual([50000]);
+      expect(params.get("subscription_data[trial_period_days]")).toBe("7");
+    });
+
+    it("gives no second trial to a business that already had one: plain checkout with the setup fee", async () => {
+      const { result, params } = await run({ hadTrial: true });
+      expect(result).toMatchObject({ ok: true, free_trial: false });
+      expect(params.get("subscription_data[trial_period_days]")).toBeNull();
+      expect(params.get("payment_method_collection")).toBeNull();
+      expect(params.get("subscription_data[metadata][trial_minutes]")).toBeNull();
+      expect(params.get("metadata[trial_days]")).toBeNull();
+      expect(unitAmounts(params)).toEqual([15000]);
+    });
+
+    it("checks the one-trial rule by owner, email and business phone", async () => {
+      const { calls } = await run({
+        body: { ...VALID_BODY, business_phone: "+12627551967" },
+      });
+      const check = calls.find((c) => c.text.includes("as had_trial"));
+      expect(check?.text).toContain("prior.trial_ends_at is not null");
+      expect(check?.text).toContain("lower(u.email) = lower(");
+      expect(check?.text).toContain("prior.business_phone =");
+      expect(check?.values).toEqual(
+        expect.arrayContaining(["user-1", "joe@example.com", "+12627551967"]),
+      );
+    });
+
+    it("uses platform_settings.free_trial when set", async () => {
+      const { params } = await run({ trialSetting: { enabled: true, days: 14, minutes: 50 } });
+      expect(params.get("subscription_data[trial_period_days]")).toBe("14");
+      expect(params.get("subscription_data[metadata][trial_minutes]")).toBe("50");
+      expect(params.get("subscription_data[metadata][trial_days]")).toBe("14");
+    });
+
+    it("turns the trial off when platform_settings.free_trial.enabled is false (no eligibility read)", async () => {
+      const { result, params, calls } = await run({ trialSetting: { enabled: false } });
+      expect(result).toMatchObject({ ok: true, free_trial: false });
+      expect(params.get("subscription_data[trial_period_days]")).toBeNull();
+      expect(unitAmounts(params)).toEqual([15000]);
+      expect(calls.some((c) => c.text.includes("as had_trial"))).toBe(false);
+    });
+
+    it("falls back to 7 days / 100 minutes for out-of-range settings", async () => {
+      const { params } = await run({ trialSetting: { days: 0, minutes: -5 } });
+      expect(params.get("subscription_data[trial_period_days]")).toBe("7");
+      expect(params.get("subscription_data[metadata][trial_minutes]")).toBe("100");
     });
   });
 });

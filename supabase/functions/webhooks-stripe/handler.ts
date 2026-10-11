@@ -1,5 +1,6 @@
 import { CheckoutRequestSchema } from "../_shared/schemas/checkout.ts";
 import type { StripeEvent } from "../_shared/schemas/stripe-event.ts";
+import { FREE_TRIAL_DEFAULTS, STRIPE_MAX_TRIAL_DAYS } from "../_shared/trial/config.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import {
   type ChargeDeps,
@@ -11,6 +12,12 @@ import {
   StripeEventDeferred,
   upsertInvoiceRow,
 } from "./billing.ts";
+import {
+  handleTrialWillEnd,
+  parseSubscriptionFacts,
+  recordTrialing,
+  recordTrialOutcome,
+} from "./trial.ts";
 
 export { replayAfterTenantDeferral, StripeEventDeferred } from "./billing.ts";
 
@@ -34,11 +41,43 @@ export interface StripeEventDeps extends ChargeDeps {
   /** BILL-9: the tenant billing page (its "Manage payment method" opens the
    * Stripe Billing Portal); put in the dunning email so the owner can fix the card. */
   billingPageUrl?: string;
+  /** Injected for deterministic tests (TRIAL-1 "has the trial ended yet"). */
+  now?: () => Date;
 }
 
 const defaultStripeEventDeps: StripeEventDeps = {
   invokeProvisioning: async () => ({ ok: true }),
 };
+
+function nowOf(deps: StripeEventDeps): Date {
+  return deps.now?.() ?? new Date();
+}
+
+/** TRIAL-1: the free trial a subscription Checkout started, from the session
+ * metadata api-checkout wrote (`trial_minutes`, `trial_days`; same limits as
+ * `_shared/trial/config.ts`), or null for a Checkout without one.
+ * `completedAt` is the event's `created` (Unix seconds), else now. */
+function checkoutTrialFacts(
+  metadata: Record<string, string | undefined>,
+  event: StripeEvent,
+  now: Date,
+): { minutes: number; days: number; completedAt: number } | null {
+  const minutes = Number(metadata["trial_minutes"]);
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 100_000) return null;
+  const days = Number(metadata["trial_days"] ?? FREE_TRIAL_DEFAULTS.days);
+  const created = (event as { created?: unknown }).created;
+  return {
+    minutes,
+    days:
+      Number.isInteger(days) && days >= 1 && days <= STRIPE_MAX_TRIAL_DAYS
+        ? days
+        : FREE_TRIAL_DEFAULTS.days,
+    completedAt:
+      typeof created === "number" && Number.isInteger(created) && created > 0
+        ? created
+        : Math.floor(now.getTime() / 1000),
+  };
+}
 
 /**
  * `/webhooks-stripe` background processing (BACKEND_SPEC §7.4). The Deno
@@ -67,11 +106,15 @@ export async function processStripeEvent(
         // `tenants.vertical`, so re-sync it first, in case a second Checkout tab changed
         // the tenant's vertical after this session was opened. Only before the first
         // subscription (never re-verticals a live tenant) and only for a known vertical.
+        // "Before" includes this session's own subscription already being linked:
+        // TRIAL-1's `customer.subscription.created` (and an early `invoice.paid`) can
+        // beat this event and link it, and provisioning has not started yet.
         const paidVertical = CheckoutRequestSchema.shape.vertical.safeParse(metadata["vertical"]);
         if (paidVertical.success) {
           await sql`
             update public.tenants set vertical = ${paidVertical.data}
-            where id = ${tenantId} and stripe_subscription_id is null
+            where id = ${tenantId}
+              and (stripe_subscription_id is null or stripe_subscription_id = ${subscriptionId})
           `;
         }
         await sql`
@@ -80,6 +123,24 @@ export async function processStripeEvent(
               stripe_subscription_id = coalesce(${subscriptionId}, stripe_subscription_id)
           where id = ${tenantId}
         `;
+        // TRIAL-1: a trial Checkout carries `trial_minutes`/`trial_days` in its
+        // metadata (api-checkout). Recorded here too, so the minutes cap, the
+        // banner and the one-trial-per-business rule work even if
+        // `customer.subscription.created` is late or not delivered: a provisional
+        // end (session completion + the trial days) that the subscription event
+        // replaces with Stripe's exact `trial_end`. Never overwrites a stored end.
+        const trial = checkoutTrialFacts(metadata, event, nowOf(deps));
+        if (trial) {
+          await sql`
+            update public.tenants
+            set trial_minutes_cap = coalesce(trial_minutes_cap, ${trial.minutes}),
+                trial_ends_at = coalesce(
+                  trial_ends_at,
+                  to_timestamp(${trial.completedAt}::bigint) + ${trial.days}::int * interval '1 day'
+                )
+            where id = ${tenantId}
+          `;
+        }
         // The tenant now carries its Stripe customer id: a `charge.succeeded`
         // that beat this event (Stripe does not order events) could not be
         // attributed and was deferred — record its real fee now (E).
@@ -139,47 +200,92 @@ export async function processStripeEvent(
       return;
     }
 
-    case "customer.subscription.updated": {
-      const status = typeof obj["status"] === "string" ? obj["status"] : null;
-      const customerId = typeof obj["customer"] === "string" ? obj["customer"] : null;
-      if (!customerId || !status) return;
-      // BILL-10: every Stripe subscription status that changes what the tenant
-      // may do is mapped (`unpaid` = dunning exhausted, `incomplete_expired` =
-      // the first payment never succeeded, `canceled` = ended); `trialing` and
-      // `incomplete` (first payment pending) leave the tenant as it is.
-      const mapped =
-        status === "past_due" || status === "unpaid"
-          ? "past_due"
-          : status === "paused"
-            ? "paused"
-            : status === "active"
-              ? "active"
-              : status === "canceled" || status === "incomplete_expired"
-                ? "canceled"
-                : null;
-      if (!mapped) return;
-      await sql`
-        update public.tenants
-        set status = ${mapped},
-            canceled_at = case
-              when ${mapped} = 'canceled' then coalesce(canceled_at, now())
-              else null
-            end
-        where stripe_customer_id = ${customerId}
-      `;
+    // TRIAL-1: `paused`/`resumed` carry the Subscription like `updated` and are
+    // handled the same way; `created` additionally starts a free trial
+    // (status `trialing`, see ./trial.ts).
+    case "customer.subscription.created":
+    case "customer.subscription.updated":
+    case "customer.subscription.paused":
+    case "customer.subscription.resumed": {
+      const facts = parseSubscriptionFacts(obj);
+      if (!facts?.status) return;
+      if (facts.status === "trialing") {
+        // A trialing tenant may use the product: tenants.status 'active'
+        // (never 'trialing', which means "never paid"), plus its trial end
+        // and minutes cap.
+        await recordTrialing(sql, facts);
+        return;
+      }
+      const customerId = facts.customerId;
+      const status = facts.status;
+      if (customerId) {
+        // BILL-10: every Stripe subscription status that changes what the
+        // tenant may do is mapped (`unpaid` = dunning exhausted,
+        // `incomplete_expired` = the first payment never succeeded,
+        // `canceled` = ended); `incomplete` (first payment pending) leaves
+        // the tenant as it is.
+        const mapped =
+          status === "past_due" || status === "unpaid"
+            ? "past_due"
+            : status === "paused"
+              ? "paused"
+              : status === "active"
+                ? "active"
+                : status === "canceled" || status === "incomplete_expired"
+                  ? "canceled"
+                  : null;
+        if (mapped) {
+          await sql`
+            update public.tenants
+            set status = ${mapped},
+                canceled_at = case
+                  when ${mapped} = 'canceled' then coalesce(canceled_at, now())
+                  else null
+                end
+            where stripe_customer_id = ${customerId}
+          `;
+        }
+      }
+      // The trial's end (time, minutes cap confirmed, or canceled).
+      await recordTrialOutcome(sql, facts, {
+        subscriptionEnded: false,
+        now: nowOf(deps),
+        logger,
+        billingPageUrl: deps.billingPageUrl,
+      });
       return;
     }
 
     case "customer.subscription.deleted": {
       const customerId = typeof obj["customer"] === "string" ? obj["customer"] : null;
-      if (!customerId) return;
-      await sql`
-        update public.tenants set status = 'canceled', canceled_at = coalesce(canceled_at, now())
-        where stripe_customer_id = ${customerId}
-      `;
+      if (customerId) {
+        await sql`
+          update public.tenants set status = 'canceled', canceled_at = coalesce(canceled_at, now())
+          where stripe_customer_id = ${customerId}
+        `;
+      }
       // Offboarding wind-down (number port-out SLA, data export, G7) is
       // handled by a dedicated job, not inline here — this only flips the
-      // status flag that job polls on.
+      // status flag that job polls on. TRIAL-1: canceled during the free
+      // trial -> trial_ended_reason 'canceled' (never billed).
+      const facts = parseSubscriptionFacts(obj);
+      if (facts)
+        await recordTrialOutcome(sql, facts, {
+          subscriptionEnded: true,
+          now: nowOf(deps),
+          logger,
+          billingPageUrl: deps.billingPageUrl,
+        });
+      return;
+    }
+
+    case "customer.subscription.trial_will_end": {
+      const facts = parseSubscriptionFacts(obj);
+      if (!facts) return;
+      await handleTrialWillEnd(sql, facts, logger, {
+        now: nowOf(deps),
+        billingPageUrl: deps.billingPageUrl,
+      });
       return;
     }
 

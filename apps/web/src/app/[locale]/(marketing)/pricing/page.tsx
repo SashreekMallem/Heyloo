@@ -14,10 +14,11 @@ import type { Metadata } from "next";
 import { setRequestLocale } from "next-intl/server";
 import { Reveal } from "@/components/marketing/reveal";
 import { Link } from "@/i18n/navigation";
+import { FREE_TRIAL_DAYS, FREE_TRIAL_MINUTES } from "@/lib/marketing/signup-steps";
 
 export const metadata: Metadata = {
   title: "Pricing — Heyloo",
-  description: "Simple, per-business pricing starting at $299/mo — no per-call penalty.",
+  description: `Simple, per-business pricing starting at $299/mo, with a ${FREE_TRIAL_DAYS}-day free trial — no per-call penalty.`,
 };
 
 /**
@@ -65,8 +66,13 @@ export default async function PricingPage({ params }: { params: Promise<{ locale
       <Section spacing="spacious" className="pt-12 md:pt-16">
         <Container size="content" className="text-center">
           <p className="lbl">Pricing</p>
-          <h1 className="d2s kx mt-4">Starting at $299/mo</h1>
+          <h1 className="d2s kx mt-4">Start your {FREE_TRIAL_DAYS}-day free trial</h1>
           <p className="lede mx-auto mt-5">
+            Plans start at $299/mo. Try Heyloo free for {FREE_TRIAL_DAYS} days or{" "}
+            {FREE_TRIAL_MINUTES} call minutes, whichever comes first. A card is required to start,
+            and nothing is charged for your plan until the trial ends.
+          </p>
+          <p className="mx-auto mt-3 max-w-xl text-small text-muted-foreground">
             Your exact price depends on your business type and call volume — see it in under a
             minute at signup, before you ever enter payment details.
           </p>
@@ -118,6 +124,17 @@ export default async function PricingPage({ params }: { params: Promise<{ locale
         <Container size="content">
           <h2 className="d2s kx">Frequently asked questions</h2>
           <Accordion type="single" collapsible className="mt-4">
+            <AccordionItem value="trial">
+              <AccordionTrigger>How does the free trial work?</AccordionTrigger>
+              <AccordionContent>
+                You get {FREE_TRIAL_DAYS} days or {FREE_TRIAL_MINUTES} call minutes, whichever comes
+                first. A card is required to start, but your plan isn&apos;t charged during the
+                trial. If your AI receptionist answers all {FREE_TRIAL_MINUTES} minutes early, the
+                trial ends that day and your plan starts — your calls are never cut off. Cancel
+                anytime before the trial ends and you won&apos;t pay for the plan. One free trial
+                per business.
+              </AccordionContent>
+            </AccordionItem>
             <AccordionItem value="billing">
               <AccordionTrigger>How does billing work?</AccordionTrigger>
               <AccordionContent>
@@ -144,9 +161,10 @@ export default async function PricingPage({ params }: { params: Promise<{ locale
               <AccordionTrigger>Is there a setup fee?</AccordionTrigger>
               <AccordionContent>
                 For most businesses, no — your monthly plan covers setup. Some business types carry
-                a one-time setup fee, and white-glove onboarding is available as an optional add-on;
-                you&apos;ll see the exact amount, if any applies to you, at signup step 2 before you
-                enter payment details.
+                a one-time setup fee, which is waived when you start with the free trial.
+                White-glove onboarding is an optional add-on, charged at signup if you choose it,
+                even during the trial. You&apos;ll see the exact amounts, if any apply to you, at
+                signup step 2 before you enter payment details.
               </AccordionContent>
             </AccordionItem>
           </Accordion>
@@ -157,7 +175,7 @@ export default async function PricingPage({ params }: { params: Promise<{ locale
         <Container size="content">
           <div className="ctas justify-center">
             <Link className="btn btn-p" href="/signup" prefetch={false}>
-              Get started
+              Start your {FREE_TRIAL_DAYS}-day free trial
             </Link>
             <Link className="btn btn-s" href="/#talk" prefetch={false}>
               Hear a live demo

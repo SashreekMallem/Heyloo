@@ -17,7 +17,9 @@ describe("ResumeCheckoutClient", () => {
     const fetchMock = vi.fn(async () => Response.json({ error: "x" }, { status: 502 }));
     vi.stubGlobal("fetch", fetchMock);
     render(<ResumeCheckoutClient annual={false} whiteGlove={true} businessName="Joe's Garage" />);
-    expect(screen.getByRole("status")).toHaveTextContent("Joe's Garage");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Taking you to start your free trial for Joe's Garage…",
+    );
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("/api/checkout/session");

@@ -39,7 +39,7 @@ What remains for the owner before accepting real tenant calls. Automation has al
 **Steps**:
 1. Create account, complete business verification
 2. Developers → API keys: copy Secret/Publishable keys (test mode first)
-3. Developers → Webhooks → Add endpoint: URL `https://<project-ref>.supabase.co/functions/v1/webhooks-stripe`, events: `checkout.session.completed`, `customer.subscription.updated`, `invoice.paid`, `invoice.payment_failed`; copy signing secret
+3. Developers → Webhooks → Add endpoint: URL `https://<project-ref>.supabase.co/functions/v1/webhooks-stripe`, events: `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `customer.subscription.trial_will_end`, `customer.subscription.paused`, `customer.subscription.resumed`, `invoice.paid`, `invoice.payment_failed`, `charge.succeeded`, `charge.refunded`, `charge.dispute.created`; copy signing secret
 4. `npx supabase secrets set STRIPE_SECRET_KEY=sk_test_xxxxx STRIPE_PUBLISHABLE_KEY=pk_test_xxxxx STRIPE_WEBHOOK_SIGNING_SECRET=whsec_xxxxx`
 5. Vercel (Project Settings → Environment Variables → Production): set `STRIPE_PUBLISHABLE_KEY`
 

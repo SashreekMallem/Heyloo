@@ -3,16 +3,23 @@
 // is false in supabase/config.toml for this function.
 import { runInBackground } from "../_shared/deno/background.ts";
 import { getSql } from "../_shared/deno/db.ts";
-import { requireRetellWebhookKey } from "../_shared/deno/env.ts";
+import { optionalEnv, requireRetellWebhookKey } from "../_shared/deno/env.ts";
 import { createLogger } from "../_shared/logger.ts";
 import { jsonResponse } from "../_shared/responses.ts";
 import { verifyRetellSignature } from "../_shared/retell-signature.ts";
 import { VoiceEventRequestSchema } from "../_shared/schemas/voice-events.ts";
+import { checkTrialCapAfterCall } from "../_shared/trial/cap.ts";
 import { insertWebhookEventIfNew, markWebhookEventProcessed } from "../_shared/webhook-dedup.ts";
-import { processVoiceEvent } from "./handler.ts";
+import { processVoiceEvent, type VoiceEventHooks } from "./handler.ts";
 
 const logger = createLogger({ fn: "voice-events" });
 const RETELL_WEBHOOK_SIGNING_SECRET = requireRetellWebhookKey();
+// TRIAL-1: the free-trial minutes cap ends a trial through Stripe after the
+// call that reached it. Optional (OPS-5 precedent): without the key the cap is
+// only logged here and job-billing-cycle's hourly `?task=trial_caps` run (or
+// the next call once the key exists) ends the trial.
+const STRIPE_SECRET_KEY = optionalEnv("STRIPE_SECRET_KEY");
+const BILLING_PAGE_URL = optionalEnv("BILLING_PORTAL_RETURN_URL");
 
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
@@ -46,6 +53,15 @@ Deno.serve(async (req: Request) => {
 
   const sql = getSql();
   const event = parsed.data;
+  const hooks: VoiceEventHooks = {
+    onBillableUsage: (tenantId) =>
+      checkTrialCapAfterCall(sql, tenantId, {
+        stripeFetch: fetch,
+        stripeSecretKey: STRIPE_SECRET_KEY,
+        billingPageUrl: BILLING_PAGE_URL,
+        logger,
+      }),
+  };
   const eventId = `${event.call.call_id}:${event.event}`;
 
   const dedup = await insertWebhookEventIfNew(sql, {
@@ -65,7 +81,7 @@ Deno.serve(async (req: Request) => {
   runInBackground(
     async () => {
       try {
-        await processVoiceEvent(sql, event, logger);
+        await processVoiceEvent(sql, event, logger, hooks);
         if (dedup.webhookEventId) await markWebhookEventProcessed(sql, dedup.webhookEventId);
       } catch (err) {
         logger.error("voice_events_background_error", { error: String(err), event: event.event });

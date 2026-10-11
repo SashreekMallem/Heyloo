@@ -12,10 +12,15 @@ vi.mock("next/navigation", () => ({
   },
 }));
 
+const selectedColumns: string[] = [];
+
 function chain(result: unknown) {
   const obj: Record<string, unknown> = {};
   for (const method of ["select", "eq", "maybeSingle"]) {
-    obj[method] = vi.fn(() => obj);
+    obj[method] = vi.fn((arg?: unknown) => {
+      if (method === "select" && typeof arg === "string") selectedColumns.push(arg);
+      return obj;
+    });
   }
   // biome-ignore lint/suspicious/noThenProperty: intentional thenable mock of a Supabase query-builder chain.
   (obj as { then: unknown }).then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
@@ -85,6 +90,23 @@ describe("requireTenantSession", () => {
     const result = await requireTenantSession("/dashboard");
     expect(result.claims.tenant_id).toBe("t1");
     expect(result.tenant).toEqual({ id: "t1", name: "Acme", status: "active" });
+  });
+
+  it("TRIAL-1: reads the free-trial columns the layout banner needs", async () => {
+    mockUser = { id: "u1", app_metadata: {} };
+    mockClaimsAppMetadata = { tenant_id: "t1", role: "owner" };
+    tenantResult = { data: { id: "t1", name: "Acme", status: "active" }, error: null };
+    selectedColumns.length = 0;
+    await requireTenantSession("/dashboard");
+    const columns = (selectedColumns[0] ?? "").split(",").map((c) => c.trim());
+    expect(columns).toEqual(
+      expect.arrayContaining([
+        "trial_ends_at",
+        "trial_minutes_cap",
+        "trial_ended_reason",
+        "trial_cancel_scheduled",
+      ]),
+    );
   });
 
   it("SIGNUP-1 regression: ignores a stale tenant_id in user.app_metadata that isn't in the JWT's own claims (the exact bug this fix closes)", async () => {

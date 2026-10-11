@@ -144,9 +144,56 @@ function isImpersonationSelfServicePath(path: string): boolean {
   );
 }
 
-/** A tenant that is actually being billed: a Stripe subscription exists AND it is in a billing status. */
-function hasLiveSubscription(status: string, subscriptionId: string | null): boolean {
-  return !!subscriptionId && (status === "active" || status === "past_due");
+/**
+ * Why a tenant has no MRR (`mrr_cents: null`), so the cockpit can say so
+ * instead of "no subscription" for every case:
+ *  - `no_subscription`: no Stripe subscription in a billing status
+ *    (active/past_due) — never subscribed, paused or canceled (COCKPIT-F14);
+ *  - `free_trial`: inside its free trial (TRIAL-1) — `active` with a
+ *    subscription but paying nothing until the trial ends
+ *    (`tenant.trial_ends_at` on the detail route says when);
+ *  - `trial_canceled`: the owner canceled during the free trial, so the
+ *    subscription ends with the trial and is never charged — counted out from
+ *    the cancellation on, including the gap after the trial end before
+ *    Stripe's `customer.subscription.deleted` sets the tenant `canceled`.
+ *    Known limit: `trial_cancel_scheduled` is not cleared when a trial
+ *    converts, so a stale flag (a cancel and its undo processed out of
+ *    order) keeps a paying tenant out until a `minutes` end overrides it.
+ * null = counted.
+ */
+type MrrExcluded = "no_subscription" | "free_trial" | "trial_canceled";
+
+interface MrrInputs {
+  status: unknown;
+  stripe_subscription_id: unknown;
+  /** Columns from 20261011120100_free_trial.sql; absent before it. */
+  trial_ends_at?: unknown;
+  trial_ended_reason?: unknown;
+  trial_cancel_scheduled?: unknown;
+}
+
+function mrrExcluded(t: MrrInputs, nowMs: number): MrrExcluded | null {
+  const billing = t.status === "active" || t.status === "past_due";
+  if (!t.stripe_subscription_id || !billing) return "no_subscription";
+  // Never trialed (or a pre-migration row).
+  if (t.trial_ends_at == null) return null;
+  // `minutes`: the cap ended the trial through Stripe, which it never does for
+  // a canceled trial (_shared/trial/cap.ts), so a set flag there is stale and
+  // the plan is being charged.
+  if (
+    t.trial_ended_reason === "canceled" ||
+    (t.trial_cancel_scheduled === true && t.trial_ended_reason !== "minutes")
+  ) {
+    return "trial_canceled";
+  }
+  if (t.trial_ended_reason != null) return null;
+  // postgres.js returns timestamptz as a Date; an ISO string reads the same.
+  const endsMs =
+    t.trial_ends_at instanceof Date
+      ? t.trial_ends_at.getTime()
+      : Date.parse(String(t.trial_ends_at));
+  // Past its end but not yet stamped `time` by the hourly sweep: billing.
+  return Number.isFinite(endsMs) && endsMs > nowMs ? "free_trial" : null;
 }
 
 async function handleTenants(
@@ -163,7 +210,8 @@ async function handleTenants(
     // route only returned id/name/vertical/status). MRR = the plan's recurring
     // base fee for tenants that are billing (active/past_due); margin % is this
     // month's paid-invoice margin from `fn_margin_by_tenant` (null until a paid
-    // invoice exists — never a fabricated 0%).
+    // invoice exists — never a fabricated 0%). TRIAL-1: a tenant in, or
+    // canceled during, its free trial has no MRR (`mrr_excluded` says why).
     const rows = await sql<{
       id: string;
       name: string;
@@ -172,11 +220,15 @@ async function handleTenants(
       plan_code: string | null;
       created_at: string;
       stripe_subscription_id: string | null;
+      trial_ends_at: unknown;
+      trial_ended_reason: string | null;
+      trial_cancel_scheduled: boolean | null;
       base_cents: unknown;
       revenue_cents: unknown;
       margin_cents: unknown;
     }>`
       select t.id, t.name, t.vertical, t.status, t.plan_code, t.created_at, t.stripe_subscription_id,
+             t.trial_ends_at, t.trial_ended_reason, t.trial_cancel_scheduled,
              (ps.value->>'base_cents')::numeric as base_cents,
              m.revenue_cents, m.margin_cents
       from public.tenants t
@@ -189,11 +241,13 @@ async function handleTenants(
       where t.deleted_at is null
       order by t.created_at desc limit 100
     `;
+    const nowMs = Date.now();
     return {
       status: 200,
       body: {
         tenants: rows.map((r) => {
           const revenue = toNumber(r.revenue_cents);
+          const excluded = mrrExcluded(r, nowMs);
           return {
             id: r.id,
             name: r.name,
@@ -204,9 +258,8 @@ async function handleTenants(
             // COCKPIT-F14: MRR only for a tenant with a live Stripe subscription;
             // a tenant without one has no recurring revenue, whatever its plan's
             // list price says (`list_price_cents`, shown separately).
-            mrr_cents: hasLiveSubscription(r.status, r.stripe_subscription_id)
-              ? toNumber(r.base_cents)
-              : null,
+            mrr_cents: excluded === null ? toNumber(r.base_cents) : null,
+            mrr_excluded: excluded,
             list_price_cents: toNumber(r.base_cents),
             margin_pct: revenue > 0 ? (toNumber(r.margin_cents) / revenue) * 100 : null,
           };
@@ -256,14 +309,22 @@ async function handleTenants(
     `;
     const listPriceCents = toNumber(baseRows[0]?.base_cents);
 
+    const excluded = mrrExcluded(
+      {
+        status: tenant["status"],
+        stripe_subscription_id: tenant["stripe_subscription_id"],
+        trial_ends_at: tenant["trial_ends_at"],
+        trial_ended_reason: tenant["trial_ended_reason"],
+        trial_cancel_scheduled: tenant["trial_cancel_scheduled"],
+      },
+      Date.now(),
+    );
     const metrics = {
-      // COCKPIT-F14: null (not 0, not the list price) without a live subscription.
-      mrr_cents: hasLiveSubscription(
-        String(tenant["status"]),
-        (tenant["stripe_subscription_id"] as string | null | undefined) ?? null,
-      )
-        ? listPriceCents
-        : null,
+      // COCKPIT-F14: null (not 0, not the list price) without a live
+      // subscription, or in / canceled during the free trial (TRIAL-1);
+      // `mrr_excluded` says which.
+      mrr_cents: excluded === null ? listPriceCents : null,
+      mrr_excluded: excluded,
       list_price_cents: listPriceCents,
       // COCKPIT-F12: no paid revenue means no margin, never a fabricated 0.0%.
       margin_pct: revenueCents > 0 ? (marginCents / revenueCents) * 100 : null,
