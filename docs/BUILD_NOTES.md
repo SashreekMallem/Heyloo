@@ -9742,8 +9742,8 @@ provider; all four connectors were only tested against mocks.
 - **Leftover test data, harmless, needs a delete approved in the connector:**
   - destination `a424113c-…` (disabled, owner) with 2 delivered events;
   - cancelled order `4c021bfc-…` (idempotency key `outbound-retry-test-…`) on Demo Trattoria.
-- **Not deployed yet:**
-  - `api-adapter-connect`: ezyVet paste_key refusal. The Next route already returns 409 and the UI hides it.
-  - `worker-adapter-push`: ezyVet host guard. There are no connections.
-  - Migration `20261009120100_outbound_events_retention.sql`: its `create or replace` needs approval in
-    the connector.
+- **Also deployed** (same stub method, same commit): `api-adapter-connect` v27 (ezyVet paste_key refusal)
+  and `worker-adapter-push` v32 (ezyVet host guard).
+  - `worker-adapter-push` answers its own `{"error":"unauthorized"}` without the cron secret, so it boots.
+- **Not applied yet:** migration `20261009120100_outbound_events_retention.sql`. Its `create or replace`
+  needs approval in the connector.
