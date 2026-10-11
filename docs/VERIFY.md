@@ -3348,3 +3348,46 @@ Code: `supabase/functions/_shared/providers/census-geocode.ts` (Zod-validated at
      `site_uid`). client_id/client_secret come from the clinic, so the connect model needs a redesign.
   2. Token TTL conflict (12 h vs 14 days): read `expires_in` live.
   3. Worker ADAPTER_FETCH must not follow redirects for the token mint.
+
+## CAL-1 / CAL-1b (2026-10-11) — Google Calendar freeBusy, events.watch, OAuth
+
+These were fetched 2026-10-11 and need confirming live.
+
+**freeBusy**
+- https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query
+- The response key when the request id is `primary`. The code also accepts a single entry keyed by the account email.
+- Per-calendar `errors[]` are treated as a failed read.
+- The maximum range per query; the code chunks at 30 days.
+- Quotas: 600 requests/min per user and 10,000/min per project.
+
+**events.watch and channels.stop**
+- https://developers.google.com/workspace/calendar/api/v3/reference/events/watch
+- The `expiration` format; the code accepts a string or a number in ms.
+- The status and reason for a refused webhook address.
+- The notification headers.
+- Notifications are not guaranteed, which is why the pre-booking live check stays.
+
+**OAuth**
+- `calendar.events` + `calendar.freebusy` are "sensitive" scopes, so they need verification: a demo video, a privacy policy and a verified domain.
+- An unverified app is capped at 100 users.
+- In Testing mode, refresh tokens expire after 7 days.
+
+**Live check**
+- A token refresh plus freeBusy must fit within 800 ms. Watch the `calendar_live_check` "unknown"/timeout rate in the logs after deploy.
+
+## TRIAL-1 (2026-10-11) — Stripe trials
+
+**Checked against Stripe docs**
+- `subscription_data.trial_period_days`, `payment_method_collection` (default `always`).
+- `subscription.update` with `trial_end="now"` (it also moves `billing_cycle_anchor`).
+- `cancel_at_period_end` / `cancel_at` on the subscription object.
+- Stripe now calls this trials path "legacy" in favour of trial offers. Recheck before go-live.
+
+**Confirm in test mode, ideally with a test clock**
+- A cancel in the portal during the trial sets `cancel_at_period_end`, and possibly also `cancel_at = trial_end`.
+- A trial Checkout with a metered price plus white-glove charges only white-glove at signup.
+- `trial_end=now` invoices and charges immediately.
+- Usage stamped before `trial_end` is not billed.
+- `Event.created` is present on `checkout.session.completed`.
+- `AbortSignal.timeout` works in the Edge Runtime.
+- The Dashboard "Trial ending events" lead time.

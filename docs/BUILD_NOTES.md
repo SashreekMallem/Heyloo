@@ -9747,3 +9747,103 @@ provider; all four connectors were only tested against mocks.
   - `worker-adapter-push` answers its own `{"error":"unauthorized"}` without the cron secret, so it boots.
 - **Not applied yet:** migration `20261009120100_outbound_events_retention.sql`. Its `create or replace`
   needs approval in the connector.
+
+## CAL-1 / CAL-1b — Google Calendar busy times block AI bookings, push-only (2026-10-11)
+
+Owner decisions:
+- The AI must never book a slot the owner already filled in Google Calendar (Google only; Outlook later).
+- Push-triggered only: no periodic re-read of a healthy calendar ("5-minute check is a waste").
+
+**Data**
+- Migration `20261011120000_external_busy_blocks.sql` adds `external_busy_blocks` (tenant RLS SELECT, service writes, GIST on (tenant_id, busy)).
+- It also adds `adapter_connections` sync, watch and alert columns: `busy_synced_at`, `busy_synced_until`, `busy_sync_requested_at`, `busy_sync_attempted_at`, `busy_sync_failures`, `busy_sync_failing_since`, `owner_alerted_at`, `watch_channel_id`, `watch_resource_id`, `watch_token_hash` (sha256 only), `watch_expires_at`, `watch_failures`, `watch_retry_at`.
+- Members may read only `busy_synced_at`. The RLS probe asserts the other 14 columns are refused.
+
+**When Google is called (worker-tick `calendar_busy_sync` leg, `_shared/calendar/sync.ts`)**
+- Only on these triggers:
+  - connect or reconnect;
+  - a push notification;
+  - channel registration or renewal (`events.watch`, 7-day TTL, renewed within 24 h of expiry; the old channel is stopped);
+  - a retry of a failed requested read, backed off 1, 5, 15 and 60 minutes, then hourly;
+  - the pre-booking live check.
+- A read covers the horizon + 9 days and stores `busy_synced_until`. A quiet calendar stays covered between weekly renewals.
+- Watch failures are counted apart from read failures (`watch_failures` / `watch_retry_at`). With no live channel, a failed watch still reads.
+- Only a 401/403 on a read, or `invalid_grant` on refresh, disconnects. That shows "Needs reconnect" and sends one `calendar_disconnected` owner alert per break. `read_failing` alerts once after 3 h of failed reads.
+
+**Webhook (`webhooks-pos/google_calendar`)**
+- Headers are Zod-checked.
+- Lookup is by `X-Goog-Channel-ID`; the token is compared timing-safe against `watch_token_hash` and the resource id must match. Anything else fails closed with 401.
+- `sync` messages get 200 and nothing else.
+- Any other state: an idempotent `webhook_events` insert (`<channel>:<message number>`), then `busy_sync_requested_at = now()`, then 200.
+
+**Hot path**
+- The `not exists (external_busy_blocks …)` filter sits inside the existing `check_availability`, `create_booking` and `update_booking` statements, so there is no extra round trip.
+- `create_booking` runs a live freeBusy re-check in parallel with preflight, with an 800 ms cap. `unknown` means proceed on the synced table. It is cancelled on idempotent replay.
+- Because push-only leaves the stored access token stale, the live check refreshes an expired token itself, under the same cap. The fresh token is kept only in the per-isolate cache and never written back.
+- Heyloo's own pushed bookings are subtracted from the busy times.
+
+**Waitlist**
+- The webhooks-sms YES claim filters on busy blocks.
+- `20261011120200_waitlist_notify_skips_calendar_busy.sql` replaces `fn_notify_waitlist_on_cancellation` (the body of 20260929163000 plus the filter).
+
+**Other changes**
+- OAuth scopes are now `calendar.events` + `calendar.freebusy` (was `calendar`). A partial grant is refused (`google_scopes_not_granted`).
+- worker-adapter-push Google refresh: only `invalid_grant` disconnects; transient failures retry; 5-minute margin.
+- Google Calendar is out of "Coming soon".
+
+**Follow-ups**
+- Treat time past `busy_synced_until` as unknown on the hot path.
+- Request a read when a booking push or cancellation is recorded, to cover a lost push response.
+- Per-calendar partial replace for mapped resource calendars; watch mapped calendars.
+- Alert on `calendar_watch_register_failed` / `watch_failures > 3`.
+
+## TRIAL-1 — 7-day free trial, card required, 100 minutes (2026-10-11)
+
+**Owner decision (Rule 4 conflict):** 7 days, card required, ends after 7 days or 100 billable minutes, whichever comes first. This conflicts with SYSTEM_DESIGN.md:318-319 ("card-required checkout + money-back guarantee").
+
+**Data (`20261011120100_free_trial.sql`)**
+- Adds `tenants.trial_ends_at`, `trial_minutes_cap`, `trial_ended_reason` (time | minutes | canceled), `trial_cap_claimed_at` (the cap lease) and `trial_cancel_scheduled`.
+- A partial unique index allows one trial email per template per tenant.
+- A trialing tenant is `status='active'`. `'trialing'` still means "never paid".
+
+**Checkout**
+- `subscription_data.trial_period_days`; the card is still required.
+- One trial per business, matched by owner user, email (case-insensitive) or business phone.
+- The setup fee is waived with the trial; white-glove is still charged at signup.
+- Trial metadata goes on the session and the subscription.
+
+**Webhooks**
+- Subscription created/updated while `trialing` records `trial_ends_at` and the cancel-scheduled flag.
+- `trial_will_end` sends an owner email, skipped when a cancellation is pending.
+- `checkout.session.completed` stores the cap plus a provisional end.
+- The BILL-6 re-sync guard allows the session's own subscription.
+
+**Minutes cap (`_shared/trial/cap.ts`; voice-events after each call, plus hourly `job-billing-cycle?task=trial_caps`)**
+- Steps: take a 15-minute lease → GET the subscription → if still trialing and no cancellation is pending, POST `trial_end=now` with an idempotency key → record `minutes` → email the owner once.
+- Calls are never blocked.
+- A cancellation during the trial is never charged.
+
+**Billing**
+- Trial minutes are never overage: usage before `trial_ends_at` is excluded and the meter event is stamped after the trial end.
+- Referrals require `total_cents > 0`.
+- Admin MRR excludes open or canceled trials (`mrr_excluded`).
+- The cockpit labels unpaid trials.
+
+**UI**
+- Pricing, vertical pages, signup steps ("Start free trial", "Card added — trial started"), billing trial card, and a dashboard banner "Free trial — N days left · M of 100 minutes used".
+- An honest cancel-pending message.
+- DEPLOY.md / GO_LIVE.md list the new Stripe events.
+- The cron check lists `job-billing-cycle-trial-caps`.
+
+**Open**
+- The cockpit page doesn't yet use `mrr_excluded`.
+- A stale `trial_cancel_scheduled` after an out-of-order cancel and undo.
+- Marketing copy hard-codes 7 days / 100 minutes.
+- "Plans start at $299/mo" vs the $249 restaurant card needs an owner decision.
+- `job-billing-cycle` runs at 01:00 UTC and cuts off US local month-ends (pre-existing).
+
+## READY-1 — delivery orders (2026-10-11)
+
+`order_ready` now carries `fulfillment_type`:
+- delivery → "Your order is on its way!"
+- otherwise → "Your order is ready for pickup!"
