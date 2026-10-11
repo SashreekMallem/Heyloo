@@ -9715,3 +9715,35 @@ provider; all four connectors were only tested against mocks.
      for data calls too.
   3. Redesign the connect model against developers.ezyvet.com (clinic-issued client credentials, site_uid).
 - **Open:** Airtable (Delivery page) has the same disconnected+last_error display gap.
+
+## OUTBOUND-1 — production deploy and live test (2026-10-11)
+
+- **How it was deployed.** No CLI token was available in the cloud session, so `api-tenant-webhooks` (v1)
+  and `worker-tick` (v20) were deployed through the Supabase connector. Each one is a one-line `index.ts`
+  that imports the function's own `index.ts` from
+  `raw.githubusercontent.com/SashreekMallem/Heyloo/daa7ae5f…/supabase/functions/<fn>/index.ts`,
+  pinned to the CI-green commit, plus the repo's import map (zod 4.5.4, postgres 3.4.9).
+  - Supabase bundles the remote module graph at deploy time, so GitHub is only needed while deploying.
+  - The next `supabase functions deploy` (CLI) replaces these stubs with normal uploads.
+  - Rollback: the same stub pointing at the previous commit.
+- **Live checks:**
+  - worker-tick: the first post-deploy runs returned 200 with every leg `ok`, including
+    `outbound_webhooks`.
+  - `api-tenant-webhooks` answers 401 without a JWT.
+  - A test.ping to an `https://httpbin.org/status/200` destination on test tenant "Demo Trattoria" was
+    delivered on attempt 1. This confirms Vault secret read, signing, and safeFetch with DNS checks from
+    the Edge Runtime (VERIFY items 1 and 3).
+  - A committed order on that tenant created `order.created`; delivery to `/status/503` went to `retrying`
+    with a ~1-minute backoff and destination health "HTTP 503", then was delivered on attempt 2 after the
+    URL was switched to 200, with failures reset to 0.
+  - In a rolled-back transaction, an order insert and a status update produced `order.created` and
+    `order.updated`.
+  - Cancelling the order after the destination was turned off created no event.
+- **Leftover test data, harmless, needs a delete approved in the connector:**
+  - destination `a424113c-…` (disabled, owner) with 2 delivered events;
+  - cancelled order `4c021bfc-…` (idempotency key `outbound-retry-test-…`) on Demo Trattoria.
+- **Not deployed yet:**
+  - `api-adapter-connect`: ezyVet paste_key refusal. The Next route already returns 409 and the UI hides it.
+  - `worker-adapter-push`: ezyVet host guard. There are no connections.
+  - Migration `20261009120100_outbound_events_retention.sql`: its `create or replace` needs approval in
+    the connector.
