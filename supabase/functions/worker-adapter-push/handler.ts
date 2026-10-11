@@ -16,7 +16,7 @@ import {
   getCalendarEvent as googleGetCalendarEvent,
   insertCalendarEvent as googleInsertCalendarEvent,
   listCalendarEvents as googleListCalendarEvents,
-  refreshGoogleToken,
+  refreshGoogleAccessToken,
   toGoogleEventId,
 } from "../_shared/providers/google-calendar.ts";
 import {
@@ -817,6 +817,17 @@ async function deleteGoogleCalendarEvent(
   return { ok: res.ok || res.status === 404 || res.status === 410, status: res.status };
 }
 
+/** CAL-1b: refresh the Google access token when it expires within this. */
+export const GOOGLE_PUSH_REFRESH_MARGIN_MS = 5 * 60_000;
+const GOOGLE_PUSH_REFRESH_TIMEOUT_MS = 10_000;
+
+/** `expires_at` as epoch ms (postgres.js may hand back a Date or a string). */
+function timestampMs(value: string | Date | null): number | null {
+  if (value === null) return null;
+  const ms = value instanceof Date ? value.getTime() : Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
 async function pushToGoogleCalendar(
   sql: SqlClient,
   msg: AdapterPushQueueMsg,
@@ -845,28 +856,48 @@ async function pushToGoogleCalendar(
   }
 
   let accessToken = connection.access_token;
-  if (connection.expires_at && Date.parse(connection.expires_at) - Date.now() <= 0) {
-    const refreshed = await refreshGoogleToken(deps.fetchImpl, {
+  // CAL-1b: refresh a token expiring within GOOGLE_PUSH_REFRESH_MARGIN_MS
+  // (an unknown expiry too), so a push never goes out on a token that dies
+  // mid-request. The answer is Zod-validated and classified
+  // (`refreshGoogleAccessToken`): ONLY `invalid_grant` (refresh token
+  // revoked/expired — the owner must reconnect) disconnects the connection.
+  // Google refusing OUR client (`client_config`), a 5xx/429/timeout
+  // (`transient`) or an unexpected body is not the tenant's fault: the
+  // connection stays connected and the push is retried (queue attempt + 1).
+  const expiresMs = timestampMs(connection.expires_at);
+  if (expiresMs === null || expiresMs - Date.now() <= GOOGLE_PUSH_REFRESH_MARGIN_MS) {
+    const refreshed = await refreshGoogleAccessToken(deps.fetchImpl, {
       clientId: deps.googleCalendar.clientId,
       clientSecret: deps.googleCalendar.clientSecret,
       refreshToken: connection.refresh_token,
+      signal: AbortSignal.timeout(GOOGLE_PUSH_REFRESH_TIMEOUT_MS),
     });
     if (!refreshed.ok) {
-      await markConnectionDisconnected(
-        sql,
-        connection.id,
-        "google_calendar refresh_token invalid/revoked",
-      );
+      if (refreshed.failure === "invalid_grant") {
+        await markConnectionDisconnected(
+          sql,
+          connection.id,
+          "google_calendar refresh_token invalid/revoked",
+        );
+      } else {
+        logger[refreshed.failure === "client_config" ? "error" : "warn"](
+          "adapter_push_google_refresh_failed",
+          {
+            tenant_id: msg.tenant_id,
+            failure: refreshed.failure,
+            detail: refreshed.detail,
+          },
+        );
+      }
       return false;
     }
-    const body = refreshed.body as { access_token: string; expires_in: number };
-    accessToken = body.access_token;
+    accessToken = refreshed.grant.accessToken;
     await markConnectionRefreshed(
       sql,
       connection.id,
       {
         accessToken,
-        expiresAt: new Date(Date.now() + body.expires_in * 1000).toISOString(),
+        expiresAt: new Date(Date.now() + refreshed.grant.expiresInSeconds * 1000).toISOString(),
       },
       deps.tokenEncryptionKey,
     );

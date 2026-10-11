@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import type {
+  CalendarBlock,
+  CalendarBusyCheck,
+  LiveBusyVerdict,
+} from "../../_shared/calendar/busy.ts";
 import { createLogger } from "../../_shared/logger.ts";
 import type { Logger, SqlClient } from "../../_shared/types.ts";
 import type { CallContext } from "../context.ts";
@@ -31,6 +36,7 @@ const args = {
   customer: { name: "Jordan Lee", phone: "555-123-4567" },
 };
 const WRONG_BUT_UUID_SHAPED_ID = "00000000-0000-0000-0000-000000000099";
+const OTHER_RESOURCE = "33333333-3333-3333-3333-333333333333";
 const OFFERING_ID = "22222222-2222-2222-2222-222222222222";
 
 /** What the preflight statement returns when nothing is special: no
@@ -48,6 +54,8 @@ interface PreflightFixture {
   any_in_hours?: boolean | null;
   tz: string | null;
   deposit_overrides: Record<string, unknown> | null;
+  calendar_busy?: boolean | null;
+  calendar_own_bookings?: { start: string; end: string }[] | null;
 }
 
 const PREFLIGHT_OK: PreflightFixture = {
@@ -89,7 +97,7 @@ const W = {
 } as const;
 
 /** Positions of the preflight statement's bound values (0-based). */
-const P = { exactResourceId: 2, lookupFirstAvailable: 5, isMotel: 36 } as const;
+const P = { exactResourceId: 2, lookupFirstAvailable: 5, isMotel: 38 } as const;
 
 type Reply = { rows?: unknown[]; throws?: unknown };
 
@@ -1068,5 +1076,263 @@ describe("createBooking — F-OFFERING-1: the offering and its price reach the r
     expect(text).toContain("case when count(*) = 1 then (array_agg(o.id))[1] end");
     expect(text).toContain("lower(o.name) in (");
     expect(text).toContain("o.tenant_id =");
+  });
+});
+
+describe("createBooking — CAL-1 calendar busy times", () => {
+  const BUSY_BLOCK: CalendarBlock = {
+    calendarId: "primary",
+    resourceId: null,
+    start: args.start,
+    end: args.end,
+    subtractOwnBookings: true,
+  };
+  const BUSY_EVERYWHERE: LiveBusyVerdict = { status: "checked", blocks: [BUSY_BLOCK] };
+
+  const liveDeps = (calendarBusy: CalendarBusyCheck, extra: Record<string, unknown> = {}) => ({
+    ...DEFERRING_DEPS,
+    logger: { ...createLogger(), warn: vi.fn(), info: vi.fn() },
+    calendarBusy,
+    ...extra,
+  });
+
+  it("filters first-available and computes calendar_busy inside the SAME preflight statement (no extra round trip)", async () => {
+    const { sql, calls, textsMatching } = makeSql(bookingRoutes({}));
+    await createBooking(sql, ctx, args, DEFERRING_DEPS);
+    const text = textsMatching(PREFLIGHT)[0]?.text ?? "";
+    expect(text.match(/from public\.external_busy_blocks x/g)).toHaveLength(2);
+    // first-available skips a resource blocked tenant-wide or for itself
+    expect(text).toContain("(x.resource_id is null or x.resource_id = r.id)");
+    // the exact resource's (or, without one, the tenant-wide) busy check
+    expect(text).toContain("(x.resource_id is null or x.resource_id = (select id from ex))");
+    expect(text).toContain("x.busy && tstzrange(");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("a synced busy time on the exact resource answers slot_taken and never writes", async () => {
+    const { sql, textsMatching } = makeSql(bookingRoutes({ preflight: { calendar_busy: true } }));
+    const result = await createBooking(sql, ctx, args, DEFERRING_DEPS);
+    expect(result).toEqual({ confirmed: false, reason: "slot_taken" });
+    expect(textsMatching(WRITE)).toHaveLength(0);
+  });
+
+  it("first-available with every resource blocked by a tenant-wide busy time is slot_taken, not resource_not_found", async () => {
+    const { sql } = makeSql(
+      bookingRoutes({
+        preflight: {
+          exact_resource_id: null,
+          first_available_resource_id: null,
+          calendar_busy: true,
+        },
+      }),
+    );
+    const result = await createBooking(
+      sql,
+      ctx,
+      { ...args, resource_id: undefined },
+      DEFERRING_DEPS,
+    );
+    expect(result).toEqual({ confirmed: false, reason: "slot_taken" });
+  });
+
+  it("no resource and no calendar block is still resource_not_found", async () => {
+    const { sql } = makeSql(
+      bookingRoutes({ preflight: { exact_resource_id: null, first_available_resource_id: null } }),
+    );
+    const result = await createBooking(
+      sql,
+      ctx,
+      { ...args, resource_id: undefined },
+      DEFERRING_DEPS,
+    );
+    expect(result).toEqual({ confirmed: false, reason: "resource_not_found" });
+  });
+
+  it("resource_name tier: the named resource's own busy check (same statement as the lookup) answers slot_taken", async () => {
+    const { sql, textsMatching } = makeSql(
+      bookingRoutes({
+        preflight: { exact_resource_id: null },
+        extra: [
+          { match: "name ilike", reply: { rows: [{ id: "res_named", calendar_busy: true }] } },
+        ],
+      }),
+    );
+    const result = await createBooking(
+      sql,
+      ctx,
+      { ...args, resource_id: undefined, resource_name: "Ana" },
+      DEFERRING_DEPS,
+    );
+    expect(result).toEqual({ confirmed: false, reason: "slot_taken" });
+    expect(textsMatching("name ilike")[0]?.text).toContain("from public.external_busy_blocks x");
+    expect(textsMatching(WRITE)).toHaveLength(0);
+  });
+
+  it("tier-3 first-available after a name miss also skips calendar-blocked resources", async () => {
+    const { sql, calls } = makeSql(
+      bookingRoutes({
+        preflight: { exact_resource_id: null },
+        extra: [
+          { match: "name ilike", reply: { rows: [] } },
+          { match: "from public.availability_slots", reply: { rows: [{ id: "res_open" }] } },
+        ],
+      }),
+    );
+    await createBooking(sql, ctx, { ...args, resource_name: "Nope" }, DEFERRING_DEPS);
+    const tier3 = calls.find(
+      (c) => !c.text.includes(PREFLIGHT) && c.text.includes("from public.availability_slots"),
+    );
+    expect(tier3?.text).toContain("from public.external_busy_blocks x");
+  });
+
+  it("closed hours still answer outside_hours before any calendar check", async () => {
+    const calendarBusy = vi.fn(async () => BUSY_EVERYWHERE);
+    const { sql } = makeSql(
+      bookingRoutes({ preflight: { exact_in_hours: false, calendar_busy: true } }),
+    );
+    const result = await createBooking(sql, ctx, args, liveDeps(calendarBusy));
+    expect(result).toMatchObject({ confirmed: false, reason: "outside_hours" });
+  });
+
+  it("the live check starts right after the preflight statement is queued and runs alongside it", async () => {
+    const order: string[] = [];
+    let release: (() => void) | undefined;
+    const calendarBusy = vi.fn(
+      () =>
+        new Promise<LiveBusyVerdict>((resolve) => {
+          order.push("live_started");
+          release = () => resolve({ status: "checked", blocks: [] });
+        }),
+    );
+    const routes = bookingRoutes({});
+    const { sql: inner } = makeSql(routes);
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes(PREFLIGHT)) order.push("preflight_sent");
+      if (text.includes(WRITE)) order.push("write_sent");
+      if (text.includes(PREFLIGHT)) setTimeout(() => release?.(), 5);
+      return inner(strings, ...values);
+    }) as SqlClient;
+    const result = await createBooking(sql, ctx, args, liveDeps(calendarBusy));
+    expect(result).toMatchObject({ confirmed: true });
+    // preflight first: on the one hot-path connection the check's own lookup
+    // queues behind it; the write still waits for the check's answer
+    expect(order).toEqual(["preflight_sent", "live_started", "write_sent"]);
+    expect(calendarBusy).toHaveBeenCalledWith(
+      ctx.tenantId,
+      { start: args.start, end: args.end },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("the owner filled the time since the last sync (live busy): slot_taken, nothing written", async () => {
+    const calendarBusy = vi.fn(async () => BUSY_EVERYWHERE);
+    const { sql, textsMatching } = makeSql(bookingRoutes({}));
+    const deps = liveDeps(calendarBusy);
+    const result = await createBooking(sql, ctx, args, deps);
+    expect(result).toEqual({ confirmed: false, reason: "slot_taken" });
+    expect(textsMatching(WRITE)).toHaveLength(0);
+    expect(deps.logger.info).toHaveBeenCalledWith(
+      "create_booking_calendar_busy",
+      expect.objectContaining({ source: "live" }),
+    );
+  });
+
+  it("a live busy time that is Heyloo's own pushed booking (another resource) does not block", async () => {
+    const calendarBusy = vi.fn(async () => BUSY_EVERYWHERE);
+    const { sql } = makeSql(
+      bookingRoutes({
+        preflight: { calendar_own_bookings: [{ start: args.start, end: args.end }] },
+      }),
+    );
+    const result = await createBooking(sql, ctx, args, liveDeps(calendarBusy));
+    expect(result).toMatchObject({ confirmed: true });
+  });
+
+  it("a live busy time on another resource's own calendar does not block this resource", async () => {
+    const calendarBusy = vi.fn(async () => ({
+      status: "checked" as const,
+      blocks: [{ ...BUSY_BLOCK, resourceId: OTHER_RESOURCE, subtractOwnBookings: false }],
+    }));
+    const { sql } = makeSql(bookingRoutes({}));
+    const result = await createBooking(sql, ctx, args, liveDeps(calendarBusy));
+    expect(result).toMatchObject({ confirmed: true });
+  });
+
+  it("a live check that does not answer in time is ignored: the booking proceeds on the synced table, logged", async () => {
+    let seen: AbortSignal | undefined;
+    const calendarBusy = vi.fn((_t: string, _r: unknown, signal: AbortSignal) => {
+      seen = signal;
+      return new Promise<LiveBusyVerdict>(() => {});
+    });
+    const { sql, textsMatching } = makeSql(bookingRoutes({}));
+    const deps = liveDeps(calendarBusy, { calendarCheckTimeoutMs: 20 });
+    const started = Date.now();
+    const result = await createBooking(sql, ctx, args, deps);
+    expect(result).toMatchObject({ confirmed: true });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(textsMatching(WRITE)).toHaveLength(1);
+    expect(seen?.aborted).toBe(true);
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      "create_booking_calendar_live_check_unknown",
+      expect.objectContaining({ reason: "timeout" }),
+    );
+  });
+
+  it("no connected calendar (skipped) books silently", async () => {
+    const calendarBusy = vi.fn(async () => ({ status: "skipped" as const }));
+    const { sql } = makeSql(bookingRoutes({}));
+    const deps = liveDeps(calendarBusy);
+    expect(await createBooking(sql, ctx, args, deps)).toMatchObject({ confirmed: true });
+    expect(deps.logger.warn).not.toHaveBeenCalledWith(
+      "create_booking_calendar_live_check_unknown",
+      expect.anything(),
+    );
+  });
+
+  it("an idempotent replay returns the existing booking without waiting for the live check, and cancels it", async () => {
+    let seen: AbortSignal | undefined;
+    const calendarBusy = vi.fn((_t: string, _r: unknown, signal: AbortSignal) => {
+      seen = signal;
+      // Would say busy if anyone waited for it.
+      return new Promise<LiveBusyVerdict>((resolve) =>
+        setTimeout(() => resolve(BUSY_EVERYWHERE), 500),
+      );
+    });
+    const { sql, calls } = makeSql(
+      bookingRoutes({
+        preflight: { replay_id: "booking_1", replay_start: args.start, replay_end: args.end },
+      }),
+    );
+    const started = Date.now();
+    const result = await createBooking(sql, ctx, args, liveDeps(calendarBusy));
+    expect(Date.now() - started).toBeLessThan(300);
+    expect(result).toEqual({
+      booking_id: "booking_1",
+      confirmed: true,
+      start: args.start,
+      end: args.end,
+    });
+    expect(seen?.aborted).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("the own-bookings read in the preflight runs only when a live check does", async () => {
+    const flagFor = async (deps: Parameters<typeof createBooking>[3]) => {
+      let flag: unknown = "unset";
+      const routes = bookingRoutes({});
+      const { sql: inner } = makeSql(routes);
+      const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+        const at = strings.findIndex(
+          (s) => s.includes("and exists (") && s.includes("adapter_connections ac"),
+        );
+        if (at > 0) flag = values[at - 1];
+        return inner(strings, ...values);
+      }) as SqlClient;
+      await createBooking(sql, ctx, args, deps);
+      return flag;
+    };
+    expect(await flagFor(DEFERRING_DEPS)).toBe(false);
+    expect(await flagFor(liveDeps(vi.fn(async () => ({ status: "skipped" as const }))))).toBe(true);
   });
 });

@@ -106,6 +106,16 @@ describe("renderTemplate", () => {
     expect(result.body.toLowerCase()).toContain("ready");
   });
 
+  it.each([
+    [{ fulfillment_type: "pickup" }, "Your order is ready for pickup!"],
+    [{ fulfillment_type: "dine_in" }, "Your order is ready for pickup!"],
+    [{ fulfillment_type: "delivery" }, "Your order is on its way!"],
+    [{}, "Your order is ready for pickup!"],
+    [{ fulfillment_type: 7 }, "Your order is ready for pickup!"],
+  ])("READY-1: order_ready matches the order's fulfillment (%o)", (payload, body) => {
+    expect(renderTemplate("order_ready", payload).body).toBe(body);
+  });
+
   it("renders waitlist_slot_opened with a non-empty body including the freed start time (FIX_REQUESTS.md)", () => {
     const result = renderTemplate("waitlist_slot_opened", {
       start: "2026-02-01T18:00:00Z",
@@ -145,6 +155,32 @@ describe("renderTemplate", () => {
     ).toBe("This week: 2 calls answered, 1 bookings captured.");
   });
 
+  it("CAL-1: owner_calendar_disconnected says what stopped working and how to fix it", () => {
+    const rendered = renderTemplate("owner_calendar_disconnected", {
+      provider_name: "Google Calendar",
+    });
+    expect(rendered.subject).toBe("Reconnect your Google Calendar");
+    expect(rendered.body).toContain("can't see when you're busy");
+    expect(rendered.body).toContain("Reconnect it under Integrations");
+    expect(renderTemplate("owner_calendar_disconnected", {}).subject).toBe(
+      "Reconnect your Google Calendar",
+    );
+    expect(renderTemplate("owner_calendar_disconnected", { reason: "disconnected" }).subject).toBe(
+      "Reconnect your Google Calendar",
+    );
+  });
+
+  it("CAL-1: owner_calendar_disconnected for reads that keep failing says so, not 'disconnected'", () => {
+    const rendered = renderTemplate("owner_calendar_disconnected", {
+      provider_name: "Google Calendar",
+      reason: "read_failing",
+    });
+    expect(rendered.subject).toBe("Heyloo can't read your Google Calendar");
+    expect(rendered.body).toContain("for a few hours");
+    expect(rendered.body).toContain("It keeps trying");
+    expect(rendered.body).toContain("reconnect it under Integrations");
+  });
+
   it("OUTBOUND-1: owner_webhook_failing names the event and the destination", () => {
     expect(
       renderTemplate("owner_webhook_failing", {
@@ -170,6 +206,47 @@ describe("renderTemplate", () => {
     expect(renderTemplate("owner_webhook_failing", {}).body).toBe(
       "Heyloo couldn't send an update to your connected app. Check Integrations in your dashboard.",
     );
+  });
+
+  describe("TRIAL-1 owner emails", () => {
+    it("trial_will_end names the end date, the charge, and how to cancel", () => {
+      const rendered = renderTemplate("trial_will_end", {
+        ends_on: "Monday, October 12",
+        billing_url: "https://heyloo.app/en/dashboard/billing",
+      });
+      expect(rendered.subject).toBe("Your Heyloo free trial ends Monday, October 12");
+      expect(rendered.body).toContain("ends on Monday, October 12");
+      expect(rendered.body).toContain("or sooner if it reaches its call-minute limit");
+      expect(rendered.body).toContain("your card on file is charged the monthly plan price");
+      expect(rendered.body).toContain(
+        "To cancel before you're charged, go to Billing in your dashboard: https://heyloo.app/en/dashboard/billing",
+      );
+    });
+
+    it("trial_will_end still reads correctly with no payload", () => {
+      const rendered = renderTemplate("trial_will_end", {});
+      expect(rendered.subject).toBe("Your Heyloo free trial ends soon");
+      expect(rendered.body).toContain("free trial ends soon");
+      expect(rendered.body).toMatch(/Billing in your dashboard\.$/);
+    });
+
+    it("trial_minutes_used says the trial ended early, the plan started, and calls continue", () => {
+      const rendered = renderTemplate("trial_minutes_used", {
+        minutes: 100,
+        billing_url: "https://heyloo.app/en/dashboard/billing",
+      });
+      expect(rendered.subject).toBe("Your trial minutes are used, so your plan has started");
+      expect(rendered.body).toContain("answered 100 minutes of calls");
+      expect(rendered.body).toContain("your plan has started today");
+      expect(rendered.body).toContain("Calls keep being answered as normal.");
+      // card-network trial rules: the conversion notice says how to cancel
+      expect(rendered.body).toContain(
+        "or to cancel, go to Billing in your dashboard: https://heyloo.app/en/dashboard/billing",
+      );
+      const bare = renderTemplate("trial_minutes_used", {}).body;
+      expect(bare).toContain("answered all the minutes");
+      expect(bare).toMatch(/or to cancel, go to Billing in your dashboard\.$/);
+    });
   });
 
   it("returns an empty body for an unknown template key rather than throwing", () => {

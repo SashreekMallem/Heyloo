@@ -338,3 +338,47 @@ describe("F13: room type matching (case-insensitive, and ignored when the tenant
     }
   });
 });
+
+describe("checkAvailability — CAL-1 calendar busy times", () => {
+  function recording(steps: unknown[][]): { sql: SqlClient; texts: string[] } {
+    const texts: string[] = [];
+    let i = 0;
+    const sql = ((strings: TemplateStringsArray) => {
+      texts.push(strings.join(" "));
+      const rows = steps[i] ?? [];
+      i += 1;
+      return Promise.resolve(rows);
+    }) as SqlClient;
+    return { sql, texts };
+  }
+
+  const FILTER = [
+    "and not exists (",
+    "from public.external_busy_blocks x",
+    "x.tenant_id = availability_slots.tenant_id",
+    "(x.resource_id is null or x.resource_id = availability_slots.resource_id)",
+    "x.busy && availability_slots.slot_range",
+  ];
+
+  it("filters the main query inside the same statement (one round trip when slots exist)", async () => {
+    const { sql, texts } = recording([
+      [
+        {
+          resource_id: "res_1",
+          slot_start: "2026-01-15T18:00:00.000Z",
+          slot_end: "2026-01-15T18:30:00.000Z",
+        },
+      ],
+    ]);
+    await checkAvailability(sql, ctx, { date_range: dateRange });
+    expect(texts).toHaveLength(1);
+    for (const fragment of FILTER) expect(texts[0]).toContain(fragment);
+  });
+
+  it("filters the nearest-alternative query too (never offers a calendar-busy alternative)", async () => {
+    const { sql, texts } = recording([[], []]);
+    await checkAvailability(sql, ctx, { date_range: dateRange });
+    expect(texts).toHaveLength(2);
+    for (const fragment of FILTER) expect(texts[1]).toContain(fragment);
+  });
+});

@@ -179,6 +179,27 @@ describe("updateBooking - F-AUTO-RESCHED-1: hours, availability and duration are
     });
   });
 
+  it("CAL-1: a busy time from the owner's connected calendar answers slot_taken and changes nothing", async () => {
+    const { sql, calls } = recordingSql([{ rows: [{ ...bookingRow, calendar_busy: true }] }]);
+    const result = await updateBooking(sql, ctx, args);
+    expect(result).toEqual({ confirmed: false, reason: "slot_taken" });
+    expect(calls).toHaveLength(1); // never reached the UPDATE
+  });
+
+  it("CAL-1: the calendar check is in the same preflight statement, for this booking's resource and new window", async () => {
+    const { sql, calls } = recordingSql([
+      { rows: [bookingRow] },
+      { rows: [{ id: "booking_1", start_at: args.new_start, end_at: args.new_end }] },
+    ]);
+    await updateBooking(sql, ctx, args);
+    const preflight = calls[0]?.text ?? "";
+    expect(preflight).toContain("update_booking:preflight");
+    expect(preflight).toContain("from public.external_busy_blocks x");
+    expect(preflight).toContain("(x.resource_id is null or x.resource_id = b.resource_id)");
+    expect(preflight).toContain("x.busy && tstzrange(");
+    expect(preflight).toContain("as calendar_busy");
+  });
+
   it("does not treat a missing slots_cover (an older row shape) as open", async () => {
     const { sql } = recordingSql([{ rows: [{ ...bookingRow, slots_cover: undefined }] }]);
     expect(await updateBooking(sql, ctx, args)).toMatchObject({

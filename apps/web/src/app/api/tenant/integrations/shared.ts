@@ -34,14 +34,19 @@ export function isPasteKeyProvider(
  * CONNECT-SAFE-1: providers whose sync is not proven end to end, so a new
  * connection is not offered (the connect route answers 409
  * `provider_coming_soon`). Square pushes silently do nothing (the OAuth
- * callback never stores the `locationId` they need); none of the four has
- * run against a live account (docs/VERIFY.md T7); ezyVet's connect sent our
- * partner secret to a tenant-typed host. An EXISTING connection stays
- * visible and can still be disconnected. Remove a provider once it works.
+ * callback never stores the `locationId` they need); Shopmonkey and ezyVet
+ * have not run against a live account (docs/VERIFY.md T7); ezyVet's connect
+ * sent our partner secret to a tenant-typed host. An EXISTING connection
+ * stays visible and can still be disconnected. Remove a provider once it
+ * works.
+ *
+ * CAL-1: Google Calendar is available — its busy times are read when it
+ * changes (CAL-1b: Google push notifications, picked up by worker-tick's
+ * `calendar_busy_sync` within about a minute) and checked again live before a
+ * booking is written, and Heyloo's bookings are added to the calendar.
  */
 export const COMING_SOON_PROVIDERS: ReadonlySet<AdapterProvider> = new Set<AdapterProvider>([
   "square",
-  "google_calendar",
   "shopmonkey",
   "ezyvet",
 ]);
@@ -52,6 +57,22 @@ export function isComingSoon(provider: string): boolean {
 
 /** What `api-adapter-connect` writes to `last_error` when the owner disconnects on purpose. */
 export const TENANT_DISCONNECT_SENTINEL = "tenant-initiated disconnect";
+
+/** CAL-1b: `last_error` prefix the calendar sync writes while a busy-time
+ * read (or the token refresh it needs) keeps failing on a still-connected
+ * calendar and is being retried — never for a failed push-channel renewal,
+ * which leaves the reads working (mirrors `CALENDAR_SYNC_ERROR_PREFIX` in
+ * supabase/functions/_shared/calendar/sync.ts; cleared by the next good read). */
+export const CALENDAR_SYNC_ERROR_PREFIX = "calendar busy sync: ";
+
+/** CAL-1b: true while a connected Google Calendar's reads are failing and retried. */
+export function calendarReadFailing(
+  row: { status: string; last_error: string | null } | undefined,
+): boolean {
+  return (
+    row?.status === "connected" && (row.last_error ?? "").startsWith(CALENDAR_SYNC_ERROR_PREFIX)
+  );
+}
 
 export type ConnectionDisplayStatus = "connected" | "disconnected" | "error";
 

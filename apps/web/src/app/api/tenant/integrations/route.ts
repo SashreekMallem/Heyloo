@@ -5,6 +5,7 @@ import {
   ADAPTER_DISPLAY_NAMES,
   ADAPTER_PROVIDERS,
   type ConnectionDisplayStatus,
+  calendarReadFailing,
   connectionDisplayStatus,
   isComingSoon,
   untypedTable,
@@ -18,6 +19,14 @@ export interface IntegrationStatus {
   /** `error` = "Needs reconnect": disconnected for a reason other than the owner's own disconnect (CONNECT-SAFE-1). */
   status: ConnectionDisplayStatus;
   last_refreshed_at: string | null;
+  /** CAL-1: Google Calendar only — when its busy times were last read
+   * successfully (`adapter_connections.busy_synced_at`); null otherwise.
+   * CAL-1b: reads happen when the calendar changes (push), not on a timer, so
+   * an old value is normal for a calendar nobody edited. */
+  last_checked_at: string | null;
+  /** CAL-1b: Google Calendar only — a read (or its push channel) is failing
+   * and being retried (`last_error` carries the sync's prefix while connected). */
+  calendar_read_failing?: boolean;
   /** Internal reason text (e.g. "square 401 on booking push"); the page shows friendly copy instead. */
   last_error: string | null;
   /** False while the provider is "Coming soon": a new connection is refused (CONNECT-SAFE-1). */
@@ -27,6 +36,14 @@ export interface IntegrationStatus {
 
 export interface IntegrationsListResponse {
   integrations: IntegrationStatus[];
+}
+
+interface ConnectionRow {
+  provider: string;
+  status: string;
+  last_refreshed_at: string | null;
+  last_error: string | null;
+  busy_synced_at?: string | null;
 }
 
 /**
@@ -49,22 +66,12 @@ export async function GET() {
 
   const supabase = await createSupabaseServerComponentClient();
   const { data: rows } = await untypedTable(supabase, "adapter_connections")
-    .select("provider, status, last_refreshed_at, last_error")
+    .select("provider, status, last_refreshed_at, last_error, busy_synced_at")
     .eq("tenant_id", session.tenantId)
     .in("provider", ADAPTER_PROVIDERS);
 
-  const byProvider = new Map<
-    string,
-    { status: string; last_refreshed_at: string | null; last_error: string | null }
-  >(
-    (
-      (rows ?? []) as {
-        provider: string;
-        status: string;
-        last_refreshed_at: string | null;
-        last_error: string | null;
-      }[]
-    ).map((r) => [r.provider, r]),
+  const byProvider = new Map<string, ConnectionRow>(
+    ((rows ?? []) as ConnectionRow[]).map((r) => [r.provider, r]),
   );
 
   const integrations: IntegrationStatus[] = ADAPTER_PROVIDERS.map((provider) => {
@@ -74,6 +81,8 @@ export async function GET() {
       display_name: ADAPTER_DISPLAY_NAMES[provider],
       status: connectionDisplayStatus(row),
       last_refreshed_at: row?.last_refreshed_at ?? null,
+      last_checked_at: provider === "google_calendar" ? (row?.busy_synced_at ?? null) : null,
+      calendar_read_failing: provider === "google_calendar" && calendarReadFailing(row),
       last_error: row?.last_error ?? null,
       available: !isComingSoon(provider),
       can_manage: session.canManage,

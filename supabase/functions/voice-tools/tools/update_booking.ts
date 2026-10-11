@@ -45,6 +45,9 @@ interface PreflightRow {
   start_in_past?: boolean | null;
   too_soon?: boolean | null;
   slots_cover?: boolean | null;
+  /** CAL-1: the new window overlaps a busy time from the owner's connected
+   * calendar (`external_busy_blocks`) that applies to this booking's resource. */
+  calendar_busy?: boolean | null;
 }
 
 /**
@@ -71,6 +74,12 @@ interface PreflightRow {
  *    slots, counting the booking's own current slot as open (so moving a
  *    booking by 15 minutes is not refused for overlapping itself). Another
  *    booking in the way is still the exclusion constraint's job (`slot_taken`).
+ *
+ * CAL-1: the new window must not overlap a busy time read from the owner's
+ * connected Google Calendar (`external_busy_blocks`) — answered `slot_taken`,
+ * computed in the same statement. The booking's own pushed event is not in
+ * the table (the sync subtracts Heyloo's pushed bookings), so a small move
+ * never collides with itself.
  */
 export async function updateBooking(
   sql: SqlClient,
@@ -124,7 +133,13 @@ export async function updateBooking(
         where s.tenant_id = ${ctx.tenantId} and s.resource_id = b.resource_id
           and (s.is_available or s.slot_range && b.during)
           and s.slot_range && tstzrange(${newStart}::timestamptz, ${newStart}::timestamptz + (b.end_at - b.start_at))
-      ), false) as slots_cover
+      ), false) as slots_cover,
+      exists (
+        select 1 from public.external_busy_blocks x
+        where x.tenant_id = b.tenant_id
+          and (x.resource_id is null or x.resource_id = b.resource_id)
+          and x.busy && tstzrange(${newStart}::timestamptz, ${newStart}::timestamptz + (b.end_at - b.start_at))
+      ) as calendar_busy
     from public.bookings b
     left join public.customers c on c.id = b.customer_id
     where b.id = ${args.booking_id} and b.tenant_id = ${ctx.tenantId} and b.status = 'confirmed'
@@ -159,6 +174,10 @@ export async function updateBooking(
       reason: "not_available",
       message: RESCHEDULE_NOT_AVAILABLE_MESSAGE,
     };
+  }
+  // CAL-1: the owner already has something in their calendar then.
+  if (booking.calendar_busy === true) {
+    return { confirmed: false, reason: "slot_taken" };
   }
 
   try {

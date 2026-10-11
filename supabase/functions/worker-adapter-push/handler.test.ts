@@ -604,7 +604,8 @@ describe("pushToAdapter: google_calendar", () => {
     status: "connected",
     access_token: "token",
     refresh_token: "refresh",
-    expires_at: null,
+    // valid for another hour: no refresh needed
+    expires_at: new Date(Date.now() + 3_600_000).toISOString(),
     provider_account_id: null,
     metadata: { calendarId: "primary" },
   };
@@ -812,6 +813,146 @@ describe("pushToAdapter: google_calendar", () => {
       expect(result).toBe(true);
       expect(fetchCalled).toBe(false);
     });
+  });
+});
+
+describe("pushToAdapter: google_calendar token refresh (CAL-1b classification)", () => {
+  const BOOKING_ROW = {
+    id: "booking_9",
+    start_at: "2026-09-10T14:00:00Z",
+    end_at: "2026-09-10T14:30:00Z",
+    notes: null,
+    party_size: null,
+    customer_name: "Jane Doe",
+    customer_phone: "+15551234567",
+    customer_email: null,
+    offering_metadata: {},
+    resource_metadata: {},
+  };
+  const MSG: AdapterPushQueueMsg = {
+    tenant_id: "t1",
+    adapter: "google_calendar",
+    entity_type: "booking",
+    entity_id: "booking_9",
+    idempotency_key: "k9",
+    attempt: 0,
+  };
+
+  function connectionExpiringIn(ms: number | null) {
+    return {
+      id: "conn_9",
+      status: "connected",
+      access_token: "old-token",
+      refresh_token: "refresh",
+      expires_at: ms === null ? null : new Date(Date.now() + ms).toISOString(),
+      provider_account_id: null,
+      metadata: { calendarId: "primary" },
+    };
+  }
+
+  function harness(connection: unknown, tokenResponse: () => Response) {
+    const statements: { text: string; values: unknown[] }[] = [];
+    const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join("?");
+      statements.push({ text, values });
+      if (text.includes("from public.adapter_connections")) return [connection];
+      if (text.includes("from public.bookings b")) return [BOOKING_ROW];
+      return [];
+    }) as unknown as SqlClient;
+    const calls: { url: string; authorization: string | undefined }[] = [];
+    const deps: AdapterPushDeps = {
+      ...DEPS,
+      fetchImpl: (async (url: string, init?: RequestInit) => {
+        calls.push({
+          url: String(url),
+          authorization: (init?.headers as Record<string, string> | undefined)?.["authorization"],
+        });
+        if (String(url).includes("oauth2.googleapis.com/token")) return tokenResponse();
+        return jsonResponse({ id: "evt_9" });
+      }) as unknown as typeof fetch,
+    };
+    const disconnected = () =>
+      statements.filter((s) => s.text.includes("set status = 'disconnected'"));
+    return { sql, deps, calls, statements, disconnected };
+  }
+
+  async function encryptedConnection(ms: number | null) {
+    const row = connectionExpiringIn(ms);
+    return {
+      ...row,
+      access_token: await encryptSecret(row.access_token, TEST_TOKEN_ENCRYPTION_KEY),
+      refresh_token: await encryptSecret(row.refresh_token, TEST_TOKEN_ENCRYPTION_KEY),
+    };
+  }
+
+  it("refreshes a token expiring within 5 minutes and pushes with the new one", async () => {
+    const h = harness(await encryptedConnection(4 * 60_000), () =>
+      jsonResponse({ access_token: "new-token", expires_in: 3600 }),
+    );
+    expect(await pushToAdapter(h.sql, MSG, createLogger(), h.deps)).toBe(true);
+    expect(h.calls[0]?.url).toBe("https://oauth2.googleapis.com/token");
+    expect(h.calls[1]?.authorization).toBe("Bearer new-token");
+    const stored = h.statements.find((s) => s.text.includes("set access_token ="));
+    const encrypted = stored?.values.find(
+      (v) => typeof v === "string" && v.startsWith("v1:"),
+    ) as string;
+    expect(await decryptSecret(encrypted, TEST_TOKEN_ENCRYPTION_KEY)).toBe("new-token");
+  });
+
+  it("does not refresh a token that is good for more than 5 minutes", async () => {
+    const h = harness(await encryptedConnection(6 * 60_000), () => jsonResponse({}));
+    expect(await pushToAdapter(h.sql, MSG, createLogger(), h.deps)).toBe(true);
+    expect(h.calls.map((c) => c.url)).not.toContain("https://oauth2.googleapis.com/token");
+    expect(h.calls[0]?.authorization).toBe("Bearer old-token");
+  });
+
+  it("refreshes when the expiry is unknown", async () => {
+    const h = harness(await encryptedConnection(null), () =>
+      jsonResponse({ access_token: "new-token", expires_in: 3600 }),
+    );
+    expect(await pushToAdapter(h.sql, MSG, createLogger(), h.deps)).toBe(true);
+    expect(h.calls[0]?.url).toBe("https://oauth2.googleapis.com/token");
+  });
+
+  it("ONLY invalid_grant marks the connection disconnected (owner must reconnect)", async () => {
+    const h = harness(await encryptedConnection(-1000), () =>
+      jsonResponse({ error: "invalid_grant" }, 400),
+    );
+    expect(await pushToAdapter(h.sql, MSG, createLogger(), h.deps)).toBe(false);
+    expect(h.disconnected()).toHaveLength(1);
+    expect(h.disconnected()[0]?.values).toContain("google_calendar refresh_token invalid/revoked");
+    expect(h.calls).toHaveLength(1); // no push with a dead token
+  });
+
+  it.each([
+    ["a 503 from the token endpoint", () => jsonResponse({ error: "backendError" }, 503)],
+    ["a 429", () => jsonResponse({}, 429)],
+    [
+      "Google refusing OUR client (invalid_client)",
+      () => jsonResponse({ error: "invalid_client" }, 401),
+    ],
+    ["a 200 that is not a token answer", () => jsonResponse({ nope: true })],
+  ])("%s is NOT the tenant's fault: stays connected, push retried", async (_l, respond) => {
+    const h = harness(await encryptedConnection(-1000), respond);
+    const warnings: string[] = [];
+    const errors: string[] = [];
+    const logger = {
+      ...createLogger(),
+      warn: (msg: string) => warnings.push(msg),
+      error: (msg: string) => errors.push(msg),
+    };
+    expect(await pushToAdapter(h.sql, MSG, logger, h.deps)).toBe(false);
+    expect(h.disconnected()).toHaveLength(0);
+    expect([...warnings, ...errors]).toContain("adapter_push_google_refresh_failed");
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it("a network failure during refresh never throws and never disconnects", async () => {
+    const h = harness(await encryptedConnection(-1000), () => {
+      throw new Error("ECONNRESET");
+    });
+    expect(await pushToAdapter(h.sql, MSG, createLogger(), h.deps)).toBe(false);
+    expect(h.disconnected()).toHaveLength(0);
   });
 });
 

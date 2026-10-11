@@ -90,6 +90,14 @@ export const INVALID_DATE_RANGE_MESSAGE =
  * motel night) — when it has not yet ended by then. Returned times are
  * rendered in the tenant's own timezone with an explicit offset
  * (`toTenantLocalIso`).
+ *
+ * CAL-1: both queries also skip a slot that overlaps a busy time read from
+ * the owner's connected Google Calendar (`external_busy_blocks`, kept fresh
+ * by the worker-tick `calendar_busy_sync` leg). A block with no resource
+ * blocks every resource; a resource-mapped calendar blocks only its
+ * resource. The NOT EXISTS is inside the same statement (an index probe on
+ * `(tenant_id, busy)` per candidate slot) — no extra round trip, and a
+ * tenant with no calendar connected has no rows to find.
  */
 export async function checkAvailability(
   sql: SqlClient,
@@ -162,6 +170,12 @@ export async function checkAvailability(
           )
           and (${partySize}::int is null or capacity >= ${partySize})
       )
+      and not exists (
+        select 1 from public.external_busy_blocks x
+        where x.tenant_id = availability_slots.tenant_id
+          and (x.resource_id is null or x.resource_id = availability_slots.resource_id)
+          and x.busy && availability_slots.slot_range
+      )
     order by slot_start asc
     limit 20
   `;
@@ -202,6 +216,12 @@ export async function checkAvailability(
             )
           )
             and (${partySize}::int is null or capacity >= ${partySize})
+        )
+        and not exists (
+          select 1 from public.external_busy_blocks x
+          where x.tenant_id = availability_slots.tenant_id
+            and (x.resource_id is null or x.resource_id = availability_slots.resource_id)
+            and x.busy && availability_slots.slot_range
         )
       order by slot_start asc
       limit 1

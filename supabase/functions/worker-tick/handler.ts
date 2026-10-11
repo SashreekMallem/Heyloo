@@ -1,3 +1,5 @@
+import type { CalendarBusySyncDeps, RunCalendarBusySyncResult } from "../_shared/calendar/sync.ts";
+import { runCalendarBusySync } from "../_shared/calendar/sync.ts";
 import type {
   RunWebhookDeliveryResult,
   WebhookDeliveryDeps,
@@ -123,6 +125,12 @@ export interface WorkerTickDeps {
    * Vault), so index.ts always configures it; the NotConfigured shape is
    * kept for symmetry with the other legs. */
   outboundWebhooks: WebhookDeliveryDeps | NotConfiguredLeg;
+  /** CAL-1 / CAL-1b: Google Calendar busy-time sync (`_shared/calendar/
+   * sync.ts`) — push-only: each tick checks the database for due reads
+   * and push channels to register/renew, and calls Google only for those.
+   * Needs the token key and the Google OAuth client (refresh); skipped when
+   * either is missing. Bounded to stay inside the per-leg deadline. */
+  calendarBusySync: CalendarBusySyncDeps | NotConfiguredLeg;
   /** Hard per-worker deadline (ms). Defaults to 12s so three workers run
    * concurrently comfortably inside the 15s `net.http_post`
    * `timeout_milliseconds` budget the calling cron job uses. */
@@ -149,6 +157,10 @@ export interface WorkerTickRunners {
     sql: SqlClient,
     deps: WebhookDeliveryDeps,
   ) => Promise<RunWebhookDeliveryResult>;
+  calendarBusySync: (
+    sql: SqlClient,
+    deps: CalendarBusySyncDeps,
+  ) => Promise<RunCalendarBusySyncResult>;
 }
 
 export const DEFAULT_WORKER_TICK_RUNNERS: WorkerTickRunners = {
@@ -156,6 +168,7 @@ export const DEFAULT_WORKER_TICK_RUNNERS: WorkerTickRunners = {
   recordingFetch: runRecordingFetchWorker,
   adapterPush: runAdapterPushWorker,
   outboundWebhooks: runWebhookDeliveryWorker,
+  calendarBusySync: runCalendarBusySync,
 };
 
 export type WorkerOutcome<T> =
@@ -176,6 +189,7 @@ export interface WorkerTickResult {
   recording_fetch: WorkerOutcome<RunRecordingFetchWorkerResult>;
   adapter_push: WorkerOutcome<RunAdapterPushWorkerResult>;
   outbound_webhooks: WorkerOutcome<RunWebhookDeliveryResult>;
+  calendar_busy_sync: WorkerOutcome<RunCalendarBusySyncResult>;
   /** Every queue's `pgmq.metrics_all()` row (OPS-8, deliverable 3) — so the
    * nightly regression and admin pages can see backlog/DLQ depth straight
    * from this response, without a separate DB read. Empty (never throws
@@ -254,6 +268,7 @@ export async function runWorkerTick(
     recordingFetchOutcome,
     adapterPushOutcome,
     outboundWebhooksOutcome,
+    calendarBusySyncOutcome,
     queues,
   ] = await Promise.all([
     runOutboundLeg(sql, deps.outbound, (d) => runners.outbound(sql, d), timeoutMs),
@@ -275,6 +290,12 @@ export async function runWorkerTick(
       timeoutMs,
       "outbound_webhooks",
     ),
+    runLeg(
+      deps.calendarBusySync,
+      (d) => runners.calendarBusySync(sql, d),
+      timeoutMs,
+      "calendar_busy_sync",
+    ),
     metricsAll(sql).catch(() => []),
   ]);
 
@@ -283,6 +304,7 @@ export async function runWorkerTick(
     recording_fetch: recordingFetchOutcome,
     adapter_push: adapterPushOutcome,
     outbound_webhooks: outboundWebhooksOutcome,
+    calendar_busy_sync: calendarBusySyncOutcome,
     queues,
     duration_ms: Date.now() - startedAt,
   };

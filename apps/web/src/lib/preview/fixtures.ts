@@ -835,9 +835,10 @@ export const API_FIXTURES: Record<string, unknown> = {
         display_name: "Google Calendar",
         status: "connected",
         last_refreshed_at: daysAgoIso(1, 8),
+        last_checked_at: new Date(Date.now() - 3 * 60_000).toISOString(),
         last_error: null,
         can_manage: true,
-        available: false,
+        available: true,
       },
       {
         provider: "shopmonkey",

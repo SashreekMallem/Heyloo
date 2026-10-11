@@ -36,8 +36,11 @@ export type TemplateKey =
   | "owner_missed_transfer"
   | "owner_line_ready"
   | "owner_webhook_failing"
+  | "owner_calendar_disconnected"
   | "sms_reply"
-  | "text_agent_reply";
+  | "text_agent_reply"
+  | "trial_will_end"
+  | "trial_minutes_used";
 
 export interface RenderedMessage {
   subject?: string;
@@ -152,6 +155,25 @@ export function renderTemplate(
         body: `Heyloo couldn't send ${str("event_label", "an update")} to ${destination}.${payload["disabled"] === true ? " It was turned off because the receiving app said the address is gone." : ""} Check Integrations in your dashboard.`,
       };
     }
+    // CAL-1: the busy-time sync (_shared/calendar/sync.ts) found the owner's
+    // calendar no longer accepts Heyloo's connection (revoked, expired, or a
+    // permission taken away). Sent once, when the connection is marked
+    // "Needs reconnect".
+    case "owner_calendar_disconnected": {
+      const calendar = str("provider_name", "Google Calendar");
+      // CAL-1: still connected, but its busy times have not been readable
+      // for hours (the sync keeps trying; blocks it already had stay).
+      if (str("reason") === "read_failing") {
+        return {
+          subject: `Heyloo can't read your ${calendar}`,
+          body: `Heyloo hasn't been able to read your ${calendar} for a few hours, so your AI receptionist may not see times you've filled since then. It keeps trying. If this doesn't clear up, disconnect and reconnect it under Integrations in your dashboard.`,
+        };
+      }
+      return {
+        subject: `Reconnect your ${calendar}`,
+        body: `Heyloo can't read your ${calendar} any more, so your AI receptionist can't see when you're busy and new bookings won't be added to your calendar. Times it already knew were busy stay blocked for up to a day. Reconnect it under Integrations in your dashboard.`,
+      };
+    }
     case "owner_missed_transfer": {
       const callerName = str("caller_name", "A caller");
       return {
@@ -223,6 +245,39 @@ export function renderTemplate(
           "We couldn't process your latest payment. Please update your billing details" +
           (str("billing_url") ? `: ${str("billing_url")}` : "."),
       };
+    // TRIAL-1 owner emails (_shared/trial/owner-email.ts). `trial_will_end`:
+    // webhooks-stripe on customer.subscription.trial_will_end (Stripe sends
+    // it 3 days before a trial ends by default), `ends_on` already formatted
+    // in the tenant's time zone. `trial_minutes_used`: the minutes cap ended
+    // the trial early (_shared/trial/cap.ts). Both say plainly what is
+    // charged and that calls keep being answered.
+    case "trial_will_end": {
+      const endsOn = str("ends_on");
+      const billing = str("billing_url");
+      return {
+        subject: endsOn
+          ? `Your Heyloo free trial ends ${endsOn}`
+          : "Your Heyloo free trial ends soon",
+        body:
+          `Your Heyloo free trial ends ${endsOn ? `on ${endsOn}` : "soon"}, or sooner if it reaches its call-minute limit. ` +
+          "When it ends, your plan starts and your card on file is charged the monthly plan price. " +
+          "You don't need to do anything to keep your AI receptionist answering. " +
+          `To cancel before you're charged, go to Billing in your dashboard${billing ? `: ${billing}` : "."}`,
+      };
+    }
+    case "trial_minutes_used": {
+      const minutes = num("minutes");
+      const billing = str("billing_url");
+      return {
+        subject: "Your trial minutes are used, so your plan has started",
+        body:
+          `Your AI receptionist has answered ${minutes !== undefined ? `${minutes} minutes` : "all the minutes"} of calls, the limit for the free trial, ` +
+          "so your free trial has ended early and your plan has started today. Your card on file is charged the monthly plan price now. " +
+          "Calls keep being answered as normal. " +
+          "To see your plan and invoices, or to cancel, go to Billing in your dashboard" +
+          (billing ? `: ${billing}` : "."),
+      };
+    }
     case "reminder":
       return { body: `Reminder: you have an appointment ${str("start_local", "coming up")}.` };
     case "review_request":
@@ -250,9 +305,16 @@ export function renderTemplate(
       return { body: str("body") };
     case "order_ready":
       // Inserted by `apps/web/src/app/api/tenant/orders/[id]/route.ts` on a
-      // transition into `status: 'ready'` — no payload fields today
-      // (FIX_REQUESTS.md), fixed body.
-      return { body: "Your order is ready for pickup!" };
+      // transition into `status: 'ready'`. READY-1: the payload carries the
+      // order's `fulfillment_type`; a delivery order is on its way, not
+      // waiting at the counter. Pickup, dine-in and an older row with no
+      // payload keep the pickup wording.
+      return {
+        body:
+          str("fulfillment_type") === "delivery"
+            ? "Your order is on its way!"
+            : "Your order is ready for pickup!",
+      };
     case "chat_phone_verification":
       // Cluster T text-agent engine (_shared/text-agent/tool-router.ts's
       // `verify_phone` web-chat tool) — a short, code-only body since the

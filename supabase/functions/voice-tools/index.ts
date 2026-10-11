@@ -4,7 +4,9 @@
 // silence and never a non-200 for a business-logic failure. verify_jwt is
 // false in supabase/config.toml — auth is the Retell HMAC signature
 // verified below.
+import { LiveConnectionCache } from "../_shared/calendar/live-check.ts";
 import { ToolCircuitBreaker } from "../_shared/circuit-breaker.ts";
+import { checkEncryptionKey } from "../_shared/crypto.ts";
 import { runInBackground } from "../_shared/deno/background.ts";
 import { getSql, isDbConnectionWarm, markDbConnectionUsed } from "../_shared/deno/db.ts";
 import { optionalEnv, requireRetellWebhookKey } from "../_shared/deno/env.ts";
@@ -55,6 +57,33 @@ const SB_REGION = optionalEnv("SB_REGION") ?? null;
 // know whether a text they are about to promise can really be sent
 // (`_shared/sms-availability.ts`). Built once per isolate; no network.
 const MESSAGING = buildMessagingRegistryFromEnv((name) => Deno.env.get(name), fetch);
+// CAL-1: create_booking's live Google Calendar re-check (800 ms cap, never
+// fails a booking). It refreshes an expired access token itself under that
+// same cap (CAL-1b push-only: nothing else keeps the stored token fresh) and
+// keeps the fresh token in the per-isolate cache, never writing it back.
+// Module-scope so the per-tenant connection lookup is cached across warm
+// invocations. Plain `fetch` is fine: the hosts are the fixed Google Calendar
+// API and OAuth token hosts (calendar ids travel in the JSON body). Off when
+// the token key is missing or malformed; no refresh without the client id/secret.
+const ADAPTER_TOKEN_ENCRYPTION_KEY = optionalEnv("ADAPTER_TOKEN_ENCRYPTION_KEY");
+const GOOGLE_CALENDAR_CLIENT_ID = optionalEnv("GOOGLE_CALENDAR_CLIENT_ID");
+const GOOGLE_CALENDAR_CLIENT_SECRET = optionalEnv("GOOGLE_CALENDAR_CLIENT_SECRET");
+const CALENDAR_LIVE_CHECK =
+  ADAPTER_TOKEN_ENCRYPTION_KEY && checkEncryptionKey(ADAPTER_TOKEN_ENCRYPTION_KEY) === null
+    ? {
+        fetchImpl: fetch,
+        tokenEncryptionKey: ADAPTER_TOKEN_ENCRYPTION_KEY,
+        cache: new LiveConnectionCache(),
+        ...(GOOGLE_CALENDAR_CLIENT_ID && GOOGLE_CALENDAR_CLIENT_SECRET
+          ? {
+              googleClient: {
+                clientId: GOOGLE_CALENDAR_CLIENT_ID,
+                clientSecret: GOOGLE_CALENDAR_CLIENT_SECRET,
+              },
+            }
+          : {}),
+      }
+    : undefined;
 
 // Module-scope — survives across invocations on the same warm instance
 // (SYSTEM_DESIGN §5's per-tool rolling-window circuit breaker).
@@ -158,6 +187,7 @@ Deno.serve(async (req: Request) => {
           // DELIVERY-1: the keyless US Census Geocoder (fixed host; the
           // address is only a query parameter, so no safe-fetch needed).
           census: { fetchImpl: fetch },
+          ...(CALENDAR_LIVE_CHECK ? { calendar: CALENDAR_LIVE_CHECK } : {}),
           telemetry,
           now: () => performance.now(),
           defer,

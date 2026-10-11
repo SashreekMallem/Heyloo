@@ -86,10 +86,19 @@ async function tryWaitlistAutoBook(
   const freed = freedRows[0];
   if (!freed) return null;
 
+  // CAL-1b: a slot the owner has since filled in their connected Google
+  // Calendar is not open either (same NOT EXISTS the voice tools apply:
+  // tenant-wide blocks, or blocks of this slot's resource).
   const stillOpen = await sql<{ id: string }>`
     select id from public.availability_slots
     where tenant_id = ${tenantId} and resource_id = ${freed.resource_id}
       and slot_range = tstzrange(${freed.start_at}, ${freed.end_at}) and is_available
+      and not exists (
+        select 1 from public.external_busy_blocks x
+        where x.tenant_id = ${tenantId}
+          and (x.resource_id is null or x.resource_id = ${freed.resource_id})
+          and x.busy && tstzrange(${freed.start_at}, ${freed.end_at})
+      )
     limit 1
   `;
   if (!stillOpen[0]) {

@@ -138,6 +138,9 @@ export const OWNER_ALERT_KINDS = [
   // OUTBOUND-1: an outbound webhook delivery gave up, or a destination was
   // turned off because the receiving app answered 410 Gone.
   "webhook_failing",
+  // CAL-1: the owner's Google Calendar stopped accepting Heyloo's connection
+  // (busy times can no longer be read; reconnect needed).
+  "calendar_disconnected",
 ] as const;
 export type OwnerAlertKind = (typeof OWNER_ALERT_KINDS)[number];
 

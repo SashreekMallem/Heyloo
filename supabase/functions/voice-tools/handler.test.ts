@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { LiveConnectionCache } from "../_shared/calendar/live-check.ts";
+import { encryptSecret } from "../_shared/crypto.ts";
 import { createLogger } from "../_shared/logger.ts";
 import type { SqlClient } from "../_shared/types.ts";
 import type { DispatchDeps } from "./handler.ts";
@@ -480,6 +482,104 @@ describe("toolBudget (HOTPATH)", () => {
     ]) {
       expect(toolBudget(name).hardAbortMs).toBeLessThan(RETELL_DEFAULT_TOOL_TIMEOUT_MS);
     }
+  });
+});
+
+describe("dispatchTool — CAL-1 live calendar re-check wiring", () => {
+  const KEY = btoa("abcdefghijklmnopqrstuvwxyz012345");
+
+  async function calendarSql(connected: boolean) {
+    const base = singleConnectionSql({});
+    const token = await encryptSecret("access-1", KEY);
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(" ");
+      if (text.includes("calendar_live_check:connection")) {
+        base.texts.push(text);
+        return Promise.resolve(
+          connected
+            ? [
+                {
+                  access_token: token,
+                  expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+                  metadata: {},
+                  resource_calendars: [],
+                },
+              ]
+            : [],
+        );
+      }
+      return base.sql(strings, ...values);
+    }) as SqlClient;
+    return { ...base, sql };
+  }
+
+  const googleBusy = (async (_url: string, init?: RequestInit) => {
+    const req = JSON.parse(String(init?.body)) as { timeMin: string; timeMax: string };
+    return Response.json({
+      calendars: { primary: { busy: [{ start: req.timeMin, end: req.timeMax }] } },
+    });
+  }) as typeof fetch;
+
+  it("with deps.calendar, a time the owner just filled in Google is refused (slot_taken) and never written", async () => {
+    const { sql, texts } = await calendarSql(true);
+    const result = await dispatchTool(
+      bookingDeps(sql, {
+        budget: { budgetMs: 2_000, verifyMs: 150, hardAbortMs: 2_500 },
+        calendar: {
+          fetchImpl: googleBusy,
+          tokenEncryptionKey: KEY,
+          cache: new LiveConnectionCache(),
+        },
+      }),
+      REAL_CALL,
+      "create_booking",
+      BOOKING_ARGS,
+    );
+    expect(result.result).toEqual({ confirmed: false, reason: "slot_taken" });
+    expect(texts.some((t) => t.includes("calendar_live_check:connection"))).toBe(true);
+    expect(texts.some((t) => t.includes("create_booking:write"))).toBe(false);
+  });
+
+  it("a tenant without a connected calendar books normally", async () => {
+    const { sql } = await calendarSql(false);
+    const result = await dispatchTool(
+      bookingDeps(sql, {
+        budget: { budgetMs: 2_000, verifyMs: 150, hardAbortMs: 2_500 },
+        calendar: {
+          fetchImpl: googleBusy,
+          tokenEncryptionKey: KEY,
+          cache: new LiveConnectionCache(),
+        },
+      }),
+      REAL_CALL,
+      "create_booking",
+      BOOKING_ARGS,
+    );
+    expect(result.result).toMatchObject({ confirmed: true, booking_id: "booking_1" });
+  });
+
+  it("without deps.calendar there is no live check at all", async () => {
+    const { sql, texts } = await calendarSql(true);
+    const result = await dispatchTool(bookingDeps(sql), REAL_CALL, "create_booking", BOOKING_ARGS);
+    expect(result.result).toMatchObject({ confirmed: true });
+    expect(texts.some((t) => t.includes("calendar_live_check:connection"))).toBe(false);
+  });
+
+  it("check_availability never runs the live check (synced table only)", async () => {
+    const { sql, texts } = await calendarSql(true);
+    await dispatchTool(
+      bookingDeps(sql, {
+        calendar: {
+          fetchImpl: googleBusy,
+          tokenEncryptionKey: KEY,
+          cache: new LiveConnectionCache(),
+        },
+      }),
+      REAL_CALL,
+      "check_availability",
+      { date_range: { start: BOOKING_ARGS.start, end: BOOKING_ARGS.end } },
+    );
+    expect(texts.some((t) => t.includes("calendar_live_check:connection"))).toBe(false);
   });
 });
 

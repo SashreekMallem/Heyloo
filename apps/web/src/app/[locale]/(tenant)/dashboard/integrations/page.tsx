@@ -33,8 +33,38 @@ const STATUS_META: Record<
   error: { label: "Needs reconnect", variant: "destructive" },
 };
 
+/** CAL-1: what a provider does for the owner, in plain words (shown on its card). */
+const PROVIDER_DESCRIPTIONS: Partial<Record<string, string>> = {
+  google_calendar:
+    "Reads your busy times so the AI never double-books, and adds Heyloo bookings to your calendar.",
+};
+
+const CALENDAR_TROUBLE = "Heyloo is having trouble reading your calendar and will keep trying.";
+
+/** CAL-1 / CAL-1b: Google Calendar's connected status line. Busy times are
+ * read when the calendar changes (Google tells Heyloo), not on a timer, so an
+ * old "last updated" time is normal; trouble is reported only while a read
+ * is actually failing. */
+function calendarCheckText(lastCheckedAt: string | null, readFailing: boolean): string {
+  if (!lastCheckedAt) {
+    return readFailing
+      ? `Connected. ${CALENDAR_TROUBLE}`
+      : "Connected. Reading your busy times for the first time — this takes about a minute.";
+  }
+  const text = `Last updated ${new Date(lastCheckedAt).toLocaleString()}.`;
+  return readFailing
+    ? `${text} ${CALENDAR_TROUBLE}`
+    : `${text} Changes in your calendar reach Heyloo within about a minute.`;
+}
+
 /** Owner-facing status line. Never the raw `last_error` (internal strings like "square 401 on booking push"). */
 function statusText(integration: IntegrationStatus, comingSoon: boolean): string {
+  if (integration.status === "connected" && integration.provider === "google_calendar") {
+    return calendarCheckText(
+      integration.last_checked_at ?? null,
+      integration.calendar_read_failing === true,
+    );
+  }
   if (integration.status === "connected") {
     return integration.last_refreshed_at
       ? `Last refreshed ${new Date(integration.last_refreshed_at).toLocaleString()}`
@@ -60,7 +90,9 @@ function statusText(integration: IntegrationStatus, comingSoon: boolean): string
  *
  * Below it, the four two-way sync adapters `api-adapter-connect` supports
  * (Square, Google Calendar, Shopmonkey, ezyVet) with live status and
- * last-refreshed time. CONNECT-SAFE-1: a provider the API marks
+ * last-refreshed time (CAL-1: for Google Calendar, when its busy times were
+ * last updated — CAL-1b: on every change, via Google push — and a plain
+ * description of what it does). CONNECT-SAFE-1: a provider the API marks
  * `available: false` reads "Coming soon" with a disabled Connect (the
  * connect route refuses it too); an existing connection stays visible and
  * can still be disconnected. A connection that broke reads "Needs
@@ -98,6 +130,10 @@ export default function IntegrationsPage() {
       if (data?.source !== "heyloo-adapter-oauth") return;
       if (data.ok) {
         toast.success(`${data.provider ?? "Adapter"} connected`);
+      } else if (data.error === "google_scopes_not_granted") {
+        toast.error(
+          "Heyloo needs both permissions: to see when you're busy and to add bookings to your calendar. Please connect again and leave both ticked.",
+        );
       } else {
         toast.error(`Couldn't connect ${data.provider ?? "adapter"} — please try again.`);
       }
@@ -234,6 +270,9 @@ export default function IntegrationsPage() {
                     )}
                   </CardHeader>
                   <CardContent className="space-y-3">
+                    {PROVIDER_DESCRIPTIONS[integration.provider] && (
+                      <p className="text-sm">{PROVIDER_DESCRIPTIONS[integration.provider]}</p>
+                    )}
                     <p className="text-xs text-muted-foreground">
                       {statusText(integration, comingSoon)}
                     </p>

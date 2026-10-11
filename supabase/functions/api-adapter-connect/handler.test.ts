@@ -181,9 +181,148 @@ describe("handleAdapterConnect: initiate", () => {
     if (result.ok) {
       const url = new URL(result.body["authorize_url"] as string);
       expect(url.searchParams.get("access_type")).toBe("offline");
-      expect(url.searchParams.get("scope")).toContain("calendar");
+      expect(url.searchParams.get("prompt")).toBe("consent");
+      // CAL-1: exactly the two narrow scopes, never the broad auth/calendar.
+      expect(url.searchParams.get("scope")?.split(" ")).toEqual([
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/calendar.freebusy",
+      ]);
+      expect(url.searchParams.get("scope")?.split(" ")).not.toContain(
+        "https://www.googleapis.com/auth/calendar",
+      );
     }
   });
+});
+
+describe("handleAdapterConnect: Google Calendar callback (CAL-1)", () => {
+  const SCOPES =
+    "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy";
+
+  async function googleCallback(tokenBody: unknown, status = 200) {
+    const state = await signOAuthState("state-secret", {
+      tenantId: "tenant_1",
+      provider: "google_calendar",
+      nonce: "n1",
+    });
+    let upserted: unknown[] | null = null;
+    let upsertText = "";
+    const base = makeSql({ membership: OWNER_MEMBERSHIP });
+    const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (strings.join("?").includes("insert into public.adapter_connections")) {
+        upserted = values;
+        upsertText = strings.join("?");
+        return [];
+      }
+      return base(strings, ...values);
+    }) as unknown as SqlClient;
+    let tokenRequest: URLSearchParams | undefined;
+    const deps: AdapterConnectDeps = {
+      ...BASE_DEPS,
+      fetchImpl: (async (_url: string, init?: RequestInit) => {
+        tokenRequest = new URLSearchParams(String(init?.body));
+        return jsonResponse(tokenBody, status);
+      }) as unknown as typeof fetch,
+    };
+    const result = await handleAdapterConnect(
+      sql,
+      "user_1",
+      { action: "callback", provider: "google_calendar", code: "code_1", state },
+      deps,
+    );
+    return { result, upserted: upserted as unknown[] | null, upsertText, tokenRequest };
+  }
+
+  it("stores a validated token response (encrypted) and asks for an immediate busy-time sync", async () => {
+    const { result, upserted, upsertText, tokenRequest } = await googleCallback({
+      access_token: "ya29.access",
+      expires_in: 3599,
+      refresh_token: "1//refresh",
+      scope: SCOPES,
+      token_type: "Bearer",
+    });
+    expect(result).toEqual({
+      ok: true,
+      status: 200,
+      body: { connected: true, provider: "google_calendar" },
+    });
+    expect(tokenRequest?.get("grant_type")).toBe("authorization_code");
+    expect(tokenRequest?.get("redirect_uri")).toBe("https://example.com/cb");
+    expect(upserted).not.toContain("ya29.access");
+    expect(upserted).not.toContain("1//refresh");
+    const secrets = (upserted ?? []).filter(
+      (v): v is string => typeof v === "string" && v.startsWith("v1:"),
+    );
+    expect(
+      await Promise.all(secrets.map((v) => decryptSecret(v, TEST_TOKEN_ENCRYPTION_KEY))),
+    ).toEqual(["ya29.access", "1//refresh"]);
+    expect(upsertText).toContain("busy_sync_attempted_at = null");
+    // a reconnect starts a fresh failure window (owner alert after 3 h) and backoff
+    expect(upsertText).toContain("busy_sync_failing_since = null");
+    expect(upsertText).toContain("busy_sync_failures = 0");
+    // CAL-1b: one busy-time read is requested now (push-only: nothing re-reads on a timer)...
+    expect(upsertText).toContain("busy_sync_requested_at");
+    expect(upsertText).toMatch(/case when \?::boolean then now\(\) end/);
+    expect(upsertText).toContain(
+      "busy_sync_requested_at = coalesce(excluded.busy_sync_requested_at",
+    );
+    // ...and a fresh push channel is forced (any older channel is replaced and stopped)
+    expect(upsertText).toMatch(/watch_expires_at = case when \?::boolean then null/);
+    // ...right away: a channel backoff left from before the reconnect is cleared
+    expect(upsertText).toMatch(/watch_failures = case when \?::boolean then 0/);
+    expect(upsertText).toMatch(/watch_retry_at = case when \?::boolean then null/);
+    expect(upserted).toContain(true);
+  });
+
+  it("CAL-1b: a non-calendar connect requests no busy-time read and keeps any channel state", async () => {
+    let upserted: unknown[] = [];
+    const sql = makeSql({ membership: OWNER_MEMBERSHIP, captureUpsert: (v) => (upserted = v) });
+    const deps: AdapterConnectDeps = {
+      ...BASE_DEPS,
+      fetchImpl: (async () => jsonResponse({ id: "user_1" })) as unknown as typeof fetch,
+    };
+    const result = await handleAdapterConnect(
+      sql,
+      "user_1",
+      { action: "paste_key", provider: "shopmonkey", api_key: "sm_key" },
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    expect(upserted).not.toContain(true);
+    expect(upserted).toContain(false);
+  });
+
+  it("refuses (and stores nothing) when the owner unticked a permission on Google's consent screen", async () => {
+    const { result, upserted } = await googleCallback({
+      access_token: "ya29.access",
+      expires_in: 3599,
+      refresh_token: "1//refresh",
+      scope: "https://www.googleapis.com/auth/calendar.events",
+    });
+    expect(result).toEqual({ ok: false, status: 400, error: "google_scopes_not_granted" });
+    expect(upserted).toBeNull();
+  });
+
+  it("an older broad-scope grant is accepted", async () => {
+    const { result } = await googleCallback({
+      access_token: "a",
+      expires_in: 3600,
+      scope: "https://www.googleapis.com/auth/calendar",
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([
+    ["a body without access_token", { expires_in: 3600, scope: SCOPES }, 200],
+    ["a non-numeric expires_in", { access_token: "a", expires_in: "soon", scope: SCOPES }, 200],
+    ["Google's own error answer", { error: "invalid_grant" }, 400],
+  ])(
+    "answers 502 google_token_exchange_failed for %s (Zod at the boundary)",
+    async (_l, body, status) => {
+      const { result, upserted } = await googleCallback(body, status);
+      expect(result).toEqual({ ok: false, status: 502, error: "google_token_exchange_failed" });
+      expect(upserted).toBeNull();
+    },
+  );
 });
 
 describe("handleAdapterConnect: callback", () => {
@@ -389,12 +528,19 @@ describe("handleAdapterConnect: ezyVet is refused (CONNECT-SAFE-1)", () => {
 
   it("an existing ezyVet connection can still be disconnected", async () => {
     let captured: unknown[] = [];
+    let fetched = false;
     const sql = makeSql({ membership: OWNER_MEMBERSHIP, captureDisconnect: (v) => (captured = v) });
     const result = await handleAdapterConnect(
       sql,
       "user_1",
       { action: "disconnect", provider: "ezyvet" },
-      BASE_DEPS,
+      {
+        ...BASE_DEPS,
+        fetchImpl: (async () => {
+          fetched = true;
+          return jsonResponse({});
+        }) as unknown as typeof fetch,
+      },
     );
     expect(result).toEqual({
       ok: true,
@@ -402,10 +548,38 @@ describe("handleAdapterConnect: ezyVet is refused (CONNECT-SAFE-1)", () => {
       body: { disconnected: true, provider: "ezyvet" },
     });
     expect(captured).toEqual(["tenant_1", "ezyvet"]);
+    expect(fetched).toBe(false);
   });
 });
 
 describe("handleAdapterConnect: disconnect", () => {
+  it("CAL-1: the owner's disconnect also deletes what Heyloo read from that calendar, in the same statement", async () => {
+    const texts: string[] = [];
+    const base = makeSql({ membership: OWNER_MEMBERSHIP });
+    const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      texts.push(strings.join(" "));
+      return base(strings, ...values);
+    }) as unknown as SqlClient;
+    await handleAdapterConnect(
+      sql,
+      "user_1",
+      { action: "disconnect", provider: "google_calendar" },
+      BASE_DEPS,
+    );
+    const statement = texts.find((t) => t.includes("update public.adapter_connections")) ?? "";
+    expect(statement).toContain("last_error = 'tenant-initiated disconnect'");
+    expect(statement).toContain("delete from public.external_busy_blocks x");
+    expect(statement).toContain("x.connection_id = d.id and x.tenant_id = d.tenant_id");
+    // CAL-1b: the push channel is forgotten in the same statement (its
+    // notifications are then refused as an unknown channel)
+    expect(statement).toContain(
+      "watch_channel_id = null, watch_resource_id = null, watch_token_hash = null",
+    );
+    // the previous channel is read under the row lock, so a renewal that
+    // committed just before is the one that gets stopped
+    expect(statement).toContain("for update");
+  });
+
   it("marks the connection disconnected for the caller's own tenant", async () => {
     let captured: unknown[] = [];
     const sql = makeSql({ membership: OWNER_MEMBERSHIP, captureDisconnect: (v) => (captured = v) });
@@ -421,5 +595,117 @@ describe("handleAdapterConnect: disconnect", () => {
       body: { disconnected: true, provider: "square" },
     });
     expect(captured).toContain("tenant_1");
+  });
+
+  describe("CAL-1b: stops the Google push channel", () => {
+    async function disconnectGoogle(
+      previous: Record<string, unknown> | null,
+      opts: { deps?: Partial<AdapterConnectDeps>; respond?: (url: string) => Response } = {},
+    ) {
+      const base = makeSql({ membership: OWNER_MEMBERSHIP });
+      const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        if (strings.join(" ").includes("update public.adapter_connections")) {
+          return previous ? [previous] : [];
+        }
+        return base(strings, ...values);
+      }) as unknown as SqlClient;
+      const calls: { url: string; body: string; authorization: string | undefined }[] = [];
+      const deps: AdapterConnectDeps = {
+        ...BASE_DEPS,
+        fetchImpl: (async (url: string, init?: RequestInit) => {
+          calls.push({
+            url,
+            body: String(init?.body ?? ""),
+            authorization: (init?.headers as Record<string, string> | undefined)?.["authorization"],
+          });
+          if (opts.respond) return opts.respond(url);
+          if (url.includes("oauth2.googleapis.com/token")) {
+            return jsonResponse({ access_token: "fresh-access", expires_in: 3600 });
+          }
+          return new Response(null, { status: 204 });
+        }) as unknown as typeof fetch,
+        ...opts.deps,
+      };
+      const result = await handleAdapterConnect(
+        sql,
+        "user_1",
+        { action: "disconnect", provider: "google_calendar" },
+        deps,
+      );
+      return { result, calls };
+    }
+
+    async function previousRow(overrides: Record<string, unknown> = {}) {
+      const { encryptSecret } = await import("../_shared/crypto.ts");
+      return {
+        watch_channel_id: "chan-1",
+        watch_resource_id: "res-1",
+        access_token: await encryptSecret("stored-access", TEST_TOKEN_ENCRYPTION_KEY),
+        refresh_token: await encryptSecret("stored-refresh", TEST_TOKEN_ENCRYPTION_KEY),
+        expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        blocks_removed: 2,
+        ...overrides,
+      };
+    }
+
+    it("calls channels.stop with the stored (still valid) access token after disconnecting", async () => {
+      const { result, calls } = await disconnectGoogle(await previousRow());
+      expect(result.ok).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toBe("https://www.googleapis.com/calendar/v3/channels/stop");
+      expect(calls[0]?.authorization).toBe("Bearer stored-access");
+      expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({ id: "chan-1", resourceId: "res-1" });
+    });
+
+    it("refreshes an expired access token once (not stored) to stop the channel", async () => {
+      const { calls } = await disconnectGoogle(
+        await previousRow({ expires_at: new Date(Date.now() - 1000).toISOString() }),
+      );
+      expect(calls.map((c) => c.url)).toEqual([
+        "https://oauth2.googleapis.com/token",
+        "https://www.googleapis.com/calendar/v3/channels/stop",
+      ]);
+      expect(calls[1]?.authorization).toBe("Bearer fresh-access");
+    });
+
+    it("a failing stop never fails the owner's disconnect", async () => {
+      const { result } = await disconnectGoogle(await previousRow(), {
+        respond: () => jsonResponse({}, 500),
+      });
+      expect(result).toEqual({
+        ok: true,
+        status: 200,
+        body: { disconnected: true, provider: "google_calendar" },
+      });
+    });
+
+    it("a refresh that fails means no stop call (the channel runs out by itself)", async () => {
+      const { result, calls } = await disconnectGoogle(await previousRow({ expires_at: null }), {
+        respond: () => jsonResponse({ error: "invalid_grant" }, 400),
+      });
+      expect(result.ok).toBe(true);
+      expect(calls.map((c) => c.url)).toEqual(["https://oauth2.googleapis.com/token"]);
+    });
+
+    it("no channel registered: no Google call at all", async () => {
+      const { calls } = await disconnectGoogle(
+        await previousRow({ watch_channel_id: null, watch_resource_id: null }),
+      );
+      expect(calls).toHaveLength(0);
+    });
+
+    it("no connection row: nothing to stop", async () => {
+      const { result, calls } = await disconnectGoogle(null);
+      expect(result.ok).toBe(true);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("without the token key the stop is skipped (disconnect still succeeds)", async () => {
+      const { result, calls } = await disconnectGoogle(await previousRow(), {
+        deps: { tokenEncryptionKey: undefined },
+      });
+      expect(result.ok).toBe(true);
+      expect(calls).toHaveLength(0);
+    });
   });
 });

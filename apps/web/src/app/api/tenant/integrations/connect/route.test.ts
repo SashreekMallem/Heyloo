@@ -23,8 +23,9 @@ vi.mock("@/lib/edge-functions", () => ({
   callEdgeFunction: (...args: unknown[]) => mockCallEdgeFunction(...args),
 }));
 
-// CONNECT-SAFE-1: every adapter is "Coming soon" today. The proxy tests below
-// pretend none is, so the forwarding path stays covered for when one returns.
+// CONNECT-SAFE-1: Square, Shopmonkey and ezyVet are "Coming soon" (CAL-1 made
+// Google Calendar available). The proxy tests below pretend none is, so the
+// forwarding path stays covered for when one returns.
 let comingSoonOverride: ReadonlySet<string> | null = null;
 vi.mock("../shared", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../shared")>();
@@ -83,7 +84,7 @@ describe("POST /api/tenant/integrations/connect", () => {
     expect(res.status).toBe(400);
   });
 
-  it.each(["square", "google_calendar", "shopmonkey", "ezyvet"])(
+  it.each(["square", "shopmonkey", "ezyvet"])(
     "CONNECT-SAFE-1: 409s a coming-soon provider (%s) without calling the edge function",
     async (provider) => {
       mockSession = ownerSession();
@@ -119,6 +120,20 @@ describe("POST /api/tenant/integrations/connect", () => {
         accessToken: "at1",
         body: { action: "initiate", provider: "square" },
       }),
+    );
+  });
+
+  it("CAL-1: Google Calendar is connectable for real (no override): proxied as action:initiate", async () => {
+    mockSession = ownerSession();
+    mockCallEdgeFunction = vi.fn(async () => ({
+      status: 200,
+      body: { authorize_url: "https://accounts.google.com/o/oauth2/v2/auth?state=x" },
+    }));
+    const res = await POST(req({ provider: "google_calendar" }));
+    expect(res.status).toBe(200);
+    expect(mockCallEdgeFunction).toHaveBeenCalledWith(
+      "api-adapter-connect",
+      expect.objectContaining({ body: { action: "initiate", provider: "google_calendar" } }),
     );
   });
 

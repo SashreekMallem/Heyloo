@@ -1,4 +1,11 @@
-import { checkEncryptionKey, encryptSecret } from "../_shared/crypto.ts";
+import { stopChannelBestEffort } from "../_shared/calendar/watch.ts";
+import { checkEncryptionKey, decryptSecret, encryptSecret } from "../_shared/crypto.ts";
+import {
+  exchangeGoogleAuthCode,
+  GOOGLE_CALENDAR_OAUTH_SCOPES,
+  missingGoogleCalendarPermissions,
+  refreshGoogleAccessToken,
+} from "../_shared/providers/google-calendar.ts";
 import { validateShopmonkeyApiKey } from "../_shared/providers/shopmonkey.ts";
 import type { Logger, SqlClient } from "../_shared/types.ts";
 import type { AdapterConnectRequest } from "./schema.ts";
@@ -66,8 +73,14 @@ async function upsertConnection(
     metadata?: Record<string, unknown> | undefined;
     connectedBy: string;
     tokenEncryptionKey: string;
+    /** CAL-1b (Google Calendar): ask the sync leg for one busy-time read now
+     * and a fresh push channel right away (`watch_expires_at = null`, the
+     * channel backoff cleared; a channel from before the reconnect, possibly
+     * another Google account's, is replaced and stopped). */
+    requestCalendarSync?: boolean;
   },
 ): Promise<void> {
+  const requestSync = params.requestCalendarSync === true;
   const encryptedAccessToken = await encryptSecret(params.accessToken, params.tokenEncryptionKey);
   const encryptedRefreshToken = params.refreshToken
     ? await encryptSecret(params.refreshToken, params.tokenEncryptionKey)
@@ -75,11 +88,12 @@ async function upsertConnection(
   await sql`
     insert into public.adapter_connections
       (tenant_id, provider, status, auth_mode, access_token, refresh_token, expires_at,
-       provider_account_id, metadata, connected_by, last_refreshed_at)
+       provider_account_id, metadata, connected_by, last_refreshed_at, busy_sync_requested_at)
     values
       (${params.tenantId}, ${params.provider}, 'connected', ${params.authMode}, ${encryptedAccessToken},
        ${encryptedRefreshToken ?? null}, ${params.expiresAt ?? null}, ${params.providerAccountId ?? null},
-       ${params.metadata ?? {}}::jsonb, ${params.connectedBy}, now())
+       ${params.metadata ?? {}}::jsonb, ${params.connectedBy}, now(),
+       case when ${requestSync}::boolean then now() end)
     on conflict (tenant_id, provider) do update set
       status = 'connected',
       auth_mode = excluded.auth_mode,
@@ -90,8 +104,97 @@ async function upsertConnection(
       metadata = public.adapter_connections.metadata || excluded.metadata,
       disconnected_at = null,
       last_error = null,
-      last_refreshed_at = now()
+      last_refreshed_at = now(),
+      busy_sync_requested_at = coalesce(excluded.busy_sync_requested_at,
+        public.adapter_connections.busy_sync_requested_at),
+      busy_sync_attempted_at = null,
+      busy_sync_failures = 0,
+      busy_sync_failing_since = null,
+      watch_expires_at = case when ${requestSync}::boolean then null
+        else public.adapter_connections.watch_expires_at end,
+      watch_failures = case when ${requestSync}::boolean then 0
+        else public.adapter_connections.watch_failures end,
+      watch_retry_at = case when ${requestSync}::boolean then null
+        else public.adapter_connections.watch_retry_at end
   `;
+}
+
+interface DisconnectedChannelRow {
+  watch_channel_id: string | null;
+  watch_resource_id: string | null;
+  access_token: string | null;
+  refresh_token: string | null;
+  expires_at: string | Date | null;
+}
+
+/** A stored access token this close to expiry is refreshed before use. */
+const ACCESS_TOKEN_SAFETY_MS = 60_000;
+/** Per Google call on the owner's disconnect (the request waits for it). */
+const DISCONNECT_GOOGLE_TIMEOUT_MS = 4_000;
+
+/**
+ * CAL-1b: `channels.stop` for the push channel of a Google connection the
+ * owner just disconnected (the row is already disconnected and its channel
+ * forgotten, so nothing here can leave it half-done). Best effort: never
+ * throws; the stored access token is used while valid, else one refresh
+ * (not stored — the connection is off). Skipped when the token key or the
+ * Google client is not configured; the channel then runs out by itself
+ * (at most 7 days) and its notifications are refused.
+ */
+async function stopDisconnectedChannel(
+  deps: AdapterConnectDeps,
+  tenantId: string,
+  row: DisconnectedChannelRow & { watch_channel_id: string; watch_resource_id: string },
+): Promise<void> {
+  const context = { tenant_id: tenantId, provider: "google_calendar" };
+  const key = deps.tokenEncryptionKey;
+  if (!key || checkEncryptionKey(key) !== null) {
+    deps.logger.warn("adapter_disconnect_channel_not_stopped", { ...context, reason: "no_key" });
+    return;
+  }
+  try {
+    const expiresMs =
+      row.expires_at instanceof Date
+        ? row.expires_at.getTime()
+        : row.expires_at
+          ? Date.parse(row.expires_at)
+          : Number.NaN;
+    let accessToken: string | null =
+      row.access_token &&
+      Number.isFinite(expiresMs) &&
+      expiresMs - Date.now() > ACCESS_TOKEN_SAFETY_MS
+        ? await decryptSecret(row.access_token, key)
+        : null;
+    if (!accessToken && row.refresh_token && deps.googleCalendar) {
+      const refreshed = await refreshGoogleAccessToken(deps.fetchImpl, {
+        clientId: deps.googleCalendar.clientId,
+        clientSecret: deps.googleCalendar.clientSecret,
+        refreshToken: await decryptSecret(row.refresh_token, key),
+        signal: AbortSignal.timeout(DISCONNECT_GOOGLE_TIMEOUT_MS),
+      });
+      accessToken = refreshed.ok ? refreshed.grant.accessToken : null;
+    }
+    if (!accessToken) {
+      deps.logger.warn("adapter_disconnect_channel_not_stopped", {
+        ...context,
+        reason: "no_token",
+      });
+      return;
+    }
+    await stopChannelBestEffort(
+      deps.fetchImpl,
+      accessToken,
+      { channelId: row.watch_channel_id, resourceId: row.watch_resource_id },
+      deps.logger,
+      context,
+      DISCONNECT_GOOGLE_TIMEOUT_MS,
+    );
+  } catch (err) {
+    deps.logger.warn("adapter_disconnect_channel_not_stopped", {
+      ...context,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 function notConfigured(deps: AdapterConnectDeps, provider: string): AdapterConnectResult {
@@ -142,7 +245,9 @@ export async function handleAdapterConnect(
       url.searchParams.set("client_id", providerConfig.clientId);
       url.searchParams.set("redirect_uri", providerConfig.redirectUri);
       url.searchParams.set("response_type", "code");
-      url.searchParams.set("scope", "https://www.googleapis.com/auth/calendar");
+      // CAL-1: the two narrow scopes Heyloo uses (busy times + its own
+      // booking events), not the broad `auth/calendar`.
+      url.searchParams.set("scope", GOOGLE_CALENDAR_OAUTH_SCOPES.join(" "));
       url.searchParams.set("access_type", "offline");
       url.searchParams.set("prompt", "consent");
       url.searchParams.set("state", state);
@@ -213,35 +318,47 @@ export async function handleAdapterConnect(
         return { ok: true, status: 200, body: { connected: true, provider: "square" } };
       }
 
-      const token = await deps.fetchImpl("https://oauth2.googleapis.com/token", {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          client_id: providerConfig.clientId,
-          client_secret: providerConfig.clientSecret,
-          code: req.code,
-          redirect_uri: providerConfig.redirectUri,
-          grant_type: "authorization_code",
-        }).toString(),
+      // CAL-1: the token answer is Zod-validated in the provider module.
+      const exchanged = await exchangeGoogleAuthCode(deps.fetchImpl, {
+        clientId: providerConfig.clientId,
+        clientSecret: providerConfig.clientSecret,
+        redirectUri: providerConfig.redirectUri,
+        code: req.code,
       });
-      const body = (await token.json().catch(() => undefined)) as
-        | { access_token: string; refresh_token?: string; expires_in?: number }
-        | undefined;
-      if (!token.ok || !body)
+      if (!exchanged.ok) {
+        deps.logger.warn("adapter_connect_google_token_exchange_failed", {
+          failure: exchanged.failure,
+          status: exchanged.status,
+        });
         return { ok: false, status: 502, error: "google_token_exchange_failed" };
+      }
+      const grant = exchanged.grant;
+      // Google lets the owner untick a permission on the consent screen.
+      // Without busy times the AI cannot avoid their appointments, and
+      // without events the booking push would fail and break the connection,
+      // so a partial grant is refused (nothing stored) and they are asked to
+      // connect again. No `scope` field at all is accepted (logged).
+      if (grant.grantedScopes === null) {
+        deps.logger.warn("adapter_connect_google_scope_unreported", {});
+      } else {
+        const missing = missingGoogleCalendarPermissions(grant.grantedScopes);
+        if (missing.length > 0) {
+          deps.logger.warn("adapter_connect_google_scopes_missing", { missing });
+          return { ok: false, status: 400, error: "google_scopes_not_granted" };
+        }
+      }
 
       await upsertConnection(sql, {
         tenantId,
         provider: "google_calendar",
         authMode: "oauth2_authorization_code",
-        accessToken: body.access_token,
-        refreshToken: body.refresh_token,
-        expiresAt: body.expires_in
-          ? new Date(Date.now() + body.expires_in * 1000).toISOString()
-          : undefined,
+        accessToken: grant.accessToken,
+        refreshToken: grant.refreshToken,
+        expiresAt: new Date(Date.now() + grant.expiresInSeconds * 1000).toISOString(),
         metadata: { calendarId: "primary" },
         connectedBy: userId,
         tokenEncryptionKey,
+        requestCalendarSync: true,
       });
       return { ok: true, status: 200, body: { connected: true, provider: "google_calendar" } };
     }
@@ -276,11 +393,48 @@ export async function handleAdapterConnect(
     }
 
     case "disconnect": {
-      await sql`
-        update public.adapter_connections
-        set status = 'disconnected', disconnected_at = now(), last_error = 'tenant-initiated disconnect'
-        where tenant_id = ${tenantId} and provider = ${req.provider}
+      // CAL-1: the owner turned the calendar off, so Heyloo stops using what
+      // it read from it — its busy blocks go in the same statement. CAL-1b:
+      // its push channel is forgotten in that statement too (a notification
+      // for it is then refused as an unknown channel) and stopped at Google
+      // afterwards, best effort.
+      const rows = await sql<DisconnectedChannelRow>`
+        with previous as (
+          select id, tenant_id, watch_channel_id, watch_resource_id,
+            access_token, refresh_token, expires_at
+          from public.adapter_connections
+          where tenant_id = ${tenantId} and provider = ${req.provider}
+          for update
+        ), disconnected as (
+          update public.adapter_connections a
+          set status = 'disconnected', disconnected_at = now(), last_error = 'tenant-initiated disconnect',
+              watch_channel_id = null, watch_resource_id = null, watch_token_hash = null,
+              watch_expires_at = null
+          from previous p
+          where a.id = p.id and a.tenant_id = p.tenant_id
+          returning a.id, a.tenant_id
+        ), removed as (
+          delete from public.external_busy_blocks x
+          using disconnected d
+          where x.connection_id = d.id and x.tenant_id = d.tenant_id
+          returning 1
+        )
+        select p.watch_channel_id, p.watch_resource_id, p.access_token, p.refresh_token,
+          p.expires_at, (select count(*) from removed)::int as blocks_removed
+        from previous p
       `;
+      const previous = rows[0];
+      if (
+        req.provider === "google_calendar" &&
+        previous?.watch_channel_id &&
+        previous.watch_resource_id
+      ) {
+        await stopDisconnectedChannel(deps, tenantId, {
+          ...previous,
+          watch_channel_id: previous.watch_channel_id,
+          watch_resource_id: previous.watch_resource_id,
+        });
+      }
       return { ok: true, status: 200, body: { disconnected: true, provider: req.provider } };
     }
   }

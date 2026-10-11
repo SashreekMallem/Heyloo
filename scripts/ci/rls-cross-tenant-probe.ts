@@ -427,6 +427,22 @@ function tenantScopedTables(): TenantScopedTable[] {
       tenantColumn: "tenant_id",
       row: (t) => ({ tenant_id: t, event_type: "test.ping", entity_type: "test" }),
     },
+    {
+      // CAL-1 seed (T7 table, 20260907160000_t7_adapter_connections.sql):
+      // tenant-readable, service-role-written. The token columns are not
+      // granted to authenticated (QA-1 SEC-13), so the probe selects readable
+      // columns only. external_busy_blocks depends on it (connection_id FK)
+      // and is seeded/probed separately in seedTenant()/main().
+      table: "adapter_connections",
+      tenantColumn: "tenant_id",
+      select: "id,tenant_id,provider,status,busy_synced_at",
+      row: (t) => ({
+        tenant_id: t,
+        provider: "google_calendar",
+        auth_mode: "oauth2_authorization_code",
+        status: "connected",
+      }),
+    },
   ];
 }
 
@@ -510,6 +526,19 @@ async function seedTenant(tenant: TenantFixture): Promise<WriteProbeFixture> {
       destination_id: destinationId,
       event_id: outboundEventId,
       status: "failed",
+    });
+  }
+
+  // CAL-1 (20261011120000_external_busy_blocks.sql): external_busy_blocks
+  // needs an adapter_connections row of the same tenant (seeded above via
+  // tenantScopedTables()).
+  const connectionId = await fetchOneId("adapter_connections", tenant.tenantId);
+  if (connectionId) {
+    await serviceInsert("external_busy_blocks", {
+      tenant_id: tenant.tenantId,
+      connection_id: connectionId,
+      calendar_id: "primary",
+      busy: "[2026-01-01T10:00:00Z,2026-01-01T11:00:00Z)",
     });
   }
 
@@ -601,6 +630,43 @@ async function probeAsUser(
     return `LEAK: user of tenant ${user.tenantId} read ${json.length} row(s) from "${table.table}" scoped to tenant ${victim.tenantId}`;
   }
   return null;
+}
+
+// CAL-1 / CAL-1b (20261011120000_external_busy_blocks.sql): adapter_connections
+// columns browser roles must never read, not even for their OWN tenant's row
+// — the AES-GCM token ciphertexts (QA-1 SEC-13), the Google push channel
+// (whose id, resource id and token hash would let anyone forge a "calendar
+// changed" notification's lookup) and the sync bookkeeping. Only
+// busy_synced_at is granted (the dashboard's "Last updated"). One request per
+// column, so a later grant that exposes ANY single one of them turns CI red
+// (one select naming several would be refused as long as one stays hidden).
+const ADAPTER_CONNECTION_HIDDEN_COLUMNS = [
+  "access_token",
+  "refresh_token",
+  "watch_channel_id",
+  "watch_resource_id",
+  "watch_token_hash",
+  "watch_expires_at",
+  "watch_failures",
+  "watch_retry_at",
+  "busy_sync_requested_at",
+  "busy_sync_attempted_at",
+  "busy_sync_failures",
+  "busy_sync_failing_since",
+  "busy_synced_until",
+  "owner_alerted_at",
+];
+
+async function probeHiddenColumnRefused(
+  user: TenantFixture,
+  column: string,
+): Promise<string | null> {
+  const { status } = await restRequest(
+    `/rest/v1/adapter_connections?tenant_id=eq.${user.tenantId}&select=${column}`,
+    { apikey: PUBLISHABLE_KEY, bearer: user.accessToken },
+  );
+  if (status >= 300) return null;
+  return `LEAK: an authenticated member of tenant ${user.tenantId} may select adapter_connections.${column} (status ${status}; only busy_synced_at may be granted to authenticated)`;
 }
 
 // DB_AUDIT.md DB-H1 write-path probes (supabase/migrations/20260910090000_
@@ -906,6 +972,36 @@ async function main(): Promise<void> {
   const bReadsADeliveries = await probeAsUser(tenantB, tenantA, outboundDeliveriesTable);
   if (bReadsADeliveries) failures.push(bReadsADeliveries);
 
+  // CAL-1: external_busy_blocks (dependent on adapter_connections, seeded
+  // separately in seedTenant() above).
+  const busyBlocksTable: TenantScopedTable = {
+    table: "external_busy_blocks",
+    tenantColumn: "tenant_id",
+    row: () => ({}),
+  };
+  const aReadsBBusy = await probeAsUser(tenantA, tenantB, busyBlocksTable);
+  if (aReadsBBusy) failures.push(aReadsBBusy);
+  const bReadsABusy = await probeAsUser(tenantB, tenantA, busyBlocksTable);
+  if (bReadsABusy) failures.push(bReadsABusy);
+
+  // CAL-1b: hidden adapter_connections columns stay hidden even on the
+  // member's own row (see ADAPTER_CONNECTION_HIDDEN_COLUMNS). The readable
+  // busy_synced_at is the positive control: it must still be selectable,
+  // or the refusals above prove nothing.
+  for (const column of ADAPTER_CONNECTION_HIDDEN_COLUMNS) {
+    const leak = await probeHiddenColumnRefused(tenantA, column);
+    if (leak) failures.push(leak);
+  }
+  const control = await restRequest(
+    `/rest/v1/adapter_connections?tenant_id=eq.${tenantA.tenantId}&select=busy_synced_at`,
+    { apikey: PUBLISHABLE_KEY, bearer: tenantA.accessToken },
+  );
+  if (control.status >= 300 || !Array.isArray(control.json) || control.json.length === 0) {
+    failures.push(
+      `CONTROL: tenant ${tenantA.tenantId} could not read its own adapter_connections.busy_synced_at (status ${control.status}) — the hidden-column refusals are not meaningful`,
+    );
+  }
+
   // DB_AUDIT.md DB-H1 — write-path WITH CHECK ownership guards on
   // bookings/orders (see writeProbeCases()/probeWriteRejected() above).
   const writeCases = writeProbeCases();
@@ -950,7 +1046,8 @@ async function main(): Promise<void> {
 
   console.log(
     `\nRLS cross-tenant probe PASSED — ${tables.length + 1} tables checked both directions ` +
-      `(+ text_conversation_messages and outbound_deliveries, dependent tables checked separately), ` +
+      `(+ text_conversation_messages, outbound_deliveries and external_busy_blocks, dependent tables checked separately), ` +
+      `${ADAPTER_CONNECTION_HIDDEN_COLUMNS.length} hidden adapter_connections columns refused to their own tenant, ` +
       `${ADMIN_ONLY_VIEWS.length} admin-only views checked as anon + authenticated, ` +
       `${writeCases.length} DB-H1 write-path cases checked both directions, 0 rows leaked, ` +
       `0 cross-tenant writes accepted, impersonation read-only/edit-enabled boundary enforced.`,

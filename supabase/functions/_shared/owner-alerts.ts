@@ -25,6 +25,7 @@ export const OWNER_ALERT_TEMPLATE_BY_KIND: Record<OwnerAlertKind, string> = {
   missed_transfer: "owner_missed_transfer",
   line_ready: "owner_line_ready",
   webhook_failing: "owner_webhook_failing",
+  calendar_disconnected: "owner_calendar_disconnected",
 };
 
 /** `after_hours_message` renders like `take_message` (templates.ts) and is

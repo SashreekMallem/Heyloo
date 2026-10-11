@@ -18,6 +18,8 @@
 // `CRON_INVOKE_SECRET` (the auth boundary every worker-*/job-* function
 // shares) stays a hard `requireEnv`.
 
+import type { CalendarBusySyncDeps } from "../_shared/calendar/sync.ts";
+import { googleCalendarWebhookAddress } from "../_shared/calendar/watch.ts";
 import { timingSafeEqual } from "../_shared/crypto.ts";
 import { getSql } from "../_shared/deno/db.ts";
 import {
@@ -150,6 +152,33 @@ const OUTBOUND_WEBHOOK_DEPS: WebhookDeliveryDeps = {
   transport: fetch,
 };
 
+// --- calendar_busy_sync leg (CAL-1 / CAL-1b push-only) — reads connected
+// Google Calendars' busy times into external_busy_blocks ONLY when a read is
+// due (connect, a verified push notification, a channel renewal, a backed-off
+// retry, or the last read no longer reaching the end of the booking horizon),
+// and registers/renews each calendar's push channel.
+// Needs the token key (decrypt + re-encrypt a refreshed token) and the Google
+// OAuth client (refresh). Notifications are delivered to this project's
+// webhooks-pos (`SUPABASE_URL`, injected by the platform; without an HTTPS
+// URL no channel is registered and only requested reads run). Google is
+// called through the same SSRF-safe adapter fetch as the push leg; the sync
+// bounds each request itself (4 s). ---
+const CALENDAR_BUSY_SYNC_MISSING = missingEnv([
+  "ADAPTER_TOKEN_ENCRYPTION_KEY",
+  "GOOGLE_CALENDAR_CLIENT_ID",
+  "GOOGLE_CALENDAR_CLIENT_SECRET",
+]);
+const CALENDAR_BUSY_SYNC_DEPS: CalendarBusySyncDeps = {
+  fetchImpl: ADAPTER_FETCH,
+  tokenEncryptionKey: optionalEnv("ADAPTER_TOKEN_ENCRYPTION_KEY") ?? "",
+  google: {
+    clientId: optionalEnv("GOOGLE_CALENDAR_CLIENT_ID") ?? "",
+    clientSecret: optionalEnv("GOOGLE_CALENDAR_CLIENT_SECRET") ?? "",
+  },
+  webhookAddress: googleCalendarWebhookAddress(SUPABASE_URL),
+  logger,
+};
+
 Deno.serve(async (req: Request) => {
   const provided = req.headers.get("x-cron-secret");
   if (!provided || !timingSafeEqual(provided, CRON_SECRET)) {
@@ -173,6 +202,10 @@ Deno.serve(async (req: Request) => {
         ? notConfigured(ADAPTER_PUSH_MISSING)
         : { deps: ADAPTER_PUSH_DEPS, logger },
     outboundWebhooks: OUTBOUND_WEBHOOK_DEPS,
+    calendarBusySync:
+      CALENDAR_BUSY_SYNC_MISSING.length > 0
+        ? notConfigured(CALENDAR_BUSY_SYNC_MISSING)
+        : CALENDAR_BUSY_SYNC_DEPS,
   });
 
   for (const [leg, outcome] of [
@@ -180,6 +213,7 @@ Deno.serve(async (req: Request) => {
     ["recording_fetch", result.recording_fetch],
     ["adapter_push", result.adapter_push],
     ["outbound_webhooks", result.outbound_webhooks],
+    ["calendar_busy_sync", result.calendar_busy_sync],
   ] as const) {
     if (outcome.status === "skipped") {
       logger.warn("worker_tick_leg_skipped_not_configured", { leg, missing: outcome.missing });

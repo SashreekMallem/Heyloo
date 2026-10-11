@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   ADAPTER_DISPLAY_NAMES,
   ADAPTER_PROVIDERS,
+  CALENDAR_SYNC_ERROR_PREFIX,
   COMING_SOON_PROVIDERS,
+  calendarReadFailing,
   connectionDisplayStatus,
   isComingSoon,
   isOAuthProvider,
@@ -39,11 +41,15 @@ describe("provider classification", () => {
 });
 
 describe("coming-soon providers (CONNECT-SAFE-1)", () => {
-  it("lists Square, Google Calendar, Shopmonkey and ezyVet as coming soon", () => {
-    expect([...COMING_SOON_PROVIDERS].sort()).toEqual(
-      ["ezyvet", "google_calendar", "shopmonkey", "square"].sort(),
-    );
-    for (const provider of ADAPTER_PROVIDERS) expect(isComingSoon(provider)).toBe(true);
+  it("lists Square, Shopmonkey and ezyVet as coming soon", () => {
+    expect([...COMING_SOON_PROVIDERS].sort()).toEqual(["ezyvet", "shopmonkey", "square"].sort());
+    for (const provider of ADAPTER_PROVIDERS) {
+      expect(isComingSoon(provider)).toBe(provider !== "google_calendar");
+    }
+  });
+
+  it("CAL-1: Google Calendar is available to connect", () => {
+    expect(isComingSoon("google_calendar")).toBe(false);
   });
 
   it("is false for an unknown provider (the connect route then answers unknown_provider)", () => {
@@ -84,6 +90,26 @@ describe("connectionDisplayStatus (CONNECT-SAFE-1)", () => {
 
   it("matches the exact sentinel api-adapter-connect writes", () => {
     expect(TENANT_DISCONNECT_SENTINEL).toBe("tenant-initiated disconnect");
+  });
+});
+
+describe("calendarReadFailing (CAL-1b)", () => {
+  it("mirrors the sync's last_error prefix exactly", () => {
+    expect(CALENDAR_SYNC_ERROR_PREFIX).toBe("calendar busy sync: ");
+  });
+
+  it("is true only for a still-connected row whose last_error carries the sync prefix", () => {
+    expect(
+      calendarReadFailing({ status: "connected", last_error: "calendar busy sync: server (503)" }),
+    ).toBe(true);
+    expect(calendarReadFailing({ status: "connected", last_error: null })).toBe(false);
+    expect(
+      calendarReadFailing({ status: "disconnected", last_error: "calendar busy sync: server" }),
+    ).toBe(false);
+    expect(
+      calendarReadFailing({ status: "connected", last_error: "google_calendar 401 on push" }),
+    ).toBe(false);
+    expect(calendarReadFailing(undefined)).toBe(false);
   });
 });
 

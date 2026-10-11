@@ -97,6 +97,17 @@ export type TenantRow = {
   business_location_matched: Nullable<string>;
   business_location_key: Nullable<string>;
   business_located_at: Nullable<string>;
+  // 20261011120100_free_trial.sql (TRIAL-1). System-only (webhooks-stripe,
+  // the minutes-cap job); owners read them for the trial banner and billing
+  // page. trial_ends_at: the scheduled end while the trial runs, the actual
+  // end once it is over; not null = this business has had its free trial.
+  trial_ends_at: Nullable<string>;
+  trial_minutes_cap: Nullable<number>;
+  trial_ended_reason: Nullable<"time" | "minutes" | "canceled">;
+  /** The minutes cap's lease (set = the cap was reached at least once). */
+  trial_cap_claimed_at: Nullable<string>;
+  /** The owner canceled during the trial: it ends unpaid with the trial. */
+  trial_cancel_scheduled: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -605,6 +616,20 @@ export type BillingInvoiceRow = {
   created_at: string;
 };
 
+/** 20260907131000_money.sql — one row per call's minutes (voice-events);
+ * `is_billable` is false for test calls. Read-only for tenant members (RLS
+ * usage_events_select): the free-trial banner sums a trial's minutes. */
+export type UsageEventRow = {
+  id: string;
+  tenant_id: string;
+  call_id: Nullable<string>;
+  /** numeric: PostgREST returns it as a JSON number. */
+  minutes: number;
+  occurred_at: string;
+  is_billable: boolean;
+  created_at: string;
+};
+
 export type UsageDailyRow = {
   tenant_id: string;
   date: string;
@@ -788,6 +813,40 @@ export type AdapterConnectionRow = {
   connected_by: Nullable<string>;
   created_at: string;
   updated_at: string;
+  // CAL-1 / CAL-1b (20261011120000_external_busy_blocks.sql). Of these,
+  // browser roles may select busy_synced_at ONLY (per-column grant); the
+  // rest — the push-only sync bookkeeping and the Google push channel
+  // (watch_*, incl. the SHA-256 of its token) — are service-role only.
+  busy_synced_at: Nullable<string>;
+  busy_synced_until: Nullable<string>;
+  busy_sync_requested_at: Nullable<string>;
+  busy_sync_attempted_at: Nullable<string>;
+  busy_sync_failures: number;
+  busy_sync_failing_since: Nullable<string>;
+  owner_alerted_at: Nullable<string>;
+  watch_channel_id: Nullable<string>;
+  watch_resource_id: Nullable<string>;
+  watch_token_hash: Nullable<string>;
+  watch_expires_at: Nullable<string>;
+  watch_failures: number;
+  watch_retry_at: Nullable<string>;
+};
+
+/**
+ * CAL-1 (20261011120000_external_busy_blocks.sql): busy intervals read from a
+ * tenant's connected Google Calendar. Tenant members and platform admins may
+ * read their own tenant's rows; only the worker-tick sync writes them.
+ * `busy` is a tstzrange as PostgREST returns it (`["start","end")` text).
+ */
+export type ExternalBusyBlockRow = {
+  id: string;
+  tenant_id: string;
+  connection_id: string;
+  calendar_id: string;
+  /** null = blocks every resource of the tenant. */
+  resource_id: Nullable<string>;
+  busy: string;
+  synced_at: string;
 };
 
 export type AdapterSyncStateRow = {
@@ -981,6 +1040,7 @@ export type Database = {
       support_requests: Tbl<SupportRequestRow>;
       support_request_notes: Tbl<SupportRequestNoteRow>;
       billing_invoices: Tbl<BillingInvoiceRow>;
+      usage_events: Tbl<UsageEventRow>;
       usage_daily: Tbl<UsageDailyRow>;
       platform_settings: Tbl<PlatformSettingRow>;
       demo_sessions: Tbl<DemoSessionRow>;
@@ -996,6 +1056,7 @@ export type Database = {
       admin_actions: Tbl<AdminActionRow>;
       adapter_connections: Tbl<AdapterConnectionRow>;
       adapter_sync_state: Tbl<AdapterSyncStateRow>;
+      external_busy_blocks: Tbl<ExternalBusyBlockRow>;
       airtable_sync_state: Tbl<AirtableSyncStateRow>;
       messaging_senders: Tbl<MessagingSenderRow>;
       messaging_business_profiles: Tbl<MessagingBusinessProfileRow>;

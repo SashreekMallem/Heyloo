@@ -1,4 +1,8 @@
 import {
+  type CalendarLiveCheckConfig,
+  makeCalendarLiveCheck,
+} from "../_shared/calendar/live-check.ts";
+import {
   applyCustomAnswers,
   type CustomQuestion,
   NO_CUSTOM_QUESTIONS_TEXT,
@@ -201,6 +205,11 @@ export interface DispatchDeps {
    * really text. Omitted = texting is treated as UNAVAILABLE (fail closed: a tool
    * never promises a text it cannot prove will be sent). */
   sms?: { registry: SmsRegistry };
+  /** CAL-1: the owner's connected Google Calendar, re-checked live inside
+   * create_booking (`_shared/calendar/live-check.ts`; module-scope cache in
+   * index.ts). Omitted = no live check (the synced busy-time filter in the
+   * tools' own statements still applies). */
+  calendar?: CalendarLiveCheckConfig;
   /** CALL-2 fix: a mutable out-param `index.ts` reads AFTER `dispatchTool`
    * resolves, so `recordToolStat`'s `tool_health` row can be tagged with
    * the real resolved `tenant_id` instead of always `null` (the pre-CALL-2
@@ -810,6 +819,7 @@ async function createBookingWithinBudget(
     appBaseUrl: deps.dentalIntake.appBaseUrl,
     ...(deps.defer ? { defer: deps.defer } : {}),
     isAborted: () => abort.aborted,
+    ...(deps.calendar ? { calendarBusy: makeCalendarLiveCheck(sql, deps.calendar) } : {}),
   });
   const first = await settleWithin(work, remainingMs);
   if (first.status === "fulfilled") return first.value;

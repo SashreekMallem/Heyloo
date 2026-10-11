@@ -96,6 +96,48 @@ describe("processInboundSms", () => {
     expect(calls.some((c) => c.includes("status = 'converted'"))).toBe(true);
   });
 
+  it("CAL-1b: the YES claim only counts the slot as open when the owner's calendar is free then", async () => {
+    const { sql, calls } = makeSql({
+      "from public.customers": [{ id: "cust-1" }],
+      "from public.phone_numbers": [{ tenant_id: "t1" }],
+      "from public.messages_outbound": [
+        { payload: { waitlist_entry_id: "entry-1" }, related_booking_id: "booking-1" },
+      ],
+      "from public.waitlist_entries": [{ id: "entry-1", status: "notified", offering_id: "off-1" }],
+      "from public.bookings where id": [
+        { resource_id: "res-1", start_at: "2026-10-01T14:00:00Z", end_at: "2026-10-01T14:30:00Z" },
+      ],
+      "from public.availability_slots": [{ id: "slot-1" }],
+    });
+    await processInboundSms(sql, { ...BASE_SMS, body: "yes" });
+    const stillOpen = calls.find((c) => c.includes("from public.availability_slots")) ?? "";
+    // same NOT EXISTS the voice tools use, inside the same statement (no extra round trip)
+    expect(stillOpen).toContain("and not exists (");
+    expect(stillOpen).toContain("from public.external_busy_blocks x");
+    expect(stillOpen).toMatch(
+      /x\.tenant_id = \s+and \(x\.resource_id is null or x\.resource_id = \s+\)/,
+    );
+    expect(stillOpen).toMatch(/x\.busy && tstzrange\(/);
+  });
+
+  it("CAL-1b: a slot the owner filled in Google Calendar since is answered like a taken slot (no booking)", async () => {
+    const { sql, calls } = makeSql({
+      "from public.customers": [{ id: "cust-1" }],
+      "from public.phone_numbers": [{ tenant_id: "t1" }],
+      "from public.messages_outbound": [
+        { payload: { waitlist_entry_id: "entry-1" }, related_booking_id: "booking-1" },
+      ],
+      "from public.waitlist_entries": [{ id: "entry-1", status: "notified", offering_id: "off-1" }],
+      "from public.bookings where id": [
+        { resource_id: "res-1", start_at: "2026-10-01T14:00:00Z", end_at: "2026-10-01T14:30:00Z" },
+      ],
+      // the still-open statement filters the busy block out -> no row
+    });
+    const result = await processInboundSms(sql, { ...BASE_SMS, body: "yes" });
+    expect(result.replyBody).toContain("already been taken");
+    expect(calls.some((c) => c.includes("insert into public.bookings"))).toBe(false);
+  });
+
   it("apologizes and expires the waitlist entry when the slot was already taken", async () => {
     const { sql, calls } = makeSql({
       "from public.customers": [{ id: "cust-1" }],

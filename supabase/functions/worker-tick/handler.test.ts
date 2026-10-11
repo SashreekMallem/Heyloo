@@ -23,6 +23,20 @@ const NO_WEBHOOKS = {
   backlog: 0,
 };
 
+const NO_CALENDAR_SYNC = {
+  claimed: 0,
+  synced: 0,
+  failed: 0,
+  needs_reconnect: 0,
+  deferred: 0,
+  superseded: 0,
+  stale_blocks_removed: 0,
+  owner_alerts: 0,
+  channels_registered: 0,
+  channels_failed: 0,
+  channels_stopped: 0,
+};
+
 function makeDeps(overrides: Partial<WorkerTickDeps> = {}): WorkerTickDeps {
   return {
     outbound: {} as WorkerTickDeps["outbound"],
@@ -35,6 +49,7 @@ function makeDeps(overrides: Partial<WorkerTickDeps> = {}): WorkerTickDeps {
       logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } as never,
     },
     outboundWebhooks: {} as WorkerTickDeps["outboundWebhooks"],
+    calendarBusySync: {} as WorkerTickDeps["calendarBusySync"],
     ...overrides,
   };
 }
@@ -56,6 +71,7 @@ describe("runWorkerTick", () => {
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 3, dead_lettered: 0, batch_size: 3 }),
       outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
+      calendarBusySync: vi.fn().mockResolvedValue(NO_CALENDAR_SYNC),
     };
 
     const result = await runWorkerTick(fakeSql, makeDeps(), runners);
@@ -84,6 +100,7 @@ describe("runWorkerTick", () => {
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
       outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
+      calendarBusySync: vi.fn().mockResolvedValue(NO_CALENDAR_SYNC),
     };
 
     const result = await runWorkerTick(fakeSql, makeDeps(), runners);
@@ -107,6 +124,7 @@ describe("runWorkerTick", () => {
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
       outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
+      calendarBusySync: vi.fn().mockResolvedValue(NO_CALENDAR_SYNC),
     };
 
     const result = await runWorkerTick(fakeSql, makeDeps({ perWorkerTimeoutMs: 20 }), runners);
@@ -133,6 +151,7 @@ describe("runWorkerTick", () => {
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
       outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
+      calendarBusySync: vi.fn().mockResolvedValue(NO_CALENDAR_SYNC),
     };
 
     const result = await runWorkerTick(fakeSql, makeDeps(), runners);
@@ -151,6 +170,7 @@ describe("runWorkerTick", () => {
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
       outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
+      calendarBusySync: vi.fn().mockResolvedValue(NO_CALENDAR_SYNC),
     };
 
     const result = await runWorkerTick(
@@ -180,6 +200,7 @@ describe("runWorkerTick", () => {
       recordingFetch: vi.fn(),
       adapterPush: vi.fn(),
       outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
+      calendarBusySync: vi.fn().mockResolvedValue(NO_CALENDAR_SYNC),
     };
 
     const result = await runWorkerTick(
@@ -189,6 +210,7 @@ describe("runWorkerTick", () => {
         recordingFetch: notConfigured(["RETELL_API_KEY"]),
         adapterPush: notConfigured(["ADAPTER_TOKEN_ENCRYPTION_KEY"]),
         outboundWebhooks: notConfigured(["APP_BASE_URL"]),
+        calendarBusySync: notConfigured(["GOOGLE_CALENDAR_CLIENT_ID"]),
       },
       runners,
     );
@@ -237,6 +259,7 @@ describe("runWorkerTick", () => {
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
       outboundWebhooks: vi.fn().mockResolvedValue(counts),
+      calendarBusySync: vi.fn().mockResolvedValue(NO_CALENDAR_SYNC),
     };
 
     const result = await runWorkerTick(
@@ -261,6 +284,7 @@ describe("runWorkerTick", () => {
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
       outboundWebhooks: vi.fn().mockRejectedValue(new Error("claim_failed")),
+      calendarBusySync: vi.fn().mockResolvedValue(NO_CALENDAR_SYNC),
     };
     const failed = await runWorkerTick(fakeSql, makeDeps(), runners);
     expect(failed.outbound_webhooks).toEqual({ status: "error", error: "claim_failed" });
@@ -275,6 +299,74 @@ describe("runWorkerTick", () => {
       error: "worker_tick_timeout:outbound_webhooks",
     });
     expect(slow.adapter_push.status).toBe("ok");
+  });
+
+  it("CAL-1: runs the calendar_busy_sync leg with its own deps and reports its counts", async () => {
+    const calendarDeps = {
+      marker: "calendar-deps",
+    } as unknown as WorkerTickDeps["calendarBusySync"];
+    const counts = { ...NO_CALENDAR_SYNC, claimed: 2, synced: 1, failed: 1 };
+    const runners: WorkerTickRunners = {
+      outbound: vi.fn().mockResolvedValue({ processed: 0, dead_lettered: 0, batch_size: 0 }),
+      recordingFetch: vi.fn().mockResolvedValue({
+        stored: 0,
+        retried: 0,
+        dead_lettered: 0,
+        batch_size: 0,
+        retry_delay_seconds: 60,
+      }),
+      adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
+      outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
+      calendarBusySync: vi.fn().mockResolvedValue(counts),
+    };
+    const result = await runWorkerTick(
+      fakeSql,
+      makeDeps({ calendarBusySync: calendarDeps }),
+      runners,
+    );
+    expect(result.calendar_busy_sync).toEqual({ status: "ok", result: counts });
+    expect(runners.calendarBusySync).toHaveBeenCalledWith(fakeSql, calendarDeps);
+  });
+
+  it("CAL-1: a not-configured, failing or slow calendar leg never affects the other legs", async () => {
+    const runners: WorkerTickRunners = {
+      outbound: vi.fn().mockResolvedValue({ processed: 1, dead_lettered: 0, batch_size: 1 }),
+      recordingFetch: vi.fn().mockResolvedValue({
+        stored: 0,
+        retried: 0,
+        dead_lettered: 0,
+        batch_size: 0,
+        retry_delay_seconds: 60,
+      }),
+      adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
+      outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
+      calendarBusySync: vi.fn().mockRejectedValue(new Error("claim_failed")),
+    };
+    const skipped = await runWorkerTick(
+      fakeSql,
+      makeDeps({ calendarBusySync: notConfigured(["GOOGLE_CALENDAR_CLIENT_SECRET"]) }),
+      runners,
+    );
+    expect(skipped.calendar_busy_sync).toEqual({
+      status: "skipped",
+      missing: ["GOOGLE_CALENDAR_CLIENT_SECRET"],
+    });
+    expect(runners.calendarBusySync).not.toHaveBeenCalled();
+    expect(skipped.messages_outbound.status).toBe("ok");
+
+    const failed = await runWorkerTick(fakeSql, makeDeps(), runners);
+    expect(failed.calendar_busy_sync).toEqual({ status: "error", error: "claim_failed" });
+    expect(failed.adapter_push.status).toBe("ok");
+
+    const slow = await runWorkerTick(fakeSql, makeDeps({ perWorkerTimeoutMs: 20 }), {
+      ...runners,
+      calendarBusySync: vi.fn().mockReturnValue(delay(NO_CALENDAR_SYNC, 200)),
+    });
+    expect(slow.calendar_busy_sync).toEqual({
+      status: "timeout",
+      error: "worker_tick_timeout:calendar_busy_sync",
+    });
+    expect(slow.outbound_webhooks.status).toBe("ok");
   });
 
   // OPS-8 deliverable 3: every tick's response reports per-queue backlog so
@@ -307,6 +399,7 @@ describe("runWorkerTick", () => {
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
       outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
+      calendarBusySync: vi.fn().mockResolvedValue(NO_CALENDAR_SYNC),
     };
 
     const result = await runWorkerTick(sql, makeDeps(), runners);
@@ -331,6 +424,7 @@ describe("runWorkerTick", () => {
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
       outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
+      calendarBusySync: vi.fn().mockResolvedValue(NO_CALENDAR_SYNC),
     };
 
     const result = await runWorkerTick(sql, makeDeps(), runners);
@@ -359,6 +453,7 @@ describe("runWorkerTick", () => {
       }),
       adapterPush: vi.fn().mockResolvedValue({ pushed: 0, dead_lettered: 0, batch_size: 0 }),
       outboundWebhooks: vi.fn().mockResolvedValue(NO_WEBHOOKS),
+      calendarBusySync: vi.fn().mockResolvedValue(NO_CALENDAR_SYNC),
     };
 
     const result = await runWorkerTick(

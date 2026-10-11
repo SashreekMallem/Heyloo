@@ -1,5 +1,14 @@
 import type { z } from "zod";
 import { enqueueAdapterPush } from "../../_shared/adapter-push.ts";
+import {
+  type CalendarBusyCheck,
+  type InstantRange,
+  liveVerdictForResource,
+} from "../../_shared/calendar/busy.ts";
+import {
+  LIVE_CHECK_TIMEOUT_MS,
+  startLiveCalendarCheck,
+} from "../../_shared/calendar/live-check.ts";
 import { alertCustomAnswers } from "../../_shared/custom-questions.ts";
 import { issueDentalIntakeToken } from "../../_shared/dental-intake.ts";
 import { bookingIdempotencyKey } from "../../_shared/idempotency.ts";
@@ -43,6 +52,17 @@ export interface CreateBookingDeps {
    * "nothing was booked" answer after a timeout stay true.
    */
   isAborted?: () => boolean;
+  /**
+   * CAL-1: live busy-time check against the owner's connected calendar
+   * (`_shared/calendar/live-check.ts`). Started in parallel with the
+   * preflight and hard-capped at `calendarCheckTimeoutMs` (default
+   * `LIVE_CHECK_TIMEOUT_MS`); `busy` answers `slot_taken`, anything it cannot
+   * answer in time is ignored (the synced `external_busy_blocks` filter in
+   * the preflight still applies). Omitted (the text agent, tests): no live
+   * check.
+   */
+  calendarBusy?: CalendarBusyCheck;
+  calendarCheckTimeoutMs?: number;
 }
 
 export type CreateBookingResult =
@@ -257,6 +277,15 @@ interface PreflightRow {
   any_in_hours?: boolean | null;
   tz: string | null;
   deposit_overrides: Record<string, unknown> | null;
+  /** CAL-1: a synced busy time from the owner's calendar overlaps the
+   * requested window and applies to the exact resource (or, with no exact
+   * resource, to every resource). */
+  calendar_busy?: boolean | null;
+  /** CAL-1: the tenant's Google-pushed, not-cancelled bookings around the
+   * window (`[{start, end}]`), so the live check does not read Heyloo's own
+   * pushed events as the owner being busy. Only computed when a live check
+   * runs and the tenant has a connected calendar; else null. */
+  calendar_own_bookings?: InstantRange[] | null;
 }
 
 /**
@@ -291,6 +320,7 @@ async function preflight(
   idempotencyKey: string,
   exactResourceId: string | null,
   offeringId: string | null,
+  liveCalendarCheck: boolean,
 ): Promise<PreflightRow> {
   const lookupFirstAvailable = !args.resource_name;
   const isMotel = ctx.vertical === "motel";
@@ -325,6 +355,12 @@ async function preflight(
             select s.resource_id from public.availability_slots s
             where s.tenant_id = ${ctx.tenantId} and s.is_available = true
               and s.slot_range && tstzrange(${args.start}::timestamptz, ${args.end}::timestamptz)
+          )
+          and not exists (
+            select 1 from public.external_busy_blocks x
+            where x.tenant_id = r.tenant_id
+              and (x.resource_id is null or x.resource_id = r.id)
+              and x.busy && tstzrange(${args.start}::timestamptz, ${args.end}::timestamptz)
           )
         order by r.id asc
         limit 1
@@ -381,7 +417,29 @@ async function preflight(
         limit 1
       ) end as deposit_overrides,
       (select name from public.offerings
-        where id = ${offeringId}::uuid and tenant_id = ${ctx.tenantId}) as offering_name
+        where id = ${offeringId}::uuid and tenant_id = ${ctx.tenantId}) as offering_name,
+      exists (
+        select 1 from public.external_busy_blocks x
+        where x.tenant_id = ${ctx.tenantId}
+          and (x.resource_id is null or x.resource_id = (select id from ex))
+          and x.busy && tstzrange(${args.start}::timestamptz, ${args.end}::timestamptz)
+      ) as calendar_busy,
+      case when ${liveCalendarCheck} and exists (
+        select 1 from public.adapter_connections ac
+        where ac.tenant_id = ${ctx.tenantId} and ac.provider = 'google_calendar'
+          and ac.status = 'connected'
+      ) then (
+        select coalesce(jsonb_agg(jsonb_build_object('start', b.start_at, 'end', b.end_at)), '[]'::jsonb)
+        from public.bookings b
+        where b.tenant_id = ${ctx.tenantId} and b.status <> 'cancelled'
+          and b.start_at < ${args.end}::timestamptz and b.end_at > ${args.start}::timestamptz
+          and b.start_at > ${args.start}::timestamptz - interval '31 days'
+          and exists (
+            select 1 from public.adapter_sync_state ss
+            where ss.tenant_id = b.tenant_id and ss.provider = 'google_calendar'
+              and ss.entity_type = 'booking' and ss.entity_id = b.id and ss.external_id is not null
+          )
+      ) end as calendar_own_bookings
   `;
   const row = rows[0];
   if (!row) {
@@ -392,19 +450,30 @@ async function preflight(
   return row;
 }
 
-/** OPS-5 tier 2 — only when tier 1 missed and the model named a resource. */
+/** OPS-5 tier 2 — only when tier 1 missed and the model named a resource.
+ * CAL-1: also says whether a synced calendar busy time blocks that resource
+ * for the requested window (same statement). */
 async function resourceByName(
   sql: SqlClient,
   ctx: CallContext,
   name: string,
-): Promise<string | null> {
-  const rows = await sql<{ id: string }>`
-    select id from public.resources
-    where tenant_id = ${ctx.tenantId} and active and name ilike ${name}
-    order by id asc
+  args: Args,
+): Promise<{ id: string; calendar_busy: boolean } | null> {
+  const rows = await sql<{ id: string; calendar_busy: boolean | null }>`
+    select r.id,
+      exists (
+        select 1 from public.external_busy_blocks x
+        where x.tenant_id = r.tenant_id
+          and (x.resource_id is null or x.resource_id = r.id)
+          and x.busy && tstzrange(${args.start}::timestamptz, ${args.end}::timestamptz)
+      ) as calendar_busy
+    from public.resources r
+    where r.tenant_id = ${ctx.tenantId} and r.active and r.name ilike ${name}
+    order by r.id asc
     limit 1
   `;
-  return rows[0]?.id ?? null;
+  const row = rows[0];
+  return row ? { id: row.id, calendar_busy: row.calendar_busy === true } : null;
 }
 
 /** OPS-5 tier 3 as its own statement — only after a tier-2 miss (when no
@@ -415,14 +484,20 @@ async function firstAvailableResource(
   args: Args,
 ): Promise<string | null> {
   const rows = await sql<{ id: string }>`
-    select id from public.resources
-    where tenant_id = ${ctx.tenantId} and active
-      and id in (
+    select r.id from public.resources r
+    where r.tenant_id = ${ctx.tenantId} and r.active
+      and r.id in (
         select resource_id from public.availability_slots
         where tenant_id = ${ctx.tenantId} and is_available = true
           and slot_range && tstzrange(${args.start}, ${args.end})
       )
-    order by id asc
+      and not exists (
+        select 1 from public.external_busy_blocks x
+        where x.tenant_id = r.tenant_id
+          and (x.resource_id is null or x.resource_id = r.id)
+          and x.busy && tstzrange(${args.start}::timestamptz, ${args.end}::timestamptz)
+      )
+    order by r.id asc
     limit 1
   `;
   return rows[0]?.id ?? null;
@@ -511,9 +586,85 @@ export async function createBooking(
   const exactResourceId =
     args.resource_id && UUID_RE.test(args.resource_id) ? args.resource_id : null;
 
+  // CAL-1: the live calendar re-check, started by bookValidated right after
+  // the preflight statement is queued.
+  const live: LiveCheckRef = { current: null };
+  try {
+    return await bookValidated(sql, ctx, args, deps, {
+      phone,
+      offeringId,
+      idempotencyKey,
+      exactResourceId,
+      live,
+    });
+  } finally {
+    // An idempotent replay or any early answer no longer needs the check.
+    live.current?.cancel();
+  }
+}
+
+/** The in-flight live calendar check, if one was started (cancelled by
+ * `createBooking` once the answer is known). */
+interface LiveCheckRef {
+  current: ReturnType<typeof startLiveCalendarCheck> | null;
+}
+
+interface ValidatedBooking {
+  phone: string;
+  offeringId: string | null;
+  idempotencyKey: string;
+  exactResourceId: string | null;
+  live: LiveCheckRef;
+}
+
+/** CAL-1: the `slot_taken` answer for a time the owner's calendar has busy. */
+function calendarSlotTaken(
+  deps: CreateBookingDeps | undefined,
+  ctx: CallContext,
+  source: "synced" | "live",
+): CreateBookingResult {
+  deps?.logger.info("create_booking_calendar_busy", {
+    tenant_id: ctx.tenantId,
+    call_id: ctx.retellCallId,
+    source,
+  });
+  return { confirmed: false, reason: "slot_taken" };
+}
+
+/** Everything after input validation: preflight, checks, the write. */
+async function bookValidated(
+  sql: SqlClient,
+  ctx: CallContext,
+  args: Args,
+  deps: CreateBookingDeps | undefined,
+  validated: ValidatedBooking,
+): Promise<CreateBookingResult> {
+  const { phone, offeringId, idempotencyKey, exactResourceId } = validated;
+  const calendarBusyCheck = deps?.calendarBusy;
   let pre: PreflightRow;
   try {
-    pre = await preflight(sql, ctx, args, idempotencyKey, exactResourceId, offeringId);
+    const pending = preflight(
+      sql,
+      ctx,
+      args,
+      idempotencyKey,
+      exactResourceId,
+      offeringId,
+      calendarBusyCheck !== undefined,
+    );
+    // CAL-1: the live re-check starts now that the preflight is queued, and
+    // runs alongside it (it costs at most what is left of its deadline). Not
+    // before it: on the single hot-path connection the check's own lookup
+    // (a cache miss) then waits behind the preflight, never the reverse.
+    validated.live.current = calendarBusyCheck
+      ? startLiveCalendarCheck(
+          calendarBusyCheck,
+          ctx.tenantId,
+          { start: args.start, end: args.end },
+          deps?.calendarCheckTimeoutMs ?? LIVE_CHECK_TIMEOUT_MS,
+        )
+      : null;
+    pre = await pending;
   } catch (err) {
     if (isPgError(err, INVALID_DATETIME_FORMAT) || isPgError(err, DATETIME_FIELD_OVERFLOW)) {
       return { confirmed: false, reason: "invalid_time", message: INVALID_TIME_MESSAGE };
@@ -546,14 +697,29 @@ export async function createBooking(
   // verified to belong to the caller's OWN tenant before it's ever written;
   // a hallucinated id can only land on one of THIS tenant's own
   // genuinely-open resources, never widen authorization to another's.
+  //
+  // CAL-1: `calendarBusy` follows the resource the booking lands on — the
+  // exact one (preflight), a named one (its own statement), or, for the
+  // first-available tiers, every resource (those tiers already skip a
+  // resource a synced busy time blocks, so only a tenant-wide block is left).
   let resolvedResourceId = pre.exact_resource_id;
+  let calendarBusy = pre.calendar_busy === true;
   if (!resolvedResourceId) {
-    resolvedResourceId = args.resource_name
-      ? ((await resourceByName(sql, ctx, args.resource_name)) ??
-        (await firstAvailableResource(sql, ctx, args)))
-      : pre.first_available_resource_id;
+    if (args.resource_name) {
+      const named = await resourceByName(sql, ctx, args.resource_name, args);
+      if (named) {
+        resolvedResourceId = named.id;
+        calendarBusy = named.calendar_busy;
+      } else {
+        resolvedResourceId = await firstAvailableResource(sql, ctx, args);
+      }
+    } else {
+      resolvedResourceId = pre.first_available_resource_id;
+    }
   }
   if (!resolvedResourceId) {
+    // Every resource is blocked by the owner's calendar: the time is taken.
+    if (calendarBusy) return calendarSlotTaken(deps, ctx, "synced");
     return { confirmed: false, reason: "resource_not_found" };
   }
   // QA-1 BE-06: the model's start must fall inside a real slot of the resource
@@ -565,6 +731,28 @@ export async function createBooking(
     resolvedResourceId === pre.exact_resource_id ? pre.exact_in_hours : pre.any_in_hours;
   if (inHours === false) {
     return { confirmed: false, reason: "outside_hours", message: OUTSIDE_HOURS_MESSAGE };
+  }
+  // CAL-1: the owner already has something in their calendar then — first
+  // from the synced table, then from the live re-check (bounded wait; an
+  // unanswered check never blocks the booking).
+  if (calendarBusy) return calendarSlotTaken(deps, ctx, "synced");
+  const live = validated.live.current;
+  if (live) {
+    const verdict = await live.verdict;
+    const decision = liveVerdictForResource(
+      verdict,
+      resolvedResourceId,
+      { start: args.start, end: args.end },
+      pre.calendar_own_bookings ?? [],
+    );
+    if (decision === "busy") return calendarSlotTaken(deps, ctx, "live");
+    if (decision === "unknown") {
+      deps?.logger.warn("create_booking_calendar_live_check_unknown", {
+        tenant_id: ctx.tenantId,
+        call_id: ctx.retellCallId,
+        reason: verdict.status === "unknown" ? verdict.reason : "unreadable_window",
+      });
+    }
   }
   if (resolvedResourceId !== args.resource_id) {
     deps?.logger.warn("create_booking_resource_id_resolved_fallback", {
