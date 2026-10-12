@@ -72,7 +72,7 @@ test("signup account step reaches the (mocked) checkout redirect", async ({ page
   await page.getByLabel("Email").fill("owner@example.com");
   await page.getByLabel("Password").fill("correct horse battery staple 1");
   await page.getByRole("checkbox").check();
-  await page.getByRole("button", { name: "Create account & continue" }).click();
+  await page.getByRole("button", { name: "Create account & start free trial" }).click();
 
   await page.waitForURL(mockCheckoutUrl);
   await expect(page.getByText("Mock checkout")).toBeVisible();

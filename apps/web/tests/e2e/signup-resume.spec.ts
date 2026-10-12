@@ -35,7 +35,7 @@ async function fillAccountForm(page: import("@playwright/test").Page) {
   await page.getByLabel("Email").fill("joe@joesgarage.com");
   await page.getByLabel("Password").fill("correct horse battery staple 1");
   await page.getByRole("checkbox").check();
-  await page.getByRole("button", { name: "Create account & continue" }).click();
+  await page.getByRole("button", { name: "Create account & start free trial" }).click();
 }
 
 test.describe("signup error mapping", () => {
